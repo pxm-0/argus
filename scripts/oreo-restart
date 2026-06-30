@@ -1,0 +1,72 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import subprocess
+import time
+
+from oreo_common import audit, by_id, fail, http_status, operation_allowed, runtime_config
+
+
+def wait_for_health(url: str, expected: str, timeout: float) -> tuple[bool, str, str]:
+    deadline = time.time() + max(timeout, 1)
+    last_status = "fail"
+    last_detail = "timeout"
+    while time.time() <= deadline:
+        status, detail = http_status(url, timeout=min(3.0, max(timeout, 1)))
+        last_status, last_detail = status, detail
+        if status == expected:
+            return True, status, detail
+        time.sleep(1)
+    return False, last_status, last_detail
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Restart an approved workload and verify health.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--confirm", default="", help="Exact workload ID required to apply restart.")
+    parser.add_argument("--health-timeout", type=float, default=20.0)
+    args = parser.parse_args()
+
+    workloads = by_id()
+    if args.workload_id not in workloads:
+        fail(f"unknown workload: {args.workload_id}")
+    if args.confirm != args.workload_id:
+        audit("restart.apply", args.workload_id, "blocked", reason="confirmation required")
+        fail(f"confirmation required: rerun with --confirm {args.workload_id}")
+    if not operation_allowed(args.workload_id, "restartAllowed"):
+        audit("restart.apply", args.workload_id, "blocked", reason="restart not allowed")
+        fail(f"restart is not allowed for {args.workload_id}")
+    runtime = runtime_config(args.workload_id)
+    if runtime.get("type") != "docker-compose":
+        audit("restart.apply", args.workload_id, "blocked", reason="unsupported runtime")
+        fail(f"restart requires docker-compose runtime for {args.workload_id}")
+    compose_path = str(runtime.get("composePath", ""))
+    project = str(runtime.get("composeProject", ""))
+    service = str(runtime.get("service", ""))
+    if not compose_path or not project:
+        audit("restart.apply", args.workload_id, "blocked", reason="missing compose config")
+        fail(f"missing composePath or composeProject for {args.workload_id}")
+
+    command = ["docker", "compose", "-f", compose_path, "-p", project, "restart"]
+    if service:
+        command.append(service)
+    result = subprocess.run(command, check=False)
+    if result.returncode != 0:
+        audit("restart.apply", args.workload_id, "failed", reason="compose restart failed", exitCode=result.returncode)
+        return result.returncode
+
+    health = workloads[args.workload_id].get("health", {})
+    url = str(health.get("url", ""))
+    expected = str(health.get("expectedStatus", ""))
+    ok, status, detail = wait_for_health(url, expected, args.health_timeout)
+    if not ok:
+        audit("restart.apply", args.workload_id, "failed", reason="health check failed", status=status, detail=detail)
+        fail(f"restart completed but health failed: expected {expected}, got {status} {detail}")
+    audit("restart.apply", args.workload_id, "ok", status=status, detail=detail)
+    print(f"{args.workload_id} restarted; health {status} {detail}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

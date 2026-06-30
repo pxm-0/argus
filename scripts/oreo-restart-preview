@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+
+from oreo_common import audit, by_id, http_status, load_json, operation_allowed, print_table, runtime_config
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Preview a safe workload restart.")
+    parser.add_argument("workload_id")
+    args = parser.parse_args()
+
+    workloads = by_id()
+    if args.workload_id not in workloads:
+        raise SystemExit(f"unknown workload: {args.workload_id}")
+    workload = workloads[args.workload_id]
+    runtime = runtime_config(args.workload_id)
+    privacy = load_json("privacy.json")["workloads"].get(args.workload_id, {})
+    access = load_json("access.json")["workloads"].get(args.workload_id, {})
+    health = workload.get("health", {})
+    status, detail = http_status(health.get("url", ""), float(health.get("timeoutSeconds", 3)))
+    allowed = operation_allowed(args.workload_id, "restartAllowed")
+    compose_path = str(runtime.get("composePath", ""))
+    project = str(runtime.get("composeProject", ""))
+    service = str(runtime.get("service", ""))
+    if runtime.get("type") == "docker-compose" and compose_path and project:
+        command = ["docker", "compose", "-f", compose_path, "-p", project, "restart"]
+        if service:
+            command.append(service)
+        command_text = " ".join(command)
+    else:
+        command_text = "unavailable: missing docker-compose runtime config"
+    print_table(
+        ["field", "value"],
+        [
+            ["workload", args.workload_id],
+            ["name", str(workload.get("name", ""))],
+            ["privacy", str(privacy.get("privacy", ""))],
+            ["desired", str(access.get("desired", ""))],
+            ["effective", str(access.get("effective", ""))],
+            ["compose", compose_path or "-"],
+            ["project", project or "-"],
+            ["service", service or "-"],
+            ["health", f"{status} {detail}"],
+            ["restart", "allowed" if allowed else "blocked"],
+            ["command", command_text],
+            ["post-health", str(health.get("url", ""))],
+        ],
+    )
+    audit("restart.preview", args.workload_id, "ok" if allowed else "blocked")
+    return 0 if allowed else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
