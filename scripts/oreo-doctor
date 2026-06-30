@@ -1,44 +1,187 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
+import subprocess
 from pathlib import Path
+from typing import Any
 
-from oreo_common import load_json, root
+from oreo_common import load_json, print_json, root
 
 
-def check(condition: bool, message: str, failures: list[str]) -> None:
-    print(("ok   " if condition else "fail ") + message)
-    if not condition:
-        failures.append(message)
+SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".token"}
+SECRET_NAMES = {".env", "control-token", "audit.log"}
+SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=root(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+def tracked_files() -> list[str]:
+    result = run(["git", "ls-files"])
+    if result.returncode != 0:
+        return []
+    return result.stdout.splitlines()
+
+
+def add(checks: list[dict[str, Any]], ok: bool, message: str, **extra: Any) -> None:
+    checks.append({"ok": ok, "message": message, **extra})
+
+
+def has_secret_shape(path: str) -> bool:
+    item = Path(path)
+    lowered = path.lower()
+    return (
+        item.name.lower() in SECRET_NAMES
+        or item.suffix.lower() in SECRET_SUFFIXES
+        or item.name.lower().startswith(".env.")
+        or "credential" in lowered
+        or "secret" in lowered
+    )
+
+
+def config_valid(checks: list[dict[str, Any]]) -> None:
+    for name in ["workloads.json", "access.json", "privacy.json", "policy.json", "routes.json", "exposure.json", "monitoring.json"]:
+        try:
+            json.loads((root() / "config" / name).read_text())
+        except Exception as exc:  # noqa: BLE001 - doctor should report concise failures.
+            add(checks, False, f"config/{name} valid", error=exc.__class__.__name__)
+        else:
+            add(checks, True, f"config/{name} valid")
+
+
+def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
+    items = tracked_files()
+    add(checks, bool(items), "tracked file inventory available")
+    secret_like = [item for item in items if has_secret_shape(item)]
+    runtime = [item for item in items if Path(item).parts[:1] == ("runtime",) and Path(item).name != ".gitkeep"]
+    workload_source = []
+    for item in items:
+        parts = Path(item).parts
+        if len(parts) >= 3 and parts[0] == "workloads" and parts[2] in {"source", "app", "repo", "data", "backups", "runtime", "logs"}:
+            workload_source.append(item)
+    add(checks, not secret_like, "no tracked secrets or credentials", paths=secret_like)
+    add(checks, not runtime, "no tracked runtime artifacts", paths=runtime)
+    add(checks, not workload_source, "no tracked workload source or runtime data", paths=workload_source)
+
+
+def exposure_checks(checks: list[dict[str, Any]]) -> None:
+    access = load_json("access.json")
+    routes = load_json("routes.json")
+    exposure = load_json("exposure.json")
+    policy = load_json("policy.json")
+    privacy = load_json("privacy.json")
+    workloads = {str(item.get("id")): item for item in load_json("workloads.json").get("workloads", [])}
+
+    api = routes.get("api", {})
+    add(checks, api.get("bind") == "127.0.0.1" and api.get("public") is False, "control API is localhost-only")
+
+    caddy_path = root() / "caddy" / "dashboard.Caddyfile"
+    if caddy_path.exists():
+        caddy = caddy_path.read_text()
+        add(checks, "bind 0.0.0.0" not in caddy, "dashboard Caddy route is not wildcard-bound")
+        add(checks, "reverse_proxy 127.0.0.1:8099" in caddy, "dashboard Caddy proxies API locally")
+    else:
+        add(checks, True, "dashboard Caddy plan absent")
+
+    observed_funnel = bool(routes.get("observed", {}).get("funnel", {}).get("enabled")) or bool(
+        exposure.get("providers", {}).get("tailscale", {}).get("funnel", {}).get("observedEnabled")
+    )
+    add(checks, policy.get("rules", {}).get("allowFunnelInP0") is False, "Funnel disallowed in policy")
+    add(checks, not observed_funnel, "no observed Funnel exposure")
+
+    cloudflare = exposure.get("providers", {}).get("cloudflare", {})
+    add(checks, cloudflare.get("allowQuickTunnels") is False, "quick tunnels disabled")
+
+    public_states = [
+        workload_id
+        for workload_id, item in access.get("workloads", {}).items()
+        if item.get("desired") == "cloudflare-public" or item.get("effective") == "cloudflare-public"
+    ]
+    add(checks, not public_states, "cloudflare-public absent in P2 access state", workloads=public_states)
+
+    unsafe_external = []
+    for workload_id, item in access.get("workloads", {}).items():
+        effective = str(item.get("effective", ""))
+        route = routes.get("workloadRoutes", {}).get(workload_id, {}).get("cloudflare", {})
+        privacy_state = privacy.get("workloads", {}).get(workload_id, {}).get("privacy", privacy.get("defaultPrivacy", ""))
+        workload = workloads.get(workload_id, {})
+        external = effective.startswith("cloudflare") or bool(route.get("enabled"))
+        if external and (privacy_state not in SAFE_CLOUDFLARE_PRIVACY or workload.get("kind") == "admin-tool"):
+            unsafe_external.append(workload_id)
+    add(checks, not unsafe_external, "no sensitive/restricted/admin workload externally exposed", workloads=unsafe_external)
+
+
+def cloudflare_ingress_checks(checks: list[dict[str, Any]]) -> None:
+    routes = load_json("routes.json")
+    privacy = load_json("privacy.json")
+    workloads = {str(item.get("id")): item for item in load_json("workloads.json").get("workloads", [])}
+    host_to_workload = {
+        str(route.get("cloudflare", {}).get("hostname")): workload_id
+        for workload_id, route in routes.get("workloadRoutes", {}).items()
+        if route.get("cloudflare", {}).get("hostname")
+    }
+    ingress_path = root() / "cloudflare" / "planned-ingress.yml"
+    blocked = []
+    if ingress_path.exists():
+        for line in ingress_path.read_text().splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("- hostname:"):
+                continue
+            hostname = stripped.partition(":")[2].strip().strip('"')
+            workload_id = host_to_workload.get(hostname, "")
+            workload = workloads.get(workload_id, {})
+            privacy_state = privacy.get("workloads", {}).get(workload_id, {}).get("privacy", privacy.get("defaultPrivacy", ""))
+            haystack = json.dumps(workload, sort_keys=True).lower()
+            if (
+                workload.get("kind") == "admin-tool"
+                or privacy_state not in SAFE_CLOUDFLARE_PRIVACY
+                or any(marker in haystack for marker in ["postgres", "docker.sock", "docker-socket", "/.ssh", "control-api"])
+            ):
+                blocked.append(hostname)
+    add(checks, not blocked, "no blocked workload in Cloudflare ingress", hostnames=blocked)
+
+
+def reconcile_check(checks: list[dict[str, Any]]) -> None:
+    script = root() / "scripts" / "oreo-access-reconcile"
+    result = run([str(script), "--offline", "--json"])
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        add(checks, False, "effective access reconcile JSON valid")
+        return
+    add(checks, result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean", failures=payload.get("failures"))
+
+
+def audit() -> dict[str, Any]:
+    checks: list[dict[str, Any]] = []
+    config_valid(checks)
+    tracked_file_checks(checks)
+    exposure_checks(checks)
+    cloudflare_ingress_checks(checks)
+    reconcile_check(checks)
+    failures = [check for check in checks if not check["ok"]]
+    return {"ok": not failures, "failures": len(failures), "checks": checks}
+
+
+def print_text(result: dict[str, Any]) -> None:
+    for check in result["checks"]:
+        print(("ok   " if check["ok"] else "fail ") + check["message"])
 
 
 def main() -> int:
-    repo = root()
-    failures: list[str] = []
-    for name in ["workloads.json", "access.json", "privacy.json", "policy.json", "routes.json", "exposure.json", "monitoring.json"]:
-        try:
-            json.loads((repo / "config" / name).read_text())
-            check(True, f"config/{name} valid", failures)
-        except Exception:
-            check(False, f"config/{name} valid", failures)
-    suspicious = []
-    for base in [repo / "config", repo / "workloads", repo / "runtime", repo / "cloudflare"]:
-        if not base.exists():
-            continue
-        for path in base.rglob("*"):
-            if not path.is_file():
-                continue
-            if path.name in {".env", "control-token"} or path.suffix in {".pem", ".key"}:
-                suspicious.append(path)
-    check(not suspicious, "no obvious secret files in managed paths", failures)
-    exposure = load_json("exposure.json")
-    policy = load_json("policy.json")
-    check(exposure["providers"]["cloudflare"]["enabled"] is False, "Cloudflare disabled", failures)
-    check(policy["rules"].get("allowFunnelInP0") is False, "Funnel disallowed in P0 policy", failures)
-    observed_funnel = exposure["providers"]["tailscale"]["funnel"].get("observedEnabled")
-    check(observed_funnel is False, "no observed Funnel exposure", failures)
-    return 1 if failures else 0
+    parser = argparse.ArgumentParser(description="Run Oreo Cloud security and exposure audit checks.")
+    parser.add_argument("--json", action="store_true")
+    args = parser.parse_args()
+
+    result = audit()
+    if args.json:
+        print_json(result)
+    else:
+        print_text(result)
+    return 0 if result["ok"] else 1
 
 
 if __name__ == "__main__":

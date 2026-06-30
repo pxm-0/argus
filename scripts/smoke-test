@@ -115,6 +115,8 @@ class Smoke:
 def check_git(repo: Path, smoke: Smoke) -> None:
     result = run(["git", "rev-parse", "--is-inside-work-tree"], repo)
     smoke.check(result.returncode == 0 and result.stdout.strip() == "true", "Git repo exists")
+    tag = run(["git", "rev-parse", "-q", "--verify", "refs/tags/p1-complete"], repo)
+    smoke.check(tag.returncode == 0, "p1-complete tag exists")
 
 
 def check_json(repo: Path, smoke: Smoke) -> None:
@@ -636,6 +638,16 @@ def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
     smoke.check(result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean")
 
 
+def check_doctor(repo: Path, smoke: Smoke) -> None:
+    result = run([str(repo / "scripts" / "oreo-doctor"), "--json"], repo)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("doctor JSON valid")
+        return
+    smoke.check(result.returncode == 0 and payload.get("ok") is True, "doctor security audit clean")
+
+
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
     workloads = run([str(repo / "scripts" / "oreo-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
@@ -700,6 +712,7 @@ def main() -> int:
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)
+    check_doctor(repo, smoke)
     check_cli(repo, smoke, args.offline)
     check_caddy(repo, smoke, args.offline)
 
