@@ -1,0 +1,313 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/pxm-0/oreo-cloud/config/schemas/workload-manifest.schema.example.json",
+  "title": "Oreo Cloud Workload Manifest",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "name",
+    "canonicalRoot",
+    "sourcePath",
+    "runtime",
+    "migration",
+    "operations",
+    "backup",
+    "security"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string",
+      "default": ""
+    },
+    "canonicalRoot": {
+      "type": "string",
+      "pattern": "^/srv/oreo-cloud/workloads/[a-z0-9][a-z0-9-]*$"
+    },
+    "sourcePath": {
+      "type": "string",
+      "pattern": "^/srv/oreo-cloud/workloads/[a-z0-9][a-z0-9-]*/source$"
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "type",
+        "composePath",
+        "composeProject",
+        "service",
+        "legacyComposePaths"
+      ],
+      "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "docker-compose",
+            "docker",
+            "static",
+            "external",
+            "unknown"
+          ]
+        },
+        "composePath": {
+          "type": "string"
+        },
+        "composeProject": {
+          "type": "string"
+        },
+        "service": {
+          "type": "string"
+        },
+        "legacyComposePaths": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "originalPath",
+        "backupPath",
+        "compatibilitySymlink",
+        "migratedAt",
+        "lastHealthCheck",
+        "rollback",
+        "notes"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "in-progress",
+            "migrated",
+            "deferred",
+            "rollback-required",
+            "needs-discovery"
+          ]
+        },
+        "originalPath": {
+          "type": "string"
+        },
+        "backupPath": {
+          "type": "string"
+        },
+        "compatibilitySymlink": {
+          "type": "boolean"
+        },
+        "migratedAt": {
+          "type": "string"
+        },
+        "lastHealthCheck": {
+          "type": "string"
+        },
+        "rollback": {
+          "type": "string"
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logsAllowed",
+        "restartAllowed",
+        "backupAllowed",
+        "dashboardActionsAllowed",
+        "approvedForCloudflareProtectedDemo",
+        "requiresConfirmation"
+      ],
+      "properties": {
+        "logsAllowed": {
+          "type": "boolean",
+          "default": false
+        },
+        "restartAllowed": {
+          "type": "boolean",
+          "default": false
+        },
+        "backupAllowed": {
+          "type": "boolean",
+          "default": false
+        },
+        "dashboardActionsAllowed": {
+          "type": "boolean",
+          "default": false
+        },
+        "approvedForCloudflareProtectedDemo": {
+          "type": "boolean",
+          "default": false
+        },
+        "requiresConfirmation": {
+          "type": "boolean",
+          "default": true
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "source",
+        "env",
+        "namedVolumes",
+        "bindMounts",
+        "database",
+        "destination",
+        "retention",
+        "restoreTested",
+        "lastBackupAt",
+        "lastRestoreTestAt"
+      ],
+      "properties": {
+        "status": {
+          "type": "string",
+          "enum": [
+            "planned",
+            "configured",
+            "blocked",
+            "not-applicable",
+            "needs-discovery"
+          ]
+        },
+        "source": {
+          "type": "boolean",
+          "default": false
+        },
+        "env": {
+          "type": "boolean",
+          "default": false
+        },
+        "namedVolumes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "bindMounts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "database": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "type",
+            "dumpCommand",
+            "restoreCommand"
+          ],
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "none",
+                "postgres",
+                "sqlite",
+                "mysql",
+                "file",
+                "other"
+              ]
+            },
+            "dumpCommand": {
+              "type": "string"
+            },
+            "restoreCommand": {
+              "type": "string"
+            }
+          }
+        },
+        "destination": {
+          "type": "string",
+          "pattern": "^/srv/oreo-cloud/runtime/backups/[a-z0-9][a-z0-9-]*$"
+        },
+        "retention": {
+          "type": "string"
+        },
+        "restoreTested": {
+          "type": "boolean",
+          "default": false
+        },
+        "lastBackupAt": {
+          "type": "string"
+        },
+        "lastRestoreTestAt": {
+          "type": "string"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "trackedByOreoCloudGit",
+        "classification",
+        "publicExposureAllowed",
+        "forbiddenTargets",
+        "notes"
+      ],
+      "properties": {
+        "trackedByOreoCloudGit": {
+          "type": "boolean",
+          "default": false
+        },
+        "classification": {
+          "type": "string",
+          "enum": [
+            "unclassified",
+            "personal",
+            "internal",
+            "sensitive",
+            "restricted"
+          ]
+        },
+        "publicExposureAllowed": {
+          "type": "boolean",
+          "default": false
+        },
+        "forbiddenTargets": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "postgres",
+              "docker-socket",
+              "host-ssh",
+              "control-api",
+              "dashboard",
+              "secrets",
+              "database"
+            ]
+          }
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
