@@ -17,6 +17,36 @@ def load_json(name: str) -> dict[str, Any]:
     return json.loads((ROOT / "config" / name).read_text())
 
 
+def load_manifest(workload_id: str) -> dict[str, Any]:
+    path = ROOT / "workloads" / workload_id / "manifest.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def recent_events() -> list[dict[str, Any]]:
+    path = ROOT / "runtime" / "audit.log"
+    if not path.exists():
+        return []
+    events = []
+    for line in path.read_text().splitlines()[-50:]:
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        events.append(
+            {
+                "timestamp": event.get("timestamp", ""),
+                "action": event.get("action", ""),
+                "workloadId": event.get("workloadId", ""),
+                "result": event.get("result", ""),
+            }
+        )
+    return events
+
+
 def write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(line.rstrip() for line in content.splitlines()) + "\n")
@@ -31,14 +61,21 @@ def merged_state() -> dict[str, Any]:
     monitoring = load_json("monitoring.json")
 
     merged = []
+    events = recent_events()
     for workload in workloads:
         wid = workload["id"]
+        manifest = load_manifest(wid)
+        last_event = next((event for event in reversed(events) if event.get("workloadId") == wid), {})
         merged.append(
             {
                 **workload,
                 "privacy": privacy["workloads"].get(wid, {}),
                 "access": access["workloads"].get(wid, {}),
                 "routes": routes["workloadRoutes"].get(wid, {}),
+                "manifest": manifest,
+                "operations": manifest.get("operations", {}),
+                "backup": manifest.get("backup", {}),
+                "lastAuditEvent": last_event,
             }
         )
     return {
@@ -48,6 +85,7 @@ def merged_state() -> dict[str, Any]:
         "routes": routes,
         "exposure": exposure,
         "monitoring": monitoring,
+        "events": events[-20:],
     }
 
 
@@ -77,6 +115,9 @@ def workload_card(workload: dict[str, Any]) -> str:
     urls = access.get("urls", {})
     routes = workload.get("routes", {})
     cloudflare = routes.get("cloudflare", {})
+    operations = workload.get("operations", {})
+    backup = workload.get("backup", {})
+    last_event = workload.get("lastAuditEvent", {})
     error = access.get("lastError") or ""
     health_label = "configured" if health.get("enabled") else "not configured"
     actions = []
@@ -105,16 +146,21 @@ def workload_card(workload: dict[str, Any]) -> str:
         {pill("desired", access.get("desired", ""))}
         {pill("effective", access.get("effective", ""))}
         {pill("migration", migration.get("status", ""))}
+        {pill("backup", backup.get("status", "needs-discovery"))}
       </div>
       <dl class="facts">
         <div><dt>Runtime</dt><dd>{escape(runtime.get("type", ""))}</dd></div>
         <div><dt>Compose</dt><dd>{escape(runtime.get("composeProject", "") or "-")}</dd></div>
         <div><dt>Health</dt><dd>{escape(health_label)} {escape(str(health.get("expectedStatus", "")))}</dd></div>
+        <div><dt>Last Health</dt><dd>{escape(migration.get("lastHealthCheck", "") or "-")}</dd></div>
         <div><dt>Local URL</dt><dd>{escape(urls.get("local", "") or "-")}</dd></div>
         <div><dt>Tailnet URL</dt><dd>{escape(urls.get("tailnet", "") or "-")}</dd></div>
         <div><dt>Cloudflare</dt><dd>{escape(cloudflare.get("mode", "disabled"))}</dd></div>
         <div><dt>Internal Port</dt><dd>{escape(str(network.get("internalPort", "-")))}</dd></div>
         <div><dt>Legacy Path</dt><dd>{escape(workload.get("paths", {}).get("legacy", "") or "-")}</dd></div>
+        <div><dt>Ops</dt><dd>logs {escape(str(bool(operations.get("logsAllowed", False))).lower())}, restart {escape(str(bool(operations.get("restartAllowed", False))).lower())}</dd></div>
+        <div><dt>Backup</dt><dd>{escape(backup.get("destination", "") or "-")}</dd></div>
+        <div><dt>Last Event</dt><dd>{escape(last_event.get("action", "") or "-")} {escape(last_event.get("result", "") or "")}</dd></div>
       </dl>
       {f'<p class="warning">{escape(error)}</p>' if error else ''}
       <div class="actions">{"".join(actions)}</div>
@@ -139,6 +185,12 @@ def script_json(data: dict[str, Any]) -> str:
 
 def render_html(state: dict[str, Any]) -> str:
     workloads = "\n".join(workload_card(item) for item in state["workloads"])
+    migrated = sum(1 for item in state["workloads"] if item.get("migration", {}).get("status") == "migrated")
+    backup_plans = sum(1 for item in state["workloads"] if item.get("backup", {}).get("status"))
+    events = "\n".join(
+        f"{escape(event.get('timestamp', ''))} {escape(event.get('workloadId', ''))} {escape(event.get('action', ''))} {escape(event.get('result', ''))}"
+        for event in state.get("events", [])[-8:]
+    )
     route = state["routes"]["dashboard"]
     api = state["routes"]["api"]
     exposure = state["exposure"]["providers"]
@@ -170,7 +222,8 @@ def render_html(state: dict[str, Any]) -> str:
         <div><strong>{len(state["workloads"])}</strong><span>Workloads</span></div>
         <div><strong>{escape(str(exposure["cloudflare"]["enabled"]).lower())}</strong><span>Cloudflare enabled</span></div>
         <div><strong>{escape(str(funnel["observedEnabled"]).lower())}</strong><span>Funnel observed</span></div>
-        <div><strong>{escape(str(state["monitoring"]["refreshSeconds"]))}s</strong><span>Monitor refresh</span></div>
+        <div><strong>{migrated}</strong><span>Migrated</span></div>
+        <div><strong>{backup_plans}</strong><span>Backup plans</span></div>
       </section>
       <section class="alert">
         <strong>P0 exposure status</strong>
@@ -185,12 +238,22 @@ def render_html(state: dict[str, Any]) -> str:
       </section>
       <section class="section-head">
         <h2>Workloads</h2>
-        <span>View-only by default</span>
+        <span>Migration, backup, access, and operations</span>
       </section>
       <section class="workloads">
         {workloads}
       </section>
       <section class="plan-grid">
+        <article>
+          <h2>Access Plan</h2>
+          <p>Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.</p>
+          <code>API {escape(api["bind"])}:{escape(str(api["port"]))}</code>
+        </article>
+        <article>
+          <h2>Backups</h2>
+          <p>{backup_plans} workloads have manifest-backed backup metadata. Backup runs remain blocked unless the workload manifest allows them.</p>
+          <code>/srv/oreo-cloud/runtime/backups</code>
+        </article>
         <article>
           <h2>Cloudflare Plan</h2>
           <p>Cloudflare is disabled. Quick tunnels and named tunnels are blocked in P0 until an explicit later phase changes policy.</p>
@@ -198,7 +261,12 @@ def render_html(state: dict[str, Any]) -> str:
         </article>
         <article>
           <h2>Events</h2>
-          <pre id="events">No audit events loaded.</pre>
+          <pre id="events">{events or "No audit events loaded."}</pre>
+        </article>
+        <article>
+          <h2>System</h2>
+          <p>Monitor refresh {escape(str(state["monitoring"]["refreshSeconds"]))}s. Dashboard remains view-only without admin mode.</p>
+          <code>{escape(route["url"])}</code>
         </article>
       </section>
     </main>

@@ -28,6 +28,34 @@ def load_json(name: str) -> dict[str, Any]:
     return json.loads((ROOT / "config" / name).read_text())
 
 
+def load_manifest(workload_id: str) -> dict[str, Any]:
+    path = ROOT / "workloads" / workload_id / "manifest.json"
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text())
+
+
+def recent_events() -> list[dict[str, Any]]:
+    events = []
+    if AUDIT.exists():
+        for line in AUDIT.read_text().splitlines()[-50:]:
+            if not line.strip():
+                continue
+            try:
+                event = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            events.append(
+                {
+                    "timestamp": event.get("timestamp", ""),
+                    "action": event.get("action", ""),
+                    "workloadId": event.get("workloadId", ""),
+                    "result": event.get("result", ""),
+                }
+            )
+    return events
+
+
 def save_json(name: str, data: dict[str, Any]) -> None:
     path = ROOT / "config" / name
     temp = path.with_suffix(path.suffix + ".tmp")
@@ -56,17 +84,24 @@ def merged_workloads() -> dict[str, Any]:
     routes = load_json("routes.json")
     exposure = load_json("exposure.json")
     merged = []
+    events = recent_events()
     for workload in workloads["workloads"]:
         wid = workload["id"]
+        manifest = load_manifest(wid)
+        last_event = next((event for event in reversed(events) if event.get("workloadId") == wid), {})
         merged.append(
             {
                 **workload,
                 "privacy": privacy["workloads"].get(wid, {}),
                 "access": access["workloads"].get(wid, {}),
                 "routes": routes["workloadRoutes"].get(wid, {}),
+                "manifest": manifest,
+                "operations": manifest.get("operations", {}),
+                "backup": manifest.get("backup", {}),
+                "lastAuditEvent": last_event,
             }
         )
-    return {"workloads": merged, "routes": routes, "exposure": exposure}
+    return {"workloads": merged, "routes": routes, "exposure": exposure, "events": events[-20:]}
 
 
 def regenerate_dashboard() -> None:
@@ -153,10 +188,7 @@ class Handler(BaseHTTPRequestHandler):
             metrics = ROOT / "control-plane" / "dashboard" / "public" / "metrics.json"
             self.send_json(200, json.loads(metrics.read_text()) if metrics.exists() else {"error": "metrics unavailable"})
         elif path == "/api/events":
-            events = []
-            if AUDIT.exists():
-                events = [json.loads(line) for line in AUDIT.read_text().splitlines()[-50:] if line.strip()]
-            self.send_json(200, {"events": events})
+            self.send_json(200, {"events": recent_events()})
         else:
             self.send_json(404, {"error": "not found"})
 
