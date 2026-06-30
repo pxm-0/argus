@@ -30,6 +30,7 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 | `docs/SECURITY.md` | Safety rules, token handling, exposure guardrails |
 | `docs/OPERATIONS.md` | Commands and operator workflow |
 | `docs/CODEX_TASKS.md` | Task prompts to paste into Codex |
+| `docs/PR_WORKFLOW.md` | Required PR workflow for every P0 phase |
 | `docs/ACCEPTANCE.md` | P0 definition of done and smoke tests |
 | `docs/REFERENCES.md` | External references used for implementation assumptions |
 | `templates/` | Starter config, systemd, Caddy, Cloudflare, and script templates |

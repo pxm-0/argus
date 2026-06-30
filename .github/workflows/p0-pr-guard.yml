@@ -1,0 +1,56 @@
+name: P0 PR Guard
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  validate-pr-contract:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate P0 PR body
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import sys
+
+          body = os.environ.get("PR_BODY", "")
+          required = [
+              "## P0 Scope",
+              "## Verification",
+              "## Safety Checklist",
+              "- [x] This PR is phase-scoped",
+              "- [x] No secrets",
+              "- [x] No Tailscale Funnel was enabled.",
+              "- [x] No Cloudflare tunnel was started or enabled.",
+              "- [x] No DNS records were created.",
+              "- [x] No router ports were opened.",
+              "- [x] No public route was exposed.",
+          ]
+
+          missing = [item for item in required if item not in body]
+          if missing:
+              print("P0 PR body is missing required confirmations:")
+              for item in missing:
+                  print(f"- {item}")
+              sys.exit(1)
+
+          print("P0 PR contract ok")
+          PY
+
+  flag-direct-main-push:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Flag direct main push
+        run: |
+          echo "::error::P0 plans and phases must land through pull requests, not direct pushes to main."
+          exit 1
