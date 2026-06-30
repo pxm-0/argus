@@ -1,0 +1,125 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+from pathlib import Path
+
+
+APPROVED_LINKS = {
+    "oreo-logs": "oreo-logs",
+    "oreo-restart-preview": "oreo-restart-preview",
+    "oreo-restart": "oreo-restart",
+    "oreo-backup-plan": "oreo-backup-plan",
+    "oreo-backup-run": "oreo-backup-run",
+    "oreo-restore-plan": "oreo-restore-plan",
+    "oreo-events": "oreo-events",
+    "oreo-cloud-smoke-test": "smoke-test",
+    "oreo-access-preview": "oreo-access-preview",
+    "oreo-access-apply": "oreo-access-apply",
+    "oreo-cloudflare-plan": "oreo-cloudflare-plan",
+}
+
+
+def repo_root() -> Path:
+    override = os.environ.get("OREO_CLOUD_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def executable(path: Path) -> bool:
+    return path.exists() and path.is_file() and os.access(path, os.X_OK)
+
+
+def fail(message: str) -> None:
+    raise SystemExit(f"ERROR {message}")
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Install approved Oreo Cloud operator command symlinks.")
+    parser.add_argument("--prefix", type=Path, default=Path("/usr/local/bin"), help="directory where symlinks are managed")
+    parser.add_argument("--check", action="store_true", help="verify links without changing anything")
+    parser.add_argument("--dry-run", action="store_true", help="show intended changes without changing anything")
+    parser.add_argument("--force", action="store_true", help="replace non-symlink files at managed link paths")
+    return parser.parse_args()
+
+
+def main() -> int:
+    args = parse_args()
+    prefix = args.prefix.expanduser().resolve()
+    scripts_dir = repo_root() / "scripts"
+    failures: list[str] = []
+
+    if prefix == Path("/usr/local/bin") and not args.check and not args.dry_run and os.geteuid() != 0:
+        fail("writing /usr/local/bin requires sudo or root")
+
+    if not args.check and not args.dry_run:
+        prefix.mkdir(parents=True, exist_ok=True)
+
+    if not args.check and not args.dry_run:
+        for link_name, target_name in APPROVED_LINKS.items():
+            target = scripts_dir / target_name
+            link = prefix / link_name
+            if not executable(target):
+                failures.append(f"{link_name}: target missing or not executable: {target}")
+            elif (link.exists() or link.is_symlink()) and not link.is_symlink() and not args.force:
+                failures.append(f"{link_name}: refusing to overwrite non-symlink file: {link}")
+        if failures:
+            for failure in failures:
+                print(f"FAIL {failure}")
+            return 1
+
+    for link_name, target_name in APPROVED_LINKS.items():
+        target = scripts_dir / target_name
+        link = prefix / link_name
+
+        if not executable(target):
+            failures.append(f"{link_name}: target missing or not executable: {target}")
+            continue
+
+        if args.check:
+            if not link.is_symlink():
+                failures.append(f"{link_name}: link missing or not a symlink: {link}")
+                continue
+            actual = link.resolve(strict=False)
+            if actual != target:
+                failures.append(f"{link_name}: points to {actual}, expected {target}")
+                continue
+            print(f"PASS {link} -> {target}")
+            continue
+
+        if link.exists() or link.is_symlink():
+            if link.is_symlink():
+                actual = link.resolve(strict=False)
+                if actual == target:
+                    print(f"OK   {link} -> {target}")
+                    continue
+                if args.dry_run:
+                    print(f"DRY  replace {link} -> {target} (currently {actual})")
+                    continue
+                link.unlink()
+            else:
+                if not args.force:
+                    failures.append(f"{link_name}: refusing to overwrite non-symlink file: {link}")
+                    continue
+                if args.dry_run:
+                    print(f"DRY  replace non-symlink {link} -> {target}")
+                    continue
+                link.unlink()
+        elif args.dry_run:
+            print(f"DRY  install {link} -> {target}")
+            continue
+
+        link.symlink_to(target)
+        print(f"LINK {link} -> {target}")
+
+    if failures:
+        for failure in failures:
+            print(f"FAIL {failure}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
