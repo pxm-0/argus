@@ -31,6 +31,7 @@ OPERATION_SCRIPTS = [
     "oreo-events",
     "oreo-action-preview",
     "oreo-action-apply",
+    "oreo-access-reconcile",
     "oreo-cloudflare-activate-preview",
     "oreo-cloudflare-activate",
     "oreo-cloudflare-rollback",
@@ -46,6 +47,7 @@ OPERATOR_LINKS = {
     "oreo-cloud-smoke-test": "smoke-test",
     "oreo-access-preview": "oreo-access-preview",
     "oreo-access-apply": "oreo-access-apply",
+    "oreo-access-reconcile": "oreo-access-reconcile",
     "oreo-cloudflare-plan": "oreo-cloudflare-plan",
     "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
     "oreo-cloudflare-activate": "oreo-cloudflare-activate",
@@ -624,6 +626,16 @@ def check_cloudflare_activation_guard(repo: Path, smoke: Smoke) -> None:
     smoke.check(rollback.returncode == 0, "Cloudflare rollback preview works")
 
 
+def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
+    result = run([str(repo / "scripts" / "oreo-access-reconcile"), "--offline", "--json"], repo)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("effective access reconcile JSON valid")
+        return
+    smoke.check(result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean")
+
+
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
     workloads = run([str(repo / "scripts" / "oreo-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
@@ -684,6 +696,7 @@ def main() -> int:
     check_cloudflare_plan(repo, smoke)
     check_cloudflare_policy(repo, smoke)
     check_cloudflare_activation_guard(repo, smoke)
+    check_access_reconcile(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)

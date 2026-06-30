@@ -13,9 +13,9 @@
   "observed": {
     "tailscaleIp": "100.75.210.83",
     "funnel": {
-      "enabled": true,
-      "url": "https://oreochiserver.tail0a3a58.ts.net",
-      "target": "http://127.0.0.1:8765",
+      "enabled": false,
+      "url": "",
+      "target": "",
       "allowedInP0": false
     }
   },
@@ -62,8 +62,8 @@
     "review-ui": {
       "tailnet": {
         "enabled": true,
-        "mode": "existing-funnel",
-        "url": "https://oreochiserver.tail0a3a58.ts.net"
+        "mode": "planned",
+        "url": "http://oreochiserver:8765"
       },
       "cloudflare": {
         "enabled": false,
