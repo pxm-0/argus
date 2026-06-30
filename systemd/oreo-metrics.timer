@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Oreo Cloud metrics collector regularly
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=3
+AccuracySec=1
+Unit=oreo-metrics.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,47 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from oreo_common import root
+
+
+def maybe_collect() -> None:
+    metrics_path = root() / "control-plane" / "dashboard" / "public" / "metrics.json"
+    if metrics_path.exists():
+        return
+    collector = root() / "control-plane" / "monitoring" / "collect_metrics.py"
+    subprocess.run([sys.executable, str(collector)], cwd=root(), check=False)
+
+
+def bar(percent: float, width: int = 18) -> str:
+    filled = int(max(0, min(100, percent)) / 100 * width)
+    return "#" * filled + "." * (width - filled)
+
+
+def main() -> int:
+    maybe_collect()
+    path = root() / "control-plane" / "dashboard" / "public" / "metrics.json"
+    data = json.loads(path.read_text())
+    print(f"{data['hostname']}  {data['timestamp']}")
+    print(f"CPU   {bar(data['cpu']['percent'])} {data['cpu']['percent']}%")
+    print(f"RAM   {bar(data['memory']['percent'])} {data['memory']['percent']}%")
+    print(f"DISK  {bar(data['disk']['percent'])} {data['disk']['percent']}%")
+    load = data["load"]
+    print(f"LOAD  {load['one']} {load['five']} {load['fifteen']}")
+    print()
+    print("Containers")
+    for item in data.get("docker", {}).get("containers", [])[:12]:
+        print(f"- {item['name']}: {item['status']}")
+    print()
+    print("Top Processes")
+    for item in data.get("processes", [])[:8]:
+        print(f"- {item['name']}: {item['cpuPercent']}% cpu, {item['memoryPercent']}% mem")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
