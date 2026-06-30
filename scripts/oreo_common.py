@@ -16,6 +16,19 @@ from pathlib import Path
 from typing import Any
 
 
+SECRET_KEY_PARTS = (
+    "authorization",
+    "bearer",
+    "credential",
+    "key",
+    "password",
+    "private",
+    "secret",
+    "token",
+)
+REDACTED = "[redacted]"
+
+
 def root() -> Path:
     override = os.environ.get("OREO_CLOUD_ROOT")
     if override:
@@ -44,17 +57,40 @@ def now() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def _secret_key(key: str) -> bool:
+    lowered = key.lower()
+    return any(part in lowered for part in SECRET_KEY_PARTS)
+
+
+def sanitize_audit_value(value: Any, *, key: str = "") -> Any:
+    if _secret_key(key):
+        return REDACTED
+    if isinstance(value, dict):
+        return {str(item_key): sanitize_audit_value(item_value, key=str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [sanitize_audit_value(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_audit_value(item) for item in value]
+    if isinstance(value, (str, int, float, bool)) or value is None:
+        return value
+    return str(value)
+
+
+def sanitize_audit_event(event: dict[str, Any]) -> dict[str, Any]:
+    return {str(key): sanitize_audit_value(value, key=str(key)) for key, value in event.items()}
+
+
 def audit(action: str, workload_id: str, result: str, **extra: Any) -> None:
     path = root() / "runtime" / "audit.log"
     path.parent.mkdir(parents=True, exist_ok=True)
-    event = {
+    event = sanitize_audit_event({
         "timestamp": now(),
         "actor": "local-cli",
         "action": action,
         "workloadId": workload_id,
         "result": result,
         **extra,
-    }
+    })
     with path.open("a") as handle:
         handle.write(json.dumps(event, sort_keys=True) + "\n")
 

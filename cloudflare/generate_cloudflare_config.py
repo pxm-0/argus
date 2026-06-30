@@ -14,7 +14,7 @@ from typing import Any
 ROOT = Path(os.environ.get("OREO_CLOUD_ROOT", Path(__file__).resolve().parents[1])).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from oreo_common import policy_decision  # noqa: E402
+from oreo_common import audit, policy_decision  # noqa: E402
 
 
 PLAN_PATH = ROOT / "cloudflare" / "planned-ingress.yml"
@@ -159,6 +159,16 @@ def main() -> int:
     args = parser.parse_args()
     plan = build_plan()
     write_plan(plan)
+    audit(
+        "cloudflare.plan",
+        "cloudflare",
+        "ok",
+        requested=len(plan["requested"]),
+        blocked=len(plan["blocked"]),
+        ingress=len(plan["ingress"]),
+        generated=plan["generated"],
+        providerEnabled=bool(plan["providerEnabled"]),
+    )
     if args.json:
         print(json.dumps(plan, indent=2, sort_keys=True))
     else:

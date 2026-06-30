@@ -2,21 +2,78 @@
 from __future__ import annotations
 
 import argparse
+import json
 from collections import deque
+from typing import Any
 
-from oreo_common import root
+from oreo_common import print_table, root, sanitize_audit_event
+
+
+DEFAULT_COLUMNS = ["timestamp", "actor", "action", "workloadId", "result"]
+
+
+def load_events(limit: int) -> tuple[list[dict[str, Any]], int]:
+    path = root() / "runtime" / "audit.log"
+    if not path.exists():
+        return [], 0
+    events = []
+    skipped = 0
+    for line in deque(path.open(), maxlen=max(limit, 1)):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            skipped += 1
+            continue
+        if not isinstance(event, dict):
+            skipped += 1
+            continue
+        events.append(sanitize_audit_event(event))
+    return events, skipped
+
+
+def extras(event: dict[str, Any]) -> str:
+    extra = {key: value for key, value in event.items() if key not in DEFAULT_COLUMNS}
+    return json.dumps(extra, sort_keys=True, separators=(",", ":")) if extra else "-"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Print recent Oreo Cloud audit events.")
-    parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument("--limit", type=int, default=50, help="Maximum recent audit lines to inspect.")
+    parser.add_argument("--workload", default="", help="Only print events for this workload ID.")
+    parser.add_argument("--action", default="", help="Only print events matching this action.")
+    parser.add_argument("--result", default="", help="Only print events matching this result.")
+    parser.add_argument("--json", action="store_true", help="Print sanitized events as JSONL.")
     args = parser.parse_args()
-    path = root() / "runtime" / "audit.log"
-    if not path.exists():
+    events, skipped = load_events(args.limit)
+    if args.workload:
+        events = [event for event in events if event.get("workloadId") == args.workload]
+    if args.action:
+        events = [event for event in events if event.get("action") == args.action]
+    if args.result:
+        events = [event for event in events if event.get("result") == args.result]
+    if not events:
         print("No audit events yet.")
         return 0
-    for line in deque(path.open(), maxlen=max(args.limit, 1)):
-        print(line.rstrip())
+    if args.json:
+        for event in events:
+            print(json.dumps(event, sort_keys=True))
+    else:
+        rows = [
+            [
+                str(event.get("timestamp", "")),
+                str(event.get("actor", "")),
+                str(event.get("action", "")),
+                str(event.get("workloadId", "")),
+                str(event.get("result", "")),
+                extras(event),
+            ]
+            for event in events
+        ]
+        print_table([*DEFAULT_COLUMNS, "details"], rows)
+        if skipped:
+            print(f"Skipped {skipped} malformed audit line(s).")
     return 0
 
 

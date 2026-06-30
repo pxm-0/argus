@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import argparse
 
-from oreo_common import fail, load_manifest, print_table
+from oreo_common import audit, fail, load_manifest, print_table
 
 
 def main() -> int:
@@ -37,6 +37,14 @@ def main() -> int:
         print("WARNING: env backup is enabled; verify explicit approval before running.")
     if not operations.get("backupAllowed", False):
         print("Backup run is blocked until operations.backupAllowed=true.")
+    audit(
+        "backup.plan",
+        args.workload_id,
+        "ok",
+        status=str(backup.get("status", "")),
+        backupAllowed=bool(operations.get("backupAllowed", False)),
+        destination=str(backup.get("destination", "")),
+    )
     return 0
 
 
