@@ -1,0 +1,10 @@
+# Template only. Do not copy credentials into this repository.
+tunnel: <named-tunnel-id>
+credentials-file: /etc/cloudflared/<named-tunnel-id>.json
+
+ingress:
+  # Generated entries from cloudflare/planned-ingress.yml go here in a future
+  # activation phase after explicit review.
+  - hostname: example.oreo-cloud.invalid
+    service: http://127.0.0.1:8080
+  - service: http_status:404

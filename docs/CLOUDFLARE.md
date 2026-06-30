@@ -128,6 +128,10 @@ Generated:
 cloudflare/planned-ingress.yml
 ```
 
+The CLI is plan-only. It rewrites `cloudflare/planned-ingress.yml` and prints a
+summary, but it never shells out to `cloudflared`, DNS providers, systemd, Docker,
+or Tailscale.
+
 ## Policy Requirements
 
 Recommended P0 policy:
