@@ -1,0 +1,83 @@
+# Runtime files
+runtime/*
+!runtime/.gitkeep
+!runtime/metrics-history/
+runtime/metrics-history/*
+!runtime/metrics-history/.gitkeep
+!runtime/migration-backups/
+runtime/migration-backups/*
+!runtime/migration-backups/.gitkeep
+
+# Generated monitoring output
+control-plane/dashboard/public/metrics.json
+
+# Workload source/code repos
+workloads/*/source/
+workloads/*/app/
+workloads/*/repo/
+
+# Workload runtime data
+workloads/*/data/
+workloads/*/backups/
+workloads/*/runtime/
+workloads/*/logs/
+
+# Workload local secrets/config
+workloads/*/.env
+workloads/*/.env.*
+workloads/*/env/
+workloads/*/*.local.yml
+workloads/*/*secret*
+workloads/*/*credential*
+workloads/*/*.pem
+workloads/*/*.key
+workloads/*/*.crt
+
+# Allow lightweight workload metadata
+!workloads/*/
+!workloads/*/README.md
+!workloads/*/manifest.json
+!workloads/*/compose.template.yml
+
+# Secrets and env
+.env
+.env.*
+*.env
+*.secret
+*.secrets
+secrets/
+credentials/
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
+*.token
+control-token
+
+# Cloudflare sensitive files
+cloudflare/*.json
+cloudflare/*credentials*
+cloudflare/*token*
+cloudflared/
+.cloudflare/
+**/.cloudflared/
+
+# Logs
+*.log
+logs/
+
+# Backups and snapshots
+snapshots/*
+!snapshots/.gitkeep
+*.backup
+*.bak
+
+# Python
+__pycache__/
+*.pyc
+
+# Editor/system junk
+.DS_Store
+.vscode/
+.idea/
