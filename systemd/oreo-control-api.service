@@ -1,0 +1,17 @@
+[Unit]
+Description=Oreo Cloud control API
+After=network.target
+
+[Service]
+Type=simple
+User=oreo
+Group=oreo
+WorkingDirectory=/srv/oreo-cloud
+Environment=OREO_CLOUD_ROOT=/srv/oreo-cloud
+Environment=OREO_CLOUD_TOKEN_FILE=/etc/oreo-cloud/control-token
+ExecStart=/usr/bin/python3 /srv/oreo-cloud/control-plane/api/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
