@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+
+from oreo_common import audit, load_json, now, policy_decision, print_json, regenerate_dashboard, save_json
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Apply an Oreo Cloud access state when policy allows it.")
+    parser.add_argument("workload_id")
+    parser.add_argument("desired")
+    parser.add_argument("--confirmation", default="", help="Required phrase for confirmed Cloudflare planning changes.")
+    parser.add_argument("--json", action="store_true", help="Print the apply result as JSON.")
+    args = parser.parse_args()
+
+    decision = policy_decision(args.workload_id, args.desired)
+    if not decision["allowed"]:
+        audit("access.apply", args.workload_id, "blocked", desired=args.desired, reason=decision["reason"])
+        payload = {"ok": False, "workloadId": args.workload_id, "desired": args.desired, **decision}
+        if args.json:
+            print_json(payload)
+        else:
+            print(f"{args.workload_id} -> {args.desired}: blocked")
+            print(f"Reason: {decision['reason']}")
+        return 2
+
+    phrase = decision.get("confirmationPhrase", "")
+    if phrase and args.confirmation != phrase:
+        audit("access.apply", args.workload_id, "blocked", desired=args.desired, reason="confirmation required")
+        payload = {
+            "ok": False,
+            "workloadId": args.workload_id,
+            "desired": args.desired,
+            "allowed": False,
+            "reason": "confirmation required",
+            "confirmationRequired": True,
+            "confirmationPhrase": phrase,
+        }
+        if args.json:
+            print_json(payload)
+        else:
+            print(f"{args.workload_id} -> {args.desired}: confirmation required")
+            print(f"Required phrase: {phrase}")
+        return 2
+
+    access = load_json("access.json")
+    if args.workload_id not in access.get("workloads", {}):
+        raise SystemExit(f"unknown workload: {args.workload_id}")
+    current = access["workloads"][args.workload_id]
+    old_desired = current["desired"]
+    old_effective = current["effective"]
+    current["desired"] = args.desired
+    if decision.get("plannedOnly"):
+        current["lastError"] = decision["reason"]
+    else:
+        current["effective"] = decision["effective"]
+        current["lastError"] = ""
+    current["lastAppliedAt"] = now()
+    save_json("access.json", access)
+    audit(
+        "access.apply",
+        args.workload_id,
+        "ok",
+        oldDesired=old_desired,
+        desired=args.desired,
+        oldEffective=old_effective,
+        effective=current["effective"],
+        plannedOnly=bool(decision.get("plannedOnly")),
+    )
+    regenerate_dashboard(quiet=args.json)
+
+    payload = {
+        "ok": True,
+        "workloadId": args.workload_id,
+        "desired": args.desired,
+        "effective": current["effective"],
+        "plannedOnly": bool(decision.get("plannedOnly")),
+        "reason": decision["reason"],
+    }
+    if args.json:
+        print_json(payload)
+    else:
+        print(f"{args.workload_id} desired={args.desired} effective={current['effective']}")
+        if decision.get("plannedOnly"):
+            print("P0: planned only; no Cloudflare tunnel was started.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

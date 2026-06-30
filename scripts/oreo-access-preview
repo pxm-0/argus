@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+
+from oreo_common import policy_decision, print_json
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Preview an Oreo Cloud access policy decision.")
+    parser.add_argument("workload_id")
+    parser.add_argument("desired")
+    parser.add_argument("--json", action="store_true", help="Print the full policy decision as JSON.")
+    args = parser.parse_args()
+
+    decision = policy_decision(args.workload_id, args.desired)
+    payload = {"workloadId": args.workload_id, "desired": args.desired, **decision}
+    if args.json:
+        print_json(payload)
+        return 0 if decision["allowed"] else 2
+
+    state = "allowed" if decision["allowed"] else "blocked"
+    print(f"{args.workload_id} -> {args.desired}: {state}")
+    print(f"Reason: {decision['reason']}")
+    print(f"Effective after apply: {decision['effective'] or '-'}")
+    if decision.get("plannedOnly"):
+        print("P0: planned only; no Cloudflare tunnel will be started.")
+    if decision.get("confirmationRequired"):
+        print(f"Confirmation required: {decision['confirmationPhrase']}")
+    return 0 if decision["allowed"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
