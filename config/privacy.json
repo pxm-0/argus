@@ -1,0 +1,43 @@
+{
+  "version": 1,
+  "defaultPrivacy": "unclassified",
+  "states": [
+    "unclassified",
+    "personal",
+    "internal",
+    "sensitive",
+    "restricted"
+  ],
+  "workloads": {
+    "intake-os": {
+      "privacy": "sensitive",
+      "reason": "Application data classification pending operator review.",
+      "updatedAt": "2026-06-30T16:59:57Z",
+      "updatedBy": "oreo-cloud-discovery"
+    },
+    "hastur": {
+      "privacy": "sensitive",
+      "reason": "Application mounts SSH and auth-related paths according to discovery.",
+      "updatedAt": "2026-06-30T16:59:57Z",
+      "updatedBy": "oreo-cloud-discovery"
+    },
+    "uptime-kuma": {
+      "privacy": "restricted",
+      "reason": "Infrastructure monitoring dashboard.",
+      "updatedAt": "2026-06-30T16:59:57Z",
+      "updatedBy": "oreo-cloud-discovery"
+    },
+    "review-ui": {
+      "privacy": "internal",
+      "reason": "Internal review UI discovered behind an existing Funnel route.",
+      "updatedAt": "2026-06-30T16:59:57Z",
+      "updatedBy": "oreo-cloud-discovery"
+    },
+    "dozzle": {
+      "privacy": "restricted",
+      "reason": "Admin tool with Docker socket access.",
+      "updatedAt": "2026-06-30T16:59:57Z",
+      "updatedBy": "oreo-cloud-discovery"
+    }
+  }
+}

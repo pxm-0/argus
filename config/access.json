@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "defaultAccess": "tailnet",
+  "states": [
+    "none",
+    "local",
+    "tailnet",
+    "cloudflare-protected",
+    "cloudflare-public"
+  ],
+  "workloads": {
+    "intake-os": {
+      "desired": "tailnet",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:8080",
+        "tailnet": "http://oreochiserver:8080",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Discovery found 0.0.0.0:3000 binding; effective state requires remediation."
+    },
+    "hastur": {
+      "desired": "tailnet",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:4173",
+        "tailnet": "http://oreochiserver:4173",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Discovery found 0.0.0.0:4173 binding; effective state requires remediation."
+    },
+    "uptime-kuma": {
+      "desired": "tailnet",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:54321",
+        "tailnet": "http://oreochiserver:54321",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Discovery found 0.0.0.0:54321 binding; effective state requires remediation."
+    },
+    "review-ui": {
+      "desired": "tailnet",
+      "effective": "tailnet",
+      "urls": {
+        "local": "http://127.0.0.1:8765",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Discovery found Tailscale Funnel already enabled; P0 must disable or replace this route."
+    },
+    "dozzle": {
+      "desired": "local",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:8081",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": ""
+    }
+  }
+}

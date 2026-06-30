@@ -1,0 +1,89 @@
+{
+  "version": 1,
+  "dashboard": {
+    "bind": "tailscale",
+    "port": 8088,
+    "url": "http://oreochiserver:8088"
+  },
+  "api": {
+    "bind": "127.0.0.1",
+    "port": 8099,
+    "public": false
+  },
+  "observed": {
+    "tailscaleIp": "100.75.210.83",
+    "funnel": {
+      "enabled": true,
+      "url": "https://oreochiserver.tail0a3a58.ts.net",
+      "target": "http://127.0.0.1:8765",
+      "allowedInP0": false
+    }
+  },
+  "workloadRoutes": {
+    "intake-os": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "planned",
+        "url": "http://oreochiserver:8080"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
+    },
+    "hastur": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "planned",
+        "url": "http://oreochiserver:4173"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
+    },
+    "uptime-kuma": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "planned",
+        "url": "http://oreochiserver:54321"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
+    },
+    "review-ui": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "existing-funnel",
+        "url": "https://oreochiserver.tail0a3a58.ts.net"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
+    },
+    "dozzle": {
+      "tailnet": {
+        "enabled": false,
+        "mode": "local-only",
+        "url": ""
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "blocked",
+        "requiresAuth": true
+      }
+    }
+  }
+}

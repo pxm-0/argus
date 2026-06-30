@@ -1,0 +1,254 @@
+{
+  "version": 1,
+  "generatedFrom": "docs/DISCOVERY.md",
+  "workloads": [
+    {
+      "id": "intake-os",
+      "name": "Intake OS",
+      "description": "Application workload discovered from Docker Compose.",
+      "lifecycle": "active",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/intake-os",
+        "source": "/srv/oreo-cloud/workloads/intake-os/source",
+        "manifest": "/srv/oreo-cloud/workloads/intake-os/manifest.json",
+        "legacy": "/home/oreo/intake-os"
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+        "legacyComposePaths": [
+          "/home/oreo/intake-os/docker-compose.yml",
+          "/home/oreo/intake-os/docker-compose.server.yml"
+        ],
+        "composeProject": "intake-os",
+        "service": ""
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:8080",
+        "internalPort": 8080,
+        "observedBindings": [
+          "0.0.0.0:3000->3000/tcp",
+          "127.0.0.1:5433->5432/tcp",
+          "127.0.0.1:8080->8080/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8080",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "planned",
+        "originalPath": "/home/oreo/intake-os",
+        "compatibilitySymlink": false
+      }
+    },
+    {
+      "id": "hastur",
+      "name": "Hastur",
+      "description": "Application workload discovered from Docker Compose.",
+      "lifecycle": "active",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/hastur",
+        "source": "/srv/oreo-cloud/workloads/hastur/source",
+        "manifest": "/srv/oreo-cloud/workloads/hastur/manifest.json",
+        "legacy": "/home/oreo/hastur"
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/oreo-cloud/workloads/hastur/source/compose.yml",
+        "legacyComposePaths": [
+          "/home/oreo/hastur/compose.yml"
+        ],
+        "composeProject": "hastur",
+        "service": "hastur"
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:4173",
+        "internalPort": 4173,
+        "observedBindings": [
+          "0.0.0.0:4173->4173/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:4173",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "planned",
+        "originalPath": "/home/oreo/hastur",
+        "compatibilitySymlink": false
+      }
+    },
+    {
+      "id": "uptime-kuma",
+      "name": "Uptime Kuma",
+      "description": "Monitoring workload discovered from Docker Compose.",
+      "lifecycle": "active",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/uptime-kuma",
+        "source": "/srv/oreo-cloud/workloads/uptime-kuma/source",
+        "manifest": "/srv/oreo-cloud/workloads/uptime-kuma/manifest.json",
+        "legacy": "/srv/apps/uptime-kuma"
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/oreo-cloud/workloads/uptime-kuma/source/docker-compose.yml",
+        "legacyComposePaths": [
+          "/srv/apps/uptime-kuma/docker-compose.yml"
+        ],
+        "composeProject": "uptime-kuma",
+        "service": "uptime-kuma"
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:54321",
+        "internalPort": 3001,
+        "observedBindings": [
+          "0.0.0.0:54321->3001/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:54321",
+        "expectedStatus": 302,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "planned",
+        "originalPath": "/srv/apps/uptime-kuma",
+        "compatibilitySymlink": false
+      }
+    },
+    {
+      "id": "review-ui",
+      "name": "Review UI",
+      "description": "Review UI container discovered without Compose labels.",
+      "lifecycle": "active",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/review-ui",
+        "source": "/srv/oreo-cloud/workloads/review-ui/source",
+        "manifest": "/srv/oreo-cloud/workloads/review-ui/manifest.json",
+        "legacy": ""
+      },
+      "runtime": {
+        "type": "docker",
+        "composePath": "",
+        "legacyComposePaths": [],
+        "composeProject": "",
+        "service": "review-ui"
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:8765",
+        "internalPort": 8765,
+        "observedBindings": [
+          "127.0.0.1:8765->8765/tcp",
+          "tailscale-funnel / -> http://127.0.0.1:8765"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8765",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "needs-discovery",
+        "originalPath": "",
+        "compatibilitySymlink": false
+      }
+    },
+    {
+      "id": "dozzle",
+      "name": "Dozzle",
+      "description": "Container log viewer discovered without Compose labels.",
+      "lifecycle": "active",
+      "kind": "admin-tool",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/dozzle",
+        "source": "/srv/oreo-cloud/workloads/dozzle/source",
+        "manifest": "/srv/oreo-cloud/workloads/dozzle/manifest.json",
+        "legacy": ""
+      },
+      "runtime": {
+        "type": "docker",
+        "composePath": "",
+        "legacyComposePaths": [],
+        "composeProject": "",
+        "service": "dozzle"
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:8081",
+        "internalPort": 8080,
+        "observedBindings": [
+          "127.0.0.1:8081->8080/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8081",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "needs-discovery",
+        "originalPath": "",
+        "compatibilitySymlink": false,
+        "risks": [
+          "docker-socket bind mount"
+        ]
+      }
+    }
+  ]
+}

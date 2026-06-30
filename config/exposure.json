@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "defaultProvider": "tailscale",
+  "providers": {
+    "tailscale": {
+      "enabled": true,
+      "default": true,
+      "notes": "Primary private access path.",
+      "funnel": {
+        "allowedInP0": false,
+        "observedEnabled": true,
+        "observedUrl": "https://oreochiserver.tail0a3a58.ts.net",
+        "remediation": "Disable Funnel or replace with a Tailscale-only dashboard route before P0 acceptance."
+      }
+    },
+    "cloudflare": {
+      "enabled": false,
+      "provisioned": false,
+      "default": false,
+      "allowQuickTunnels": false,
+      "allowNamedTunnels": false,
+      "requireAccessPolicy": true,
+      "configPath": "/srv/oreo-cloud/cloudflare/planned-ingress.yml",
+      "observedCloudflared": "not-installed"
+    }
+  }
+}

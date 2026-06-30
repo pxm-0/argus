@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "defaultDecision": "deny-public",
+  "rules": {
+    "allowDashboardPrivacyToggle": true,
+    "allowDashboardAccessToggle": true,
+    "requireConfirmationForCloudflareProtected": true,
+    "requireConfirmationForCloudflarePublic": true,
+    "requireSecondConfirmationForRestrictedPublic": true,
+    "requireAuthForDashboardMutations": true,
+    "allowRestrictedToCloudflarePublic": false,
+    "allowSensitiveToCloudflarePublic": false,
+    "allowRestrictedToCloudflareProtected": true,
+    "allowSensitiveToCloudflareProtected": true,
+    "allowUnclassifiedToCloudflarePublic": true,
+    "allowTailnetForAll": true,
+    "allowFunnelInP0": false
+  },
+  "blockedTargets": [
+    "postgres",
+    "docker-socket",
+    "host-ssh",
+    "control-api"
+  ],
+  "confirmationPhrases": {
+    "cloudflare-public": "publish publicly",
+    "restricted-cloudflare-public": "override restricted public exposure"
+  }
+}
