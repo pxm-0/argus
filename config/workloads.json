@@ -51,7 +51,15 @@
       "migration": {
         "status": "planned",
         "originalPath": "/home/oreo/intake-os",
-        "compatibilitySymlink": false
+        "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/home/oreo/intake-os/deploy/Caddyfile.server -> /etc/caddy/Caddyfile"
+        ],
+        "namedVolumeRisks": [
+          "intake-os_intake_os_pgdata",
+          "intake-os_caddy_data",
+          "intake-os_caddy_config"
+        ]
       }
     },
     {
@@ -100,7 +108,13 @@
       "migration": {
         "status": "planned",
         "originalPath": "/home/oreo/hastur",
-        "compatibilitySymlink": false
+        "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/home/oreo/.ssh -> /root/.ssh",
+          "/home/oreo/hastur/data -> /app/data",
+          "/home/oreo/hastur/auth -> /app/auth"
+        ],
+        "namedVolumeRisks": []
       }
     },
     {
@@ -149,7 +163,11 @@
       "migration": {
         "status": "planned",
         "originalPath": "/srv/apps/uptime-kuma",
-        "compatibilitySymlink": false
+        "compatibilitySymlink": false,
+        "bindMountRisks": [],
+        "namedVolumeRisks": [
+          "uptime-kuma_uptime-kuma-data"
+        ]
       }
     },
     {
@@ -197,7 +215,12 @@
       "migration": {
         "status": "needs-discovery",
         "originalPath": "",
-        "compatibilitySymlink": false
+        "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/data/runs -> /data/runs",
+          "/data/review_ui_jobs -> /data/review_ui_jobs"
+        ],
+        "namedVolumeRisks": []
       }
     },
     {
@@ -245,6 +268,10 @@
         "status": "needs-discovery",
         "originalPath": "",
         "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/var/run/docker.sock -> /var/run/docker.sock"
+        ],
+        "namedVolumeRisks": [],
         "risks": [
           "docker-socket bind mount"
         ]
