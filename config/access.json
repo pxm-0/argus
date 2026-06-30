@@ -65,15 +65,15 @@
       "lastError": ""
     },
     "hello-nginx": {
-      "desired": "local",
+      "desired": "cloudflare-protected",
       "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:18080",
         "tailnet": "",
-        "cloudflare": ""
+        "cloudflare": "https://hello-nginx.oreo-cloud.invalid"
       },
-      "lastAppliedAt": "2026-06-30T18:20:44Z",
-      "lastError": ""
+      "lastAppliedAt": "2026-06-30T18:48:04Z",
+      "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled."
     }
   }
 }

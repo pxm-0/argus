@@ -31,7 +31,7 @@
     "restartAllowed": true,
     "backupAllowed": false,
     "dashboardActionsAllowed": false,
-    "approvedForCloudflareProtectedDemo": false,
+    "approvedForCloudflareProtectedDemo": true,
     "requiresConfirmation": true
   },
   "backup": {
