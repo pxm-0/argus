@@ -21,6 +21,19 @@ OPERATION_SCRIPTS = [
     "oreo-restore-plan",
     "oreo-events",
 ]
+OPERATOR_LINKS = {
+    "oreo-logs": "oreo-logs",
+    "oreo-restart-preview": "oreo-restart-preview",
+    "oreo-restart": "oreo-restart",
+    "oreo-backup-plan": "oreo-backup-plan",
+    "oreo-backup-run": "oreo-backup-run",
+    "oreo-restore-plan": "oreo-restore-plan",
+    "oreo-events": "oreo-events",
+    "oreo-cloud-smoke-test": "smoke-test",
+    "oreo-access-preview": "oreo-access-preview",
+    "oreo-access-apply": "oreo-access-apply",
+    "oreo-cloudflare-plan": "oreo-cloudflare-plan",
+}
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -275,7 +288,7 @@ def check_migration_and_backup(repo: Path, smoke: Smoke) -> None:
 
 def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
     ok = True
-    for name in OPERATION_SCRIPTS:
+    for name in [*OPERATION_SCRIPTS, "install-operator-links"]:
         path = repo / "scripts" / name
         if not (path.exists() and path.stat().st_mode & 0o111):
             smoke.fail(f"{name} exists and is executable")
@@ -297,6 +310,36 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
     if ok:
         smoke.pass_("operation scripts exist")
         smoke.pass_("operation permissions valid")
+
+
+def check_operator_links(repo: Path, smoke: Smoke, offline: bool) -> None:
+    if offline:
+        smoke.warn("operator link check skipped in offline mode")
+        return
+    ok = True
+    scripts_dir = repo / "scripts"
+    prefix = Path("/usr/local/bin")
+    for link_name, target_name in OPERATOR_LINKS.items():
+        link = prefix / link_name
+        target = scripts_dir / target_name
+        if not link.is_symlink():
+            smoke.fail(f"{link_name} operator link exists")
+            ok = False
+            continue
+        actual = link.resolve(strict=False)
+        if actual != target:
+            smoke.fail(f"{link_name} operator link target valid")
+            ok = False
+        if scripts_dir not in actual.parents:
+            smoke.fail(f"{link_name} operator link stays under scripts")
+            ok = False
+        if not (target.exists() and target.stat().st_mode & 0o111):
+            smoke.fail(f"{link_name} operator link target executable")
+            ok = False
+    if ok:
+        smoke.pass_("operator links exist")
+        smoke.pass_("operator link targets executable")
+        smoke.pass_("operator links do not point outside scripts")
 
 
 def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
@@ -431,6 +474,7 @@ def main() -> int:
     check_tracked_runtime_and_source(repo, smoke)
     check_migration_and_backup(repo, smoke)
     check_operation_permissions(repo, smoke)
+    check_operator_links(repo, smoke, args.offline)
     check_dashboard_v2(repo, smoke)
     check_policy_effective_access(repo, smoke)
     check_api_bind(repo, smoke, args.offline)
