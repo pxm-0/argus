@@ -1,0 +1,9 @@
+[Unit]
+Description=Oreo Cloud metrics collector
+
+[Service]
+Type=oneshot
+User=oreo
+Group=oreo
+WorkingDirectory=/srv/oreo-cloud
+ExecStart=/usr/bin/python3 /srv/oreo-cloud/control-plane/monitoring/collect_metrics.py
