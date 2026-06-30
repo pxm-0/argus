@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sys
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +19,9 @@ TOKEN_FILE = Path(os.environ.get("OREO_CLOUD_TOKEN_FILE", "/etc/oreo-cloud/contr
 AUDIT = ROOT / "runtime" / "audit.log"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
 
 
 def now() -> str:
@@ -201,6 +205,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(200, json.loads(metrics.read_text()) if metrics.exists() else {"error": "metrics unavailable"})
         elif path == "/api/events":
             self.send_json(200, {"events": recent_events()})
+        elif path == "/api/actions":
+            self.send_json(200, actions_catalog())
         else:
             self.send_json(404, {"error": "not found"})
 
@@ -211,6 +217,11 @@ class Handler(BaseHTTPRequestHandler):
         privacy_match = re.fullmatch(r"/api/workloads/([^/]+)/privacy", path)
         preview_match = re.fullmatch(r"/api/workloads/([^/]+)/access/preview", path)
         apply_match = re.fullmatch(r"/api/workloads/([^/]+)/access/apply", path)
+        logs_preview_match = re.fullmatch(r"/api/workloads/([^/]+)/logs/preview", path)
+        restart_preview_match = re.fullmatch(r"/api/workloads/([^/]+)/restart/preview", path)
+        restart_apply_match = re.fullmatch(r"/api/workloads/([^/]+)/restart/apply", path)
+        backup_preview_match = re.fullmatch(r"/api/workloads/([^/]+)/backup/preview", path)
+        backup_apply_match = re.fullmatch(r"/api/workloads/([^/]+)/backup/apply", path)
         try:
             body = self.read_body()
             if privacy_match:
@@ -219,6 +230,16 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_access_preview(preview_match.group(1), body)
             elif apply_match:
                 self.handle_access_apply(apply_match.group(1), body)
+            elif logs_preview_match:
+                self.handle_logs_preview(logs_preview_match.group(1), body)
+            elif restart_preview_match:
+                self.handle_restart_preview(restart_preview_match.group(1))
+            elif restart_apply_match:
+                self.handle_restart_apply(restart_apply_match.group(1), body)
+            elif backup_preview_match:
+                self.handle_backup_preview(backup_preview_match.group(1))
+            elif backup_apply_match:
+                self.handle_backup_apply(backup_apply_match.group(1), body)
             else:
                 self.send_json(404, {"error": "not found"})
         except json.JSONDecodeError:
@@ -271,6 +292,28 @@ class Handler(BaseHTTPRequestHandler):
         audit("access.apply", workload_id, "ok", oldDesired=old_desired, desired=desired, oldEffective=old_effective, effective=access["workloads"][workload_id]["effective"])
         regenerate_dashboard()
         self.send_json(200, {"ok": True, "workloadId": workload_id, "desired": desired, "effective": access["workloads"][workload_id]["effective"], "plannedOnly": bool(decision.get("plannedOnly"))})
+
+    def handle_logs_preview(self, workload_id: str, body: dict[str, Any]) -> None:
+        payload = logs_preview(workload_id, max_lines=int(body.get("maxLines", 100)))
+        self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
+
+    def handle_restart_preview(self, workload_id: str) -> None:
+        payload = restart_preview(workload_id)
+        self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
+
+    def handle_restart_apply(self, workload_id: str, body: dict[str, Any]) -> None:
+        payload = restart_apply(workload_id, confirmation=str(body.get("confirmation", "")))
+        regenerate_dashboard()
+        self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
+
+    def handle_backup_preview(self, workload_id: str) -> None:
+        payload = backup_preview(workload_id)
+        self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
+
+    def handle_backup_apply(self, workload_id: str, body: dict[str, Any]) -> None:
+        payload = backup_apply(workload_id, confirmation=str(body.get("confirmation", "")))
+        regenerate_dashboard()
+        self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
 
 
 def main() -> int:

@@ -174,11 +174,18 @@ function renderWorkload(workload) {
       </dl>
       ${error ? `<p class="warning">${escapeHtml(error)}</p>` : ""}
       <div class="actions">${workloadActions(urls)}</div>
+      <div class="actions operation-row">
+        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}">Logs preview</button>
+        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}">Restart preview</button>
+        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}">Backup preview</button>
+      </div>
       <div class="admin-row" hidden>
         <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}"></select></label>
         <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
         <button type="button" data-preview="${escapeHtml(id)}">Preview</button>
         <button type="button" data-apply="${escapeHtml(id)}">Apply</button>
+        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}">Restart apply</button>
+        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}">Backup apply</button>
       </div>
     </article>
   `;
@@ -265,6 +272,37 @@ adminToggle.addEventListener("click", () => {
 });
 
 document.addEventListener("click", async (event) => {
+  const operation = event.target.closest("[data-operation]");
+  if (operation) {
+    const workload = operation.dataset.workload;
+    const action = operation.dataset.operation;
+    const token = sessionStorage.getItem("oreoControlToken") || "";
+    if (!token) {
+      window.alert("Admin token required");
+      return;
+    }
+    const body = action.endsWith("-apply") ? { confirmation: window.prompt(`Type ${workload} to confirm`) || "" } : {};
+    if (action.endsWith("-apply") && body.confirmation !== workload) return;
+    const parts = action.split("-");
+    const endpoint = `/api/workloads/${encodeURIComponent(workload)}/${parts[0]}/${parts[1]}`;
+    try {
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: {
+          "Authorization": `Bearer ${token}`,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify(body)
+      });
+      const payload = await response.json();
+      const lines = Array.isArray(payload.lines) ? `\n\n${payload.lines.join("\n")}` : "";
+      window.alert(`${payload.summary || payload.reason || response.statusText}${lines}`);
+      await loadDashboardState();
+    } catch (error) {
+      window.alert(`Action failed: ${error.message}`);
+    }
+    return;
+  }
   const preview = event.target.closest("[data-preview]");
   const apply = event.target.closest("[data-apply]");
   if (!preview && !apply) return;
