@@ -6,10 +6,55 @@ import json
 import shutil
 import subprocess
 from pathlib import Path
+from typing import Any
+
+
+MIGRATION_STATUSES = {"planned", "needs-discovery", "migrated", "blocked", "deprecated"}
+BACKUP_STATUSES = {"planned", "needs-discovery", "disabled", "blocked", "ok"}
+SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
+OPERATION_SCRIPTS = [
+    "oreo-logs",
+    "oreo-restart-preview",
+    "oreo-restart",
+    "oreo-backup-plan",
+    "oreo-backup-run",
+    "oreo-restore-plan",
+    "oreo-events",
+]
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+def load_json_file(path: Path) -> Any:
+    return json.loads(path.read_text())
+
+
+def tracked_files(repo: Path) -> list[str]:
+    result = run(["git", "ls-files"], repo)
+    if result.returncode != 0:
+        return []
+    return result.stdout.splitlines()
+
+
+def workload_map(repo: Path) -> dict[str, dict[str, Any]]:
+    data = load_json_file(repo / "config" / "workloads.json")
+    return {str(item.get("id")): item for item in data.get("workloads", [])}
+
+
+def load_manifest(repo: Path, workload_id: str) -> dict[str, Any]:
+    path = repo / "workloads" / workload_id / "manifest.json"
+    if not path.exists():
+        return {}
+    data = load_json_file(path)
+    return data if isinstance(data, dict) else {}
+
+
+def privacy_for(repo: Path, workload_id: str) -> str:
+    privacy = load_json_file(repo / "config" / "privacy.json")
+    item = privacy.get("workloads", {}).get(workload_id, {})
+    return str(item.get("privacy", privacy.get("defaultPrivacy", "")))
 
 
 class Smoke:
@@ -133,18 +178,209 @@ def check_cloudflared(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def check_tracked_secrets(repo: Path, smoke: Smoke) -> None:
-    result = run(["git", "ls-files"], repo)
-    if result.returncode != 0:
+    items = tracked_files(repo)
+    if not items:
         smoke.fail("tracked secrets check ran")
         return
     bad = []
-    for item in result.stdout.splitlines():
+    for item in items:
         path = Path(item)
         name = path.name.lower()
         suffix = path.suffix.lower()
-        if name in {".env", "control-token"} or ".env." in name or suffix in {".pem", ".key", ".p12", ".pfx"}:
+        if (
+            name in {".env", "control-token", "audit.log"}
+            or name.startswith(".env.")
+            or ".env." in name
+            or suffix in {".pem", ".key", ".p12", ".pfx"}
+        ):
             bad.append(item)
     smoke.check(not bad, "no tracked secrets")
+
+
+def check_tracked_runtime_and_source(repo: Path, smoke: Smoke) -> None:
+    items = tracked_files(repo)
+    if not items:
+        smoke.fail("tracked file inventory available")
+        return
+    manifests = {workload_id: load_manifest(repo, workload_id) for workload_id in workload_map(repo)}
+    tracked_source = []
+    tracked_runtime = []
+    for item in items:
+        parts = Path(item).parts
+        if len(parts) >= 3 and parts[0] == "workloads" and parts[2] == "source":
+            manifest = manifests.get(parts[1], {})
+            security = manifest.get("security", {}) if manifest else {}
+            if not security.get("trackedByOreoCloudGit", False):
+                tracked_source.append(item)
+        if parts and parts[0] == "runtime" and Path(item).name != ".gitkeep":
+            tracked_runtime.append(item)
+    smoke.check(not tracked_source, "no unapproved workload source tracked")
+    smoke.check(not tracked_runtime, "no runtime artifacts tracked")
+
+
+def check_workload_manifests(repo: Path, smoke: Smoke) -> None:
+    workloads = workload_map(repo)
+    ok = True
+    manifest_paths = sorted((repo / "workloads").glob("*/manifest.json"))
+    for path in manifest_paths:
+        workload_id = path.parent.name
+        try:
+            manifest = load_json_file(path)
+        except Exception:
+            smoke.fail(f"{path.relative_to(repo)} valid JSON")
+            ok = False
+            continue
+        checks = [
+            manifest.get("id") == workload_id,
+            manifest.get("canonicalRoot") == f"/srv/oreo-cloud/workloads/{workload_id}",
+            manifest.get("sourcePath") == f"/srv/oreo-cloud/workloads/{workload_id}/source",
+            isinstance(manifest.get("runtime"), dict),
+            isinstance(manifest.get("migration"), dict),
+            isinstance(manifest.get("operations"), dict),
+            isinstance(manifest.get("backup"), dict),
+            isinstance(manifest.get("security"), dict),
+        ]
+        if not all(checks):
+            smoke.fail(f"{path.relative_to(repo)} manifest shape valid")
+            ok = False
+    for workload_id, workload in workloads.items():
+        if workload.get("migration", {}).get("status") == "migrated" and not (repo / "workloads" / workload_id / "manifest.json").exists():
+            smoke.fail(f"{workload_id} migrated workload has manifest")
+            ok = False
+    if manifest_paths and ok:
+        smoke.pass_("workload manifests valid")
+    elif not manifest_paths:
+        smoke.fail("workload manifests exist")
+
+
+def check_migration_and_backup(repo: Path, smoke: Smoke) -> None:
+    ok = True
+    for workload_id, workload in workload_map(repo).items():
+        migration = workload.get("migration", {})
+        status = str(migration.get("status", ""))
+        if status not in MIGRATION_STATUSES:
+            smoke.fail(f"{workload_id} migration status valid")
+            ok = False
+        manifest = load_manifest(repo, workload_id)
+        if status == "migrated":
+            backup = manifest.get("backup", {}) if manifest else {}
+            backup_status = str(backup.get("status", ""))
+            if not manifest or backup_status not in BACKUP_STATUSES or not backup_status:
+                smoke.fail(f"{workload_id} migrated workload has backup plan")
+                ok = False
+    if ok:
+        smoke.pass_("migration statuses valid")
+        smoke.pass_("backup plans exist for migrated workloads")
+
+
+def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
+    ok = True
+    for name in OPERATION_SCRIPTS:
+        path = repo / "scripts" / name
+        if not (path.exists() and path.stat().st_mode & 0o111):
+            smoke.fail(f"{name} exists and is executable")
+            ok = False
+    for workload_id in workload_map(repo):
+        manifest = load_manifest(repo, workload_id)
+        if not manifest:
+            continue
+        operations = manifest.get("operations", {})
+        for key in ["logsAllowed", "restartAllowed", "backupAllowed", "dashboardActionsAllowed", "approvedForCloudflareProtectedDemo", "requiresConfirmation"]:
+            if key in operations and not isinstance(operations[key], bool):
+                smoke.fail(f"{workload_id} operation permission {key} is boolean")
+                ok = False
+        runtime = manifest.get("runtime", {})
+        if operations.get("logsAllowed") or operations.get("restartAllowed"):
+            if runtime.get("type") != "docker-compose" or not runtime.get("composePath") or not runtime.get("composeProject"):
+                smoke.fail(f"{workload_id} allowed operations have docker-compose runtime")
+                ok = False
+    if ok:
+        smoke.pass_("operation scripts exist")
+        smoke.pass_("operation permissions valid")
+
+
+def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
+    html_path = repo / "control-plane" / "dashboard" / "public" / "index.html"
+    if not html_path.exists():
+        smoke.fail("dashboard V2 generated")
+        return
+    html = html_path.read_text()
+    required = ["Access Plan", "Backups", "System", "Last Event", "Ops", "Cloudflare Plan"]
+    forbidden = ["control-token", "Authorization: Bearer", "PRIVATE KEY", "BEGIN ", ".env="]
+    smoke.check(all(item in html for item in required), "dashboard V2 generated")
+    smoke.check(not any(item in html for item in forbidden), "dashboard V2 contains no secret markers")
+
+
+def check_policy_effective_access(repo: Path, smoke: Smoke) -> None:
+    ok = True
+    access = load_json_file(repo / "config" / "access.json")
+    routes = load_json_file(repo / "config" / "routes.json")
+    workloads = workload_map(repo)
+    for workload_id, item in access.get("workloads", {}).items():
+        effective = str(item.get("effective", ""))
+        privacy = privacy_for(repo, workload_id)
+        workload = workloads.get(workload_id, {})
+        if effective == "cloudflare-public" and privacy not in {"unclassified", "personal"}:
+            smoke.fail(f"{workload_id} effective access policy valid")
+            ok = False
+        if effective == "cloudflare-protected" and privacy not in SAFE_CLOUDFLARE_PRIVACY:
+            smoke.fail(f"{workload_id} protected effective access policy valid")
+            ok = False
+        if effective.startswith("cloudflare"):
+            route = routes.get("workloadRoutes", {}).get(workload_id, {}).get("cloudflare", {})
+            if not route.get("enabled"):
+                smoke.fail(f"{workload_id} Cloudflare effective access has enabled route")
+                ok = False
+        if workload.get("kind") == "admin-tool" and effective.startswith("cloudflare"):
+            smoke.fail(f"{workload_id} admin tool is not Cloudflare exposed")
+            ok = False
+    if ok:
+        smoke.pass_("effective access policy valid")
+
+
+def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
+    result = run([str(repo / "scripts" / "oreo-cloudflare-plan"), "--json"], repo)
+    if result.returncode != 0:
+        smoke.fail("Cloudflare policy plan generated")
+        return
+    try:
+        plan = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("Cloudflare policy plan JSON valid")
+        return
+    workloads = workload_map(repo)
+    ok = True
+    planned_ids = {str(item.get("workloadId")) for item in plan.get("requested", [])}
+    ingress_hosts = {str(item.get("hostname")) for item in plan.get("ingress", [])}
+    routes = load_json_file(repo / "config" / "routes.json")
+    host_to_workload = {
+        str(route.get("cloudflare", {}).get("hostname")): workload_id
+        for workload_id, route in routes.get("workloadRoutes", {}).items()
+        if route.get("cloudflare", {}).get("hostname")
+    }
+    for workload_id in planned_ids:
+        workload = workloads.get(workload_id, {})
+        privacy = privacy_for(repo, workload_id)
+        if workload.get("kind") == "admin-tool" or privacy not in SAFE_CLOUDFLARE_PRIVACY:
+            smoke.fail(f"{workload_id} Cloudflare planned workload allowed")
+            ok = False
+    for host in ingress_hosts:
+        workload_id = host_to_workload.get(host)
+        if not workload_id:
+            smoke.fail(f"{host} planned ingress maps to known workload")
+            ok = False
+            continue
+        workload = workloads.get(workload_id, {})
+        haystack = json.dumps(workload, sort_keys=True).lower()
+        privacy = privacy_for(repo, workload_id)
+        blocked_target = workload.get("kind") == "admin-tool" or privacy not in SAFE_CLOUDFLARE_PRIVACY or any(
+            marker in haystack for marker in ["postgres", "docker.sock", "docker-socket", "/.ssh", "control-api"]
+        )
+        if blocked_target:
+            smoke.fail(f"{workload_id} blocked workload absent from Cloudflare ingress")
+            ok = False
+    if ok:
+        smoke.pass_("Cloudflare plan excludes blocked workloads")
 
 
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
@@ -191,9 +427,16 @@ def main() -> int:
     check_git(repo, smoke)
     check_json(repo, smoke)
     check_dashboard(repo, smoke)
+    check_workload_manifests(repo, smoke)
+    check_tracked_runtime_and_source(repo, smoke)
+    check_migration_and_backup(repo, smoke)
+    check_operation_permissions(repo, smoke)
+    check_dashboard_v2(repo, smoke)
+    check_policy_effective_access(repo, smoke)
     check_api_bind(repo, smoke, args.offline)
     check_metrics(repo, smoke)
     check_cloudflare_plan(repo, smoke)
+    check_cloudflare_policy(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)
