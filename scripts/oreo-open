@@ -1,0 +1,34 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import os
+import subprocess
+
+from oreo_common import by_id, load_json
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print or open a workload URL.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--mode", choices=["local", "tailnet", "cloudflare"], default="local")
+    parser.add_argument("--open", action="store_true", help="Open with xdg-open/open when available")
+    args = parser.parse_args()
+
+    workloads = by_id()
+    if args.workload_id not in workloads:
+        known = ", ".join(sorted(workloads))
+        raise SystemExit(f"unknown workload '{args.workload_id}'. Known workloads: {known}")
+    access = load_json("access.json")["workloads"].get(args.workload_id, {})
+    url = access.get("urls", {}).get(args.mode, "")
+    if not url:
+        raise SystemExit(f"no {args.mode} URL configured for {args.workload_id}")
+    print(url)
+    if args.open:
+        opener = "open" if os.uname().sysname == "Darwin" else "xdg-open"
+        subprocess.run([opener, url], check=False)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

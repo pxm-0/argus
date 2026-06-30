@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+from oreo_common import load_json, print_table, workloads
+
+
+def main() -> int:
+    privacy = load_json("privacy.json")["workloads"]
+    access = load_json("access.json")["workloads"]
+    rows = []
+    for workload in workloads():
+        wid = workload["id"]
+        rows.append([
+            wid,
+            workload.get("lifecycle", ""),
+            workload.get("kind", ""),
+            privacy.get(wid, {}).get("privacy", ""),
+            access.get(wid, {}).get("desired", ""),
+            access.get(wid, {}).get("effective", ""),
+            workload.get("migration", {}).get("status", ""),
+        ])
+    print_table(["id", "life", "kind", "privacy", "desired", "effective", "migration"], rows)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

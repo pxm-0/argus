@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from oreo_common import load_json, root
+
+
+def check(condition: bool, message: str, failures: list[str]) -> None:
+    print(("ok   " if condition else "fail ") + message)
+    if not condition:
+        failures.append(message)
+
+
+def main() -> int:
+    repo = root()
+    failures: list[str] = []
+    for name in ["workloads.json", "access.json", "privacy.json", "policy.json", "routes.json", "exposure.json", "monitoring.json"]:
+        try:
+            json.loads((repo / "config" / name).read_text())
+            check(True, f"config/{name} valid", failures)
+        except Exception:
+            check(False, f"config/{name} valid", failures)
+    suspicious = []
+    for base in [repo / "config", repo / "workloads", repo / "runtime", repo / "cloudflare"]:
+        if not base.exists():
+            continue
+        for path in base.rglob("*"):
+            if not path.is_file():
+                continue
+            if path.name in {".env", "control-token"} or path.suffix in {".pem", ".key"}:
+                suspicious.append(path)
+    check(not suspicious, "no obvious secret files in managed paths", failures)
+    exposure = load_json("exposure.json")
+    policy = load_json("policy.json")
+    check(exposure["providers"]["cloudflare"]["enabled"] is False, "Cloudflare disabled", failures)
+    check(policy["rules"].get("allowFunnelInP0") is False, "Funnel disallowed in P0 policy", failures)
+    observed_funnel = exposure["providers"]["tailscale"]["funnel"].get("observedEnabled")
+    check(observed_funnel is False, "no observed Funnel exposure", failures)
+    return 1 if failures else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

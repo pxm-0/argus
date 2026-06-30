@@ -1,0 +1,24 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+from collections import deque
+
+from oreo_common import root
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print recent Oreo Cloud audit events.")
+    parser.add_argument("--limit", type=int, default=50)
+    args = parser.parse_args()
+    path = root() / "runtime" / "audit.log"
+    if not path.exists():
+        print("No audit events yet.")
+        return 0
+    for line in deque(path.open(), maxlen=max(args.limit, 1)):
+        print(line.rstrip())
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
