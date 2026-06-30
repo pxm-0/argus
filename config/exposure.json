@@ -8,9 +8,9 @@
       "notes": "Primary private access path.",
       "funnel": {
         "allowedInP0": false,
-        "observedEnabled": true,
-        "observedUrl": "https://oreochiserver.tail0a3a58.ts.net",
-        "remediation": "Disable Funnel or replace with a Tailscale-only dashboard route before P0 acceptance."
+        "observedEnabled": false,
+        "observedUrl": "",
+        "remediation": "P2-08 server evidence reported no Tailscale Serve/Funnel config."
       }
     },
     "cloudflare": {

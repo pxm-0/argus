@@ -44,14 +44,14 @@
     },
     "review-ui": {
       "desired": "tailnet",
-      "effective": "tailnet",
+      "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:8765",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net",
+        "tailnet": "",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "Discovery found Tailscale Funnel already enabled; P0 must disable or replace this route."
+      "lastError": "P2-08 server evidence found no Tailscale Serve/Funnel config; effective access lowered to local."
     },
     "dozzle": {
       "desired": "local",
