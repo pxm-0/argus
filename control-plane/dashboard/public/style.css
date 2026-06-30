@@ -1,24 +1,32 @@
 :root {
   color-scheme: light;
-  --bg: oklch(0.965 0.004 250);
-  --panel: oklch(0.99 0.002 250);
-  --panel-2: oklch(0.945 0.006 250);
-  --ink: oklch(0.22 0.025 245);
-  --muted: oklch(0.45 0.028 245);
-  --faint: oklch(0.63 0.022 245);
-  --border: oklch(0.86 0.012 245);
-  --border-strong: oklch(0.74 0.018 245);
-  --accent: oklch(0.48 0.12 248);
-  --accent-ink: oklch(0.25 0.08 248);
-  --accent-bg: oklch(0.93 0.04 248);
-  --good: oklch(0.39 0.09 160);
-  --good-bg: oklch(0.93 0.045 160);
-  --warn: oklch(0.44 0.1 72);
-  --warn-bg: oklch(0.94 0.07 82);
-  --bad: oklch(0.45 0.14 28);
-  --bad-bg: oklch(0.94 0.055 28);
+  --bg: oklch(0.965 0.012 190);
+  --panel: oklch(0.99 0.005 190);
+  --panel-2: oklch(0.946 0.014 190);
+  --ink: oklch(0.215 0.035 205);
+  --muted: oklch(0.43 0.04 210);
+  --faint: oklch(0.62 0.032 205);
+  --border: oklch(0.85 0.026 195);
+  --border-strong: oklch(0.7 0.05 195);
+  --accent: oklch(0.43 0.12 187);
+  --accent-ink: oklch(0.24 0.075 187);
+  --accent-bg: oklch(0.92 0.052 187);
+  --accent-border: oklch(0.76 0.08 187);
+  --info: oklch(0.43 0.12 238);
+  --info-ink: oklch(0.24 0.082 238);
+  --info-bg: oklch(0.925 0.048 238);
+  --info-border: oklch(0.77 0.075 238);
+  --good: oklch(0.37 0.105 150);
+  --good-bg: oklch(0.925 0.06 150);
+  --good-border: oklch(0.75 0.09 150);
+  --warn: oklch(0.43 0.112 72);
+  --warn-bg: oklch(0.94 0.08 82);
+  --warn-border: oklch(0.8 0.1 82);
+  --bad: oklch(0.43 0.15 24);
+  --bad-bg: oklch(0.935 0.058 24);
+  --bad-border: oklch(0.78 0.08 24);
   --shadow: 0 1px 2px rgb(24 33 45 / 7%);
-  --focus: 0 0 0 3px oklch(0.72 0.12 248 / 42%);
+  --focus: 0 0 0 3px oklch(0.72 0.11 187 / 42%);
 }
 * { box-sizing: border-box; }
 html { min-width: 320px; }
@@ -48,7 +56,7 @@ button, .action {
   gap: 6px;
   font-weight: 650;
 }
-button:hover, .action:hover { border-color: var(--border-strong); background: var(--panel-2); }
+button:hover, .action:hover { border-color: var(--accent-border); background: var(--accent-bg); color: var(--accent-ink); }
 button:focus-visible, .action:focus-visible, select:focus-visible { outline: 0; box-shadow: var(--focus); }
 select {
   min-height: 34px;
@@ -64,6 +72,16 @@ select {
   background: var(--panel-2);
 }
 .action.disabled:hover { border-color: var(--border); }
+#monitor-toggle {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  color: var(--info-ink);
+}
+#admin-toggle {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+  color: var(--warn);
+}
 .topbar {
   position: sticky;
   top: 0;
@@ -73,8 +91,8 @@ select {
   gap: 16px;
   align-items: center;
   padding: 14px 24px;
-  border-bottom: 1px solid var(--border);
-  background: oklch(0.985 0.002 250 / 94%);
+  border-bottom: 1px solid var(--accent-border);
+  background: oklch(0.985 0.012 190 / 96%);
   backdrop-filter: blur(14px);
 }
 h1, h2, p { margin: 0; }
@@ -116,12 +134,22 @@ main {
   box-shadow: none;
   padding: 14px 16px;
 }
+.summary div:nth-child(1) { background: var(--good-bg); }
+.summary div:nth-child(2) { background: var(--info-bg); }
+.summary div:nth-child(3) { background: var(--warn-bg); }
+.summary div:nth-child(4) { background: var(--accent-bg); }
+.summary div:nth-child(5) { background: oklch(0.94 0.045 128); }
 .summary strong {
   display: block;
   font-size: 22px;
   line-height: 1;
   letter-spacing: 0;
 }
+.summary div:nth-child(1) strong { color: var(--good); }
+.summary div:nth-child(2) strong { color: var(--info-ink); }
+.summary div:nth-child(3) strong { color: var(--warn); }
+.summary div:nth-child(4) strong { color: var(--accent-ink); }
+.summary div:nth-child(5) strong { color: oklch(0.34 0.095 128); }
 .summary span, dt {
   color: var(--muted);
   font-size: 11px;
@@ -136,7 +164,7 @@ main {
   padding: 12px 16px;
   margin-bottom: 18px;
   background: var(--warn-bg);
-  border-color: oklch(0.82 0.085 82);
+  border-color: var(--warn-border);
   border-radius: 8px;
   color: oklch(0.28 0.06 72);
   box-shadow: none;
@@ -148,6 +176,19 @@ main {
   gap: 12px;
   margin: 22px 0 10px;
 }
+.section-head h2 {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.section-head h2::before {
+  content: "";
+  width: 9px;
+  height: 9px;
+  border-radius: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-bg);
+}
 .workloads {
   display: grid;
   grid-template-columns: 1fr;
@@ -156,6 +197,30 @@ main {
 .workload {
   border-radius: 8px;
   padding: 16px;
+  border-color: var(--border-strong);
+}
+.workload[data-privacy="unclassified"] {
+  background: oklch(0.99 0.012 150);
+  border-color: var(--good-border);
+}
+.workload[data-privacy="internal"] {
+  background: oklch(0.99 0.013 187);
+  border-color: var(--accent-border);
+}
+.workload[data-privacy="sensitive"] {
+  background: oklch(0.988 0.018 82);
+  border-color: var(--warn-border);
+}
+.workload[data-privacy="restricted"] {
+  background: oklch(0.988 0.014 24);
+  border-color: var(--bad-border);
+}
+.workload[data-migration="migrated"] .workload-head h2 {
+  color: var(--good);
+}
+.workload[data-access="tailnet"] .workload-head h2,
+.workload[data-access="local"] .workload-head h2 {
+  color: var(--accent-ink);
 }
 .workload-head {
   display: flex;
@@ -174,8 +239,8 @@ main {
 code {
   padding: 3px 6px;
   border-radius: 4px;
-  background: var(--panel-2);
-  color: oklch(0.31 0.035 245);
+  background: oklch(0.93 0.018 205);
+  color: oklch(0.29 0.06 205);
   font-size: 12px;
   word-break: break-word;
 }
@@ -195,21 +260,23 @@ code {
   color: var(--ink);
   font-size: 12px;
   font-weight: 650;
+  border: 1px solid transparent;
 }
 .pill span {
-  color: var(--muted);
+  color: currentColor;
+  opacity: 0.72;
   font-weight: 700;
 }
-.pill.good { background: var(--good-bg); color: var(--good); }
-.pill.info { background: var(--accent-bg); color: var(--accent-ink); }
-.pill.warn { background: var(--warn-bg); color: var(--warn); }
-.pill.bad { background: var(--bad-bg); color: var(--bad); }
+.pill.good { background: var(--good-bg); border-color: var(--good-border); color: var(--good); }
+.pill.info { background: var(--info-bg); border-color: var(--info-border); color: var(--info-ink); }
+.pill.warn { background: var(--warn-bg); border-color: var(--warn-border); color: var(--warn); }
+.pill.bad { background: var(--bad-bg); border-color: var(--bad-border); color: var(--bad); }
 .facts {
   display: grid;
   grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 0;
   margin: 0;
-  border: 1px solid var(--border);
+  border: 1px solid oklch(0.82 0.035 195);
   border-radius: 8px;
   overflow: hidden;
 }
@@ -219,8 +286,9 @@ code {
   border-top: 0;
   border-right: 1px solid var(--border);
   border-bottom: 1px solid var(--border);
-  background: oklch(0.995 0.001 250);
+  background: oklch(0.995 0.006 190);
 }
+dt { color: oklch(0.38 0.055 205); }
 .facts div:nth-child(4n) {
   border-right: 0;
 }
@@ -237,7 +305,7 @@ dd {
   padding: 10px 12px;
   border-radius: 6px;
   background: var(--warn-bg);
-  border: 1px solid oklch(0.84 0.075 82);
+  border: 1px solid var(--warn-border);
   color: oklch(0.28 0.06 72);
 }
 .actions, .admin-row {
@@ -259,6 +327,8 @@ dd {
   border-radius: 8px;
   padding: 16px;
   margin-bottom: 18px;
+  background: var(--info-bg);
+  border-color: var(--info-border);
 }
 .metrics-grid {
   display: grid;
@@ -268,7 +338,8 @@ dd {
 .metric {
   padding: 12px;
   border-radius: 6px;
-  background: var(--panel-2);
+  background: oklch(0.985 0.012 238);
+  border: 1px solid var(--info-border);
 }
 .metric strong { font-size: 12px; color: var(--muted); }
 .metric p { margin-top: 4px; font-weight: 750; }
@@ -276,13 +347,13 @@ dd {
   height: 8px;
   margin-top: 8px;
   border-radius: 999px;
-  background: oklch(0.86 0.014 245);
+  background: oklch(0.86 0.035 238);
   overflow: hidden;
 }
 .bar span {
   display: block;
   height: 100%;
-  background: var(--accent);
+  background: var(--info);
 }
 .plan-grid {
   display: grid;
@@ -294,6 +365,22 @@ dd {
   border-radius: 8px;
   padding: 14px;
   min-width: 0;
+}
+.plan-grid article:nth-child(1) {
+  background: var(--info-bg);
+  border-color: var(--info-border);
+}
+.plan-grid article:nth-child(2) {
+  background: var(--good-bg);
+  border-color: var(--good-border);
+}
+.plan-grid article:nth-child(3) {
+  background: var(--warn-bg);
+  border-color: var(--warn-border);
+}
+.plan-grid article:nth-child(4) {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
 }
 .plan-grid article p {
   color: var(--muted);
