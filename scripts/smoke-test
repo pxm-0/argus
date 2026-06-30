@@ -31,6 +31,9 @@ OPERATION_SCRIPTS = [
     "oreo-events",
     "oreo-action-preview",
     "oreo-action-apply",
+    "oreo-cloudflare-activate-preview",
+    "oreo-cloudflare-activate",
+    "oreo-cloudflare-rollback",
 ]
 OPERATOR_LINKS = {
     "oreo-logs": "oreo-logs",
@@ -44,6 +47,9 @@ OPERATOR_LINKS = {
     "oreo-access-preview": "oreo-access-preview",
     "oreo-access-apply": "oreo-access-apply",
     "oreo-cloudflare-plan": "oreo-cloudflare-plan",
+    "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
+    "oreo-cloudflare-activate": "oreo-cloudflare-activate",
+    "oreo-cloudflare-rollback": "oreo-cloudflare-rollback",
 }
 
 
@@ -603,6 +609,21 @@ def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
         smoke.pass_("Cloudflare plan excludes blocked workloads")
 
 
+def check_cloudflare_activation_guard(repo: Path, smoke: Smoke) -> None:
+    preview = run([str(repo / "scripts" / "oreo-cloudflare-activate-preview"), "--json"], repo)
+    try:
+        payload = json.loads(preview.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("Cloudflare activation preview JSON valid")
+        return
+    blockers = payload.get("blockers", [])
+    invalid_blocker = any(".invalid" in str(item) for item in blockers)
+    smoke.check(preview.returncode == 2 and invalid_blocker, "Cloudflare activation blocks placeholder hostname")
+    smoke.check(payload.get("allowQuickTunnels") is False, "Cloudflare activation refuses quick tunnel mode")
+    rollback = run([str(repo / "scripts" / "oreo-cloudflare-rollback")], repo)
+    smoke.check(rollback.returncode == 0, "Cloudflare rollback preview works")
+
+
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
     workloads = run([str(repo / "scripts" / "oreo-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
@@ -662,6 +683,7 @@ def main() -> int:
     check_metrics(repo, smoke)
     check_cloudflare_plan(repo, smoke)
     check_cloudflare_policy(repo, smoke)
+    check_cloudflare_activation_guard(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)

@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+
+from oreo_cloudflare_activation import activation_plan, audit_preview, json_or_text
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Preview P2 Cloudflare protected activation.")
+    parser.add_argument("workload_id", nargs="?", default="hello-nginx")
+    parser.add_argument("--json", action="store_true", help="Print activation preview as JSON.")
+    args = parser.parse_args()
+
+    plan = activation_plan(args.workload_id)
+    audit_preview(plan)
+    json_or_text(plan, as_json=args.json)
+    return 0 if plan["ok"] else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

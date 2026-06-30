@@ -1,0 +1,104 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from oreo_common import audit, regenerate_dashboard
+from oreo_cloudflare_activation import (
+    ACCESS_CONFIRMATION,
+    activation_plan,
+    set_effective_cloudflare_protected,
+    validate_ingress,
+    write_evidence,
+)
+
+
+def external_probe(url: str) -> dict[str, object]:
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "oreo-cloud-p2-activation"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            text = response.read(4096).decode(errors="replace")
+            return {"status": response.status, "blocked": response.status in {401, 403}, "sample": text[:160]}
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, "blocked": exc.code in {401, 403}, "sample": exc.read(512).decode(errors="replace")}
+    except Exception as exc:  # noqa: BLE001 - operator CLI reports concise probe result.
+        return {"status": "fail", "blocked": False, "error": exc.__class__.__name__}
+
+
+def reload_cloudflared() -> dict[str, object]:
+    result = subprocess.run(
+        ["systemctl", "reload-or-restart", "cloudflared"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    return {"ok": result.returncode == 0, "stdout": result.stdout.strip(), "stderr": result.stderr.strip()}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Activate a verified P2 Cloudflare protected route.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--confirm-workload", required=True)
+    parser.add_argument("--confirm-hostname", required=True)
+    parser.add_argument("--confirm-access-protected", required=True)
+    parser.add_argument("--no-reload", action="store_true", help="Write and validate config without restarting cloudflared.")
+    args = parser.parse_args()
+
+    plan = activation_plan(args.workload_id)
+    if args.confirm_workload != args.workload_id:
+        plan["blockers"].append("workload confirmation did not match")
+    if args.confirm_hostname != plan.get("hostname"):
+        plan["blockers"].append("hostname confirmation did not match")
+    if args.confirm_access_protected != ACCESS_CONFIRMATION:
+        plan["blockers"].append("Cloudflare Access protection confirmation did not match")
+    if plan["blockers"]:
+        audit("cloudflare.activate", args.workload_id, "blocked", blockers=plan["blockers"], hostname=plan.get("hostname", ""))
+        print(json.dumps({"ok": False, **plan}, indent=2, sort_keys=True))
+        return 2
+
+    config_path = Path(str(plan["configPath"]))
+    config_path.parent.mkdir(parents=True, exist_ok=True)
+    config_path.write_text(str(plan["ingress"]))
+    validation = validate_ingress(config_path)
+    if not validation["ok"]:
+        audit("cloudflare.activate", args.workload_id, "blocked", reason="ingress validation failed", validation=validation)
+        print(json.dumps({"ok": False, "reason": "ingress validation failed", "validation": validation}, indent=2, sort_keys=True))
+        return 2
+
+    reload_result = {"ok": True, "skipped": True} if args.no_reload else reload_cloudflared()
+    if not reload_result["ok"]:
+        audit("cloudflare.activate", args.workload_id, "blocked", reason="cloudflared reload failed", reload=reload_result)
+        print(json.dumps({"ok": False, "reason": "cloudflared reload failed", "reload": reload_result}, indent=2, sort_keys=True))
+        return 2
+
+    probe = external_probe(f"https://{plan['hostname']}")
+    if probe.get("status") == 200 or not probe.get("blocked"):
+        audit("cloudflare.activate", args.workload_id, "blocked", reason="unauthenticated probe was not blocked", probe=probe)
+        print(json.dumps({"ok": False, "reason": "unauthenticated probe was not blocked", "probe": probe}, indent=2, sort_keys=True))
+        return 2
+
+    set_effective_cloudflare_protected(args.workload_id)
+    regenerate_dashboard(quiet=True)
+    evidence = {
+        "ok": True,
+        "workloadId": args.workload_id,
+        "hostname": plan["hostname"],
+        "configPath": str(config_path),
+        "validation": validation,
+        "reload": reload_result,
+        "unauthenticatedProbe": probe,
+    }
+    evidence_path = write_evidence(evidence)
+    audit("cloudflare.activate", args.workload_id, "ok", hostname=plan["hostname"], evidence=str(evidence_path))
+    print(json.dumps({**evidence, "evidencePath": str(evidence_path)}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

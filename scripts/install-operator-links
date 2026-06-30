@@ -18,6 +18,9 @@ APPROVED_LINKS = {
     "oreo-access-preview": "oreo-access-preview",
     "oreo-access-apply": "oreo-access-apply",
     "oreo-cloudflare-plan": "oreo-cloudflare-plan",
+    "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
+    "oreo-cloudflare-activate": "oreo-cloudflare-activate",
+    "oreo-cloudflare-rollback": "oreo-cloudflare-rollback",
 }
 
 
