@@ -638,6 +638,44 @@ def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
     smoke.check(result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean")
 
 
+def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
+    required_docs = [
+        "P3_BASELINE.md",
+        "P3_HELLO_NGINX_RESTORE_DRILL.md",
+        "P3_TAILNET_ROUTING_REVIEW.md",
+        "P3_CLOUDFLARE_PREREQS.md",
+        "P3_CLOUDFLARE_ACTIVATION.md",
+        "P3_CLOUDFLARE_ROLLBACK.md",
+        "P3_NEXT_WORKLOAD_DISCOVERY.md",
+    ]
+    missing = [name for name in required_docs if not (repo / "docs" / name).is_file()]
+    smoke.check(not missing, "P3 evidence docs exist")
+
+    restore_doc = repo / "docs" / "P3_HELLO_NGINX_RESTORE_DRILL.md"
+    if restore_doc.exists():
+        content = restore_doc.read_text()
+        smoke.check(
+            "CHECKSUMS_OK true" in content and "source/docker-compose.yml present" in content,
+            "P3 restore drill evidence recorded",
+        )
+
+    activation_doc = repo / "docs" / "P3_CLOUDFLARE_ACTIVATION.md"
+    access = load_json_file(repo / "config" / "access.json")
+    exposure = load_json_file(repo / "config" / "exposure.json")
+    hello = access.get("workloads", {}).get("hello-nginx", {})
+    cloudflare = exposure.get("providers", {}).get("cloudflare", {})
+    deferred = (
+        hello.get("effective") == "local"
+        and str(hello.get("urls", {}).get("cloudflare", "")).endswith(".invalid")
+        and cloudflare.get("enabled") is False
+        and cloudflare.get("provisioned") is False
+    )
+    smoke.check(deferred, "P3 Cloudflare activation remains deferred")
+    if activation_doc.exists():
+        content = activation_doc.read_text()
+        smoke.check("Decision: `defer`" in content and "effective access remains `local`" in content, "P3 deferral evidence recorded")
+
+
 def check_doctor(repo: Path, smoke: Smoke) -> None:
     result = run([str(repo / "scripts" / "oreo-doctor"), "--json"], repo)
     try:
@@ -709,6 +747,7 @@ def main() -> int:
     check_cloudflare_policy(repo, smoke)
     check_cloudflare_activation_guard(repo, smoke)
     check_access_reconcile(repo, smoke)
+    check_p3_evidence(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)

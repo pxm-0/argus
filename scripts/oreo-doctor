@@ -67,6 +67,27 @@ def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
     add(checks, not workload_source, "no tracked workload source or runtime data", paths=workload_source)
 
 
+def cloudflare_access_evidence_exists(workload_id: str) -> bool:
+    evidence_dir = root() / "runtime" / "cloudflare-activation"
+    if not evidence_dir.exists():
+        return False
+    for path in evidence_dir.glob("*.json"):
+        try:
+            payload = json.loads(path.read_text())
+        except Exception:
+            continue
+        probe = payload.get("unauthenticatedProbe", {})
+        validation = payload.get("validation", {})
+        if (
+            payload.get("ok") is True
+            and payload.get("workloadId") == workload_id
+            and probe.get("blocked") is True
+            and validation.get("ok") is True
+        ):
+            return True
+    return False
+
+
 def exposure_checks(checks: list[dict[str, Any]]) -> None:
     access = load_json("access.json")
     routes = load_json("routes.json")
@@ -94,6 +115,17 @@ def exposure_checks(checks: list[dict[str, Any]]) -> None:
 
     cloudflare = exposure.get("providers", {}).get("cloudflare", {})
     add(checks, cloudflare.get("allowQuickTunnels") is False, "quick tunnels disabled")
+    protected_without_access_evidence = [
+        workload_id
+        for workload_id, item in access.get("workloads", {}).items()
+        if item.get("effective") == "cloudflare-protected" and not cloudflare_access_evidence_exists(workload_id)
+    ]
+    add(
+        checks,
+        not protected_without_access_evidence,
+        "Cloudflare protected effective access has Access/Auth evidence",
+        workloads=protected_without_access_evidence,
+    )
 
     public_states = [
         workload_id
