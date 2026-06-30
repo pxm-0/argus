@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+import subprocess
+from pathlib import Path
+
+
+def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=cwd, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+
+
+class Smoke:
+    def __init__(self) -> None:
+        self.failures: list[str] = []
+        self.warnings: list[str] = []
+
+    def pass_(self, message: str) -> None:
+        print(f"PASS {message}")
+
+    def fail(self, message: str) -> None:
+        print(f"FAIL {message}")
+        self.failures.append(message)
+
+    def warn(self, message: str) -> None:
+        print(f"WARN {message}")
+        self.warnings.append(message)
+
+    def check(self, condition: bool, message: str) -> None:
+        if condition:
+            self.pass_(message)
+        else:
+            self.fail(message)
+
+
+def check_git(repo: Path, smoke: Smoke) -> None:
+    result = run(["git", "rev-parse", "--is-inside-work-tree"], repo)
+    smoke.check(result.returncode == 0 and result.stdout.strip() == "true", "Git repo exists")
+
+
+def check_json(repo: Path, smoke: Smoke) -> None:
+    ok = True
+    config_paths = [path for path in sorted((repo / "config").glob("*.json")) if not path.name.startswith("._")]
+    for path in config_paths:
+        try:
+            json.loads(path.read_text())
+        except Exception:
+            ok = False
+            smoke.fail(f"{path.relative_to(repo)} valid JSON")
+        else:
+            smoke.pass_(f"{path.relative_to(repo)} valid JSON")
+    if not config_paths:
+        smoke.fail("JSON configs exist")
+    elif ok:
+        smoke.pass_("JSON configs valid")
+
+
+def check_dashboard(repo: Path, smoke: Smoke) -> None:
+    for name in ["index.html", "style.css", "app.js"]:
+        smoke.check((repo / "control-plane" / "dashboard" / "public" / name).exists(), f"dashboard {name} generated")
+
+
+def check_api_bind(repo: Path, smoke: Smoke, offline: bool) -> None:
+    if offline:
+        smoke.warn("API bind check skipped in offline mode")
+        return
+    if not shutil.which("ss"):
+        smoke.warn("ss unavailable; API bind check skipped")
+        return
+    result = run(["ss", "-tulpen"], repo)
+    lines = [line for line in result.stdout.splitlines() if ":8099" in line]
+    if not lines:
+        smoke.fail("control API listener found on :8099")
+        return
+    public = [line for line in lines if "127.0.0.1:8099" not in line]
+    smoke.check(not public, "control API binds localhost only")
+
+
+def check_metrics(repo: Path, smoke: Smoke) -> None:
+    result = run(["python3", str(repo / "control-plane" / "monitoring" / "collect_metrics.py")], repo)
+    if result.returncode != 0:
+        smoke.fail("metrics collector works")
+        return
+    metrics = repo / "control-plane" / "dashboard" / "public" / "metrics.json"
+    try:
+        json.loads(metrics.read_text())
+    except Exception:
+        smoke.fail("metrics.json valid")
+    else:
+        smoke.pass_("metrics collector works")
+        smoke.pass_("metrics.json valid")
+
+
+def check_cloudflare_plan(repo: Path, smoke: Smoke) -> None:
+    result = run([str(repo / "scripts" / "oreo-cloudflare-plan"), "--json"], repo)
+    if result.returncode != 0:
+        smoke.fail("Cloudflare plan generated")
+        return
+    try:
+        plan = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("Cloudflare plan JSON valid")
+        return
+    path = repo / "cloudflare" / "planned-ingress.yml"
+    smoke.check(path.exists() and "http_status:404" in path.read_text(), "Cloudflare plan generated")
+    smoke.check(plan.get("providerEnabled") is False, "Cloudflare disabled by default")
+
+
+def check_funnel(repo: Path, smoke: Smoke, offline: bool) -> None:
+    if offline:
+        smoke.warn("Funnel check skipped in offline mode")
+        return
+    if not shutil.which("tailscale"):
+        smoke.warn("tailscale unavailable; Funnel check skipped")
+        return
+    result = run(["tailscale", "funnel", "status"], repo)
+    output = f"{result.stdout}\n{result.stderr}".strip().lower()
+    detected = "https://" in output or "funnel on" in output or "enabled" in output
+    smoke.check(not detected, "no Funnel detected")
+
+
+def check_cloudflared(repo: Path, smoke: Smoke, offline: bool) -> None:
+    if offline:
+        smoke.warn("cloudflared service check skipped in offline mode")
+        return
+    if not shutil.which("systemctl"):
+        smoke.warn("systemctl unavailable; cloudflared check skipped")
+        return
+    result = run(["systemctl", "is-active", "cloudflared"], repo)
+    smoke.check(result.stdout.strip() != "active", "no unexpected cloudflared active")
+
+
+def check_tracked_secrets(repo: Path, smoke: Smoke) -> None:
+    result = run(["git", "ls-files"], repo)
+    if result.returncode != 0:
+        smoke.fail("tracked secrets check ran")
+        return
+    bad = []
+    for item in result.stdout.splitlines():
+        path = Path(item)
+        name = path.name.lower()
+        suffix = path.suffix.lower()
+        if name in {".env", "control-token"} or ".env." in name or suffix in {".pem", ".key", ".p12", ".pfx"}:
+            bad.append(item)
+    smoke.check(not bad, "no tracked secrets")
+
+
+def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
+    workloads = run([str(repo / "scripts" / "oreo-workloads")], repo)
+    smoke.check(workloads.returncode == 0, "workload CLI works")
+    health = run([str(repo / "scripts" / "oreo-health")], repo)
+    if health.returncode == 0:
+        smoke.pass_("health CLI works")
+    elif offline:
+        smoke.warn("health CLI failed in offline mode")
+    else:
+        smoke.fail("health CLI works")
+
+
+def check_caddy(repo: Path, smoke: Smoke, offline: bool) -> None:
+    plan = run([str(repo / "scripts" / "oreo-caddy-dashboard-plan"), "--json"], repo)
+    smoke.check(plan.returncode == 0, "Caddy dashboard route generated")
+    planned = repo / "caddy" / "dashboard.Caddyfile"
+    if planned.exists():
+        content = planned.read_text()
+        smoke.check("bind 0.0.0.0" not in content and "reverse_proxy 127.0.0.1:8099" in content, "Caddy route is private")
+    if not shutil.which("caddy"):
+        smoke.warn("caddy unavailable; validation skipped")
+        return
+    planned_validate = run(["caddy", "validate", "--config", str(planned), "--adapter", "caddyfile"], repo)
+    smoke.check(planned_validate.returncode == 0, "planned Caddy route validates")
+    if not offline:
+        live = Path("/etc/caddy/Caddyfile")
+        if live.exists():
+            live_validate = run(["caddy", "validate", "--config", str(live)], repo)
+            smoke.check(live_validate.returncode == 0, "live Caddy validates")
+        else:
+            smoke.fail("live Caddyfile exists")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run Oreo Cloud P0 smoke checks.")
+    parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
+    parser.add_argument("--offline", action="store_true", help="Skip live listener/service checks.")
+    args = parser.parse_args()
+    repo = args.root.expanduser().resolve()
+    smoke = Smoke()
+
+    check_git(repo, smoke)
+    check_json(repo, smoke)
+    check_dashboard(repo, smoke)
+    check_api_bind(repo, smoke, args.offline)
+    check_metrics(repo, smoke)
+    check_cloudflare_plan(repo, smoke)
+    check_funnel(repo, smoke, args.offline)
+    check_cloudflared(repo, smoke, args.offline)
+    check_tracked_secrets(repo, smoke)
+    check_cli(repo, smoke, args.offline)
+    check_caddy(repo, smoke, args.offline)
+
+    print("")
+    print(f"Smoke summary: {len(smoke.failures)} failure(s), {len(smoke.warnings)} warning(s)")
+    if smoke.failures:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

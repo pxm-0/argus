@@ -59,6 +59,18 @@ oreo-doctor
 oreo-cloud-smoke-test
 ```
 
+From the repository checkout before `/usr/local/bin` symlinks exist:
+
+```bash
+scripts/smoke-test
+```
+
+Offline/temp-root validation:
+
+```bash
+scripts/smoke-test --offline
+```
+
 ## Metrics
 
 Run collector once:
