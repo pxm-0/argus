@@ -232,38 +232,21 @@ def check_tracked_runtime_and_source(repo: Path, smoke: Smoke) -> None:
 
 
 def check_workload_manifests(repo: Path, smoke: Smoke) -> None:
+    result = run([str(repo / "scripts" / "validate-manifests")], repo)
+    if result.returncode != 0:
+        smoke.fail("workload manifests schema-valid")
+        for line in result.stdout.splitlines():
+            if line.startswith("FAIL "):
+                smoke.fail(line[5:])
+        return
     workloads = workload_map(repo)
-    ok = True
-    manifest_paths = sorted((repo / "workloads").glob("*/manifest.json"))
-    for path in manifest_paths:
-        workload_id = path.parent.name
-        try:
-            manifest = load_json_file(path)
-        except Exception:
-            smoke.fail(f"{path.relative_to(repo)} valid JSON")
-            ok = False
-            continue
-        checks = [
-            manifest.get("id") == workload_id,
-            manifest.get("canonicalRoot") == f"/srv/oreo-cloud/workloads/{workload_id}",
-            manifest.get("sourcePath") == f"/srv/oreo-cloud/workloads/{workload_id}/source",
-            isinstance(manifest.get("runtime"), dict),
-            isinstance(manifest.get("migration"), dict),
-            isinstance(manifest.get("operations"), dict),
-            isinstance(manifest.get("backup"), dict),
-            isinstance(manifest.get("security"), dict),
-        ]
-        if not all(checks):
-            smoke.fail(f"{path.relative_to(repo)} manifest shape valid")
-            ok = False
     for workload_id, workload in workloads.items():
         if workload.get("migration", {}).get("status") == "migrated" and not (repo / "workloads" / workload_id / "manifest.json").exists():
             smoke.fail(f"{workload_id} migrated workload has manifest")
-            ok = False
-    if manifest_paths and ok:
-        smoke.pass_("workload manifests valid")
-    elif not manifest_paths:
-        smoke.fail("workload manifests exist")
+            return
+    smoke.pass_("workload manifests schema-valid")
+    smoke.pass_("workload manifest paths valid")
+    smoke.pass_("workload manifest operation policy valid")
 
 
 def check_migration_and_backup(repo: Path, smoke: Smoke) -> None:

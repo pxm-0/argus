@@ -2,10 +2,21 @@
   "id": "hello-nginx",
   "name": "Hello Nginx",
   "description": "Low-risk demo workload migrated during P1 to prove the canonical layout.",
+  "schemaVersion": 1,
   "canonicalRoot": "/srv/oreo-cloud/workloads/hello-nginx",
   "sourcePath": "/srv/oreo-cloud/workloads/hello-nginx/source",
+  "privacyCompatibility": "unclassified",
+  "accessCompatibility": "cloudflare-protected",
   "runtime": {
     "type": "docker-compose",
+    "compose": {
+      "path": "/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml",
+      "project": "hello-nginx",
+      "service": "web",
+      "legacyPaths": [
+        "/srv/apps/hello-nginx/docker-compose.yml"
+      ]
+    },
     "composePath": "/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml",
     "composeProject": "hello-nginx",
     "service": "web",
@@ -26,7 +37,21 @@
       "Migrated Compose binds localhost-only 127.0.0.1:18080."
     ]
   },
+  "health": {
+    "url": "http://127.0.0.1:18080",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
   "operations": {
+    "logs": {
+      "allowed": true
+    },
+    "restart": {
+      "allowed": true
+    },
+    "backup": {
+      "allowed": false
+    },
     "logsAllowed": true,
     "restartAllowed": true,
     "backupAllowed": false,
@@ -35,6 +60,8 @@
     "requiresConfirmation": true
   },
   "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
     "status": "planned",
     "source": false,
     "env": false,
@@ -52,6 +79,7 @@
     "lastRestoreTestAt": ""
   },
   "security": {
+    "publicAllowed": false,
     "trackedByOreoCloudGit": false,
     "classification": "unclassified",
     "publicExposureAllowed": false,

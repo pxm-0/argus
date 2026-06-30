@@ -1,0 +1,163 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://oreo-cloud.local/schemas/workload-manifest.schema.json",
+  "title": "Oreo Cloud Workload Manifest",
+  "type": "object",
+  "required": [
+    "id",
+    "name",
+    "schemaVersion",
+    "canonicalRoot",
+    "sourcePath",
+    "runtime",
+    "health",
+    "migration",
+    "operations",
+    "backup",
+    "security"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]*$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "schemaVersion": {
+      "const": 1
+    },
+    "canonicalRoot": {
+      "type": "string"
+    },
+    "sourcePath": {
+      "type": "string"
+    },
+    "privacyCompatibility": {
+      "enum": ["unclassified", "personal", "internal", "sensitive", "restricted"]
+    },
+    "accessCompatibility": {
+      "enum": ["none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"]
+    },
+    "runtime": {
+      "type": "object",
+      "required": ["type", "compose"],
+      "properties": {
+        "type": {
+          "enum": ["docker-compose", "external", "static", "unknown"]
+        },
+        "compose": {
+          "type": "object",
+          "required": ["project", "service"],
+          "properties": {
+            "path": {
+              "type": "string"
+            },
+            "project": {
+              "type": "string"
+            },
+            "service": {
+              "type": "string"
+            },
+            "legacyPaths": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              }
+            }
+          }
+        }
+      }
+    },
+    "health": {
+      "type": "object",
+      "required": ["url", "expectedStatus"],
+      "properties": {
+        "url": {
+          "type": "string"
+        },
+        "expectedStatus": {
+          "type": "integer",
+          "minimum": 100,
+          "maximum": 599
+        },
+        "timeoutSeconds": {
+          "type": "number",
+          "minimum": 1
+        }
+      }
+    },
+    "migration": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {
+          "enum": ["planned", "migrated", "external", "rolled-back", "skipped"]
+        }
+      }
+    },
+    "operations": {
+      "type": "object",
+      "required": ["logs", "restart", "backup"],
+      "properties": {
+        "logs": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "restart": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "backup": {
+          "$ref": "#/$defs/operationPermission"
+        }
+      }
+    },
+    "backup": {
+      "type": "object",
+      "required": ["backupAllowed", "restoreAllowed"],
+      "properties": {
+        "backupAllowed": {
+          "type": "boolean"
+        },
+        "restoreAllowed": {
+          "type": "boolean"
+        },
+        "destination": {
+          "type": "string"
+        }
+      }
+    },
+    "security": {
+      "type": "object",
+      "required": ["publicAllowed", "notes"],
+      "properties": {
+        "publicAllowed": {
+          "type": "boolean"
+        },
+        "classification": {
+          "enum": ["unclassified", "personal", "internal", "sensitive", "restricted"]
+        },
+        "notes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "operationPermission": {
+      "type": "object",
+      "required": ["allowed"],
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

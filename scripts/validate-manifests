@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+from typing import Any
+
+
+RUNTIME_TYPES = {"docker-compose", "external", "static", "unknown"}
+MIGRATION_STATUSES = {"planned", "migrated", "external", "rolled-back", "skipped"}
+PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restricted"}
+ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
+SENSITIVE_PRIVACY = {"sensitive", "restricted"}
+
+
+def repo_root() -> Path:
+    override = os.environ.get("OREO_CLOUD_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def load_json(path: Path) -> Any:
+    return json.loads(path.read_text())
+
+
+def field(data: dict[str, Any], path: str) -> Any:
+    current: Any = data
+    for part in path.split("."):
+        if not isinstance(current, dict) or part not in current:
+            raise KeyError(path)
+        current = current[part]
+    return current
+
+
+def add_error(errors: list[str], workload_id: str, path: str, message: str) -> None:
+    errors.append(f"{workload_id}: {path} {message}")
+
+
+def require(data: dict[str, Any], workload_id: str, path: str, errors: list[str]) -> Any:
+    try:
+        return field(data, path)
+    except KeyError:
+        add_error(errors, workload_id, path, "missing")
+        return None
+
+
+def require_type(data: dict[str, Any], workload_id: str, path: str, expected: type, errors: list[str]) -> Any:
+    value = require(data, workload_id, path, errors)
+    if value is None:
+        return None
+    if not isinstance(value, expected):
+        add_error(errors, workload_id, path, f"must be {expected.__name__}")
+        return None
+    return value
+
+
+def load_privacy(repo: Path) -> dict[str, str]:
+    path = repo / "config" / "privacy.json"
+    if not path.exists():
+        return {}
+    data = load_json(path)
+    default = str(data.get("defaultPrivacy", "unclassified"))
+    result: dict[str, str] = {}
+    for workload_id, item in data.get("workloads", {}).items():
+        result[str(workload_id)] = str(item.get("privacy", default))
+    return result
+
+
+def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[str]:
+    workload_id = path.parent.name
+    errors: list[str] = []
+    try:
+        manifest = load_json(path)
+    except json.JSONDecodeError as exc:
+        return [f"{workload_id}: manifest.json invalid JSON: {exc}"]
+    if not isinstance(manifest, dict):
+        return [f"{workload_id}: manifest root must be object"]
+
+    manifest_id = require_type(manifest, workload_id, "id", str, errors)
+    if manifest_id and manifest_id != workload_id:
+        add_error(errors, workload_id, "id", f"must match directory name {workload_id}")
+    require_type(manifest, workload_id, "name", str, errors)
+    schema_version = require(manifest, workload_id, "schemaVersion", errors)
+    if schema_version is not None and schema_version != 1:
+        add_error(errors, workload_id, "schemaVersion", "must be 1")
+
+    canonical_root = require_type(manifest, workload_id, "canonicalRoot", str, errors)
+    expected_root = f"/srv/oreo-cloud/workloads/{workload_id}"
+    if canonical_root and canonical_root != expected_root:
+        add_error(errors, workload_id, "canonicalRoot", f"must be {expected_root}")
+    source_path = require_type(manifest, workload_id, "sourcePath", str, errors)
+    expected_source = f"{expected_root}/source"
+    if source_path and source_path != expected_source:
+        add_error(errors, workload_id, "sourcePath", f"must be {expected_source}")
+
+    privacy_compat = manifest.get("privacyCompatibility")
+    if privacy_compat is not None and privacy_compat not in PRIVACY_STATES:
+        add_error(errors, workload_id, "privacyCompatibility", "has invalid enum value")
+    access_compat = manifest.get("accessCompatibility")
+    if access_compat is not None and access_compat not in ACCESS_STATES:
+        add_error(errors, workload_id, "accessCompatibility", "has invalid enum value")
+
+    runtime_type = require_type(manifest, workload_id, "runtime.type", str, errors)
+    if runtime_type and runtime_type not in RUNTIME_TYPES:
+        add_error(errors, workload_id, "runtime.type", "has invalid enum value")
+    compose_project = require_type(manifest, workload_id, "runtime.compose.project", str, errors)
+    compose_service = require_type(manifest, workload_id, "runtime.compose.service", str, errors)
+    if runtime_type == "docker-compose":
+        compose_path = require_type(manifest, workload_id, "runtime.compose.path", str, errors)
+        if compose_path and not compose_path.startswith(expected_source + "/"):
+            add_error(errors, workload_id, "runtime.compose.path", "must be under sourcePath")
+        if not compose_project:
+            add_error(errors, workload_id, "runtime.compose.project", "must not be empty for docker-compose")
+        if compose_service is None:
+            add_error(errors, workload_id, "runtime.compose.service", "must be present for docker-compose")
+
+    health_url = require_type(manifest, workload_id, "health.url", str, errors)
+    if health_url and not health_url.startswith(("http://", "https://")):
+        add_error(errors, workload_id, "health.url", "must be an HTTP URL")
+    expected_status = require(manifest, workload_id, "health.expectedStatus", errors)
+    if expected_status is not None and (not isinstance(expected_status, int) or expected_status < 100 or expected_status > 599):
+        add_error(errors, workload_id, "health.expectedStatus", "must be an integer HTTP status")
+
+    migration_status = require_type(manifest, workload_id, "migration.status", str, errors)
+    if migration_status and migration_status not in MIGRATION_STATUSES:
+        add_error(errors, workload_id, "migration.status", "has invalid enum value")
+
+    for operation in ("logs", "restart", "backup"):
+        require_type(manifest, workload_id, f"operations.{operation}.allowed", bool, errors)
+
+    backup_allowed = require_type(manifest, workload_id, "backup.backupAllowed", bool, errors)
+    require_type(manifest, workload_id, "backup.restoreAllowed", bool, errors)
+    destination = manifest.get("backup", {}).get("destination")
+    approved_backup_root = f"/srv/oreo-cloud/runtime/backups/{workload_id}"
+    if destination is not None:
+        if not isinstance(destination, str):
+            add_error(errors, workload_id, "backup.destination", "must be string")
+        elif not destination.startswith(approved_backup_root):
+            add_error(errors, workload_id, "backup.destination", f"must be under {approved_backup_root}")
+    elif backup_allowed:
+        add_error(errors, workload_id, "backup.destination", "missing when backupAllowed is true")
+
+    public_allowed = require_type(manifest, workload_id, "security.publicAllowed", bool, errors)
+    notes = require_type(manifest, workload_id, "security.notes", list, errors)
+    if notes is not None and not all(isinstance(item, str) for item in notes):
+        add_error(errors, workload_id, "security.notes", "must contain only strings")
+    privacy_state = privacy.get(workload_id, str(manifest.get("security", {}).get("classification", "")))
+    if public_allowed and privacy_state in SENSITIVE_PRIVACY:
+        add_error(errors, workload_id, "security.publicAllowed", "cannot be true for sensitive or restricted privacy")
+
+    return errors
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Validate Oreo Cloud workload manifests.")
+    parser.add_argument("--root", type=Path, default=repo_root())
+    args = parser.parse_args()
+
+    repo = args.root.expanduser().resolve()
+    schema = repo / "config" / "schemas" / "workload-manifest.schema.json"
+    if not schema.exists():
+        print(f"FAIL schema missing: {schema}")
+        return 1
+    try:
+        load_json(schema)
+    except json.JSONDecodeError as exc:
+        print(f"FAIL schema invalid JSON: {exc}")
+        return 1
+
+    privacy = load_privacy(repo)
+    manifest_paths = sorted((repo / "workloads").glob("*/manifest.json"))
+    if not manifest_paths:
+        print("FAIL no workload manifests found")
+        return 1
+
+    failed = False
+    for path in manifest_paths:
+        workload_id = path.parent.name
+        errors = validate_manifest(repo, path, privacy)
+        if errors:
+            failed = True
+            for error in errors:
+                print(f"FAIL {error}")
+        else:
+            print(f"PASS {workload_id} manifest valid")
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
