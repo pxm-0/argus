@@ -4,6 +4,8 @@ This project manages private self-hosted infrastructure.
 
 ## Hard Rules
 
+- Land every P0 plan, phase, and task through a pull request.
+- Do not commit phase work directly to `main`.
 - Do not expose services publicly by default.
 - Do not enable Tailscale Funnel.
 - Do not start Cloudflare tunnels in P0.
@@ -18,6 +20,13 @@ This project manages private self-hosted infrastructure.
 - Validate Caddy before reload.
 - Keep scripts idempotent.
 - Preserve Docker Compose project names during migration.
+
+## PR Workflow
+
+- Follow `docs/PR_WORKFLOW.md`.
+- Link each PR to the matching P0 issue.
+- Keep server-required work on `oreochiserver`; do not use Mac discovery as server evidence.
+- Complete the PR template safety checklist before merge.
 
 ## Project Model
 
