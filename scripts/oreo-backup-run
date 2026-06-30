@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import shutil
+from pathlib import Path
+
+from oreo_common import audit, fail, load_manifest, now, operation_allowed
+
+
+def copy_path(source: Path, destination: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(source, destination, symlinks=True)
+    elif source.is_file():
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, destination)
+    else:
+        raise FileNotFoundError(source)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run an explicitly allowed workload backup.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--confirm", default="", help="Exact workload ID required to run backup.")
+    args = parser.parse_args()
+    manifest = load_manifest(args.workload_id)
+    if not manifest:
+        fail(f"missing manifest for {args.workload_id}")
+    if args.confirm != args.workload_id:
+        audit("backup.run", args.workload_id, "blocked", reason="confirmation required")
+        fail(f"confirmation required: rerun with --confirm {args.workload_id}")
+    if not operation_allowed(args.workload_id, "backupAllowed"):
+        audit("backup.run", args.workload_id, "blocked", reason="backup not allowed")
+        fail(f"backup is not allowed for {args.workload_id}")
+
+    backup = manifest.get("backup", {})
+    destination_root = Path(str(backup.get("destination", "")))
+    if not str(destination_root).startswith("/srv/oreo-cloud/runtime/backups/"):
+        audit("backup.run", args.workload_id, "blocked", reason="invalid destination")
+        fail("backup destination must be under /srv/oreo-cloud/runtime/backups")
+    run_dir = destination_root / now().replace(":", "").replace("-", "")
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    copied: list[str] = []
+    if backup.get("source", False):
+        source = Path(str(manifest.get("sourcePath", "")))
+        copy_path(source, run_dir / "source")
+        copied.append("source")
+    if backup.get("env", False):
+        audit("backup.run", args.workload_id, "blocked", reason="env backup not implemented")
+        fail("env backup requires a later explicit implementation")
+    for item in backup.get("bindMounts", []):
+        source = Path(str(item))
+        copy_path(source, run_dir / "bind-mounts" / source.name)
+        copied.append(f"bind:{source}")
+    database = backup.get("database", {})
+    if database.get("type", "none") != "none":
+        audit("backup.run", args.workload_id, "blocked", reason="database backup not implemented")
+        fail("database backup requires a later explicit implementation")
+    if backup.get("namedVolumes", []):
+        audit("backup.run", args.workload_id, "blocked", reason="named volume backup not implemented")
+        fail("named volume backup requires a later explicit implementation")
+
+    audit("backup.run", args.workload_id, "ok", destination=str(run_dir), copied=copied)
+    print(f"backup written to {run_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

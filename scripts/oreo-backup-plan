@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+
+from oreo_common import fail, load_manifest, print_table
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Print the backup plan for a workload.")
+    parser.add_argument("workload_id")
+    args = parser.parse_args()
+    manifest = load_manifest(args.workload_id)
+    if not manifest:
+        fail(f"missing manifest for {args.workload_id}")
+    backup = manifest.get("backup", {})
+    database = backup.get("database", {})
+    operations = manifest.get("operations", {})
+    security = manifest.get("security", {})
+    rows = [
+        ["workload", args.workload_id],
+        ["status", str(backup.get("status", ""))],
+        ["backup allowed", str(bool(operations.get("backupAllowed", False))).lower()],
+        ["source", str(bool(backup.get("source", False))).lower()],
+        ["env", str(bool(backup.get("env", False))).lower()],
+        ["named volumes", ", ".join(backup.get("namedVolumes", [])) or "-"],
+        ["bind mounts", ", ".join(backup.get("bindMounts", [])) or "-"],
+        ["database", str(database.get("type", "none"))],
+        ["dump command", str(database.get("dumpCommand", "")) or "-"],
+        ["destination", str(backup.get("destination", ""))],
+        ["retention", str(backup.get("retention", ""))],
+        ["restore tested", str(bool(backup.get("restoreTested", False))).lower()],
+        ["tracked by git", str(bool(security.get("trackedByOreoCloudGit", False))).lower()],
+    ]
+    print_table(["field", "value"], rows)
+    if backup.get("env"):
+        print("WARNING: env backup is enabled; verify explicit approval before running.")
+    if not operations.get("backupAllowed", False):
+        print("Backup run is blocked until operations.backupAllowed=true.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
