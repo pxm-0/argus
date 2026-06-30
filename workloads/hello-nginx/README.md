@@ -10,7 +10,20 @@ Low-risk demo workload used for the first P1 migration.
 - Compose project: `hello-nginx`
 - Service: `web`
 - Health: `http://127.0.0.1:18080`
-- Access: local only
+- Access: local effective, Cloudflare protected planned
+
+## Cloudflare Protected Demo Plan
+
+`hello-nginx` is the approved low-risk P1 demo workload for protected
+Cloudflare planning. The route uses the intentionally non-routable hostname:
+
+```text
+hello-nginx.oreo-cloud.invalid
+```
+
+The desired access state is `cloudflare-protected`, but effective access remains
+`local`. No Cloudflare tunnel, DNS record, public route, or `cloudflared`
+service is enabled by this plan.
 
 ## Layout
 

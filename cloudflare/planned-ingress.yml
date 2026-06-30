@@ -1,3 +1,6 @@
 # Generated plan only. No tunnel is enabled by this file.
 ingress:
+  - hostname: hello-nginx.oreo-cloud.invalid
+    service: http://127.0.0.1:18080
+    # Cloudflare Access policy required before activation.
   - service: http_status:404

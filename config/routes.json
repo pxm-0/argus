@@ -93,8 +93,8 @@
       },
       "cloudflare": {
         "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
+        "hostname": "hello-nginx.oreo-cloud.invalid",
+        "mode": "planned",
         "requiresAuth": true
       }
     }
