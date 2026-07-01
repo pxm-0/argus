@@ -212,6 +212,18 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 and manifest_payload.get("ok") is False,
                 "backup execution gated by manifest",
             )
+            access_status, access_payload, _ = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/access/apply",
+                method="POST",
+                token=token,
+                payload={"desired": "cloudflare-protected", "confirmation": ""},
+            )
+            smoke.check(
+                access_status == 403
+                and access_payload.get("confirmationRequired") is True
+                and access_payload.get("confirmationPhrase") == "plan protected cloudflare",
+                "control API enforces access confirmation phrase",
+            )
         finally:
             process.terminate()
             try:
@@ -511,6 +523,7 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
     smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
+    smoke.check("/access/preview" in js and "/access/apply" in js and "/privacy" in js, "dashboard admin flow calls control API")
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:

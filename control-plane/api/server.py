@@ -151,6 +151,22 @@ class Handler(BaseHTTPRequestHandler):
             audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason=decision["reason"])
             self.send_json(403, {"workloadId": workload_id, "desired": desired, **decision})
             return
+        phrase = str(decision.get("confirmationPhrase", ""))
+        if phrase and str(body.get("confirmation", "")) != phrase:
+            audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason="confirmation required")
+            self.send_json(
+                403,
+                {
+                    "ok": False,
+                    "workloadId": workload_id,
+                    "desired": desired,
+                    "allowed": False,
+                    "reason": "confirmation required",
+                    "confirmationRequired": True,
+                    "confirmationPhrase": phrase,
+                },
+            )
+            return
         access = load_json("access.json")
         if workload_id not in access["workloads"]:
             raise ValueError("unknown workload")
