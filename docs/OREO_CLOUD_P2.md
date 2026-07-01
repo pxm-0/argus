@@ -497,8 +497,6 @@ scripts/install-operator-links
 
 ```text
 /usr/local/bin/oreo-logs                  -> /srv/oreo-cloud/scripts/oreo-logs
-/usr/local/bin/oreo-restart-preview       -> /srv/oreo-cloud/scripts/oreo-restart-preview
-/usr/local/bin/oreo-restart               -> /srv/oreo-cloud/scripts/oreo-restart
 /usr/local/bin/oreo-backup-plan           -> /srv/oreo-cloud/scripts/oreo-backup-plan
 /usr/local/bin/oreo-backup-run            -> /srv/oreo-cloud/scripts/oreo-backup-run
 /usr/local/bin/oreo-restore-plan          -> /srv/oreo-cloud/scripts/oreo-restore-plan
@@ -1513,8 +1511,8 @@ Do not return raw command strings.
 
 ```text
 oreo-logs
-oreo-restart-preview
-oreo-restart
+oreo-action-preview
+oreo-action-apply
 oreo-backup-plan
 oreo-backup-run
 oreo-restore-plan

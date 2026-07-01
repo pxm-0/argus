@@ -104,7 +104,9 @@ It should not permanently mark a workload as private/public/company/demo.
 
 ### 8. Dashboard
 
-Static HTML/CSS/JS generated from config and served by Caddy.
+Static HTML/CSS/JS generated from tracked generator source and served by Caddy.
+Generated files under `control-plane/dashboard/public/` are local artifacts and
+are ignored by Git.
 
 The dashboard has:
 
@@ -126,7 +128,9 @@ A timer-driven Python script that writes safe metrics to `metrics.json`.
 
 ### 11. Cloudflare Planner
 
-A generator that reads workload/access/privacy/policy config and writes a planned Cloudflare ingress file only.
+A generator that reads workload/access/privacy/policy config and writes a
+planned Cloudflare ingress file only. The generated plan is a local artifact and
+is ignored by Git.
 
 ## P0 Network Model
 

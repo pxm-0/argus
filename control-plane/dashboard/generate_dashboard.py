@@ -42,6 +42,13 @@ def render_html() -> str:
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
+      <section class="command-panel" id="command-panel" hidden>
+        <div class="section-head">
+          <h2>Command Result</h2>
+          <button id="command-close" type="button">Close</button>
+        </div>
+        <pre id="command-output"></pre>
+      </section>
       <section class="monitor" id="monitor-panel" hidden>
         <div class="section-head">
           <h2>Monitor</h2>
@@ -119,15 +126,13 @@ html { min-width: 320px; background: var(--bg); }
 body {
   margin: 0;
   min-height: 100vh;
-  background:
-    radial-gradient(circle at 18% -10%, oklch(0.26 0.06 195 / 38%), transparent 34rem),
-    linear-gradient(180deg, var(--bg-2), var(--bg) 28rem);
+  background: var(--bg);
   color: var(--ink);
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   font-size: 14px;
   line-height: 1.45;
 }
-button, select { font: inherit; }
+button, select, input { font: inherit; }
 button, .action {
   min-height: 32px;
   padding: 6px 10px;
@@ -152,6 +157,15 @@ button:hover, .action:hover {
 button:focus-visible, .action:focus-visible, select:focus-visible { outline: 0; box-shadow: var(--focus); }
 select {
   min-height: 32px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--bg);
+  color: var(--ink);
+  padding: 6px 8px;
+}
+input {
+  min-height: 32px;
+  min-width: 190px;
   border: 1px solid var(--line);
   border-radius: 4px;
   background: var(--bg);
@@ -435,6 +449,18 @@ dd {
   background: var(--blue-panel);
   border-color: var(--blue);
 }
+.command-panel {
+  padding: 12px;
+  margin-bottom: 12px;
+  background: var(--panel);
+  border: 1px solid var(--line-strong);
+}
+.command-panel .section-head {
+  padding: 0 0 10px;
+  margin: 0 0 10px;
+  border: 0;
+  background: transparent;
+}
 .monitor .section-head {
   padding: 0 0 10px;
   margin: 0 0 10px;
@@ -519,6 +545,7 @@ pre {
   .alert { align-items: flex-start; flex-direction: column; }
   .workload-head { grid-template-columns: 1fr; }
   .facts, .metrics-grid { grid-template-columns: 1fr; }
+  input { width: 100%; }
 }
 @media (max-width: 520px) {
   .top-actions { width: 100%; }
@@ -545,6 +572,9 @@ const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
 const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
+const commandPanel = document.getElementById("command-panel");
+const commandOutput = document.getElementById("command-output");
+const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
 
@@ -579,6 +609,41 @@ function pct(value) {
 function metricCard(label, value, percent) {
   const width = percent == null ? 0 : pct(percent);
   return `<div class="metric"><strong>${label}</strong><p>${value}</p>${percent == null ? "" : `<div class="bar"><span style="width:${width}%"></span></div>`}</div>`;
+}
+
+function showCommandResult(title, payload) {
+  const body = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
+  commandOutput.textContent = `${title}\n\n${body}`;
+  commandPanel.hidden = false;
+  commandPanel.scrollIntoView({ block: "nearest" });
+}
+
+function tokenFor(row) {
+  const value = row?.querySelector("[data-token]")?.value || "";
+  if (value) sessionStorage.setItem("oreoControlToken", value);
+  return value || sessionStorage.getItem("oreoControlToken") || "";
+}
+
+function selectedValue(row, selector) {
+  return row?.querySelector(selector)?.value || "";
+}
+
+async function apiPost(endpoint, token, body) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Authorization": `Bearer ${token}`,
+      "Content-Type": "application/json"
+    },
+    body: JSON.stringify(body || {})
+  });
+  let payload = {};
+  try {
+    payload = await response.json();
+  } catch (error) {
+    payload = { error: error.message };
+  }
+  return { ok: response.ok, status: response.status, payload };
 }
 
 function renderMetrics(data) {
@@ -716,8 +781,10 @@ function renderWorkload(workload) {
         <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}">Backup preview</button>
       </div>
       <div class="admin-row" hidden>
+        <label>Token <input type="password" autocomplete="off" data-token="${escapeHtml(id)}" placeholder="control token"></label>
         <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}"></select></label>
         <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
+        <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
         <button type="button" data-preview="${escapeHtml(id)}">Preview</button>
         <button type="button" data-apply="${escapeHtml(id)}">Apply</button>
         <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}">Restart apply</button>
@@ -798,13 +865,16 @@ function setAdmin(open) {
 monitorToggle.addEventListener("click", () => setMonitor(monitorPanel.hidden));
 adminToggle.addEventListener("click", () => {
   if (!adminEnabled) {
-    const token = window.prompt("Control token");
-    if (!token) return;
-    sessionStorage.setItem("oreoControlToken", token);
+    showCommandResult("Admin mode", "Enter the control token in the workload row before applying changes.");
   } else {
     sessionStorage.removeItem("oreoControlToken");
   }
   setAdmin(!adminEnabled);
+});
+
+commandClose.addEventListener("click", () => {
+  commandPanel.hidden = true;
+  commandOutput.textContent = "";
 });
 
 document.addEventListener("click", async (event) => {
@@ -812,30 +882,27 @@ document.addEventListener("click", async (event) => {
   if (operation) {
     const workload = operation.dataset.workload;
     const action = operation.dataset.operation;
-    const token = sessionStorage.getItem("oreoControlToken") || "";
+    const row = operation.closest(".workload");
+    const token = tokenFor(row);
     if (!token) {
-      window.alert("Admin token required");
+      showCommandResult("Admin token required", "Enter the control token in this workload row.");
       return;
     }
-    const body = action.endsWith("-apply") ? { confirmation: window.prompt(`Type ${workload} to confirm`) || "" } : {};
-    if (action.endsWith("-apply") && body.confirmation !== workload) return;
+    const confirmation = row?.querySelector("[data-confirm]")?.value || "";
+    const body = action.endsWith("-apply") ? { confirmation } : {};
+    if (action.endsWith("-apply") && body.confirmation !== workload) {
+      showCommandResult("Confirmation required", `Type ${workload} in the confirmation field before applying.`);
+      return;
+    }
     const parts = action.split("-");
     const endpoint = `/api/workloads/${encodeURIComponent(workload)}/${parts[0]}/${parts[1]}`;
     try {
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: {
-          "Authorization": `Bearer ${token}`,
-          "Content-Type": "application/json"
-        },
-        body: JSON.stringify(body)
-      });
-      const payload = await response.json();
-      const lines = Array.isArray(payload.lines) ? `\n\n${payload.lines.join("\n")}` : "";
-      window.alert(`${payload.summary || payload.reason || response.statusText}${lines}`);
+      const result = await apiPost(endpoint, token, body);
+      const lines = Array.isArray(result.payload.lines) ? { ...result.payload, lines: result.payload.lines } : result.payload;
+      showCommandResult(`${workload} ${action}`, { status: result.status, ...lines });
       await loadDashboardState();
     } catch (error) {
-      window.alert(`Action failed: ${error.message}`);
+      showCommandResult("Action failed", error.message);
     }
     return;
   }
@@ -843,8 +910,66 @@ document.addEventListener("click", async (event) => {
   const apply = event.target.closest("[data-apply]");
   if (!preview && !apply) return;
   const workload = (preview || apply).dataset.preview || (preview || apply).dataset.apply;
-  const mode = preview ? "preview" : "apply";
-  window.alert(`${mode} for ${workload} requires the P0 control API phase.`);
+  const row = (preview || apply).closest(".workload");
+  const token = tokenFor(row);
+  if (!token) {
+    showCommandResult("Admin token required", "Enter the control token in this workload row.");
+    return;
+  }
+  const current = state?.workloads?.find((item) => item.id === workload) || {};
+  const privacyTarget = selectedValue(row, 'select[data-action="privacy"]');
+  const accessTarget = selectedValue(row, 'select[data-action="access"]');
+  const confirmation = selectedValue(row, "[data-confirm]");
+  const privacyChanged = privacyTarget && privacyTarget !== current.privacy?.privacy;
+  const accessChanged = accessTarget && accessTarget !== current.access?.desired;
+  if (preview) {
+    try {
+      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/preview`, token, { desired: accessTarget });
+      showCommandResult(`${workload} preview`, {
+        privacy: {
+          from: current.privacy?.privacy || "",
+          to: privacyTarget,
+          wouldUpdate: privacyChanged
+        },
+        access: {
+          status: accessPreview.status,
+          ...accessPreview.payload
+        }
+      });
+    } catch (error) {
+      showCommandResult("Preview failed", error.message);
+    }
+    return;
+  }
+  if (!privacyChanged && !accessChanged) {
+    showCommandResult(`${workload} apply`, "No privacy or access change selected.");
+    return;
+  }
+  const results = [];
+  try {
+    if (privacyChanged) {
+      const privacyResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/privacy`, token, {
+        privacy: privacyTarget,
+        reason: "Dashboard admin change"
+      });
+      results.push({ privacy: { status: privacyResult.status, ...privacyResult.payload } });
+      if (!privacyResult.ok) {
+        showCommandResult(`${workload} apply`, results);
+        return;
+      }
+    }
+    if (accessChanged) {
+      const accessResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/apply`, token, {
+        desired: accessTarget,
+        confirmation
+      });
+      results.push({ access: { status: accessResult.status, ...accessResult.payload } });
+    }
+    showCommandResult(`${workload} apply`, results);
+    await loadDashboardState();
+  } catch (error) {
+    showCommandResult("Apply failed", error.message);
+  }
 });
 
 loadDashboardState();

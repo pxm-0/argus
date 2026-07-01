@@ -1,10 +1,21 @@
 # Dashboard Runtime Cleanliness
 
-P2 separates tracked dashboard assets from runtime state.
+P5 separates dashboard source from generated dashboard output.
 
-## Tracked Static Assets
+## Dashboard Source
 
-These files are tracked and should change only when dashboard source changes:
+The tracked source of truth is:
+
+```text
+control-plane/dashboard/generate_dashboard.py
+```
+
+The generator writes a static shell. It does not read audit logs, metrics,
+action previews, Cloudflare activation evidence, or runtime health snapshots.
+
+## Generated Static Assets
+
+These files are generated locally and ignored by Git:
 
 ```text
 control-plane/dashboard/public/index.html
@@ -12,7 +23,11 @@ control-plane/dashboard/public/style.css
 control-plane/dashboard/public/app.js
 ```
 
-`control-plane/dashboard/generate_dashboard.py` writes a static shell. It does not read audit logs, metrics, action previews, Cloudflare activation evidence, or runtime health snapshots.
+Regenerate them with:
+
+```bash
+python3 control-plane/dashboard/generate_dashboard.py
+```
 
 ## Runtime State
 
@@ -55,15 +70,20 @@ Secret-like audit fields are redacted by shared audit sanitization before they r
 
 `scripts/smoke-test` verifies the invariant by:
 
-1. Reading tracked dashboard asset bytes.
-2. Running `scripts/oreo-dashboard-state`.
-3. Running `python3 control-plane/dashboard/generate_dashboard.py`.
-4. Comparing tracked asset bytes after regeneration.
-5. Confirming `runtime/dashboard-state.json` is ignored.
+1. Running `python3 control-plane/dashboard/generate_dashboard.py`.
+2. Confirming generated static assets exist.
+3. Confirming generated static assets are ignored.
+4. Running `scripts/oreo-dashboard-state`.
+5. Running the generator again.
+6. Confirming generation is stable.
+7. Confirming `runtime/dashboard-state.json` is ignored.
 
 Expected smoke output includes:
 
 ```text
+PASS dashboard index.html ignored
+PASS dashboard style.css ignored
+PASS dashboard app.js ignored
 PASS dashboard generation clean
 PASS runtime dashboard state ignored
 ```

@@ -7,7 +7,6 @@ import json
 import os
 import re
 import sys
-from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -16,62 +15,12 @@ from urllib.parse import urlparse
 
 ROOT = Path(os.environ.get("OREO_CLOUD_ROOT", Path(__file__).resolve().parents[2])).resolve()
 TOKEN_FILE = Path(os.environ.get("OREO_CLOUD_TOKEN_FILE", "/etc/oreo-cloud/control-token"))
-AUDIT = ROOT / "runtime" / "audit.log"
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
-
-
-def now() -> str:
-    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
-
-
-def load_json(name: str) -> dict[str, Any]:
-    return json.loads((ROOT / "config" / name).read_text())
-
-
-def load_manifest(workload_id: str) -> dict[str, Any]:
-    path = ROOT / "workloads" / workload_id / "manifest.json"
-    if not path.exists():
-        return {}
-    return json.loads(path.read_text())
-
-
-def recent_events() -> list[dict[str, Any]]:
-    events = []
-    if AUDIT.exists():
-        for line in AUDIT.read_text().splitlines()[-50:]:
-            if not line.strip():
-                continue
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            events.append(
-                {
-                    "timestamp": event.get("timestamp", ""),
-                    "action": event.get("action", ""),
-                    "workloadId": event.get("workloadId", ""),
-                    "result": event.get("result", ""),
-                }
-            )
-    return events
-
-
-def save_json(name: str, data: dict[str, Any]) -> None:
-    path = ROOT / "config" / name
-    temp = path.with_suffix(path.suffix + ".tmp")
-    temp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
-    temp.replace(path)
-
-
-def audit(action: str, workload_id: str, result: str, **extra: Any) -> None:
-    AUDIT.parent.mkdir(parents=True, exist_ok=True)
-    event = {"timestamp": now(), "actor": "admin-token", "action": action, "workloadId": workload_id, "result": result, **extra}
-    with AUDIT.open("a") as handle:
-        handle.write(json.dumps(event, sort_keys=True) + "\n")
+from oreo_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
 
 
 def token() -> str:
@@ -82,82 +31,8 @@ def token() -> str:
 
 
 def merged_workloads() -> dict[str, Any]:
-    workloads = load_json("workloads.json")
-    privacy = load_json("privacy.json")
-    access = load_json("access.json")
-    routes = load_json("routes.json")
-    exposure = load_json("exposure.json")
-    merged = []
-    events = recent_events()
-    for workload in workloads["workloads"]:
-        wid = workload["id"]
-        manifest = load_manifest(wid)
-        last_event = next((event for event in reversed(events) if event.get("workloadId") == wid), {})
-        merged.append(
-            {
-                **workload,
-                "privacy": privacy["workloads"].get(wid, {}),
-                "access": access["workloads"].get(wid, {}),
-                "routes": routes["workloadRoutes"].get(wid, {}),
-                "manifest": manifest,
-                "operations": manifest.get("operations", {}),
-                "backup": manifest.get("backup", {}),
-                "lastAuditEvent": last_event,
-            }
-        )
-    return {"workloads": merged, "routes": routes, "exposure": exposure, "events": events[-20:]}
-
-
-def dashboard_state() -> dict[str, Any]:
-    state = merged_workloads()
-    privacy = load_json("privacy.json")
-    access = load_json("access.json")
-    state["privacyStates"] = privacy["states"]
-    state["accessStates"] = access["states"]
-    state["monitoring"] = load_json("monitoring.json")
-    return state
-
-
-def regenerate_dashboard() -> None:
-    import importlib.util
-
-    generator = ROOT / "control-plane" / "dashboard" / "generate_dashboard.py"
-    spec = importlib.util.spec_from_file_location("generate_dashboard", generator)
-    if spec is None or spec.loader is None:
-        raise RuntimeError("dashboard generator unavailable")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    module.main()
-
-
-def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
-    workloads = {item["id"]: item for item in load_json("workloads.json")["workloads"]}
-    privacy = load_json("privacy.json")
-    policy = load_json("policy.json")
-    access = load_json("access.json")
-    if workload_id not in workloads:
-        return {"allowed": False, "reason": "unknown workload", "effective": None}
-    if desired not in access["states"]:
-        return {"allowed": False, "reason": "invalid access state", "effective": None}
-    privacy_state = privacy["workloads"].get(workload_id, {}).get("privacy", privacy["defaultPrivacy"])
-    rules = policy["rules"]
-    if desired == "tailnet" and rules.get("allowTailnetForAll", False):
-        return {"allowed": True, "reason": "tailnet allowed", "effective": "tailnet"}
-    if desired in {"none", "local"}:
-        return {"allowed": True, "reason": "safe local state", "effective": desired}
-    if desired == "cloudflare-public":
-        if privacy_state == "restricted" and not rules.get("allowRestrictedToCloudflarePublic", False):
-            return {"allowed": False, "reason": "restricted workloads cannot be public", "effective": None}
-        if privacy_state == "sensitive" and not rules.get("allowSensitiveToCloudflarePublic", False):
-            return {"allowed": False, "reason": "sensitive workloads cannot be public", "effective": None}
-        return {"allowed": True, "reason": "public exposure planned only in P0", "effective": access["workloads"][workload_id]["effective"], "plannedOnly": True}
-    if desired == "cloudflare-protected":
-        if privacy_state == "restricted" and not rules.get("allowRestrictedToCloudflareProtected", False):
-            return {"allowed": False, "reason": "restricted protected exposure blocked", "effective": None}
-        if privacy_state == "sensitive" and not rules.get("allowSensitiveToCloudflareProtected", False):
-            return {"allowed": False, "reason": "sensitive protected exposure blocked", "effective": None}
-        return {"allowed": True, "reason": "Cloudflare exposure planned only in P0", "effective": access["workloads"][workload_id]["effective"], "plannedOnly": True}
-    return {"allowed": False, "reason": "policy denied", "effective": None}
+    state = dashboard_state()
+    return {key: state[key] for key in ["workloads", "routes", "exposure", "events"]}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -261,7 +136,7 @@ class Handler(BaseHTTPRequestHandler):
         old = privacy["workloads"].get(workload_id, {}).get("privacy", privacy["defaultPrivacy"])
         privacy["workloads"][workload_id] = {"privacy": new_privacy, "reason": reason, "updatedAt": now(), "updatedBy": "control-api"}
         save_json("privacy.json", privacy)
-        audit("privacy.set", workload_id, "ok", **{"from": old, "to": new_privacy})
+        audit("privacy.set", workload_id, "ok", actor="admin-token", **{"from": old, "to": new_privacy})
         regenerate_dashboard()
         self.send_json(200, {"ok": True, "from": old, "to": new_privacy})
 
@@ -273,8 +148,24 @@ class Handler(BaseHTTPRequestHandler):
         desired = str(body.get("desired", ""))
         decision = policy_decision(workload_id, desired)
         if not decision["allowed"]:
-            audit("access.apply", workload_id, "blocked", desired=desired, reason=decision["reason"])
+            audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason=decision["reason"])
             self.send_json(403, {"workloadId": workload_id, "desired": desired, **decision})
+            return
+        phrase = str(decision.get("confirmationPhrase", ""))
+        if phrase and str(body.get("confirmation", "")) != phrase:
+            audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason="confirmation required")
+            self.send_json(
+                403,
+                {
+                    "ok": False,
+                    "workloadId": workload_id,
+                    "desired": desired,
+                    "allowed": False,
+                    "reason": "confirmation required",
+                    "confirmationRequired": True,
+                    "confirmationPhrase": phrase,
+                },
+            )
             return
         access = load_json("access.json")
         if workload_id not in access["workloads"]:
@@ -289,7 +180,16 @@ class Handler(BaseHTTPRequestHandler):
             access["workloads"][workload_id]["lastError"] = ""
         access["workloads"][workload_id]["lastAppliedAt"] = now()
         save_json("access.json", access)
-        audit("access.apply", workload_id, "ok", oldDesired=old_desired, desired=desired, oldEffective=old_effective, effective=access["workloads"][workload_id]["effective"])
+        audit(
+            "access.apply",
+            workload_id,
+            "ok",
+            actor="admin-token",
+            oldDesired=old_desired,
+            desired=desired,
+            oldEffective=old_effective,
+            effective=access["workloads"][workload_id]["effective"],
+        )
         regenerate_dashboard()
         self.send_json(200, {"ok": True, "workloadId": workload_id, "desired": desired, "effective": access["workloads"][workload_id]["effective"], "plannedOnly": bool(decision.get("plannedOnly"))})
 

@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import shutil
+from pathlib import Path
+from typing import Any
+
+from oreo_common import audit, load_manifest, print_json, workloads
+
+
+CONFIRMATION = "prune oreo backups"
+
+
+def approved_destination(workload_id: str, destination: Path) -> bool:
+    expected = Path(f"/srv/oreo-cloud/runtime/backups/{workload_id}")
+    try:
+        destination.relative_to(expected)
+    except ValueError:
+        return destination == expected
+    return True
+
+
+def backup_runs(path: Path) -> list[Path]:
+    if not path.exists():
+        return []
+    return sorted(item for item in path.iterdir() if item.is_dir())
+
+
+def plan_workload(workload_id: str) -> dict[str, Any]:
+    manifest = load_manifest(workload_id)
+    backup = manifest.get("backup", {}) if manifest else {}
+    destination = Path(str(backup.get("destination", "")))
+    retention = backup.get("retention", {})
+    keep_last = max(0, int(retention.get("keepLast", 0) or 0))
+    allowed = bool(backup.get("backupAllowed", False))
+    destination_ok = allowed and approved_destination(workload_id, destination)
+    runs = backup_runs(destination) if destination_ok else []
+    keep = runs[-keep_last:] if keep_last else []
+    prune = runs[: len(runs) - len(keep)]
+    return {
+        "workloadId": workload_id,
+        "backupAllowed": allowed,
+        "destination": str(destination),
+        "destinationOk": destination_ok,
+        "keepLast": keep_last,
+        "runs": [str(item) for item in runs],
+        "keep": [str(item) for item in keep],
+        "prune": [str(item) for item in prune],
+        "blockedReason": "" if destination_ok or not allowed else "destination outside approved backup root",
+    }
+
+
+def build_plan() -> dict[str, Any]:
+    items = [plan_workload(str(workload["id"])) for workload in workloads()]
+    return {
+        "ok": all(item["destinationOk"] or not item["backupAllowed"] for item in items),
+        "confirmationPhrase": CONFIRMATION,
+        "workloads": items,
+        "totalPrunable": sum(len(item["prune"]) for item in items),
+    }
+
+
+def apply_plan(plan: dict[str, Any]) -> list[str]:
+    removed = []
+    for item in plan["workloads"]:
+        if not item["destinationOk"]:
+            continue
+        for path_text in item["prune"]:
+            path = Path(path_text)
+            if not path.exists():
+                continue
+            shutil.rmtree(path)
+            removed.append(path_text)
+    return removed
+
+
+def print_text(plan: dict[str, Any], *, removed: list[str] | None = None) -> None:
+    print("Oreo Cloud Backup Prune")
+    print("")
+    print(f"Prunable runs: {plan['totalPrunable']}")
+    if removed is not None:
+        print(f"Removed runs: {len(removed)}")
+    print("")
+    for item in plan["workloads"]:
+        if not item["backupAllowed"]:
+            continue
+        print(f"{item['workloadId']}: keepLast={item['keepLast']} runs={len(item['runs'])} prune={len(item['prune'])}")
+        if item["blockedReason"]:
+            print(f"  blocked: {item['blockedReason']}")
+        for path in item["prune"]:
+            marker = "removed" if removed is not None and path in removed else "prune"
+            print(f"  {marker}: {path}")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Preview or apply Oreo Cloud backup retention pruning.")
+    parser.add_argument("--apply", action="store_true", help="delete prunable backup runs")
+    parser.add_argument("--confirm", default="", help=f"required phrase for --apply: {CONFIRMATION}")
+    parser.add_argument("--json", action="store_true", help="print JSON")
+    args = parser.parse_args()
+
+    plan = build_plan()
+    if not plan["ok"]:
+        audit("backup.prune", "all", "blocked", reason="invalid backup destination")
+        if args.json:
+            print_json(plan)
+        else:
+            print_text(plan)
+        return 2
+    if not args.apply:
+        audit("backup.prune.preview", "all", "ok", prunable=plan["totalPrunable"])
+        if args.json:
+            print_json(plan)
+        else:
+            print_text(plan)
+        return 0
+    if args.confirm != CONFIRMATION:
+        audit("backup.prune", "all", "blocked", reason="confirmation required")
+        payload = {**plan, "ok": False, "reason": "confirmation required"}
+        if args.json:
+            print_json(payload)
+        else:
+            print(f"confirmation required: --confirm \"{CONFIRMATION}\"")
+        return 2
+    removed = apply_plan(plan)
+    audit("backup.prune", "all", "ok", removed=len(removed))
+    payload = {**plan, "removed": removed}
+    if args.json:
+        print_json(payload)
+    else:
+        print_text(plan, removed=removed)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

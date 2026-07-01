@@ -71,6 +71,48 @@ Offline/temp-root validation:
 scripts/smoke-test --offline
 ```
 
+## Scheduled Smoke
+
+P5 adds a server-side timer that records smoke status locally.
+
+Install only on `oreochiserver` after testing:
+
+```bash
+sudo cp /srv/oreo-cloud/systemd/oreo-smoke.service /etc/systemd/system/oreo-smoke.service
+sudo cp /srv/oreo-cloud/systemd/oreo-smoke.timer /etc/systemd/system/oreo-smoke.timer
+sudo systemctl daemon-reload
+sudo systemctl enable --now oreo-smoke.timer
+```
+
+Run once:
+
+```bash
+oreo-smoke-scheduled
+```
+
+Status is written to:
+
+```text
+/srv/oreo-cloud/runtime/smoke/latest.json
+```
+
+## Backup Retention
+
+Preview pruning:
+
+```bash
+oreo-backup-prune
+```
+
+Apply pruning:
+
+```bash
+oreo-backup-prune --apply --confirm "prune oreo backups"
+```
+
+Only approved backup destinations under
+`/srv/oreo-cloud/runtime/backups/<workload-id>` are eligible.
+
 ## Metrics
 
 Run collector once:
@@ -141,7 +183,8 @@ This should generate:
 /srv/oreo-cloud/cloudflare/planned-ingress.yml
 ```
 
-and not start any tunnel.
+and not start any tunnel. The generated file is local runtime evidence and is
+not tracked by Git.
 
 ## Git Checkpoint
 
@@ -166,6 +209,9 @@ Generate the planned private route:
 ```bash
 oreo-caddy-dashboard-plan
 ```
+
+The generated `caddy/dashboard.Caddyfile` is local review material and is not
+tracked by Git.
 
 Dashboard route should look like:
 

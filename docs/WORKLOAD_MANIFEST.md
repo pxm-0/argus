@@ -74,7 +74,7 @@ The `operations` object is policy-facing. Commands must refuse actions that are
 not explicitly allowed here.
 
 - `logsAllowed`: allows `oreo-logs`
-- `restartAllowed`: allows `oreo-restart`
+- `restartAllowed`: allows `oreo-action-apply restart`
 - `backupAllowed`: allows `oreo-backup-run`
 - `dashboardActionsAllowed`: allows authenticated dashboard operation previews
 - `approvedForCloudflareProtectedDemo`: marks a low-risk demo candidate

@@ -7,7 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
-from oreo_common import audit, by_id, load_json, now, print_json, root, save_json
+from oreo_common import audit, by_id, load_json, now, print_json, root, save_json, yaml_quote
 
 
 ACCESS_CONFIRMATION = "cloudflare access protects this hostname"
@@ -49,13 +49,6 @@ def _service_url(workload: dict[str, Any], access_item: dict[str, Any], route: d
     if port:
         return f"http://127.0.0.1:{port}"
     return ""
-
-
-def yaml_quote(value: str) -> str:
-    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:/"
-    if value and all(char in safe for char in value):
-        return value
-    return json.dumps(value)
 
 
 def ingress_text(hostname: str, service: str) -> str:

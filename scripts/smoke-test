@@ -16,43 +16,12 @@ from pathlib import Path
 from typing import Any
 
 from oreo_actions import sanitize_log_text
+from oreo_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS
 
 
 MIGRATION_STATUSES = {"planned", "needs-discovery", "migrated", "blocked", "deprecated"}
 BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok"}
 SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
-OPERATION_SCRIPTS = [
-    "oreo-logs",
-    "oreo-restart-preview",
-    "oreo-restart",
-    "oreo-backup-plan",
-    "oreo-backup-run",
-    "oreo-restore-plan",
-    "oreo-events",
-    "oreo-action-preview",
-    "oreo-action-apply",
-    "oreo-access-reconcile",
-    "oreo-cloudflare-activate-preview",
-    "oreo-cloudflare-activate",
-    "oreo-cloudflare-rollback",
-]
-OPERATOR_LINKS = {
-    "oreo-logs": "oreo-logs",
-    "oreo-restart-preview": "oreo-restart-preview",
-    "oreo-restart": "oreo-restart",
-    "oreo-backup-plan": "oreo-backup-plan",
-    "oreo-backup-run": "oreo-backup-run",
-    "oreo-restore-plan": "oreo-restore-plan",
-    "oreo-events": "oreo-events",
-    "oreo-cloud-smoke-test": "smoke-test",
-    "oreo-access-preview": "oreo-access-preview",
-    "oreo-access-apply": "oreo-access-apply",
-    "oreo-access-reconcile": "oreo-access-reconcile",
-    "oreo-cloudflare-plan": "oreo-cloudflare-plan",
-    "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
-    "oreo-cloudflare-activate": "oreo-cloudflare-activate",
-    "oreo-cloudflare-rollback": "oreo-cloudflare-rollback",
-}
 
 
 def run(command: list[str], cwd: Path, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
@@ -137,8 +106,14 @@ def check_json(repo: Path, smoke: Smoke) -> None:
 
 
 def check_dashboard(repo: Path, smoke: Smoke) -> None:
+    generator_result = run(["python3", str(repo / "control-plane" / "dashboard" / "generate_dashboard.py")], repo)
+    if generator_result.returncode != 0:
+        smoke.fail("dashboard generated")
+        return
     for name in ["index.html", "style.css", "app.js"]:
         smoke.check((repo / "control-plane" / "dashboard" / "public" / name).exists(), f"dashboard {name} generated")
+        ignored = run(["git", "check-ignore", "--no-index", "-q", f"control-plane/dashboard/public/{name}"], repo)
+        smoke.check(ignored.returncode == 0, f"dashboard {name} ignored")
 
 
 def check_dashboard_runtime_cleanliness(repo: Path, smoke: Smoke) -> None:
@@ -236,6 +211,18 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 and manifest_status == 403
                 and manifest_payload.get("ok") is False,
                 "backup execution gated by manifest",
+            )
+            access_status, access_payload, _ = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/access/apply",
+                method="POST",
+                token=token,
+                payload={"desired": "cloudflare-protected", "confirmation": ""},
+            )
+            smoke.check(
+                access_status == 403
+                and access_payload.get("confirmationRequired") is True
+                and access_payload.get("confirmationPhrase") == "plan protected cloudflare",
+                "control API enforces access confirmation phrase",
             )
         finally:
             process.terminate()
@@ -500,7 +487,7 @@ def check_operator_links(repo: Path, smoke: Smoke, offline: bool) -> None:
     ok = True
     scripts_dir = repo / "scripts"
     prefix = Path("/usr/local/bin")
-    for link_name, target_name in OPERATOR_LINKS.items():
+    for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
         link = prefix / link_name
         target = scripts_dir / target_name
         if not link.is_symlink():
@@ -525,14 +512,18 @@ def check_operator_links(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     html_path = repo / "control-plane" / "dashboard" / "public" / "index.html"
+    js_path = repo / "control-plane" / "dashboard" / "public" / "app.js"
     if not html_path.exists():
         smoke.fail("dashboard V2 generated")
         return
     html = html_path.read_text()
-    required = ["Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", 'id="workloads"']
+    js = js_path.read_text() if js_path.exists() else ""
+    required = ["Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", 'id="workloads"', 'id="command-panel"']
     forbidden = ["control-token", "Authorization: Bearer", "PRIVATE KEY", "BEGIN ", ".env="]
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
+    smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
+    smoke.check("/access/preview" in js and "/access/apply" in js and "/privacy" in js, "dashboard admin flow calls control API")
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:
@@ -710,6 +701,50 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
     )
 
 
+def check_p5_evidence(repo: Path, smoke: Smoke) -> None:
+    required = [
+        "docs/P5_PLATFORM_MATURITY.md",
+        "docs/P5_SCHEDULED_SMOKE.md",
+        "docs/P5_BACKUP_RETENTION.md",
+        "docs/RUNBOOKS/stateful-restore-gates.md",
+        "systemd/oreo-smoke.service",
+        "systemd/oreo-smoke.timer",
+        "templates/systemd/oreo-smoke.service",
+        "templates/systemd/oreo-smoke.timer",
+    ]
+    missing = [path for path in required if not (repo / path).is_file()]
+    smoke.check(not missing, "P5 maturity assets exist")
+
+    prune = run([str(repo / "scripts" / "oreo-backup-prune"), "--json"], repo)
+    try:
+        payload = json.loads(prune.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("backup prune preview JSON valid")
+        return
+    hello = next((item for item in payload.get("workloads", []) if item.get("workloadId") == "hello-nginx"), {})
+    smoke.check(prune.returncode == 0 and payload.get("confirmationPhrase") == "prune oreo backups", "backup prune previews by default")
+    smoke.check(hello.get("destinationOk") is True and hello.get("keepLast") == 5, "backup retention policy recognized")
+
+
+def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
+    required = [
+        "docs/P6_PRODUCTIZATION_OPTIONAL.md",
+        "docs/P6_TEMPLATE_ONBOARDING.md",
+        "templates/README.md",
+        "scripts/oreo-template-check",
+    ]
+    missing = [path for path in required if not (repo / path).is_file()]
+    smoke.check(not missing, "P6 productization assets exist")
+
+    result = run([str(repo / "scripts" / "oreo-template-check"), "--json"], repo)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("template check JSON valid")
+        return
+    smoke.check(result.returncode == 0 and payload.get("ok") is True, "productization templates valid")
+
+
 def check_doctor(repo: Path, smoke: Smoke) -> None:
     result = run([str(repo / "scripts" / "oreo-doctor"), "--json"], repo)
     try:
@@ -783,6 +818,8 @@ def main() -> int:
     check_access_reconcile(repo, smoke)
     check_p3_evidence(repo, smoke)
     check_p4_evidence(repo, smoke)
+    check_p5_evidence(repo, smoke)
+    check_p6_evidence(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)

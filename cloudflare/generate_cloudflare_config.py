@@ -14,14 +14,10 @@ from typing import Any
 ROOT = Path(os.environ.get("OREO_CLOUD_ROOT", Path(__file__).resolve().parents[1])).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from oreo_common import audit, policy_decision  # noqa: E402
+from oreo_common import audit, load_json, policy_decision, yaml_quote  # noqa: E402
 
 
 PLAN_PATH = ROOT / "cloudflare" / "planned-ingress.yml"
-
-
-def load_json(name: str) -> dict[str, Any]:
-    return json.loads((ROOT / "config" / name).read_text())
 
 
 def service_url(workload: dict[str, Any], access_item: dict[str, Any]) -> str:
@@ -48,15 +44,6 @@ def target_risks(workload: dict[str, Any]) -> list[str]:
     if "control-api" in haystack:
         risks.append("control-api target")
     return risks
-
-
-def yaml_quote(value: str) -> str:
-    if not value:
-        return '""'
-    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:/"
-    if all(char in safe for char in value):
-        return value
-    return json.dumps(value)
 
 
 def build_plan() -> dict[str, Any]:

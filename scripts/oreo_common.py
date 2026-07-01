@@ -9,6 +9,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections import deque
 from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from io import StringIO
@@ -16,6 +17,41 @@ from pathlib import Path
 from typing import Any
 
 
+APPROVED_OPERATOR_LINKS = {
+    "oreo-logs": "oreo-logs",
+    "oreo-backup-plan": "oreo-backup-plan",
+    "oreo-backup-prune": "oreo-backup-prune",
+    "oreo-backup-run": "oreo-backup-run",
+    "oreo-restore-plan": "oreo-restore-plan",
+    "oreo-events": "oreo-events",
+    "oreo-cloud-smoke-test": "smoke-test",
+    "oreo-access-preview": "oreo-access-preview",
+    "oreo-access-apply": "oreo-access-apply",
+    "oreo-access-reconcile": "oreo-access-reconcile",
+    "oreo-cloudflare-plan": "oreo-cloudflare-plan",
+    "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
+    "oreo-cloudflare-activate": "oreo-cloudflare-activate",
+    "oreo-cloudflare-rollback": "oreo-cloudflare-rollback",
+    "oreo-smoke-scheduled": "oreo-smoke-scheduled",
+    "oreo-template-check": "oreo-template-check",
+}
+OPERATION_SCRIPTS = [
+    "oreo-logs",
+    "oreo-backup-plan",
+    "oreo-backup-prune",
+    "oreo-backup-run",
+    "oreo-restore-plan",
+    "oreo-events",
+    "oreo-action-preview",
+    "oreo-action-apply",
+    "oreo-access-reconcile",
+    "oreo-cloudflare-activate-preview",
+    "oreo-cloudflare-activate",
+    "oreo-cloudflare-rollback",
+    "oreo-smoke-scheduled",
+    "oreo-template-check",
+    "smoke-test",
+]
 SECRET_KEY_PARTS = (
     "authorization",
     "bearer",
@@ -80,12 +116,12 @@ def sanitize_audit_event(event: dict[str, Any]) -> dict[str, Any]:
     return {str(key): sanitize_audit_value(value, key=str(key)) for key, value in event.items()}
 
 
-def audit(action: str, workload_id: str, result: str, **extra: Any) -> None:
+def audit(action: str, workload_id: str, result: str, *, actor: str = "local-cli", **extra: Any) -> None:
     path = root() / "runtime" / "audit.log"
     path.parent.mkdir(parents=True, exist_ok=True)
     event = sanitize_audit_event({
         "timestamp": now(),
-        "actor": "local-cli",
+        "actor": actor,
         "action": action,
         "workloadId": workload_id,
         "result": result,
@@ -134,6 +170,70 @@ def load_manifest(workload_id: str) -> dict[str, Any]:
         return json.loads(manifest_path.read_text())
     except json.JSONDecodeError as exc:
         fail(f"invalid JSON in {manifest_path}: {exc}")
+
+
+def recent_events(limit: int = 50) -> list[dict[str, Any]]:
+    path = root() / "runtime" / "audit.log"
+    if not path.exists():
+        return []
+    events: list[dict[str, Any]] = []
+    for line in deque(path.open(), maxlen=max(limit, 1)):
+        if not line.strip():
+            continue
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(event, dict):
+            continue
+        safe = sanitize_audit_event(event)
+        events.append(
+            {
+                "timestamp": safe.get("timestamp", ""),
+                "actor": safe.get("actor", ""),
+                "action": safe.get("action", ""),
+                "workloadId": safe.get("workloadId", ""),
+                "result": safe.get("result", ""),
+            }
+        )
+    return events
+
+
+def dashboard_state() -> dict[str, Any]:
+    privacy = load_json("privacy.json")
+    access = load_json("access.json")
+    routes = load_json("routes.json")
+    exposure = load_json("exposure.json")
+    monitoring = load_json("monitoring.json")
+    events = recent_events()
+
+    merged = []
+    for workload in workloads():
+        workload_id = str(workload["id"])
+        manifest = load_manifest(workload_id)
+        last_event = next((event for event in reversed(events) if event.get("workloadId") == workload_id), {})
+        merged.append(
+            {
+                **workload,
+                "privacy": privacy["workloads"].get(workload_id, {}),
+                "access": access["workloads"].get(workload_id, {}),
+                "routes": routes["workloadRoutes"].get(workload_id, {}),
+                "manifest": manifest,
+                "operations": manifest.get("operations", {}),
+                "backup": manifest.get("backup", {}),
+                "lastAuditEvent": last_event,
+            }
+        )
+
+    return {
+        "workloads": merged,
+        "privacyStates": privacy["states"],
+        "accessStates": access["states"],
+        "routes": routes,
+        "exposure": exposure,
+        "monitoring": monitoring,
+        "events": events[-20:],
+    }
 
 
 def operation_allowed(workload_id: str, operation: str) -> bool:
@@ -276,6 +376,15 @@ def print_table(headers: list[str], rows: list[list[str]]) -> None:
     print(fmt.format(*["-" * width for width in widths]))
     for row in rows:
         print(fmt.format(*row))
+
+
+def yaml_quote(value: str) -> str:
+    if not value:
+        return '""'
+    safe = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._:/"
+    if all(char in safe for char in value):
+        return value
+    return json.dumps(value)
 
 
 def http_status(url: str, timeout: float = 3.0) -> tuple[str, str]:
