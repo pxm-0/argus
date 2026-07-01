@@ -676,6 +676,40 @@ def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
         smoke.check("Decision: `defer`" in content and "effective access remains `local`" in content, "P3 deferral evidence recorded")
 
 
+def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
+    required_docs = [
+        "P4_BASELINE.md",
+        "P4_WORKLOAD_RISK_MATRIX.md",
+        "P4_BACKUP_STRATEGY.md",
+        "P4_REVIEW_UI_MIGRATION.md",
+        "P4_RESTORE_DRILLS.md",
+        "P4_INTERNAL_ROUTING.md",
+        "P4_CLOSEOUT.md",
+    ]
+    missing = [name for name in required_docs if not (repo / "docs" / name).is_file()]
+    smoke.check(not missing, "P4 evidence docs exist")
+
+    blocked_backup = ["review-ui", "dozzle", "uptime-kuma", "hastur", "intake-os"]
+    bad_backup_state = []
+    for workload_id in blocked_backup:
+        manifest = load_manifest(repo, workload_id)
+        backup = manifest.get("backup", {}) if manifest else {}
+        operations = manifest.get("operations", {}) if manifest else {}
+        if (
+            backup.get("backupAllowed") is not False
+            or backup.get("restoreAllowed") is not False
+            or operations.get("backupAllowed") is not False
+        ):
+            bad_backup_state.append(workload_id)
+    smoke.check(not bad_backup_state, "P4 stateful backup execution remains disabled")
+
+    review_manifest = load_manifest(repo, "review-ui")
+    smoke.check(
+        review_manifest.get("migration", {}).get("status") == "skipped",
+        "P4 review-ui migration explicitly deferred",
+    )
+
+
 def check_doctor(repo: Path, smoke: Smoke) -> None:
     result = run([str(repo / "scripts" / "oreo-doctor"), "--json"], repo)
     try:
@@ -748,6 +782,7 @@ def main() -> int:
     check_cloudflare_activation_guard(repo, smoke)
     check_access_reconcile(repo, smoke)
     check_p3_evidence(repo, smoke)
+    check_p4_evidence(repo, smoke)
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)
