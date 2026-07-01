@@ -190,8 +190,8 @@ P1 should add safe operational commands:
 
 ```bash
 oreo-logs <workload-id>
-oreo-restart-preview <workload-id>
-oreo-restart <workload-id>
+oreo-action-preview restart <workload-id>
+oreo-action-apply restart <workload-id> --confirm <workload-id>
 oreo-backup-plan <workload-id>
 oreo-backup-run <workload-id>
 oreo-restore-plan <workload-id>
@@ -320,8 +320,8 @@ As the operator, I want to restart a workload by ID with confirmation and health
 
 Acceptance:
 
-- `oreo-restart-preview <id>` shows what would happen.
-- `oreo-restart <id>` requires exact workload ID confirmation.
+- `oreo-action-preview restart <id>` shows what would happen.
+- `oreo-action-apply restart <id> --confirm <id>` requires exact workload ID confirmation.
 - Restart uses the preserved Compose project name.
 - Health check runs after restart.
 - Audit event is written.
@@ -731,23 +731,14 @@ Add safe restart operations for approved workloads.
 Create:
 
 ```text
-scripts/oreo-restart-preview
-scripts/oreo-restart
-```
-
-Symlink:
-
-```bash
-sudo ln -sf /srv/oreo-cloud/scripts/oreo-restart-preview /usr/local/bin/oreo-restart-preview
-sudo ln -sf /srv/oreo-cloud/scripts/oreo-restart /usr/local/bin/oreo-restart
-sudo chmod +x /srv/oreo-cloud/scripts/oreo-restart-preview
-sudo chmod +x /srv/oreo-cloud/scripts/oreo-restart
+scripts/oreo-action-preview
+scripts/oreo-action-apply
 ```
 
 ### Preview Behavior
 
 ```bash
-oreo-restart-preview <workload-id>
+oreo-action-preview restart <workload-id>
 ```
 
 Print:
@@ -769,7 +760,7 @@ Do not mutate anything.
 ### Apply Behavior
 
 ```bash
-oreo-restart <workload-id>
+oreo-action-apply restart <workload-id> --confirm <workload-id>
 ```
 
 Requirements:
@@ -1362,22 +1353,22 @@ oreo-logs <workload-id> [--tail N] [--follow]
 
 Safe logs via Compose.
 
-### 13.3 `oreo-restart-preview`
+### 13.3 `oreo-action-preview restart`
 
 Usage:
 
 ```bash
-oreo-restart-preview <workload-id>
+oreo-action-preview restart <workload-id>
 ```
 
 No mutation.
 
-### 13.4 `oreo-restart`
+### 13.4 `oreo-action-apply restart`
 
 Usage:
 
 ```bash
-oreo-restart <workload-id>
+oreo-action-apply restart <workload-id> --confirm <workload-id>
 ```
 
 Requires confirmation and policy approval.
@@ -1660,8 +1651,8 @@ Open a PR.
 Add restart preview and restart apply CLI.
 
 Create:
-- scripts/oreo-restart-preview
-- scripts/oreo-restart
+- scripts/oreo-action-preview
+- scripts/oreo-action-apply
 
 Requirements:
 - preview mutates nothing
@@ -1873,4 +1864,3 @@ P1 is complete when Oreo Cloud becomes the safe daily operating layer for the se
 - Cloudflare is tested only where appropriate
 - the platform remains private-first
 - smoke tests prove the safety model still holds
-

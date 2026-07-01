@@ -69,8 +69,6 @@ links:
 
 ```text
 PASS /usr/local/bin/oreo-logs -> /srv/oreo-cloud/scripts/oreo-logs
-PASS /usr/local/bin/oreo-restart-preview -> /srv/oreo-cloud/scripts/oreo-restart-preview
-PASS /usr/local/bin/oreo-restart -> /srv/oreo-cloud/scripts/oreo-restart
 PASS /usr/local/bin/oreo-backup-plan -> /srv/oreo-cloud/scripts/oreo-backup-plan
 PASS /usr/local/bin/oreo-backup-run -> /srv/oreo-cloud/scripts/oreo-backup-run
 PASS /usr/local/bin/oreo-restore-plan -> /srv/oreo-cloud/scripts/oreo-restore-plan

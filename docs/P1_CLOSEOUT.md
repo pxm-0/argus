@@ -38,8 +38,8 @@ Verified on `oreochiserver`: 2026-06-30T18:56Z.
 Added during P1:
 
 - `scripts/oreo-logs`
-- `scripts/oreo-restart-preview`
-- `scripts/oreo-restart`
+- `scripts/oreo-action-preview`
+- `scripts/oreo-action-apply`
 - `scripts/oreo-backup-plan`
 - `scripts/oreo-backup-run`
 - `scripts/oreo-restore-plan`

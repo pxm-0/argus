@@ -33,6 +33,9 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 | `docs/PR_WORKFLOW.md` | Required PR workflow for every P0 phase |
 | `docs/ACCEPTANCE.md` | P0 definition of done and smoke tests |
 | `docs/REFERENCES.md` | External references used for implementation assumptions |
+| `docs/P5_PLATFORM_MATURITY.md` | P5 scheduled smoke, retention, and restore-gate scope |
+| `docs/P6_PRODUCTIZATION_OPTIONAL.md` | P6 optional template/productization scope |
+| `docs/LEAN_CLEANUP_CLOSEOUT.md` | Generated-artifact and duplicate-surface cleanup record |
 | `templates/` | Starter config, systemd, Caddy, Cloudflare, and script templates |
 
 ## P0 North Star

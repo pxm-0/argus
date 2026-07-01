@@ -12,7 +12,12 @@ runtime/migration-backups/*
 !runtime/migration-backups/.gitkeep
 
 # Generated monitoring output
+control-plane/dashboard/public/index.html
+control-plane/dashboard/public/style.css
+control-plane/dashboard/public/app.js
 control-plane/dashboard/public/metrics.json
+caddy/dashboard.Caddyfile
+cloudflare/planned-ingress.yml
 
 # Workload source/code repos
 workloads/*/source/

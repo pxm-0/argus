@@ -5,24 +5,7 @@ import argparse
 import os
 from pathlib import Path
 
-
-APPROVED_LINKS = {
-    "oreo-logs": "oreo-logs",
-    "oreo-restart-preview": "oreo-restart-preview",
-    "oreo-restart": "oreo-restart",
-    "oreo-backup-plan": "oreo-backup-plan",
-    "oreo-backup-run": "oreo-backup-run",
-    "oreo-restore-plan": "oreo-restore-plan",
-    "oreo-events": "oreo-events",
-    "oreo-cloud-smoke-test": "smoke-test",
-    "oreo-access-preview": "oreo-access-preview",
-    "oreo-access-apply": "oreo-access-apply",
-    "oreo-access-reconcile": "oreo-access-reconcile",
-    "oreo-cloudflare-plan": "oreo-cloudflare-plan",
-    "oreo-cloudflare-activate-preview": "oreo-cloudflare-activate-preview",
-    "oreo-cloudflare-activate": "oreo-cloudflare-activate",
-    "oreo-cloudflare-rollback": "oreo-cloudflare-rollback",
-}
+from oreo_common import APPROVED_OPERATOR_LINKS
 
 
 def repo_root() -> Path:
@@ -62,7 +45,7 @@ def main() -> int:
         prefix.mkdir(parents=True, exist_ok=True)
 
     if not args.check and not args.dry_run:
-        for link_name, target_name in APPROVED_LINKS.items():
+        for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
             target = scripts_dir / target_name
             link = prefix / link_name
             if not executable(target):
@@ -74,7 +57,7 @@ def main() -> int:
                 print(f"FAIL {failure}")
             return 1
 
-    for link_name, target_name in APPROVED_LINKS.items():
+    for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
         target = scripts_dir / target_name
         link = prefix / link_name
 
