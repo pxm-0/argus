@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -89,6 +90,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.require_auth():
             return
         path = urlparse(self.path).path
+        if path == "/api/workloads/discover":
+            self.handle_workload_discover()
+            return
         privacy_match = re.fullmatch(r"/api/workloads/([^/]+)/privacy", path)
         preview_match = re.fullmatch(r"/api/workloads/([^/]+)/access/preview", path)
         apply_match = re.fullmatch(r"/api/workloads/([^/]+)/access/apply", path)
@@ -214,6 +218,25 @@ class Handler(BaseHTTPRequestHandler):
         payload = backup_apply(workload_id, confirmation=str(body.get("confirmation", "")))
         regenerate_dashboard()
         self.send_json(int(payload.pop("status", 200 if payload.get("ok") else 403)), payload)
+
+    def handle_workload_discover(self) -> None:
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "scripts" / "oreo-workload-discover"), "--json"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.send_json(500, {"ok": False, "error": "discovery failed", "output": result.stdout})
+            return
+        try:
+            report = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            self.send_json(500, {"ok": False, "error": "invalid discovery output", "output": result.stdout})
+            return
+        self.send_json(200, {"ok": True, **report})
 
 
 def main() -> int:
