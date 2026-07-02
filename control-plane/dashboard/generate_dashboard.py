@@ -49,6 +49,7 @@ def render_html() -> str:
           <button id="command-close" type="button">Close</button>
         </div>
         <pre id="command-output"></pre>
+        <div id="command-actions" class="actions"></div>
       </section>
       <section class="monitor" id="monitor-panel" hidden>
         <div class="section-head">
@@ -576,6 +577,7 @@ const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
 const commandPanel = document.getElementById("command-panel");
 const commandOutput = document.getElementById("command-output");
+const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
@@ -616,8 +618,15 @@ function metricCard(label, value, percent) {
 function showCommandResult(title, payload) {
   const body = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
   commandOutput.textContent = `${title}\n\n${body}`;
+  commandActions.innerHTML = "";
   commandPanel.hidden = false;
   commandPanel.scrollIntoView({ block: "nearest" });
+}
+
+function renderDiscoveryCandidates(candidates) {
+  commandActions.innerHTML = (candidates || [])
+    .map((id) => `<button type="button" data-register="${escapeHtml(id)}">Register ${escapeHtml(id)}</button>`)
+    .join("");
 }
 
 function tokenFor(row) {
@@ -875,6 +884,7 @@ workloadDiscoverButton.addEventListener("click", async () => {
   try {
     const result = await apiPost("/api/workloads/discover", token, {});
     showCommandResult("Workload discovery", result.payload);
+    renderDiscoveryCandidates(result.payload.newComposeProjects);
   } catch (error) {
     showCommandResult("Refresh failed", error.message);
   } finally {
@@ -899,6 +909,25 @@ commandClose.addEventListener("click", () => {
 });
 
 document.addEventListener("click", async (event) => {
+  const register = event.target.closest("[data-register]");
+  if (register) {
+    const workloadId = register.dataset.register;
+    const token = sessionStorage.getItem("oreoControlToken") || "";
+    if (!token) {
+      showCommandResult("Admin token required", "Enable Admin Mode and enter a control token in any workload row first.");
+      return;
+    }
+    register.disabled = true;
+    try {
+      const result = await apiPost(`/api/workloads/${encodeURIComponent(workloadId)}/register`, token, { composeProject: workloadId });
+      showCommandResult(`Register ${workloadId}`, result.payload);
+      await loadDashboardState();
+    } catch (error) {
+      showCommandResult("Register failed", error.message);
+      register.disabled = false;
+    }
+    return;
+  }
   const operation = event.target.closest("[data-operation]");
   if (operation) {
     const workload = operation.dataset.workload;
