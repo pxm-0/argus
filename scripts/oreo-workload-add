@@ -1,0 +1,93 @@
+#!/usr/bin/env python3
+"""Register a newly discovered workload in config/workloads.json.
+
+Registers metadata only. Access defaults to "none" and privacy to
+"unclassified" so the workload stays unexposed until an operator reviews and
+reclassifies it.
+"""
+from __future__ import annotations
+
+import argparse
+
+from oreo_common import audit, fail, load_json, now, root, save_json, workloads
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Register a discovered workload as tracked.")
+    parser.add_argument("id", help="workload id, e.g. compose project name")
+    parser.add_argument("name", help="display name")
+    parser.add_argument("--kind", default="web-app")
+    parser.add_argument("--description", default="Workload discovered from Docker Compose.")
+    parser.add_argument("--compose-project", default="")
+    args = parser.parse_args()
+
+    if args.id in {str(w.get("id")) for w in workloads()}:
+        fail(f"workload already tracked: {args.id}")
+
+    workloads_data = load_json("workloads.json")
+    workloads_data["workloads"].append({
+        "id": args.id,
+        "name": args.name,
+        "description": args.description,
+        "lifecycle": "discovered",
+        "kind": args.kind,
+        "paths": {
+            "root": f"/srv/oreo-cloud/workloads/{args.id}",
+            "source": f"/srv/oreo-cloud/workloads/{args.id}/source",
+            "manifest": f"/srv/oreo-cloud/workloads/{args.id}/manifest.json",
+            "legacy": "",
+        },
+        "runtime": {
+            "type": "docker-compose" if args.compose_project else "unknown",
+            "composePath": "",
+            "legacyComposePaths": [],
+            "composeProject": args.compose_project,
+            "service": "",
+        },
+        "network": {"localUrl": "", "internalPort": 0, "observedBindings": []},
+        "health": {"enabled": False, "url": "", "expectedStatus": 200, "timeoutSeconds": 3},
+        "actions": {
+            "open": False,
+            "health": False,
+            "logs": False,
+            "restart": False,
+            "deploy": False,
+            "accessToggle": True,
+            "privacyToggle": True,
+        },
+        "migration": {
+            "status": "needs-discovery",
+            "originalPath": "",
+            "compatibilitySymlink": False,
+            "bindMountRisks": [],
+            "namedVolumeRisks": [],
+        },
+    })
+    save_json("workloads.json", workloads_data)
+
+    privacy_data = load_json("privacy.json")
+    privacy_data["workloads"][args.id] = {
+        "privacy": "unclassified",
+        "reason": "Newly discovered workload pending operator classification.",
+        "updatedAt": now(),
+        "updatedBy": "oreo-workload-add",
+    }
+    save_json("privacy.json", privacy_data)
+
+    access_data = load_json("access.json")
+    access_data["workloads"][args.id] = {
+        "desired": "none",
+        "effective": "local",
+        "urls": {"local": "", "tailnet": "", "cloudflare": ""},
+        "lastAppliedAt": "",
+    }
+    save_json("access.json", access_data)
+
+    audit("workload.add", args.id, "ok", name=args.name, kind=args.kind)
+    print(f"Registered {args.id} as discovered. Access desired=none until reviewed.")
+    print(f"Next: classify privacy, then run oreo-access-apply once ready to grant access.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
