@@ -32,6 +32,7 @@ def render_html() -> str:
         <p id="route-summary">loading dashboard state</p>
       </div>
       <div class="top-actions">
+        <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
         <button id="admin-toggle" type="button">Admin Mode</button>
       </div>
@@ -562,6 +563,7 @@ pre {
 
 JS = r"""
 let state = null;
+const workloadDiscoverButton = document.getElementById("workload-discover");
 const monitorToggle = document.getElementById("monitor-toggle");
 const monitorPanel = document.getElementById("monitor-panel");
 const monitorStatus = document.getElementById("monitor-status");
@@ -861,6 +863,25 @@ function setAdmin(open) {
   });
   if (open) fillAdminControls();
 }
+
+workloadDiscoverButton.addEventListener("click", async () => {
+  const token = sessionStorage.getItem("oreoControlToken") || "";
+  if (!token) {
+    showCommandResult("Admin token required", "Enable Admin Mode and enter a control token in any workload row first.");
+    return;
+  }
+  workloadDiscoverButton.disabled = true;
+  workloadDiscoverButton.textContent = "Refreshing...";
+  try {
+    const result = await apiPost("/api/workloads/discover", token, {});
+    showCommandResult("Workload discovery", result.payload);
+  } catch (error) {
+    showCommandResult("Refresh failed", error.message);
+  } finally {
+    workloadDiscoverButton.disabled = false;
+    workloadDiscoverButton.textContent = "Refresh Workloads";
+  }
+});
 
 monitorToggle.addEventListener("click", () => setMonitor(monitorPanel.hidden));
 adminToggle.addEventListener("click", () => {
