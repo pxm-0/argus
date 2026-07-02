@@ -32,6 +32,7 @@ def render_html() -> str:
         <p id="route-summary">loading dashboard state</p>
       </div>
       <div class="top-actions">
+        <input id="admin-token" type="password" autocomplete="off" placeholder="control token" hidden>
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
         <button id="admin-toggle" type="button">Admin Mode</button>
@@ -182,6 +183,15 @@ input {
 .action.disabled:hover { border-color: var(--line); color: var(--faint); background: var(--panel); }
 #monitor-toggle { border-color: var(--blue); color: var(--blue); background: var(--blue-panel); }
 #admin-toggle { border-color: var(--amber); color: var(--amber); background: var(--amber-panel); }
+#admin-token {
+  min-height: 32px;
+  padding: 6px 10px;
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  background: var(--panel-2);
+  color: var(--ink);
+  width: 200px;
+}
 .topbar {
   position: sticky;
   top: 0;
@@ -570,6 +580,7 @@ const monitorPanel = document.getElementById("monitor-panel");
 const monitorStatus = document.getElementById("monitor-status");
 const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
+const adminTokenInput = document.getElementById("admin-token");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
@@ -629,10 +640,8 @@ function renderDiscoveryCandidates(candidates) {
     .join("");
 }
 
-function tokenFor(row) {
-  const value = row?.querySelector("[data-token]")?.value || "";
-  if (value) sessionStorage.setItem("oreoControlToken", value);
-  return value || sessionStorage.getItem("oreoControlToken") || "";
+function tokenFor() {
+  return adminTokenInput.value || sessionStorage.getItem("oreoControlToken") || "";
 }
 
 function selectedValue(row, selector) {
@@ -792,7 +801,6 @@ function renderWorkload(workload) {
         <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}">Backup preview</button>
       </div>
       <div class="admin-row" hidden>
-        <label>Token <input type="password" autocomplete="off" data-token="${escapeHtml(id)}" placeholder="control token"></label>
         <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}"></select></label>
         <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
         <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
@@ -867,16 +875,24 @@ function fillAdminControls() {
 function setAdmin(open) {
   adminEnabled = open;
   adminToggle.textContent = open ? "Exit Admin" : "Admin Mode";
+  adminTokenInput.hidden = !open;
+  if (open) {
+    adminTokenInput.value = sessionStorage.getItem("oreoControlToken") || "";
+    fillAdminControls();
+  }
   document.querySelectorAll(".admin-row").forEach((row) => {
     row.hidden = !open;
   });
-  if (open) fillAdminControls();
 }
 
+adminTokenInput.addEventListener("input", () => {
+  sessionStorage.setItem("oreoControlToken", adminTokenInput.value);
+});
+
 workloadDiscoverButton.addEventListener("click", async () => {
-  const token = sessionStorage.getItem("oreoControlToken") || "";
+  const token = tokenFor();
   if (!token) {
-    showCommandResult("Admin token required", "Enable Admin Mode and enter a control token in any workload row first.");
+    showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
     return;
   }
   workloadDiscoverButton.disabled = true;
@@ -896,9 +912,10 @@ workloadDiscoverButton.addEventListener("click", async () => {
 monitorToggle.addEventListener("click", () => setMonitor(monitorPanel.hidden));
 adminToggle.addEventListener("click", () => {
   if (!adminEnabled) {
-    showCommandResult("Admin mode", "Enter the control token in the workload row before applying changes.");
+    showCommandResult("Admin mode", "Enter the control token above before applying changes.");
   } else {
     sessionStorage.removeItem("oreoControlToken");
+    adminTokenInput.value = "";
   }
   setAdmin(!adminEnabled);
 });
@@ -912,9 +929,9 @@ document.addEventListener("click", async (event) => {
   const register = event.target.closest("[data-register]");
   if (register) {
     const workloadId = register.dataset.register;
-    const token = sessionStorage.getItem("oreoControlToken") || "";
+    const token = tokenFor();
     if (!token) {
-      showCommandResult("Admin token required", "Enable Admin Mode and enter a control token in any workload row first.");
+      showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
       return;
     }
     register.disabled = true;
@@ -933,9 +950,9 @@ document.addEventListener("click", async (event) => {
     const workload = operation.dataset.workload;
     const action = operation.dataset.operation;
     const row = operation.closest(".workload");
-    const token = tokenFor(row);
+    const token = tokenFor();
     if (!token) {
-      showCommandResult("Admin token required", "Enter the control token in this workload row.");
+      showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
       return;
     }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";
@@ -961,9 +978,9 @@ document.addEventListener("click", async (event) => {
   if (!preview && !apply) return;
   const workload = (preview || apply).dataset.preview || (preview || apply).dataset.apply;
   const row = (preview || apply).closest(".workload");
-  const token = tokenFor(row);
+  const token = tokenFor();
   if (!token) {
-    showCommandResult("Admin token required", "Enter the control token in this workload row.");
+    showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
     return;
   }
   const current = state?.workloads?.find((item) => item.id === workload) || {};
