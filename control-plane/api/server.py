@@ -101,9 +101,12 @@ class Handler(BaseHTTPRequestHandler):
         restart_apply_match = re.fullmatch(r"/api/workloads/([^/]+)/restart/apply", path)
         backup_preview_match = re.fullmatch(r"/api/workloads/([^/]+)/backup/preview", path)
         backup_apply_match = re.fullmatch(r"/api/workloads/([^/]+)/backup/apply", path)
+        register_match = re.fullmatch(r"/api/workloads/([^/]+)/register", path)
         try:
             body = self.read_body()
-            if privacy_match:
+            if register_match:
+                self.handle_workload_register(register_match.group(1), body)
+            elif privacy_match:
                 self.handle_privacy(privacy_match.group(1), body)
             elif preview_match:
                 self.handle_access_preview(preview_match.group(1), body)
@@ -237,6 +240,35 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"ok": False, "error": "invalid discovery output", "output": result.stdout})
             return
         self.send_json(200, {"ok": True, **report})
+
+    def handle_workload_register(self, workload_id: str, body: dict[str, Any]) -> None:
+        if workload_id in {str(item.get("id")) for item in load_json("workloads.json")["workloads"]}:
+            raise ValueError("workload already tracked")
+        name = str(body.get("name") or workload_id)
+        compose_project = str(body.get("composeProject") or workload_id)
+        kind = str(body.get("kind") or "web-app")
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "oreo-workload-add"),
+                workload_id,
+                name,
+                "--compose-project",
+                compose_project,
+                "--kind",
+                kind,
+            ],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            check=False,
+        )
+        if result.returncode != 0:
+            self.send_json(500, {"ok": False, "error": "register failed", "output": result.stdout})
+            return
+        regenerate_dashboard()
+        self.send_json(200, {"ok": True, "workloadId": workload_id, "output": result.stdout})
 
 
 def main() -> int:
