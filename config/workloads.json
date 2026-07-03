@@ -278,6 +278,66 @@
       }
     },
     {
+      "id": "locigraph",
+      "name": "LociGraph",
+      "description": "AI-assisted claim extraction and knowledge graph app discovered from Docker Compose.",
+      "lifecycle": "discovered",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/locigraph",
+        "source": "/srv/oreo-cloud/workloads/locigraph/source",
+        "manifest": "/srv/oreo-cloud/workloads/locigraph/manifest.json",
+        "legacy": "/home/oreo/LociGraph"
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/home/oreo/LociGraph/docker-compose.yml",
+        "legacyComposePaths": [
+          "/home/oreo/LociGraph/docker-compose.yml"
+        ],
+        "composeProject": "locigraph",
+        "service": ""
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:8090",
+        "internalPort": 80,
+        "observedBindings": [
+          "0.0.0.0:8000->8000/tcp",
+          "0.0.0.0:8090->80/tcp",
+          "0.0.0.0:16379->6379/tcp",
+          "0.0.0.0:15432->5432/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8090",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "needs-discovery",
+        "originalPath": "/home/oreo/LociGraph",
+        "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/home/oreo/LociGraph/Caddyfile -> /etc/caddy/Caddyfile"
+        ],
+        "namedVolumeRisks": [
+          "locigraph_postgres_data",
+          "locigraph_redis_data",
+          "locigraph_raw_data"
+        ]
+      }
+    },
+    {
       "id": "hello-nginx",
       "name": "Hello Nginx",
       "description": "Low-risk demo workload migrated during P1 to prove the canonical layout.",

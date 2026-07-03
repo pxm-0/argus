@@ -44,6 +44,12 @@
       "reason": "Low-risk demo workload with no env, secrets, volumes, or data files discovered.",
       "updatedAt": "2026-06-30T18:20:44Z",
       "updatedBy": "p1-migration"
+    },
+    "locigraph": {
+      "privacy": "sensitive",
+      "reason": "Handles JWT auth, an OpenAI API key, an app login password, and a Postgres/pgvector database of extracted claims.",
+      "updatedAt": "2026-07-03T12:43:40Z",
+      "updatedBy": "oreo-cloud-discovery"
     }
   }
 }

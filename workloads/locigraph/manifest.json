@@ -1,0 +1,103 @@
+{
+  "id": "locigraph",
+  "name": "LociGraph",
+  "description": "AI-assisted claim extraction and knowledge graph app: Postgres/pgvector, Redis, FastAPI backend, worker, frontend, and Caddy.",
+  "schemaVersion": 1,
+  "canonicalRoot": "/srv/oreo-cloud/workloads/locigraph",
+  "sourcePath": "/srv/oreo-cloud/workloads/locigraph/source",
+  "privacyCompatibility": "sensitive",
+  "accessCompatibility": "tailnet",
+  "runtime": {
+    "type": "external",
+    "compose": {
+      "path": "/home/oreo/LociGraph/docker-compose.yml",
+      "project": "locigraph",
+      "service": "",
+      "legacyPaths": [
+        "/home/oreo/LociGraph/docker-compose.yml"
+      ]
+    },
+    "composePath": "/home/oreo/LociGraph/docker-compose.yml",
+    "composeProject": "locigraph",
+    "service": "",
+    "legacyComposePaths": [
+      "/home/oreo/LociGraph/docker-compose.yml"
+    ]
+  },
+  "migration": {
+    "status": "skipped",
+    "originalPath": "/home/oreo/LociGraph",
+    "compatibilitySymlink": false,
+    "rollback": "Stop the locigraph Compose project on oreochiserver; no canonical migration has been performed yet.",
+    "notes": [
+      "Still running from /home/oreo/LociGraph, not the canonical /srv/oreo-cloud/workloads layout.",
+      "backend and caddy are bound to 0.0.0.0 (ports 8000 and 8090); needs firewall/bind remediation before any access grant.",
+      "Ports remapped to avoid host conflicts: postgres 15432, redis 16379, caddy 8090."
+    ]
+  },
+  "health": {
+    "url": "http://127.0.0.1:8090",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
+  "operations": {
+    "logs": {
+      "allowed": false
+    },
+    "restart": {
+      "allowed": false
+    },
+    "backup": {
+      "allowed": false
+    },
+    "logsAllowed": false,
+    "restartAllowed": false,
+    "backupAllowed": false,
+    "dashboardActionsAllowed": false,
+    "approvedForCloudflareProtectedDemo": false,
+    "requiresConfirmation": true
+  },
+  "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
+    "status": "needs-discovery",
+    "source": false,
+    "env": false,
+    "namedVolumes": [
+      "locigraph_postgres_data",
+      "locigraph_redis_data",
+      "locigraph_raw_data"
+    ],
+    "bindMounts": [
+      "/home/oreo/LociGraph/Caddyfile -> /etc/caddy/Caddyfile"
+    ],
+    "database": {
+      "type": "postgres",
+      "dumpCommand": "",
+      "restoreCommand": ""
+    },
+    "destination": "/srv/oreo-cloud/runtime/backups/locigraph",
+    "retention": {
+      "keepLast": 0
+    },
+    "restoreTested": false,
+    "lastBackupAt": "",
+    "lastRestoreTestAt": "",
+    "exclusions": [],
+    "requirements": [
+      "No backup execution allowed until sensitive-data classification and env/secret handling are reviewed."
+    ]
+  },
+  "security": {
+    "publicAllowed": false,
+    "trackedByOreoCloudGit": false,
+    "classification": "sensitive",
+    "publicExposureAllowed": false,
+    "forbiddenTargets": [],
+    "notes": [
+      "Handles JWT auth, an OpenAI API key, and an app login password as environment variables.",
+      "backend (8000) and caddy (8090) are bound to 0.0.0.0; verify firewall posture before any access grant.",
+      "Postgres and Redis are also host-exposed (15432, 16379); confirm no unintended external reachability."
+    ]
+  }
+}
