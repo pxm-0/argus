@@ -74,6 +74,17 @@
       },
       "lastAppliedAt": "2026-06-30T18:48:04Z",
       "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled."
+    },
+    "locigraph": {
+      "desired": "none",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:8090",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Discovery found 0.0.0.0:8000 and 0.0.0.0:8090 bindings; effective state requires remediation before any access grant."
     }
   }
 }
