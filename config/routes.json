@@ -101,8 +101,8 @@
     "nodens": {
       "tailnet": {
         "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8443"
+        "mode": "planned",
+        "url": "http://oreochiserver:8092"
       },
       "cloudflare": {
         "enabled": false,

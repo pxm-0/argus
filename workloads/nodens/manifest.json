@@ -31,13 +31,14 @@
     "rollback": "Keep /home/oreo/nodens intact. If the compose stack fails, run docker compose -p nodens-live -f /home/oreo/nodens/deploy/compose.yml -f /home/oreo/nodens/deploy/docker-compose.override.local.yml up -d after reviewing env and health.",
     "notes": [
       "Running as Docker Compose project nodens-live from /home/oreo/nodens/deploy/compose.yml with a local override.",
-      "web and api are bound to 127.0.0.1 only; tailnet access is provided separately through Tailscale Serve.",
+      "web and api are bound to 127.0.0.1 only; workload Caddy binds to the Tailscale IP 100.75.210.83 on 8092/http and 9444/https to avoid host-level 80/443 collisions.",
       "Postgres is not published on a host port and uses the nodens-live_postgres-data named volume.",
-      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/nodens/source is still pending."
+      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/nodens/source is still pending.",
+      "Tailnet routing reference should use http://oreochiserver:8092 unless Tailscale Serve is re-enabled separately."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:3000",
+    "url": "http://100.75.210.83:8092",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -96,8 +97,24 @@
     "forbiddenTargets": [],
     "notes": [
       "Handles personal life, work, relationship, and risk data per the project README.",
-      "web and api bind to 127.0.0.1 only; tailnet access is mediated by Tailscale Serve.",
+      "web and api bind to 127.0.0.1 only; Caddy binds to the Tailscale IP 100.75.210.83 on non-standard host ports 8092/http and 9444/https.",
       "Postgres is not published on a host port in the nodens-live Compose stack."
     ]
+  },
+  "network": {
+    "localUrl": "http://100.75.210.83:8092",
+    "internalPort": 80,
+    "observedBindings": [
+      "127.0.0.1:3000->3000/tcp",
+      "127.0.0.1:3001->3001/tcp",
+      "100.75.210.83:8092->80/tcp",
+      "100.75.210.83:9444->443/tcp"
+    ],
+    "caddy": {
+      "bind": "100.75.210.83",
+      "httpPort": 8092,
+      "httpsPort": 9444,
+      "composeService": "caddy"
+    }
   }
 }
