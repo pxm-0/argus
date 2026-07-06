@@ -87,15 +87,15 @@
       "lastError": "Discovery found 0.0.0.0:8000 and 0.0.0.0:8090 bindings; effective state requires remediation before any access grant."
     },
     "nodens": {
-      "desired": "none",
-      "effective": "local",
+      "desired": "tailnet",
+      "effective": "tailnet",
       "urls": {
         "local": "http://127.0.0.1:3000",
-        "tailnet": "",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8443",
         "cloudflare": ""
       },
-      "lastAppliedAt": "",
-      "lastError": "Discovery found 0.0.0.0:3000, 0.0.0.0:3001, and 0.0.0.0:5433 bindings via host network mode with no reverse proxy or auth in front, plus default Postgres credentials; effective state requires remediation before any access grant."
+      "lastAppliedAt": "2026-07-06T18:55:47Z",
+      "lastError": ""
     }
   }
 }
