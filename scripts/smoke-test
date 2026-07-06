@@ -288,7 +288,9 @@ def check_funnel(repo: Path, smoke: Smoke, offline: bool) -> None:
         return
     result = run(["tailscale", "funnel", "status"], repo)
     output = f"{result.stdout}\n{result.stderr}".strip().lower()
-    detected = "https://" in output or "funnel on" in output or "enabled" in output
+    # ponytail: "https://" also appears for tailnet-only `serve` entries;
+    # only "(funnel on)" means traffic is actually public.
+    detected = "funnel on" in output
     smoke.check(not detected, "no Funnel detected")
 
 
