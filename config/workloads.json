@@ -347,13 +347,13 @@
         "root": "/srv/oreo-cloud/workloads/nodens",
         "source": "/srv/oreo-cloud/workloads/nodens/source",
         "manifest": "/srv/oreo-cloud/workloads/nodens/manifest.json",
-        "legacy": "/home/oreo/codex-demo/nodens"
+        "legacy": "/home/oreo/nodens"
       },
       "runtime": {
         "type": "docker",
         "composePath": "",
         "legacyComposePaths": [
-          "/home/oreo/codex-demo/nodens/deploy/compose.yml"
+          "/home/oreo/nodens/deploy/compose.yml"
         ],
         "composeProject": "",
         "service": ""
@@ -384,10 +384,10 @@
       },
       "migration": {
         "status": "needs-discovery",
-        "originalPath": "/home/oreo/codex-demo/nodens",
+        "originalPath": "/home/oreo/nodens",
         "compatibilitySymlink": false,
         "bindMountRisks": [
-          "/home/oreo/codex-demo/nodens -> /workspace (web, api)"
+          "/home/oreo/nodens -> /workspace (web, api)"
         ],
         "namedVolumeRisks": [
           "anonymous hash-named Postgres data volume (not compose-tracked)"

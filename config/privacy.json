@@ -53,7 +53,7 @@
     },
     "nodens": {
       "privacy": "personal",
-      "reason": "Personal strategic-HQ app storing life, work, relationship, and risk data; Postgres database currently reachable with default demo credentials.",
+      "reason": "Personal strategic-HQ app storing life, work, relationship, and risk data; Postgres database currently reachable with default credentials.",
       "updatedAt": "2026-07-06T17:07:36Z",
       "updatedBy": "oreo-cloud-discovery"
     }
