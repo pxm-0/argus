@@ -340,8 +340,8 @@
     {
       "id": "nodens",
       "name": "Nodens",
-      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), currently running as ad-hoc host-network Docker containers.",
-      "lifecycle": "discovered",
+      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), running as the nodens-live Docker Compose stack.",
+      "lifecycle": "active",
       "kind": "web-app",
       "paths": {
         "root": "/srv/oreo-cloud/workloads/nodens",
@@ -350,21 +350,18 @@
         "legacy": "/home/oreo/nodens"
       },
       "runtime": {
-        "type": "docker",
-        "composePath": "",
-        "legacyComposePaths": [
-          "/home/oreo/nodens/deploy/compose.yml"
-        ],
-        "composeProject": "",
+        "type": "docker-compose",
+        "composePath": "/home/oreo/nodens/deploy/compose.yml",
+        "legacyComposePaths": [],
+        "composeProject": "nodens-live",
         "service": ""
       },
       "network": {
         "localUrl": "http://127.0.0.1:3000",
         "internalPort": 3000,
         "observedBindings": [
-          "0.0.0.0:3000->3000/tcp (host network mode)",
-          "0.0.0.0:3001->3001/tcp (host network mode)",
-          "0.0.0.0:5433->5432/tcp"
+          "127.0.0.1:3000->3000/tcp",
+          "127.0.0.1:3001->3001/tcp"
         ]
       },
       "health": {
@@ -383,14 +380,12 @@
         "privacyToggle": true
       },
       "migration": {
-        "status": "needs-discovery",
+        "status": "planned",
         "originalPath": "/home/oreo/nodens",
         "compatibilitySymlink": false,
-        "bindMountRisks": [
-          "/home/oreo/nodens -> /workspace (web, api)"
-        ],
+        "bindMountRisks": [],
         "namedVolumeRisks": [
-          "anonymous hash-named Postgres data volume (not compose-tracked)"
+          "nodens-live_postgres-data"
         ]
       }
     },

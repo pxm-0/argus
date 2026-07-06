@@ -1,39 +1,39 @@
 {
   "id": "nodens",
   "name": "Nodens",
-  "description": "Personal strategic HQ: Next.js web + Node API + Postgres, currently running as ad-hoc host-network containers rather than the project's own Caddy-fronted deploy/compose.yml.",
+  "description": "Personal strategic HQ: Next.js web + Node API + Postgres, running as the nodens-live Docker Compose stack.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/oreo-cloud/workloads/nodens",
   "sourcePath": "/srv/oreo-cloud/workloads/nodens/source",
   "privacyCompatibility": "personal",
   "accessCompatibility": "tailnet",
   "runtime": {
-    "type": "external",
+    "type": "docker-compose",
     "compose": {
       "path": "",
-      "project": "",
+      "project": "nodens-live",
       "service": "",
       "legacyPaths": [
         "/home/oreo/nodens/deploy/compose.yml"
       ]
     },
     "composePath": "",
-    "composeProject": "",
+    "composeProject": "nodens-live",
     "service": "",
     "legacyComposePaths": [
       "/home/oreo/nodens/deploy/compose.yml"
     ]
   },
   "migration": {
-    "status": "skipped",
+    "status": "planned",
     "originalPath": "/home/oreo/nodens",
     "compatibilitySymlink": false,
-    "rollback": "Stop the ad-hoc nodens-* containers on oreochiserver. The project's own deploy/compose.yml (Caddy-fronted, no directly published app ports) is the intended production path once reviewed.",
+    "rollback": "Keep /home/oreo/nodens intact. If the compose stack fails, run docker compose -p nodens-live -f /home/oreo/nodens/deploy/compose.yml -f /home/oreo/nodens/deploy/docker-compose.override.local.yml up -d after reviewing env and health.",
     "notes": [
-      "Running via ad-hoc docker run in host network mode, not the project's own deploy/compose.yml.",
-      "web (3000), api (3001), and postgres (5433) are all bound to 0.0.0.0; no reverse proxy or auth in front.",
-      "Postgres uses trivial default credentials per the api container's DATABASE_URL; rotate before any access grant.",
-      "A second, unrelated container nodens-sprint55-postgres was also observed on an isolated Docker network with no host port published; likely a leftover test container, not part of the live Nodens deployment."
+      "Running as Docker Compose project nodens-live from /home/oreo/nodens/deploy/compose.yml with a local override.",
+      "web and api are bound to 127.0.0.1 only; tailnet access is provided separately through Tailscale Serve.",
+      "Postgres is not published on a host port and uses the nodens-live_postgres-data named volume.",
+      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/nodens/source is still pending."
     ]
   },
   "health": {
@@ -64,9 +64,11 @@
     "status": "needs-discovery",
     "source": false,
     "env": false,
-    "namedVolumes": [],
+    "namedVolumes": [
+      "nodens-live_postgres-data"
+    ],
     "bindMounts": [
-      "/home/oreo/nodens -> /workspace"
+      "/home/oreo/nodens/deploy/backups -> /backups"
     ],
     "database": {
       "type": "postgres",
@@ -83,7 +85,7 @@
     "exclusions": [],
     "requirements": [
       "No backup execution allowed until personal-data classification and credential rotation are reviewed.",
-      "Postgres volume is anonymous/hash-named (not compose-tracked); re-provision via deploy/compose.yml's named postgres-data volume before any backup automation."
+      "Postgres is now on the nodens-live_postgres-data named volume; define and test dump/restore commands before enabling backup automation."
     ]
   },
   "security": {
@@ -94,8 +96,8 @@
     "forbiddenTargets": [],
     "notes": [
       "Handles personal life, work, relationship, and risk data per the project README.",
-      "Running with host network mode; web/api/postgres are all directly bound to 0.0.0.0 with no reverse proxy or auth in front.",
-      "Postgres reachable at 0.0.0.0:5433 with trivial default credentials."
+      "web and api bind to 127.0.0.1 only; tailnet access is mediated by Tailscale Serve.",
+      "Postgres is not published on a host port in the nodens-live Compose stack."
     ]
   }
 }
