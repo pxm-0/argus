@@ -45,3 +45,6 @@ Workloads are agnostic by default.
 - Do not print secrets.
 - Shell scripts should use safe defaults.
 - JSON files must validate with `python3 -m json.tool`.
+
+## Identity
+GitHub: pushes as **pxm-0** (pinned via ~/.gitconfig — never switch accounts manually).
