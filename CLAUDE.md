@@ -33,3 +33,6 @@ When the user's request matches an available gstack skill, invoke it.
 - Work one GitHub issue at a time when possible.
 - Keep Cloudflare work plan-only during P0.
 - Treat the PR template as a required safety gate, not a formality.
+
+## Identity (learned from session audit)
+- GitHub: pushes as **pxm-0** (pinned via ~/.gitconfig — don't switch accounts manually).
