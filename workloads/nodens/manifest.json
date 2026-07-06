@@ -1,0 +1,101 @@
+{
+  "id": "nodens",
+  "name": "Nodens",
+  "description": "Personal strategic HQ: Next.js web + Node API + Postgres, currently running as ad-hoc host-network containers rather than the project's own Caddy-fronted deploy/compose.yml.",
+  "schemaVersion": 1,
+  "canonicalRoot": "/srv/oreo-cloud/workloads/nodens",
+  "sourcePath": "/srv/oreo-cloud/workloads/nodens/source",
+  "privacyCompatibility": "personal",
+  "accessCompatibility": "tailnet",
+  "runtime": {
+    "type": "external",
+    "compose": {
+      "path": "",
+      "project": "",
+      "service": "",
+      "legacyPaths": [
+        "/home/oreo/codex-demo/nodens/deploy/compose.yml"
+      ]
+    },
+    "composePath": "",
+    "composeProject": "",
+    "service": "",
+    "legacyComposePaths": [
+      "/home/oreo/codex-demo/nodens/deploy/compose.yml"
+    ]
+  },
+  "migration": {
+    "status": "skipped",
+    "originalPath": "/home/oreo/codex-demo/nodens",
+    "compatibilitySymlink": false,
+    "rollback": "Stop the ad-hoc nodens-demo-* containers on oreochiserver. The project's own deploy/compose.yml (Caddy-fronted, no directly published app ports) is the intended production path once reviewed.",
+    "notes": [
+      "Running via ad-hoc docker run in host network mode, not the project's own deploy/compose.yml.",
+      "web (3000), api (3001), and postgres (5433) are all bound to 0.0.0.0; no reverse proxy or auth in front.",
+      "Postgres uses a trivial default demo username/password pair per the api container's DATABASE_URL; rotate before any access grant.",
+      "A second, unrelated container nodens-sprint55-postgres was also observed on an isolated Docker network with no host port published; likely a leftover test container, not part of this running demo."
+    ]
+  },
+  "health": {
+    "url": "http://127.0.0.1:3000",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
+  "operations": {
+    "logs": {
+      "allowed": false
+    },
+    "restart": {
+      "allowed": false
+    },
+    "backup": {
+      "allowed": false
+    },
+    "logsAllowed": false,
+    "restartAllowed": false,
+    "backupAllowed": false,
+    "dashboardActionsAllowed": false,
+    "approvedForCloudflareProtectedDemo": false,
+    "requiresConfirmation": true
+  },
+  "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
+    "status": "needs-discovery",
+    "source": false,
+    "env": false,
+    "namedVolumes": [],
+    "bindMounts": [
+      "/home/oreo/codex-demo/nodens -> /workspace"
+    ],
+    "database": {
+      "type": "postgres",
+      "dumpCommand": "",
+      "restoreCommand": ""
+    },
+    "destination": "/srv/oreo-cloud/runtime/backups/nodens",
+    "retention": {
+      "keepLast": 0
+    },
+    "restoreTested": false,
+    "lastBackupAt": "",
+    "lastRestoreTestAt": "",
+    "exclusions": [],
+    "requirements": [
+      "No backup execution allowed until personal-data classification and credential rotation are reviewed.",
+      "Postgres volume is anonymous/hash-named (not compose-tracked); re-provision via deploy/compose.yml's named postgres-data volume before any backup automation."
+    ]
+  },
+  "security": {
+    "publicAllowed": false,
+    "trackedByOreoCloudGit": false,
+    "classification": "personal",
+    "publicExposureAllowed": false,
+    "forbiddenTargets": [],
+    "notes": [
+      "Handles personal life, work, relationship, and risk data per the project README.",
+      "Running with host network mode; web/api/postgres are all directly bound to 0.0.0.0 with no reverse proxy or auth in front.",
+      "Postgres reachable at 0.0.0.0:5433 with a trivial default demo username/password pair."
+    ]
+  }
+}

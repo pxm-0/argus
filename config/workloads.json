@@ -338,6 +338,63 @@
       }
     },
     {
+      "id": "nodens",
+      "name": "Nodens",
+      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), currently running as ad-hoc host-network Docker containers.",
+      "lifecycle": "discovered",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/oreo-cloud/workloads/nodens",
+        "source": "/srv/oreo-cloud/workloads/nodens/source",
+        "manifest": "/srv/oreo-cloud/workloads/nodens/manifest.json",
+        "legacy": "/home/oreo/codex-demo/nodens"
+      },
+      "runtime": {
+        "type": "docker",
+        "composePath": "",
+        "legacyComposePaths": [
+          "/home/oreo/codex-demo/nodens/deploy/compose.yml"
+        ],
+        "composeProject": "",
+        "service": ""
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:3000",
+        "internalPort": 3000,
+        "observedBindings": [
+          "0.0.0.0:3000->3000/tcp (host network mode)",
+          "0.0.0.0:3001->3001/tcp (host network mode)",
+          "0.0.0.0:5433->5432/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:3000",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": true,
+        "health": true,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "needs-discovery",
+        "originalPath": "/home/oreo/codex-demo/nodens",
+        "compatibilitySymlink": false,
+        "bindMountRisks": [
+          "/home/oreo/codex-demo/nodens -> /workspace (web, api)"
+        ],
+        "namedVolumeRisks": [
+          "anonymous hash-named Postgres data volume (not compose-tracked)"
+        ]
+      }
+    },
+    {
       "id": "hello-nginx",
       "name": "Hello Nginx",
       "description": "Low-risk demo workload migrated during P1 to prove the canonical layout.",
