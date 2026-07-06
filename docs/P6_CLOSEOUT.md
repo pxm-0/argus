@@ -1,7 +1,6 @@
 # Oreo Cloud P6 Closeout
 
-P6 status: local implementation complete; server closeout remains required
-before tagging from `main`.
+P6 status: complete. Server closeout verified on `oreochiserver`.
 
 ## Scope
 
@@ -57,3 +56,21 @@ git status --short
 
 P6 is complete only after server smoke passes with `0 failure(s), 0 warning(s)`
 and the P6 tag is pushed from `main`.
+
+## Server Verification (complete)
+
+Run on `oreochiserver` at commit `5efb620` on `main`:
+
+```text
+scripts/oreo-template-check --json
+ok=True failures=0
+
+scripts/smoke-test
+Smoke summary: 0 failure(s), 0 warning(s)
+
+git status --short
+(clean)
+```
+
+`p6-complete` was force-moved from the earlier PR #107 commit (which
+predated this verification) to `5efb620`.
