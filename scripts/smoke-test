@@ -286,11 +286,13 @@ def check_funnel(repo: Path, smoke: Smoke, offline: bool) -> None:
     if not shutil.which("tailscale"):
         smoke.warn("tailscale unavailable; Funnel check skipped")
         return
-    result = run(["tailscale", "funnel", "status"], repo)
-    output = f"{result.stdout}\n{result.stderr}".strip().lower()
-    # ponytail: "https://" also appears for tailnet-only `serve` entries;
-    # only "(funnel on)" means traffic is actually public.
-    detected = "funnel on" in output
+    result = run(["tailscale", "serve", "status", "--json"], repo)
+    try:
+        config = json.loads(result.stdout) if result.stdout.strip() else {}
+    except json.JSONDecodeError:
+        smoke.warn("could not parse tailscale serve status --json; Funnel check skipped")
+        return
+    detected = any(config.get("AllowFunnel", {}).values())
     smoke.check(not detected, "no Funnel detected")
 
 
