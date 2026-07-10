@@ -153,25 +153,28 @@ def processes(limit: int = 8) -> list[dict[str, float | int | str]]:
     if not shutil.which("ps"):
         return []
     result = subprocess.run(
-        ["ps", "-eo", "pid,comm,%cpu,%mem", "--sort=-%cpu"],
+        ["ps", "-eo", "pid=,%cpu=,%mem=,comm=", "--sort=-%cpu"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,
         check=False,
     )
     rows = []
-    for line in result.stdout.splitlines()[1 : limit + 1]:
+    for line in result.stdout.splitlines()[:limit]:
         parts = line.split(None, 3)
         if len(parts) != 4:
             continue
-        rows.append(
-            {
-                "pid": int(parts[0]),
-                "name": parts[1],
-                "cpuPercent": float(parts[2]),
-                "memoryPercent": float(parts[3]),
-            }
-        )
+        try:
+            rows.append(
+                {
+                    "pid": int(parts[0]),
+                    "cpuPercent": float(parts[1]),
+                    "memoryPercent": float(parts[2]),
+                    "name": parts[3],
+                }
+            )
+        except ValueError:
+            continue
     return rows
 
 

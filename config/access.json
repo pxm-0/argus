@@ -55,14 +55,14 @@
     },
     "dozzle": {
       "desired": "local",
-      "effective": "local",
+      "effective": "none",
       "urls": {
-        "local": "http://127.0.0.1:8081",
+        "local": "",
         "tailnet": "",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": ""
+      "lastError": "No running Dozzle container is present; local access remains disabled."
     },
     "hello-nginx": {
       "desired": "cloudflare-protected",

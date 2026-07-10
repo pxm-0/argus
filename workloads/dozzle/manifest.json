@@ -31,7 +31,8 @@
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:8081",
+    "enabled": false,
+    "url": "",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
