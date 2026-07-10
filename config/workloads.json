@@ -357,18 +357,16 @@
         "service": ""
       },
       "network": {
-        "localUrl": "http://100.75.210.83:8092",
-        "internalPort": 80,
+        "localUrl": "http://127.0.0.1:3000",
+        "internalPort": 3000,
         "observedBindings": [
           "127.0.0.1:3000->3000/tcp",
-          "127.0.0.1:3001->3001/tcp",
-          "100.75.210.83:8092->80/tcp",
-          "100.75.210.83:9444->443/tcp"
+          "127.0.0.1:3001->3001/tcp"
         ]
       },
       "health": {
         "enabled": true,
-        "url": "http://100.75.210.83:8092",
+        "url": "http://127.0.0.1:3000",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },

@@ -28,17 +28,17 @@
     "status": "planned",
     "originalPath": "/home/oreo/nodens",
     "compatibilitySymlink": false,
-    "rollback": "Keep /home/oreo/nodens intact. If the compose stack fails, run docker compose -p nodens-live -f /home/oreo/nodens/deploy/compose.yml -f /home/oreo/nodens/deploy/docker-compose.override.local.yml up -d after reviewing env and health.",
+    "rollback": "Keep /home/oreo/nodens intact. Use /home/oreo/nodens/deploy/scripts/release.sh with the previous merged SHA; the release command restores the prior Compose build and verifies readiness.",
     "notes": [
-      "Running as Docker Compose project nodens-live from /home/oreo/nodens/deploy/compose.yml with a local override.",
-      "web and api are bound to 127.0.0.1 only; workload Caddy binds to the Tailscale IP 100.75.210.83 on 8092/http and 9444/https to avoid host-level 80/443 collisions.",
+      "Running as Docker Compose project nodens-live from /home/oreo/nodens/deploy/compose.yml.",
+      "Web and API bind only to 127.0.0.1 on ports 3000 and 3001; Tailscale Serve provides tailnet-only HTTPS on port 8443.",
       "Postgres is not published on a host port and uses the nodens-live_postgres-data named volume.",
       "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/nodens/source is still pending.",
-      "Tailnet routing reference should use http://oreochiserver:8092 unless Tailscale Serve is re-enabled separately."
+      "Release, health, backup, restore, and client-replica procedures are documented in /home/oreo/nodens/deploy/README.md."
     ]
   },
   "health": {
-    "url": "http://100.75.210.83:8092",
+    "url": "http://127.0.0.1:3000",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -62,31 +62,30 @@
   "backup": {
     "backupAllowed": false,
     "restoreAllowed": false,
-    "status": "needs-discovery",
+    "status": "application-managed",
     "source": false,
     "env": false,
     "namedVolumes": [
       "nodens-live_postgres-data"
     ],
-    "bindMounts": [
-      "/home/oreo/nodens/deploy/backups -> /backups"
-    ],
+    "bindMounts": [],
     "database": {
       "type": "postgres",
-      "dumpCommand": "",
-      "restoreCommand": ""
+      "dumpCommand": "/home/oreo/nodens/deploy/scripts/backup-postgres.sh",
+      "restoreCommand": "/home/oreo/nodens/deploy/scripts/restore-postgres.sh"
     },
     "destination": "/srv/oreo-cloud/runtime/backups/nodens",
+    "applicationDestination": "/home/oreo/nodens-backups",
     "retention": {
-      "keepLast": 0
+      "keepLast": 14
     },
-    "restoreTested": false,
-    "lastBackupAt": "",
-    "lastRestoreTestAt": "",
+    "restoreTested": true,
+    "lastBackupAt": "2026-07-10T21:03:15Z",
+    "lastRestoreTestAt": "2026-07-10T21:03:15Z",
     "exclusions": [],
     "requirements": [
-      "No backup execution allowed until personal-data classification and credential rotation are reviewed.",
-      "Postgres is now on the nodens-live_postgres-data named volume; define and test dump/restore commands before enabling backup automation."
+      "Nodens owns backup execution; Oreo Cloud records and validates the operator contract but does not expose a dashboard backup action.",
+      "The server timer retains 14 daily dumps and 8 weekly snapshots; every dump has a checksum and must pass an isolated restore drill."
     ]
   },
   "security": {
@@ -97,24 +96,16 @@
     "forbiddenTargets": [],
     "notes": [
       "Handles personal life, work, relationship, and risk data per the project README.",
-      "web and api bind to 127.0.0.1 only; Caddy binds to the Tailscale IP 100.75.210.83 on non-standard host ports 8092/http and 9444/https.",
+      "Web and API bind to 127.0.0.1 only; Tailscale Serve terminates tailnet-only HTTPS on port 8443.",
       "Postgres is not published on a host port in the nodens-live Compose stack."
     ]
   },
   "network": {
-    "localUrl": "http://100.75.210.83:8092",
-    "internalPort": 80,
+    "localUrl": "http://127.0.0.1:3000",
+    "internalPort": 3000,
     "observedBindings": [
       "127.0.0.1:3000->3000/tcp",
-      "127.0.0.1:3001->3001/tcp",
-      "100.75.210.83:8092->80/tcp",
-      "100.75.210.83:9444->443/tcp"
-    ],
-    "caddy": {
-      "bind": "100.75.210.83",
-      "httpPort": 8092,
-      "httpsPort": 9444,
-      "composeService": "caddy"
-    }
+      "127.0.0.1:3001->3001/tcp"
+    ]
   }
 }
