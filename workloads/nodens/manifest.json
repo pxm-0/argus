@@ -79,9 +79,9 @@
     "retention": {
       "keepLast": 14
     },
-    "restoreTested": false,
-    "lastBackupAt": "",
-    "lastRestoreTestAt": "",
+    "restoreTested": true,
+    "lastBackupAt": "2026-07-10T21:03:15Z",
+    "lastRestoreTestAt": "2026-07-10T21:03:15Z",
     "exclusions": [],
     "requirements": [
       "Nodens owns backup execution; Oreo Cloud records and validates the operator contract but does not expose a dashboard backup action.",
