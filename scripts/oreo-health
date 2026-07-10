@@ -9,6 +9,9 @@ def main() -> int:
     failed = False
     for workload in workloads():
         health = workload.get("health", {})
+        if health.get("enabled") is False:
+            rows.append([workload["id"], "-", "-", "skip", "disabled"])
+            continue
         url = health.get("url", "")
         expected = str(health.get("expectedStatus", ""))
         status, detail = http_status(url, float(health.get("timeoutSeconds", 3)))
