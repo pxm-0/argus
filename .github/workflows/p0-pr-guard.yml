@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
   validate-pr-contract:
@@ -50,7 +51,20 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
-      - name: Flag direct main push
+      - name: Verify main push came through a merged PR
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "::error::P0 plans and phases must land through pull requests, not direct pushes to main."
-          exit 1
+          associated_prs="$(
+            gh api \
+              -H "Accept: application/vnd.github+json" \
+              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
+              --jq '[.[] | select(.merged_at != null and .base.ref == "main")] | length'
+          )"
+
+          if [ "${associated_prs}" -lt 1 ]; then
+            echo "::error::P0 plans and phases must land through pull requests, not direct pushes to main."
+            exit 1
+          fi
+
+          echo "Main commit is associated with a merged pull request."
