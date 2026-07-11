@@ -152,7 +152,7 @@ Example:
       "effective": "tailnet",
       "urls": {
         "local": "http://127.0.0.1:8080",
-        "tailnet": "http://oreochiserver:8080",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8444",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
@@ -198,6 +198,10 @@ Example:
 
 Purpose: record dashboard and workload routes.
 
+Tailnet workload routes use the Tailscale Serve standard (`mode: "tailscale-serve"`,
+a `https://<magicdns-fqdn>:<port>` URL). See
+[TAILSCALE_ACCESS_STANDARD.md](TAILSCALE_ACCESS_STANDARD.md).
+
 Example:
 
 ```json
@@ -217,8 +221,8 @@ Example:
     "intake-os": {
       "tailnet": {
         "enabled": true,
-        "mode": "direct",
-        "url": "http://oreochiserver:8080"
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8444"
       },
       "cloudflare": {
         "enabled": false,
