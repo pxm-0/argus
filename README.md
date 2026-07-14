@@ -19,6 +19,8 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 
 | File | Purpose |
 |---|---|
+| `ARGUS_V1_BRIDGE.md` | Accepted bridge from Oreo Cloud into the Argus V1 trust-domain and portfolio architecture |
+| `docs/ARGUS_V1_DECISIONS.md` | Public-safe architecture decisions, viability evidence, limits, and delivery ledger |
 | `docs/PRD.md` | Product requirements for P0 |
 | `docs/ARCHITECTURE.md` | System architecture and trust boundaries |
 | `docs/IMPLEMENTATION_PLAN.md` | Step-by-step build plan |
