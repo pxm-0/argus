@@ -84,7 +84,7 @@
     "lastRestoreTestAt": "2026-07-10T21:03:15Z",
     "exclusions": [],
     "requirements": [
-      "Nodens owns backup execution; Oreo Cloud records and validates the operator contract but does not expose a dashboard backup action.",
+      "Kadath owns backup execution; Oreo Cloud records and validates the operator contract but does not expose a dashboard backup action.",
       "The server timer retains 14 daily dumps and 8 weekly snapshots; every dump has a checksum and must pass an isolated restore drill."
     ]
   },
