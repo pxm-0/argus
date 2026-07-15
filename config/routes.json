@@ -23,8 +23,8 @@
     "intake-os": {
       "tailnet": {
         "enabled": true,
-        "mode": "planned",
-        "url": "http://oreochiserver:8080"
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8444"
       },
       "cloudflare": {
         "enabled": false,
@@ -36,8 +36,8 @@
     "hastur": {
       "tailnet": {
         "enabled": true,
-        "mode": "planned",
-        "url": "http://oreochiserver:4173"
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8445"
       },
       "cloudflare": {
         "enabled": false,
@@ -49,8 +49,8 @@
     "uptime-kuma": {
       "tailnet": {
         "enabled": true,
-        "mode": "planned",
-        "url": "http://oreochiserver:54321"
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8446"
       },
       "cloudflare": {
         "enabled": false,
@@ -62,8 +62,8 @@
     "review-ui": {
       "tailnet": {
         "enabled": true,
-        "mode": "planned",
-        "url": "http://oreochiserver:8765"
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8447"
       },
       "cloudflare": {
         "enabled": false,
@@ -95,6 +95,19 @@
         "enabled": false,
         "hostname": "hello-nginx.oreo-cloud.invalid",
         "mode": "planned",
+        "requiresAuth": true
+      }
+    },
+    "locigraph": {
+      "tailnet": {
+        "enabled": false,
+        "mode": "local-only",
+        "url": ""
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
         "requiresAuth": true
       }
     },

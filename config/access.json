@@ -14,44 +14,44 @@
       "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:8080",
-        "tailnet": "http://oreochiserver:8080",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8444",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "Discovery found 0.0.0.0:3000 binding; effective state requires remediation."
+      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8444 -> 127.0.0.1:8080). Pending 0.0.0.0:3000 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
     },
     "hastur": {
       "desired": "tailnet",
       "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:4173",
-        "tailnet": "http://oreochiserver:4173",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8445",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "Discovery found 0.0.0.0:4173 binding; effective state requires remediation."
+      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8445 -> 127.0.0.1:4173). Pending 0.0.0.0:4173 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
     },
     "uptime-kuma": {
       "desired": "tailnet",
       "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:54321",
-        "tailnet": "http://oreochiserver:54321",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8446",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "Discovery found 0.0.0.0:54321 binding; effective state requires remediation."
+      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8446 -> 127.0.0.1:54321). Pending 0.0.0.0:54321 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
     },
     "review-ui": {
       "desired": "tailnet",
       "effective": "local",
       "urls": {
         "local": "http://127.0.0.1:8765",
-        "tailnet": "",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8447",
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "P2-08 server evidence found no Tailscale Serve/Funnel config; effective access lowered to local."
+      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8447 -> 127.0.0.1:8765). Already 127.0.0.1-bound; pending serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
     },
     "dozzle": {
       "desired": "local",
