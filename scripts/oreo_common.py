@@ -18,6 +18,7 @@ from typing import Any
 
 
 APPROVED_OPERATOR_LINKS = {
+    "argus-legacy-inventory": "argus-legacy-inventory",
     "oreo-logs": "oreo-logs",
     "oreo-backup-plan": "oreo-backup-plan",
     "oreo-backup-prune": "oreo-backup-prune",
@@ -36,6 +37,7 @@ APPROVED_OPERATOR_LINKS = {
     "oreo-template-check": "oreo-template-check",
 }
 OPERATION_SCRIPTS = [
+    "argus-legacy-inventory",
     "oreo-logs",
     "oreo-backup-plan",
     "oreo-backup-prune",

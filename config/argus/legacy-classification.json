@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "default": {
+    "realm": "unclassified",
+    "zone": "legacy",
+    "stage": "none",
+    "trustDomain": "legacy-rootful",
+    "status": "legacy-unclassified",
+    "admission": "denied"
+  },
+  "workloads": {
+    "dozzle": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "hastur": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "hello-nginx": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "intake-os": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "locigraph": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "nodens": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "review-ui": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    },
+    "uptime-kuma": {
+      "realm": "unclassified",
+      "zone": "legacy",
+      "stage": "none",
+      "trustDomain": "legacy-rootful",
+      "status": "legacy-unclassified",
+      "admission": "denied"
+    }
+  }
+}
