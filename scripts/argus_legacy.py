@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from oreo_common import load_json, now, root
+from oreo_common import http_status, load_json, now, root, workloads
 
 
 LEGACY_CLASSIFICATION = {
@@ -24,6 +24,7 @@ LEGACY_CLASSIFICATION = {
     "trustDomain": "legacy-rootful",
     "status": "legacy-unclassified",
 }
+EVIDENCE_SCHEMA_VERSION = 2
 PROHIBITED_MOUNT_DESTINATIONS = {
     "/root/.ssh": "operator-identity",
     "/home/oreo/.ssh": "operator-identity",
@@ -60,6 +61,25 @@ def opaque_ref(value: str) -> str:
 
     digest = hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
     return f"sha256:{digest[:16]}"
+
+
+def canonical_digest(value: Any) -> str:
+    """Create a stable digest for private evidence without exposing its contents."""
+
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode("utf-8")
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def source_revision() -> str:
+    result = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root(),
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    return result.stdout.strip() if result.returncode == 0 else "unknown"
 
 
 def address_scope(address: str) -> str:
@@ -283,8 +303,11 @@ def firewall_inventory(runner: CommandRunner) -> tuple[dict[str, Any], list[str]
             "chainCount": len(chains),
             "hooks": hooks,
             "policies": policies,
+            "forwardingVerified": "forward" in hooks,
         }
         gaps = [] if evidence["privileged"] else ["firewall-inventory-not-privileged"]
+        if not evidence["forwardingVerified"]:
+            gaps.append("firewall-forwarding-unverified")
         return evidence, gaps
 
     iptables = runner.run(["iptables-save"])
@@ -297,8 +320,11 @@ def firewall_inventory(runner: CommandRunner) -> tuple[dict[str, Any], list[str]
             "privileged": os.geteuid() == 0,
             "chainCount": len(chains),
             "policies": policies,
+            "forwardingVerified": any(line.startswith(":FORWARD ") for line in chains),
         }
         gaps = [] if evidence["privileged"] else ["firewall-inventory-not-privileged"]
+        if not evidence["forwardingVerified"]:
+            gaps.append("firewall-forwarding-unverified")
         return evidence, gaps
 
     return {"backend": "unknown", "verified": False, "privileged": os.geteuid() == 0}, [
@@ -335,23 +361,156 @@ def tracked_legacy_workloads() -> list[dict[str, Any]]:
     ]
 
 
-def collect_inventory(runner: CommandRunner | None = None) -> dict[str, Any]:
+def _service_state(runner: CommandRunner, service: str) -> dict[str, Any]:
+    result = runner.run(["systemctl", "is-active", service])
+    if result.returncode == 127:
+        return {"available": False, "state": "unavailable"}
+    state = result.stdout.strip().lower() or "inactive"
+    return {"available": True, "state": state, "evidenceDigest": opaque_ref(result.stdout)}
+
+
+def _json_route_state(runner: CommandRunner, command: Sequence[str]) -> dict[str, Any]:
+    result = runner.run(command)
+    if result.returncode != 0:
+        return {"available": False, "configured": False, "state": "unavailable"}
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return {"available": False, "configured": False, "state": "invalid-output"}
+    allow_funnel = payload.get("AllowFunnel", {}) if isinstance(payload, dict) else {}
+    return {
+        "available": True,
+        "configured": bool(payload),
+        "state": "present" if payload else "absent",
+        "funnelEnabled": any(allow_funnel.values()) if isinstance(allow_funnel, dict) else False,
+        "evidenceDigest": canonical_digest(payload),
+    }
+
+
+def route_evidence(runner: CommandRunner) -> tuple[dict[str, Any], list[str]]:
+    routes = load_json("routes.json")
+    exposure = load_json("exposure.json")
+    route_items = [item for item in routes.get("workloadRoutes", {}).values() if isinstance(item, dict)]
+    tailnet_required = any(bool((item.get("tailnet") or {}).get("url")) for item in route_items)
+    cloudflare_required = bool(exposure.get("providers", {}).get("cloudflare", {}).get("enabled"))
+    caddy_required = (root() / "caddy" / "dashboard.Caddyfile").exists()
+    tailscale_serve = _json_route_state(runner, ["tailscale", "serve", "status", "--json"])
+    evidence = {
+        "tailscaleServe": tailscale_serve,
+        "tailscaleFunnel": {
+            "available": tailscale_serve["available"],
+            "enabled": tailscale_serve.get("funnelEnabled", False),
+            "evidenceDigest": tailscale_serve.get("evidenceDigest", ""),
+        },
+        "caddy": _service_state(runner, "caddy"),
+        "cloudflared": _service_state(runner, "cloudflared"),
+    }
+    required = {
+        "tailscaleServe": tailnet_required,
+        "caddy": caddy_required,
+        "cloudflared": cloudflare_required,
+    }
+    gaps = [f"route-evidence-unavailable:{name}" for name, needed in required.items() if needed and not evidence[name]["available"]]
+    return evidence, gaps
+
+
+def health_baseline() -> list[dict[str, Any]]:
+    baseline: list[dict[str, Any]] = []
+    for workload in workloads():
+        health = workload.get("health", {}) if isinstance(workload.get("health"), dict) else {}
+        if not health.get("enabled"):
+            continue
+        status, detail = http_status(str(health.get("url", "")), float(health.get("timeoutSeconds", 3)))
+        expected = str(health.get("expectedStatus", ""))
+        baseline.append(
+            {
+                "workloadId": str(workload.get("id", "")),
+                "expectedStatus": expected,
+                "observedStatus": status,
+                "ok": status == expected,
+                "detail": detail,
+            }
+        )
+    return sorted(baseline, key=lambda item: item["workloadId"])
+
+
+def _finding(category: str, resource_ref: str, *, severity: str = "high", detail: str = "") -> dict[str, str]:
+    finding_id = opaque_ref(f"{category}|{resource_ref}|{detail}")
+    return {
+        "id": finding_id,
+        "category": category,
+        "resourceRef": resource_ref,
+        "severity": severity,
+        "status": "open",
+        "blocks": "classification,migration",
+    }
+
+
+def detailed_findings(
+    containers: list[dict[str, Any]], listeners: list[dict[str, Any]], health: list[dict[str, Any]],
+) -> list[dict[str, str]]:
+    findings: list[dict[str, str]] = []
+    for container in containers:
+        resource_ref = str(container.get("containerRef", ""))
+        for category in container.get("blockingFindings", []):
+            findings.append(_finding(str(category), resource_ref, severity="critical"))
+    for listener in listeners:
+        if listener.get("addressScope") == "wildcard":
+            resource_ref = opaque_ref(f"{listener.get('protocol')}:{listener.get('port')}")
+            findings.append(_finding("wildcard-listener", resource_ref, severity="high"))
+    for result in health:
+        if not result.get("ok"):
+            findings.append(_finding("health-unhealthy", opaque_ref(str(result.get("workloadId", ""))), severity="high"))
+    unique = {item["id"]: item for item in findings}
+    return [unique[item_id] for item_id in sorted(unique)]
+
+
+def ownership_reconciliation(containers: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, str]]]:
+    configured = workloads()
+    by_project = {
+        str(item.get("runtime", {}).get("composeProject")): str(item.get("id"))
+        for item in configured
+        if isinstance(item.get("runtime"), dict) and item.get("runtime", {}).get("composeProject")
+    }
+    owners: list[dict[str, Any]] = []
+    findings: list[dict[str, str]] = []
+    for container in containers:
+        project = str(container.get("composeProject", ""))
+        workload_id = by_project.get(project, "")
+        owner = workload_id or "legacy-unclassified"
+        owners.append({"containerRef": container.get("containerRef", ""), "workloadId": owner})
+        if not workload_id:
+            findings.append(_finding("untracked-runtime-resource", str(container.get("containerRef", "")), severity="high"))
+    return owners, findings
+
+
+def collect_inventory(runner: CommandRunner | None = None, *, include_health: bool = False) -> dict[str, Any]:
     command_runner = runner or CommandRunner()
     containers, container_gaps = docker_containers(command_runner)
     networks, network_gaps = docker_named_resources(command_runner, "network")
     volumes, volume_gaps = docker_named_resources(command_runner, "volume")
     listeners, listener_gaps = listener_inventory(command_runner)
     firewall, firewall_gaps = firewall_inventory(command_runner)
-    evidence_gaps = sorted({*container_gaps, *network_gaps, *volume_gaps, *listener_gaps, *firewall_gaps})
+    routes, route_gaps = route_evidence(command_runner)
+    health = health_baseline() if include_health else []
+    ownership, ownership_findings = ownership_reconciliation(containers)
+    findings = detailed_findings(containers, listeners, health) + ownership_findings
+    if routes.get("tailscaleFunnel", {}).get("enabled"):
+        findings.append(_finding("funnel-enabled", opaque_ref("tailscale-funnel"), severity="critical"))
+    unique_findings = {item["id"]: item for item in findings}
+    findings = [unique_findings[item_id] for item_id in sorted(unique_findings)]
+    evidence_gaps = sorted(
+        {*container_gaps, *network_gaps, *volume_gaps, *listener_gaps, *firewall_gaps, *route_gaps}
+    )
     blocking_findings = sorted(
         {
-            finding
-            for container in containers
-            for finding in container.get("blockingFindings", [])
+            str(finding["category"])
+            for finding in findings
         }
     )
-    return {
-        "schemaVersion": 1,
+    payload = {
+        "schemaVersion": EVIDENCE_SCHEMA_VERSION,
+        "sourceRevision": source_revision(),
         "capturedAt": now(),
         "hostRef": opaque_ref(socket.gethostname()),
         "readOnly": True,
@@ -363,10 +522,16 @@ def collect_inventory(runner: CommandRunner | None = None) -> dict[str, Any]:
         "volumes": volumes,
         "listeners": listeners,
         "routes": configured_routes(),
+        "routeEvidence": routes,
         "firewall": firewall,
+        "healthBaseline": health,
+        "ownership": ownership,
+        "findings": findings,
         "blockingFindings": blocking_findings,
         "evidenceGaps": evidence_gaps,
     }
+    payload["evidenceDigest"] = canonical_digest(payload)
+    return payload
 
 
 def write_inventory(payload: dict[str, Any], destination: Path | None = None) -> Path:
@@ -386,3 +551,26 @@ def write_inventory(payload: dict[str, Any], destination: Path | None = None) ->
         if temporary.exists():
             temporary.unlink()
     return path
+
+
+def inventory_summary(payload: dict[str, Any]) -> dict[str, Any]:
+    categories: dict[str, int] = {}
+    for finding in payload.get("findings", []):
+        category = str(finding.get("category", "unknown"))
+        categories[category] = categories.get(category, 0) + 1
+    health = payload.get("healthBaseline", [])
+    return {
+        "schemaVersion": payload.get("schemaVersion"),
+        "sourceRevision": payload.get("sourceRevision"),
+        "complete": bool(payload.get("complete")),
+        "evidenceDigest": payload.get("evidenceDigest"),
+        "resourceCounts": {
+            "containers": len(payload.get("containers", [])),
+            "listeners": len(payload.get("listeners", [])),
+            "networks": len(payload.get("networks", [])),
+            "volumes": len(payload.get("volumes", [])),
+        },
+        "findingCategories": dict(sorted(categories.items())),
+        "evidenceGapCount": len(payload.get("evidenceGaps", [])),
+        "health": {"checked": len(health), "passing": sum(1 for item in health if item.get("ok"))},
+    }

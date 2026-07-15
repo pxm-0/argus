@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import importlib.util
 import json
 import os
 import runpy
@@ -23,11 +22,14 @@ from argus_legacy import (  # noqa: E402
     collect_inventory,
     docker_containers,
     firewall_inventory,
+    inventory_summary,
     mount_finding,
     normalize_mount,
     parse_ss_listeners,
+    route_evidence,
     write_inventory,
 )
+from argus_m0 import isolation_report, record_evidence, remediation_plan  # noqa: E402
 
 
 class FakeRunner:
@@ -81,7 +83,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
                 "Config": {
                     "Image": "example:latest",
                     "Labels": {
-                        "com.docker.compose.project": "example-project",
+                        "com.docker.compose.project": "intake-os",
                         "com.docker.compose.service": "web",
                     },
                 },
@@ -109,7 +111,8 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         ]
         nft_payload = {
             "nftables": [
-                {"chain": {"family": "inet", "table": "filter", "name": "input", "hook": "input", "policy": "drop"}}
+                {"chain": {"family": "inet", "table": "filter", "name": "input", "hook": "input", "policy": "drop"}},
+                {"chain": {"family": "inet", "table": "filter", "name": "forward", "hook": "forward", "policy": "drop"}},
             ]
         }
         runner = FakeRunner(
@@ -120,6 +123,8 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
                 ("docker", "volume", "ls", "--format", "{{.Name}}"): CommandResult(0, "example_data\n"),
                 ("ss", "-H", "-lntu"): CommandResult(0, "tcp LISTEN 0 4096 127.0.0.1:22 0.0.0.0:*\n"),
                 ("nft", "--json", "list", "ruleset"): CommandResult(0, json.dumps(nft_payload)),
+                ("tailscale", "serve", "status", "--json"): CommandResult(0, "{}"),
+                ("tailscale", "funnel", "status", "--json"): CommandResult(0, "{}"),
             }
         )
         payload = collect_inventory(runner)
@@ -130,6 +135,8 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual(18080, container["publishedPorts"][0]["publicPort"])
         self.assertNotIn("/private/source", json.dumps(payload))
         self.assertEqual(["wildcard-listener"], payload["blockingFindings"])
+        self.assertTrue(payload["evidenceDigest"].startswith("sha256:"))
+        self.assertEqual(2, payload["schemaVersion"])
 
     def test_container_host_capabilities_are_blocking_findings(self) -> None:
         inspect_payload = [
@@ -187,6 +194,91 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual(LEGACY_CLASSIFICATION, payload["classification"])
         self.assertIn("firewall-inventory-unavailable", payload["evidenceGaps"])
         self.assertEqual(8, len(payload["trackedWorkloads"]))
+
+    def test_safe_summary_excludes_private_resource_values(self) -> None:
+        payload = {
+            "schemaVersion": 2,
+            "sourceRevision": "commit",
+            "complete": False,
+            "evidenceDigest": "sha256:proof",
+            "containers": [{"name": "private-container"}],
+            "listeners": [{"port": "9443"}],
+            "networks": [{"name": "private-network"}],
+            "volumes": [{"name": "private-volume"}],
+            "findings": [{"category": "runtime-control"}],
+            "evidenceGaps": ["firewall"],
+            "healthBaseline": [{"ok": True}],
+        }
+        summary = inventory_summary(payload)
+        rendered = json.dumps(summary)
+        self.assertNotIn("private-container", rendered)
+        self.assertNotIn("9443", rendered)
+        self.assertEqual({"runtime-control": 1}, summary["findingCategories"])
+
+    def test_route_evidence_uses_serve_status_for_funnel_state(self) -> None:
+        runner = FakeRunner(
+            {
+                ("tailscale", "serve", "status", "--json"): CommandResult(
+                    0, json.dumps({"AllowFunnel": {"https": True}})
+                )
+            }
+        )
+        evidence, gaps = route_evidence(runner)
+        self.assertTrue(evidence["tailscaleFunnel"]["enabled"])
+        self.assertNotIn("tailscaleFunnel", " ".join(gaps))
+
+    def test_inventory_cli_outputs_only_safe_summary(self) -> None:
+        result = subprocess.run(
+            [str(ROOT / "scripts" / "argus-legacy-inventory"), "--summary-json", "--no-write", "--skip-health"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+        self.assertEqual(2, result.returncode)
+        payload = json.loads(result.stdout)
+        self.assertIn("resourceCounts", payload)
+        self.assertNotIn("containers", payload)
+        self.assertNotIn("routes", payload)
+
+    def test_remediation_records_are_typed_and_reject_stale_inventory(self) -> None:
+        inventory = {
+            "sourceRevision": "abc",
+            "evidenceDigest": "sha256:inventory",
+            "findings": [{"id": "sha256:finding", "category": "runtime-control"}],
+        }
+        plan = remediation_plan(inventory)
+        self.assertEqual("remove-runtime-control-mount", plan["actions"][0]["action"])
+        record = record_evidence(plan, inventory, "sha256:finding", "pre")
+        self.assertEqual("pre", record["phase"])
+        with self.assertRaisesRegex(ValueError, "requires an approved"):
+            record_evidence(plan, inventory, "sha256:finding", "post")
+        plan["actions"][0]["approval"] = "approved"
+        self.assertEqual("post", record_evidence(plan, inventory, "sha256:finding", "post")["phase"])
+        changed = {**inventory, "evidenceDigest": "sha256:new"}
+        with self.assertRaisesRegex(ValueError, "stale remediation plan"):
+            record_evidence(plan, changed, "sha256:finding", "post")
+
+    def test_isolation_report_redacts_target_values(self) -> None:
+        class IsolationRunner(FakeRunner):
+            def run(self, command: list[str]) -> CommandResult:
+                if command[:3] == ["timeout", "3", "nsenter"]:
+                    return CommandResult(1, "")
+                return super().run(command)
+
+        runner = IsolationRunner(
+            {
+                ("docker", "ps", "--no-trunc", "--format", "{{.ID}}"): CommandResult(0, "container\n"),
+                ("docker", "inspect", "container"): CommandResult(
+                    0, json.dumps([{"Id": "container", "State": {"Pid": 1234}}])
+                ),
+            }
+        )
+        report = isolation_report({"targets": [{"id": "control-api", "host": "10.5.0.7", "port": 8099}]}, runner)
+        self.assertTrue(report["complete"])
+        self.assertEqual("blocked", report["checks"][0]["state"])
+        self.assertNotIn("10.5.0.7", json.dumps(report))
 
     def test_write_inventory_is_private_and_atomic(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:

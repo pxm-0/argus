@@ -5,33 +5,33 @@ from __future__ import annotations
 
 import argparse
 
-from argus_legacy import collect_inventory, write_inventory
+from argus_legacy import collect_inventory, inventory_summary, write_inventory
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Capture secret-safe listeners, containers, mounts, networks, volumes, routes, and firewall evidence."
     )
-    parser.add_argument("--json", action="store_true", help="print the normalized evidence document")
+    parser.add_argument("--summary-json", action="store_true", help="print a public-safe evidence summary")
     parser.add_argument("--no-write", action="store_true", help="do not persist evidence under runtime/argus")
+    parser.add_argument("--skip-health", action="store_true", help="skip local workload health probes")
     args = parser.parse_args()
 
-    payload = collect_inventory()
-    path = None if args.no_write else write_inventory(payload)
-    if args.json:
+    payload = collect_inventory(include_health=not args.skip_health)
+    if not args.no_write:
+        write_inventory(payload)
+    summary = inventory_summary(payload)
+    if args.summary_json:
         import json
 
-        print(json.dumps(payload, indent=2, sort_keys=True))
+        print(json.dumps(summary, indent=2, sort_keys=True))
     else:
-        print(f"Argus M0 inventory complete: {payload['complete']}")
-        print(f"containers: {len(payload['containers'])}")
-        print(f"listeners: {len(payload['listeners'])}")
-        print(f"networks: {len(payload['networks'])}")
-        print(f"volumes: {len(payload['volumes'])}")
-        print(f"blocking findings: {len(payload['blockingFindings'])}")
-        print(f"evidence gaps: {len(payload['evidenceGaps'])}")
-        if path:
-            print(f"private evidence: {path}")
+        print(f"Argus M0 inventory complete: {summary['complete']}")
+        for name, count in summary["resourceCounts"].items():
+            print(f"{name}: {count}")
+        print(f"finding categories: {len(summary['findingCategories'])}")
+        print(f"evidence gaps: {summary['evidenceGapCount']}")
+        print(f"evidence digest: {summary['evidenceDigest']}")
     return 0 if payload["complete"] else 2
 
 

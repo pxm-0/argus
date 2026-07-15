@@ -34,6 +34,10 @@ The command is read-only. It collects normalized evidence for:
 - configured local, tailnet, and Cloudflare route presence;
 - nftables or iptables enforcement metadata without copying the ruleset.
 
+The command writes a complete private bundle only. Use `--summary-json` when a
+machine-readable, public-safe summary is needed; the former `--json` full-output
+mode is intentionally unavailable.
+
 Exit code `0` means all required collectors ran. Exit code `2` means the file
 was written but at least one evidence source was unavailable. Treat an evidence
 gap as a blocker, never as a clean result.
@@ -86,6 +90,33 @@ For each blocking finding, keep the following in private server evidence:
 Never paste raw inventory files into this public repository. Summarize only the
 number and category of findings, the pass/fail result, and a redacted evidence
 digest.
+
+## Plan, evidence, and isolation checks
+
+After a complete privileged inventory, create typed remediation records without
+embedding shell commands in a plan file:
+
+```bash
+sudo scripts/argus-m0-remediation-plan
+sudo scripts/argus-m0-evidence --finding <finding-id> --phase pre
+```
+
+Apply only a separately reviewed, per-finding server change. Capture a fresh
+inventory, health result, and rollback outcome, then record `post` or `rollback`
+evidence with the same finding ID. The evidence command refuses a remediation
+plan whose inventory digest no longer matches; `post` evidence also requires
+the matching typed action to be marked `approved` in the private plan.
+
+For namespace isolation checks, an operator creates the private, mode-`0600`
+`runtime/argus/probe-targets.json` with target IDs, hosts, and ports. Then run:
+
+```bash
+sudo scripts/argus-m0-isolation-check
+```
+
+The check enters existing container network namespaces only; it never creates a
+container. Its output contains opaque container and target references, not host
+addresses.
 
 ## M0 completion gate
 

@@ -19,6 +19,9 @@ from typing import Any
 
 APPROVED_OPERATOR_LINKS = {
     "argus-legacy-inventory": "argus-legacy-inventory",
+    "argus-m0-remediation-plan": "argus-m0-remediation-plan",
+    "argus-m0-evidence": "argus-m0-evidence",
+    "argus-m0-isolation-check": "argus-m0-isolation-check",
     "oreo-logs": "oreo-logs",
     "oreo-backup-plan": "oreo-backup-plan",
     "oreo-backup-prune": "oreo-backup-prune",
@@ -38,6 +41,9 @@ APPROVED_OPERATOR_LINKS = {
 }
 OPERATION_SCRIPTS = [
     "argus-legacy-inventory",
+    "argus-m0-remediation-plan",
+    "argus-m0-evidence",
+    "argus-m0-isolation-check",
     "oreo-logs",
     "oreo-backup-plan",
     "oreo-backup-prune",
