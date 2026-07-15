@@ -3,6 +3,7 @@ from __future__ import annotations
 import importlib.util
 import json
 import os
+import runpy
 import stat
 import subprocess
 import sys
@@ -20,6 +21,9 @@ from argus_legacy import (  # noqa: E402
     LEGACY_CLASSIFICATION,
     address_scope,
     collect_inventory,
+    docker_containers,
+    firewall_inventory,
+    mount_finding,
     normalize_mount,
     parse_ss_listeners,
     write_inventory,
@@ -66,6 +70,8 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertTrue(mount["sourceRef"].startswith("sha256:"))
         self.assertEqual("operator-identity", mount["blockingFinding"])
         self.assertFalse(mount["readOnly"])
+        self.assertEqual("runtime-control", mount_finding("/var/run/docker.sock", "/run/service.sock"))
+        self.assertEqual("host-capability", mount_finding("/host/sys", "/sys"))
 
     def test_complete_inventory_normalizes_docker_data_without_host_paths(self) -> None:
         inspect_payload = [
@@ -125,6 +131,55 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertNotIn("/private/source", json.dumps(payload))
         self.assertEqual(["wildcard-listener"], payload["blockingFindings"])
 
+    def test_container_host_capabilities_are_blocking_findings(self) -> None:
+        inspect_payload = [
+            {
+                "Id": "dangerous-container",
+                "Name": "/dangerous",
+                "Config": {"Image": "example:latest", "Labels": {}},
+                "HostConfig": {
+                    "Privileged": True,
+                    "NetworkMode": "host",
+                    "PidMode": "host",
+                    "CapAdd": ["SYS_ADMIN"],
+                    "Devices": [{"PathOnHost": "/dev/example"}],
+                },
+                "NetworkSettings": {"Networks": {}, "Ports": {}},
+                "Mounts": [],
+            }
+        ]
+        runner = FakeRunner(
+            {
+                ("docker", "ps", "--no-trunc", "--format", "{{.ID}}"): CommandResult(0, "dangerous-container\n"),
+                ("docker", "inspect", "dangerous-container"): CommandResult(0, json.dumps(inspect_payload)),
+            }
+        )
+        containers, gaps = docker_containers(runner)
+        self.assertEqual([], gaps)
+        self.assertEqual(
+            ["added-capabilities", "host-device", "host-network", "host-pid", "privileged-container"],
+            containers[0]["blockingFindings"],
+        )
+        self.assertNotIn("PathOnHost", json.dumps(containers))
+
+    def test_firewall_inventory_falls_back_to_iptables_and_rejects_bad_nft_json(self) -> None:
+        malformed = FakeRunner({("nft", "--json", "list", "ruleset"): CommandResult(0, "not-json")})
+        evidence, gaps = firewall_inventory(malformed)
+        self.assertFalse(evidence["verified"])
+        self.assertEqual(["nftables-output-invalid"], gaps)
+
+        fallback = FakeRunner(
+            {
+                ("nft", "--json", "list", "ruleset"): CommandResult(1, ""),
+                ("iptables-save",): CommandResult(0, ":INPUT DROP [0:0]\n:FORWARD DROP [0:0]\n"),
+            }
+        )
+        evidence, gaps = firewall_inventory(fallback)
+        self.assertEqual("iptables", evidence["backend"])
+        self.assertEqual(2, evidence["chainCount"])
+        self.assertEqual(["DROP"], evidence["policies"])
+        self.assertEqual([] if os.geteuid() == 0 else ["firewall-inventory-not-privileged"], gaps)
+
     def test_collect_inventory_is_incomplete_when_server_tools_are_unavailable(self) -> None:
         payload = collect_inventory(FakeRunner({}))
         self.assertFalse(payload["complete"])
@@ -154,6 +209,12 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertTrue(policy["rules"]["requireLegacyUnclassifiedQuarantine"])
 
     def test_workload_add_fails_closed_during_m0(self) -> None:
+        guarded_paths = [
+            ROOT / "config" / "workloads.json",
+            ROOT / "config" / "privacy.json",
+            ROOT / "config" / "access.json",
+        ]
+        before = {path: path.read_bytes() for path in guarded_paths}
         result = subprocess.run(
             [str(ROOT / "scripts" / "oreo-workload-add"), "new-legacy-app", "New Legacy App"],
             cwd=ROOT,
@@ -164,6 +225,42 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         )
         self.assertEqual(1, result.returncode)
         self.assertIn("new legacy-rootful workload admission is denied", result.stderr)
+        self.assertEqual(before, {path: path.read_bytes() for path in guarded_paths})
+
+    def test_doctor_quarantine_checks_fail_for_missing_and_invalid_records(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts" / "oreo-doctor"))
+        quarantine_checks = namespace["argus_quarantine_checks"]
+        original_load_json = namespace["load_json"]
+
+        fixtures = {
+            "workloads.json": {"workloads": [{"id": "one"}, {"id": "two"}]},
+            "argus/legacy-classification.json": {
+                "workloads": {
+                    "one": {
+                        "realm": "personal",
+                        "zone": "legacy",
+                        "stage": "none",
+                        "trustDomain": "legacy-rootful",
+                        "status": "legacy-unclassified",
+                        "admission": "denied",
+                    }
+                }
+            },
+            "policy.json": {
+                "rules": {
+                    "allowNewLegacyRootfulAdmission": True,
+                    "requireLegacyUnclassifiedQuarantine": False,
+                }
+            },
+        }
+        quarantine_checks.__globals__["load_json"] = lambda name: fixtures[name]
+        try:
+            checks: list[dict[str, object]] = []
+            quarantine_checks(checks)
+        finally:
+            quarantine_checks.__globals__["load_json"] = original_load_json
+        self.assertEqual(4, len(checks))
+        self.assertTrue(all(check["ok"] is False for check in checks))
 
 
 if __name__ == "__main__":
