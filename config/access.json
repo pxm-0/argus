@@ -86,7 +86,7 @@
       "lastAppliedAt": "",
       "lastError": "Discovery found 0.0.0.0:8000 and 0.0.0.0:8090 bindings; effective state requires remediation before any access grant."
     },
-    "nodens": {
+    "kadath": {
       "desired": "tailnet",
       "effective": "tailnet",
       "urls": {

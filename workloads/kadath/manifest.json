@@ -1,40 +1,40 @@
 {
-  "id": "nodens",
-  "name": "Nodens",
-  "description": "Personal strategic HQ: Next.js web + Node API + Postgres, running as the nodens-live Docker Compose stack.",
+  "id": "kadath",
+  "name": "Kadath",
+  "description": "Personal strategic HQ: Next.js web + Node API + Postgres, running as the kadath-live Docker Compose stack.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/nodens",
-  "sourcePath": "/srv/oreo-cloud/workloads/nodens/source",
+  "canonicalRoot": "/srv/oreo-cloud/workloads/kadath",
+  "sourcePath": "/srv/oreo-cloud/workloads/kadath/source",
   "privacyCompatibility": "personal",
   "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
       "path": "",
-      "project": "nodens-live",
+      "project": "kadath-live",
       "service": "",
       "legacyPaths": [
-        "/home/oreo/nodens/deploy/compose.yml"
+        "/home/oreo/kadath/deploy/compose.yml"
       ]
     },
     "composePath": "",
-    "composeProject": "nodens-live",
+    "composeProject": "kadath-live",
     "service": "",
     "legacyComposePaths": [
-      "/home/oreo/nodens/deploy/compose.yml"
+      "/home/oreo/kadath/deploy/compose.yml"
     ]
   },
   "migration": {
     "status": "planned",
-    "originalPath": "/home/oreo/nodens",
+    "originalPath": "/home/oreo/kadath",
     "compatibilitySymlink": false,
-    "rollback": "Keep /home/oreo/nodens intact. Use /home/oreo/nodens/deploy/scripts/release.sh with the previous merged SHA; the release command restores the prior Compose build and verifies readiness.",
+    "rollback": "Keep /home/oreo/kadath intact. Use /home/oreo/kadath/deploy/scripts/release.sh with the previous merged SHA; the release command restores the prior Compose build and verifies readiness.",
     "notes": [
-      "Running as Docker Compose project nodens-live from /home/oreo/nodens/deploy/compose.yml.",
+      "Running as Docker Compose project kadath-live from /home/oreo/kadath/deploy/compose.yml.",
       "Web and API bind only to 127.0.0.1 on ports 3000 and 3001; Tailscale Serve provides tailnet-only HTTPS on port 8443.",
-      "Postgres is not published on a host port and uses the nodens-live_postgres-data named volume.",
-      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/nodens/source is still pending.",
-      "Release, health, backup, restore, and client-replica procedures are documented in /home/oreo/nodens/deploy/README.md."
+      "Postgres is not published on a host port and uses the kadath-live_postgres-data named volume.",
+      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/kadath/source is still pending.",
+      "Release, health, backup, restore, and client-replica procedures are documented in /home/oreo/kadath/deploy/README.md."
     ]
   },
   "health": {
@@ -66,16 +66,16 @@
     "source": false,
     "env": false,
     "namedVolumes": [
-      "nodens-live_postgres-data"
+      "kadath-live_postgres-data"
     ],
     "bindMounts": [],
     "database": {
       "type": "postgres",
-      "dumpCommand": "/home/oreo/nodens/deploy/scripts/backup-postgres.sh",
-      "restoreCommand": "/home/oreo/nodens/deploy/scripts/restore-postgres.sh"
+      "dumpCommand": "/home/oreo/kadath/deploy/scripts/backup-postgres.sh",
+      "restoreCommand": "/home/oreo/kadath/deploy/scripts/restore-postgres.sh"
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/nodens",
-    "applicationDestination": "/home/oreo/nodens-backups",
+    "destination": "/srv/oreo-cloud/runtime/backups/kadath",
+    "applicationDestination": "/home/oreo/kadath-backups",
     "retention": {
       "keepLast": 14
     },
@@ -97,7 +97,7 @@
     "notes": [
       "Handles personal life, work, relationship, and risk data per the project README.",
       "Web and API bind to 127.0.0.1 only; Tailscale Serve terminates tailnet-only HTTPS on port 8443.",
-      "Postgres is not published on a host port in the nodens-live Compose stack."
+      "Postgres is not published on a host port in the kadath-live Compose stack."
     ]
   },
   "network": {

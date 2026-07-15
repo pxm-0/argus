@@ -51,7 +51,7 @@
       "updatedAt": "2026-07-03T12:43:40Z",
       "updatedBy": "oreo-cloud-discovery"
     },
-    "nodens": {
+    "kadath": {
       "privacy": "personal",
       "reason": "Personal strategic-HQ app storing life, work, relationship, and risk data; Postgres remains private to the Compose network and application routes require a production API token.",
       "updatedAt": "2026-07-10T20:30:00Z",

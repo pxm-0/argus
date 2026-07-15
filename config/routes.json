@@ -111,7 +111,7 @@
         "requiresAuth": true
       }
     },
-    "nodens": {
+    "kadath": {
       "tailnet": {
         "enabled": true,
         "mode": "tailscale-serve",
