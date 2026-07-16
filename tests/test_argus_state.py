@@ -98,6 +98,17 @@ class ArgusStateTest(unittest.TestCase):
                 connection.execute("UPDATE audit_events SET payload_json = ? WHERE sequence = 1", ('{}',))
             self.assertFalse(ledger.verify())
 
+    def test_audit_checkpoint_is_transport_neutral_and_bound_to_latest_event(self) -> None:
+        payload = {"actor": "operator-1", "operation": "approve", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful"}
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AuditLedger(Path(directory) / "audit.sqlite3")
+            self.assertEqual(0, ledger.checkpoint()["sequence"])
+            event_hash = ledger.append(payload)
+            checkpoint = ledger.checkpoint()
+            self.assertEqual(1, checkpoint["sequence"])
+            self.assertEqual(event_hash, checkpoint["eventHash"])
+            self.assertTrue(checkpoint["checkpointHash"].startswith("sha256:"))
+
     def test_audit_ledger_rejects_unattributed_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(StateError):

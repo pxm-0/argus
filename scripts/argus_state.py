@@ -412,3 +412,12 @@ class AuditLedger:
                 outcome="error",
             )
         return abandoned
+
+    def checkpoint(self) -> dict[str, Any]:
+        """Return a deterministic, transport-neutral off-host anchor payload."""
+        with self._connect() as connection:
+            row = connection.execute("SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1").fetchone()
+        sequence = 0 if row is None else int(row["sequence"])
+        event_hash = "" if row is None else str(row["event_hash"])
+        payload = {"schemaVersion": 1, "sequence": sequence, "eventHash": event_hash}
+        return {**payload, "checkpointHash": _canonical_digest(payload)}
