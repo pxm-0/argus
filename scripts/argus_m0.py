@@ -103,6 +103,21 @@ def record_evidence(plan: dict[str, Any], inventory: dict[str, Any], finding_id:
     return record
 
 
+def approve_action(plan: dict[str, Any], inventory: dict[str, Any], finding_id: str, approval_digest: str) -> dict[str, Any]:
+    if plan.get("inventoryDigest") != inventory.get("evidenceDigest"):
+        raise ValueError("stale remediation plan: inventory digest changed")
+    if not approval_digest.startswith("sha256:"):
+        raise ValueError("approval must be a reviewed sha256 digest")
+    action = next((item for item in plan.get("actions", []) if item.get("findingId") == finding_id), None)
+    if not isinstance(action, dict):
+        raise ValueError("finding is not in the remediation plan")
+    action["approval"] = "approved"
+    action["approvalDigest"] = approval_digest
+    action["approvedAt"] = now()
+    plan["planDigest"] = canonical_digest({key: value for key, value in plan.items() if key != "planDigest"})
+    return plan
+
+
 def _containers_with_pids(runner: CommandRunner) -> list[tuple[str, int]]:
     identifiers = runner.run(["docker", "ps", "--no-trunc", "--format", "{{.ID}}"])
     if identifiers.returncode != 0:
