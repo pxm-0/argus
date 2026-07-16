@@ -91,6 +91,27 @@ class ArgusStateTest(unittest.TestCase):
             store._append({"phase": "PREPARED", "transactionId": "lost", "expectedRevision": 0, "operation": "replace", "payloadChecksum": "sha256:test"})
             self.assertEqual({"lost": "aborted"}, store.recover())
 
+    def test_json_store_crash_injection_recovers_every_durable_boundary(self) -> None:
+        for boundary, expected in {
+            "after-prepared": 0,
+            "after-json-fsync": 0,
+            "after-replace": 1,
+            "after-committed": 1,
+        }.items():
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+
+                def crash(point: str) -> None:
+                    if point == boundary:
+                        raise RuntimeError(f"injected crash: {point}")
+
+                store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl", fault_hook=crash)
+                with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                    store.replace({"value": "one"}, expected_revision=0, operation="replace-legacy")
+                outcomes = store.recover()
+                self.assertEqual(expected, store.read()["revision"])
+                self.assertTrue(outcomes or boundary == "after-committed")
+
     def test_audit_ledger_is_hash_chained_and_detects_tampering(self) -> None:
         payload = {"actor": "operator-1", "operation": "approve", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful"}
         with tempfile.TemporaryDirectory() as directory:

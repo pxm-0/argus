@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 REALMS = {"unclassified", "personal", "work"}
@@ -77,11 +77,17 @@ def _sync_directory(path: Path) -> None:
 class AtomicJsonStore:
     """Single-writer compatibility store with a durable write-ahead journal."""
 
-    def __init__(self, path: Path, journal_path: Path):
+    def __init__(self, path: Path, journal_path: Path, *, fault_hook: Callable[[str], None] | None = None):
         self.path = path
         self.journal_path = journal_path
+        self.fault_hook = fault_hook
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _fault(self, boundary: str) -> None:
+        """Test-only crash injection after a durable write boundary."""
+        if self.fault_hook is not None:
+            self.fault_hook(boundary)
 
     def read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -121,6 +127,7 @@ class AtomicJsonStore:
             "payloadChecksum": _canonical_digest(replacement),
         }
         self._append(prepared)
+        self._fault("after-prepared")
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -128,12 +135,15 @@ class AtomicJsonStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            self._fault("after-json-fsync")
             os.replace(temporary, self.path)
             _sync_directory(self.path.parent)
+            self._fault("after-replace")
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        self._fault("after-committed")
         return replacement["revision"]
 
     def recover(self) -> dict[str, str]:
