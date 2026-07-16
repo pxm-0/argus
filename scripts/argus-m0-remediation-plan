@@ -1,0 +1,25 @@
+#!/usr/bin/env python3
+"""Generate a typed, private Argus M0 remediation plan from fresh inventory."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from argus_m0 import load_private_json, private_path, remediation_plan, write_private
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Generate private typed remediation actions from Argus M0 inventory.")
+    parser.add_argument("--inventory", type=str, default=str(private_path("legacy-inventory.json")))
+    parser.add_argument("--output", type=str, default=str(private_path("remediation-plan.json")))
+    args = parser.parse_args()
+    plan = remediation_plan(load_private_json(Path(args.inventory)))
+    write_private(plan, Path(args.output))
+    print(f"Argus M0 remediation actions: {len(plan['actions'])}")
+    print(f"plan digest: {plan['planDigest']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

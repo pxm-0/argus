@@ -21,6 +21,14 @@ def main() -> int:
     parser.add_argument("--compose-project", default="")
     args = parser.parse_args()
 
+    policy = load_json("policy.json")
+    if policy.get("rules", {}).get("allowNewLegacyRootfulAdmission") is not True:
+        audit("workload.add", args.id, "blocked", reason="new legacy-rootful admission denied")
+        fail(
+            "new legacy-rootful workload admission is denied by Argus M0; "
+            "discovery remains read-only until an isolated trust-domain runtime is approved"
+        )
+
     if args.id in {str(w.get("id")) for w in workloads()}:
         fail(f"workload already tracked: {args.id}")
 

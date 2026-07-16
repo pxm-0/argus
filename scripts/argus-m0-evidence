@@ -1,0 +1,28 @@
+#!/usr/bin/env python3
+"""Record a private typed remediation evidence checkpoint."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from argus_m0 import load_private_json, private_path, record_evidence, write_private
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Record pre, post, or rollback evidence for one Argus M0 finding.")
+    parser.add_argument("--finding", required=True)
+    parser.add_argument("--phase", required=True, choices=("pre", "post", "rollback"))
+    parser.add_argument("--inventory", type=Path, default=private_path("legacy-inventory.json"))
+    parser.add_argument("--plan", type=Path, default=private_path("remediation-plan.json"))
+    args = parser.parse_args()
+    record = record_evidence(load_private_json(args.plan), load_private_json(args.inventory), args.finding, args.phase)
+    output = private_path("evidence", f"{record['actionId'].removeprefix('sha256:')}-{args.phase}.json")
+    write_private(record, output)
+    print(f"Argus M0 evidence phase: {args.phase}")
+    print(f"evidence digest: {record['evidenceDigest']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,22 @@
+#!/usr/bin/env python3
+"""Generate private, opaque M0 review cards; never prints raw inventory."""
+from __future__ import annotations
+import json
+from argus_m0 import load_private_json, private_path, write_private
+
+def main() -> int:
+    inventory = load_private_json(private_path("legacy-inventory.json"))
+    cards = []
+    for finding in inventory.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        cards.append({
+            "findingId": finding.get("id"), "category": finding.get("category"),
+            "resourceRef": finding.get("resourceRef"), "severity": finding.get("severity"),
+            "requiredReview": ["identify owning configuration privately", "review containment command", "review rollback command", "capture pre/post health and isolation evidence"],
+        })
+    payload = {"schemaVersion": 1, "inventoryDigest": inventory.get("evidenceDigest"), "cards": cards}
+    write_private(payload, private_path("review-cards.json"))
+    print(f"Argus M0 private review cards: {len(cards)}")
+    return 0
+if __name__ == "__main__": raise SystemExit(main())

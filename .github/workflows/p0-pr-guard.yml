@@ -4,7 +4,7 @@ on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
   push:
-    branches: [main]
+    branches: [main, argus]
 
 permissions:
   contents: read
@@ -48,23 +48,24 @@ jobs:
           PY
 
   flag-direct-main-push:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/argus')
     runs-on: ubuntu-latest
     steps:
-      - name: Verify main push came through a merged PR
+      - name: Verify protected-branch push came through a merged PR
         env:
           GH_TOKEN: ${{ github.token }}
+          TARGET_BRANCH: ${{ github.ref_name }}
         run: |
           associated_prs="$(
             gh api \
               -H "Accept: application/vnd.github+json" \
               "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-              --jq '[.[] | select(.merged_at != null and .base.ref == "main")] | length'
+              --jq '[.[] | select(.merged_at != null and .base.ref == env.TARGET_BRANCH)] | length'
           )"
 
           if [ "${associated_prs}" -lt 1 ]; then
-            echo "::error::P0 plans and phases must land through pull requests, not direct pushes to main."
+            echo "::error::P0 plans and phases must land through pull requests, not direct pushes to protected integration branches."
             exit 1
           fi
 
-          echo "Main commit is associated with a merged pull request."
+          echo "Protected-branch commit is associated with a merged pull request."

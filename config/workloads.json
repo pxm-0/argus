@@ -336,22 +336,22 @@
       }
     },
     {
-      "id": "nodens",
-      "name": "Nodens",
-      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), running as the nodens-live Docker Compose stack.",
+      "id": "kadath",
+      "name": "Kadath",
+      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), running as the kadath-live Docker Compose stack.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/nodens",
-        "source": "/srv/oreo-cloud/workloads/nodens/source",
-        "manifest": "/srv/oreo-cloud/workloads/nodens/manifest.json",
-        "legacy": "/home/oreo/nodens"
+        "root": "/srv/oreo-cloud/workloads/kadath",
+        "source": "/srv/oreo-cloud/workloads/kadath/source",
+        "manifest": "/srv/oreo-cloud/workloads/kadath/manifest.json",
+        "legacy": "/home/oreo/kadath"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/home/oreo/nodens/deploy/compose.yml",
+        "composePath": "/home/oreo/kadath/deploy/compose.yml",
         "legacyComposePaths": [],
-        "composeProject": "nodens-live",
+        "composeProject": "kadath-live",
         "service": ""
       },
       "network": {
@@ -379,11 +379,11 @@
       },
       "migration": {
         "status": "planned",
-        "originalPath": "/home/oreo/nodens",
+        "originalPath": "/home/oreo/kadath",
         "compatibilitySymlink": false,
         "bindMountRisks": [],
         "namedVolumeRisks": [
-          "nodens-live_postgres-data"
+          "kadath-live_postgres-data"
         ]
       }
     },

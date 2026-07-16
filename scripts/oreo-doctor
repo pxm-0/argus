@@ -50,6 +50,37 @@ def config_valid(checks: list[dict[str, Any]]) -> None:
             add(checks, False, f"config/{name} valid", error=exc.__class__.__name__)
         else:
             add(checks, True, f"config/{name} valid")
+    try:
+        json.loads((root() / "config" / "argus" / "legacy-classification.json").read_text())
+    except Exception as exc:  # noqa: BLE001 - doctor should report concise failures.
+        add(checks, False, "config/argus/legacy-classification.json valid", error=exc.__class__.__name__)
+    else:
+        add(checks, True, "config/argus/legacy-classification.json valid")
+
+
+def argus_quarantine_checks(checks: list[dict[str, Any]]) -> None:
+    tracked = {str(item.get("id")) for item in load_json("workloads.json").get("workloads", [])}
+    baseline = load_json("argus/legacy-classification.json")
+    classified = baseline.get("workloads", {})
+    expected = {
+        "realm": "unclassified",
+        "zone": "legacy",
+        "stage": "none",
+        "trustDomain": "legacy-rootful",
+        "status": "legacy-unclassified",
+        "admission": "denied",
+    }
+    invalid = sorted(
+        workload_id
+        for workload_id, classification in classified.items()
+        if not isinstance(classification, dict)
+        or any(classification.get(key) != value for key, value in expected.items())
+    )
+    add(checks, tracked == set(classified), "every tracked workload has an Argus quarantine record")
+    add(checks, not invalid, "Argus legacy classifications are fail-closed", workloads=invalid)
+    rules = load_json("policy.json").get("rules", {})
+    add(checks, rules.get("allowNewLegacyRootfulAdmission") is False, "new legacy-rootful admission denied")
+    add(checks, rules.get("requireLegacyUnclassifiedQuarantine") is True, "legacy quarantine required")
 
 
 def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
@@ -190,6 +221,7 @@ def reconcile_check(checks: list[dict[str, Any]]) -> None:
 def audit() -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     config_valid(checks)
+    argus_quarantine_checks(checks)
     tracked_file_checks(checks)
     exposure_checks(checks)
     cloudflare_ingress_checks(checks)
