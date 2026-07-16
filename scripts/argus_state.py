@@ -292,3 +292,60 @@ class AuditLedger:
                 return False
             previous_hash = row["event_hash"]
         return True
+
+    def _events(self) -> list[dict[str, Any]]:
+        with self._connect() as connection:
+            rows = connection.execute("SELECT payload_json FROM audit_events ORDER BY sequence").fetchall()
+        return [json.loads(row["payload_json"]) for row in rows]
+
+    def begin_break_glass(self, *, actor: str, target: str, trust_domain: str, operation: str, correlation_id: str, bypass_non_waivable: bool = False) -> str:
+        if bypass_non_waivable:
+            raise StateError("break-glass cannot bypass non-waivable isolation or exposure controls")
+        if not correlation_id:
+            raise StateError("break-glass requires a correlation ID")
+        return self.append(
+            {
+                "actor": actor,
+                "operation": operation,
+                "outcome": "intent",
+                "target": target,
+                "trustDomain": trust_domain,
+                "correlationId": correlation_id,
+                "breakGlass": True,
+            }
+        )
+
+    def complete_break_glass(self, *, actor: str, target: str, trust_domain: str, operation: str, correlation_id: str, outcome: str) -> str:
+        if outcome not in {"accepted", "denied", "error", "rolled-back"}:
+            raise StateError("break-glass outcome is invalid")
+        intents = {event.get("correlationId") for event in self._events() if event.get("breakGlass") and event.get("outcome") == "intent"}
+        if correlation_id not in intents:
+            raise StateError("break-glass outcome has no durable intent")
+        return self.append(
+            {
+                "actor": actor,
+                "operation": operation,
+                "outcome": outcome,
+                "target": target,
+                "trustDomain": trust_domain,
+                "correlationId": correlation_id,
+                "breakGlass": True,
+            }
+        )
+
+    def reconcile_abandoned_break_glass(self, *, actor: str) -> list[str]:
+        events = self._events()
+        intents = {event.get("correlationId") for event in events if event.get("breakGlass") and event.get("outcome") == "intent"}
+        completed = {event.get("correlationId") for event in events if event.get("breakGlass") and event.get("outcome") != "intent"}
+        abandoned = sorted(correlation for correlation in intents - completed if isinstance(correlation, str))
+        for correlation_id in abandoned:
+            intent = next(event for event in events if event.get("correlationId") == correlation_id and event.get("outcome") == "intent")
+            self.complete_break_glass(
+                actor=actor,
+                target=str(intent["target"]),
+                trust_domain=str(intent["trustDomain"]),
+                operation=str(intent["operation"]),
+                correlation_id=correlation_id,
+                outcome="error",
+            )
+        return abandoned
