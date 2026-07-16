@@ -242,6 +242,48 @@ class SQLiteRepository:
             "state": json.loads(row["state_json"]),
         }
 
+    def import_snapshot(self, entities: list[dict[str, Any]]) -> None:
+        """Import a complete shadow snapshot only when every record is valid."""
+        validated: list[tuple[str, str, EntityState]] = []
+        def classification(value: dict[str, Any]) -> Classification:
+            return Classification(
+                realm=value.get("realm"),
+                zone=value.get("zone"),
+                stage=value.get("stage"),
+                trust_domain=str(value.get("trustDomain", "")),
+                domain_kind=str(value.get("domainKind", "")),
+            )
+        for entity in entities:
+            try:
+                state = EntityState(
+                    declared=classification(entity["state"]["declared"]),
+                    observed=classification(entity["state"]["observed"]),
+                    effective=classification(entity["state"]["effective"]),
+                )
+                validated.append((str(entity["id"]), str(entity["kind"]), state))
+            except (KeyError, TypeError) as exc:
+                raise StateError("snapshot entity is malformed") from exc
+        if len({item[0] for item in validated}) != len(validated):
+            raise StateError("snapshot contains duplicate entity IDs")
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM entities")
+            for entity_id, entity_kind, state in validated:
+                connection.execute(
+                    "INSERT INTO entities(entity_id, entity_kind, revision, state_json) VALUES (?, ?, 1, ?)",
+                    (entity_id, entity_kind, json.dumps(state.as_dict(), separators=(",", ":"), sort_keys=True)),
+                )
+
+    def semantic_parity(self, snapshot: list[dict[str, Any]]) -> bool:
+        expected = sorted(
+            [{"id": str(item.get("id")), "kind": str(item.get("kind")), "state": item.get("state")} for item in snapshot],
+            key=lambda item: item["id"],
+        )
+        with self._connect() as connection:
+            rows = connection.execute("SELECT entity_id, entity_kind, state_json FROM entities ORDER BY entity_id").fetchall()
+        actual = [{"id": row["entity_id"], "kind": row["entity_kind"], "state": json.loads(row["state_json"])} for row in rows]
+        return actual == expected
+
 
 class AuditLedger:
     """Append-only, hash-chained mutation intent and outcome ledger."""
