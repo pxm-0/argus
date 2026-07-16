@@ -29,7 +29,7 @@ from argus_legacy import (  # noqa: E402
     route_evidence,
     write_inventory,
 )
-from argus_m0 import isolation_report, record_evidence, remediation_plan  # noqa: E402
+from argus_m0 import isolation_report, owner_review_cards, record_evidence, remediation_plan  # noqa: E402
 
 
 class FakeRunner:
@@ -241,6 +241,21 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertIn("resourceCounts", payload)
         self.assertNotIn("containers", payload)
         self.assertNotIn("routes", payload)
+
+    def test_owner_review_cards_resolve_only_private_workload_ownership(self) -> None:
+        inventory = {
+            "evidenceDigest": "sha256:inventory",
+            "ownership": [{"containerRef": "sha256:container", "workloadId": "workload-a"}],
+            "findings": [
+                {"id": "sha256:one", "category": "runtime-control", "resourceRef": "sha256:container"},
+                {"id": "sha256:two", "category": "wildcard-listener", "resourceRef": "sha256:listener"},
+            ],
+        }
+        cards = owner_review_cards(inventory)
+        self.assertEqual("workload-a", cards["cards"][0]["owner"])
+        self.assertEqual("registered", cards["cards"][0]["ownershipState"])
+        self.assertEqual("unresolved-non-container", cards["cards"][1]["owner"])
+        self.assertTrue(cards["reviewDigest"].startswith("sha256:"))
 
     def test_remediation_records_are_typed_and_reject_stale_inventory(self) -> None:
         inventory = {
