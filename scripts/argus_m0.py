@@ -118,6 +118,44 @@ def approve_action(plan: dict[str, Any], inventory: dict[str, Any], finding_id: 
     return plan
 
 
+def owner_review_cards(inventory: dict[str, Any]) -> dict[str, Any]:
+    """Resolve opaque finding references to private workload ownership only."""
+    digest = str(inventory.get("evidenceDigest", ""))
+    if not digest:
+        raise ValueError("inventory has no evidence digest")
+    ownership = inventory.get("ownership", [])
+    if not isinstance(ownership, list):
+        raise ValueError("inventory ownership is malformed")
+    owners = {
+        str(item.get("containerRef")): str(item.get("workloadId"))
+        for item in ownership
+        if isinstance(item, dict) and item.get("containerRef") and item.get("workloadId")
+    }
+    cards = []
+    for finding in inventory.get("findings", []):
+        if not isinstance(finding, dict):
+            continue
+        resource_ref = str(finding.get("resourceRef", ""))
+        owner = owners.get(resource_ref, "")
+        cards.append(
+            {
+                "findingId": str(finding.get("id", "")),
+                "category": str(finding.get("category", "")),
+                "resourceRef": resource_ref,
+                "owner": owner or "unresolved-non-container",
+                "ownershipState": "registered" if owner and owner != "legacy-unclassified" else "quarantined",
+                "requiredReview": [
+                    "review owning configuration privately",
+                    "review containment and rollback commands",
+                    "capture pre/post health and isolation evidence",
+                ],
+            }
+        )
+    payload = {"schemaVersion": 1, "inventoryDigest": digest, "cards": cards}
+    payload["reviewDigest"] = canonical_digest(payload)
+    return payload
+
+
 def _containers_with_pids(runner: CommandRunner) -> list[tuple[str, int]]:
     identifiers = runner.run(["docker", "ps", "--no-trunc", "--format", "{{.ID}}"])
     if identifiers.returncode != 0:
