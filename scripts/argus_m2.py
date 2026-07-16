@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -25,25 +24,21 @@ def evaluate_pilot(*, subordinate_ids: bool, rootless_tool: bool, linger: bool, 
     return {"schemaVersion": 1, "complete": all(checks.values()), "checks": checks, "missing": sorted(name for name, value in checks.items() if not value)}
 
 
-def _run(command: list[str]) -> tuple[int, str]:
-    if not shutil.which(command[0]):
-        return 127, ""
-    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
-    return result.returncode, result.stdout
-
-
 def collect_pilot(user: str) -> dict[str, Any]:
     if not user or any(char.isspace() for char in user):
         raise PilotError("a local Unix user name is required")
     subuid = Path("/etc/subuid").read_text(encoding="utf-8", errors="ignore") if Path("/etc/subuid").exists() else ""
     subordinate_ids = any(line.split(":", 1)[0] == user for line in subuid.splitlines() if ":" in line)
-    _, linger_output = _run(["loginctl", "show-user", user, "-p", "Linger"])
-    _, storage_output = _run(["docker", "info", "--format", "{{.Driver}}"])
+    linger_output = ""
+    if shutil.which("loginctl"):
+        import subprocess
+        result = subprocess.run(["loginctl", "show-user", user, "-p", "Linger"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+        linger_output = result.stdout
     return evaluate_pilot(
         subordinate_ids=subordinate_ids,
         rootless_tool=shutil.which("dockerd-rootless-setuptool.sh") is not None,
         linger="Linger=yes" in linger_output,
         cgroup_v2=Path("/sys/fs/cgroup/cgroup.controllers").exists(),
-        storage=bool(storage_output.strip()),
+        storage=shutil.which("fuse-overlayfs") is not None,
         namespace_tool=shutil.which("unshare") is not None,
     )
