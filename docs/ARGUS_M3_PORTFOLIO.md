@@ -33,3 +33,5 @@ The mirror receipt is digest-bound. Any changed artifact fails the final
 promotion check. The receipt proves artifact verification only; the deployment
 runbook must additionally record the independently hosted mirror's no-route
 and return-network checks before a public origin can serve the artifact.
+It is not a substitute for those deployment observations or an authorization
+to publish.
