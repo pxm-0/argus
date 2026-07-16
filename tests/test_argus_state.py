@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_relationship  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -26,6 +26,14 @@ class ArgusStateTest(unittest.TestCase):
             Classification(None, None, "none", "argus-management", "management").validate()
         with self.assertRaises(StateError):
             Classification("unclassified", "sandbox", "dev", "workload-a", "workload").validate()
+
+    def test_cross_domain_resources_require_authenticated_gateway(self) -> None:
+        authorize_relationship("personal-prod", "personal-prod", "volume")
+        authorize_relationship("personal-prod", "work-prod", "service-gateway", authenticated_gateway=True)
+        with self.assertRaises(StateError):
+            authorize_relationship("personal-prod", "work-prod", "volume")
+        with self.assertRaises(StateError):
+            authorize_relationship("personal-prod", "work-prod", "service-gateway")
 
     def test_effective_state_cannot_claim_more_than_observed(self) -> None:
         observed = legacy()
