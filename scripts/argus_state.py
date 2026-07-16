@@ -32,6 +32,17 @@ def authorize_relationship(source_domain: str, target_domain: str, relation: str
         raise StateError("cross-domain resources require an authenticated explicit service gateway")
 
 
+def authorize_mutation(**dependencies: bool) -> None:
+    """Fail closed whenever a mandatory mutation dependency is unavailable."""
+    required = {"policy", "store", "authorization", "freshness", "observation", "reconciliation", "audit"}
+    unknown = set(dependencies) - required
+    missing = required - set(dependencies)
+    failed = sorted(name for name in required if not dependencies.get(name, False))
+    if unknown or missing or failed:
+        detail = ", ".join(sorted(unknown | missing | set(failed)))
+        raise StateError(f"mutation denied: unavailable dependency {detail}")
+
+
 def _canonical_digest(value: Any) -> str:
     import hashlib
 

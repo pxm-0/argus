@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_relationship  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_mutation, authorize_relationship  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -34,6 +34,13 @@ class ArgusStateTest(unittest.TestCase):
             authorize_relationship("personal-prod", "work-prod", "volume")
         with self.assertRaises(StateError):
             authorize_relationship("personal-prod", "work-prod", "service-gateway")
+
+    def test_mutation_gate_fails_closed_for_any_missing_dependency(self) -> None:
+        dependencies = {"policy": True, "store": True, "authorization": True, "freshness": True, "observation": True, "reconciliation": True, "audit": True}
+        authorize_mutation(**dependencies)
+        dependencies["audit"] = False
+        with self.assertRaises(StateError):
+            authorize_mutation(**dependencies)
 
     def test_effective_state_cannot_claim_more_than_observed(self) -> None:
         observed = legacy()
