@@ -22,6 +22,16 @@ class StateError(ValueError):
     """Raised when an entity cannot be safely represented or persisted."""
 
 
+def authorize_relationship(source_domain: str, target_domain: str, relation: str, *, authenticated_gateway: bool = False) -> None:
+    """Reject resource sharing across trust domains unless an explicit gateway mediates it."""
+    if not source_domain or not target_domain or not relation:
+        raise StateError("relationship source, target, and type are required")
+    if source_domain == target_domain:
+        return
+    if relation != "service-gateway" or not authenticated_gateway:
+        raise StateError("cross-domain resources require an authenticated explicit service gateway")
+
+
 def _canonical_digest(value: Any) -> str:
     import hashlib
 
