@@ -9,7 +9,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import Classification, EntityState, SQLiteRepository, StateError  # noqa: E402
+from argus_state import AtomicJsonStore, Classification, EntityState, SQLiteRepository, StateError  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -41,3 +41,22 @@ class ArgusStateTest(unittest.TestCase):
             with self.assertRaises(StateError):
                 repository.put_entity("project-a", "project", state, expected_revision=1)
             self.assertEqual(2, repository.get_entity("project-a")["revision"])
+
+    def test_json_store_journals_and_recovers_applied_write_without_commit_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl")
+            self.assertEqual(1, store.replace({"value": "one"}, expected_revision=0, operation="replace-legacy"))
+            record = store.read()
+            lines = (root / "journal.jsonl").read_text().splitlines()
+            (root / "journal.jsonl").write_text("\n".join(lines[:-1]) + "\n")
+            outcomes = store.recover()
+            self.assertEqual("committed", outcomes[record["transactionId"]])
+            self.assertEqual(1, store.read()["revision"])
+
+    def test_json_store_recovery_aborts_prepared_write_not_reflected_in_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl")
+            store._append({"phase": "PREPARED", "transactionId": "lost", "expectedRevision": 0, "operation": "replace", "payloadChecksum": "sha256:test"})
+            self.assertEqual({"lost": "aborted"}, store.recover())
