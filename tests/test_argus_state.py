@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_mutation, authorize_relationship, legacy_workload_snapshot  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -72,6 +72,38 @@ class ArgusStateTest(unittest.TestCase):
             self.assertTrue(repository.semantic_parity(snapshot))
             self.assertFalse(repository.semantic_parity([{**snapshot[0], "kind": "service"}]))
 
+    def test_cutover_requires_parity_and_retains_a_safe_rollback_checkpoint(self) -> None:
+        state = EntityState(legacy(), legacy(), legacy()).as_dict()
+        snapshot = [{"id": "project-a", "kind": "project", "state": state}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = SQLiteRepository(root / "argus.sqlite3")
+            cutover = StoreCutover(repository, root / "cutover.json")
+            with self.assertRaises(StateError):
+                cutover.prepare(snapshot, journal_digest="sha256:journal")
+            repository.import_snapshot(snapshot)
+            prepared = cutover.prepare(snapshot, journal_digest="sha256:journal")
+            self.assertEqual("PREPARED", prepared["phase"])
+            with self.assertRaises(StateError):
+                cutover.activate(snapshot, journal_digest="sha256:changed")
+            active = cutover.activate(snapshot, journal_digest="sha256:journal")
+            self.assertEqual("SQLITE_ACTIVE", active["phase"])
+            self.assertEqual(snapshot, cutover.rollback())
+
+    def test_cutover_refuses_rollback_after_sqlite_diverges(self) -> None:
+        state = EntityState(legacy(), legacy(), legacy())
+        snapshot = [{"id": "project-a", "kind": "project", "state": state.as_dict()}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = SQLiteRepository(root / "argus.sqlite3")
+            repository.import_snapshot(snapshot)
+            cutover = StoreCutover(repository, root / "cutover.json")
+            cutover.prepare(snapshot, journal_digest="sha256:journal")
+            cutover.activate(snapshot, journal_digest="sha256:journal")
+            repository.put_entity("project-a", "service", state, expected_revision=1)
+            with self.assertRaises(StateError):
+                cutover.rollback()
+
     def test_json_store_journals_and_recovers_applied_write_without_commit_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -90,6 +122,27 @@ class ArgusStateTest(unittest.TestCase):
             store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl")
             store._append({"phase": "PREPARED", "transactionId": "lost", "expectedRevision": 0, "operation": "replace", "payloadChecksum": "sha256:test"})
             self.assertEqual({"lost": "aborted"}, store.recover())
+
+    def test_json_store_crash_injection_recovers_every_durable_boundary(self) -> None:
+        for boundary, expected in {
+            "after-prepared": 0,
+            "after-json-fsync": 0,
+            "after-replace": 1,
+            "after-committed": 1,
+        }.items():
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+
+                def crash(point: str) -> None:
+                    if point == boundary:
+                        raise RuntimeError(f"injected crash: {point}")
+
+                store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl", fault_hook=crash)
+                with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                    store.replace({"value": "one"}, expected_revision=0, operation="replace-legacy")
+                outcomes = store.recover()
+                self.assertEqual(expected, store.read()["revision"])
+                self.assertTrue(outcomes or boundary == "after-committed")
 
     def test_audit_ledger_is_hash_chained_and_detects_tampering(self) -> None:
         payload = {"actor": "operator-1", "operation": "approve", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful"}

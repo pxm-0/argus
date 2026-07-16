@@ -9,7 +9,7 @@ import tempfile
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 REALMS = {"unclassified", "personal", "work"}
@@ -74,14 +74,37 @@ def _sync_directory(path: Path) -> None:
         os.close(descriptor)
 
 
+def _atomic_json_replace(path: Path, value: dict[str, Any]) -> None:
+    """Durably replace a small control record without leaving a partial file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+        _sync_directory(path.parent)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
 class AtomicJsonStore:
     """Single-writer compatibility store with a durable write-ahead journal."""
 
-    def __init__(self, path: Path, journal_path: Path):
+    def __init__(self, path: Path, journal_path: Path, *, fault_hook: Callable[[str], None] | None = None):
         self.path = path
         self.journal_path = journal_path
+        self.fault_hook = fault_hook
         self.path.parent.mkdir(parents=True, exist_ok=True)
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+
+    def _fault(self, boundary: str) -> None:
+        """Test-only crash injection after a durable write boundary."""
+        if self.fault_hook is not None:
+            self.fault_hook(boundary)
 
     def read(self) -> dict[str, Any]:
         if not self.path.exists():
@@ -121,6 +144,7 @@ class AtomicJsonStore:
             "payloadChecksum": _canonical_digest(replacement),
         }
         self._append(prepared)
+        self._fault("after-prepared")
         descriptor, temporary = tempfile.mkstemp(prefix=f".{self.path.name}.", dir=self.path.parent)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -128,12 +152,15 @@ class AtomicJsonStore:
                 handle.write("\n")
                 handle.flush()
                 os.fsync(handle.fileno())
+            self._fault("after-json-fsync")
             os.replace(temporary, self.path)
             _sync_directory(self.path.parent)
+            self._fault("after-replace")
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        self._fault("after-committed")
         return replacement["revision"]
 
     def recover(self) -> dict[str, str]:
@@ -321,6 +348,69 @@ class SQLiteRepository:
             rows = connection.execute("SELECT entity_id, entity_kind, state_json FROM entities ORDER BY entity_id").fetchall()
         actual = [{"id": row["entity_id"], "kind": row["entity_kind"], "state": json.loads(row["state_json"])} for row in rows]
         return actual == expected
+
+
+class StoreCutover:
+    """Durably coordinate one-way SQLite activation with a rollback checkpoint."""
+
+    def __init__(self, repository: SQLiteRepository, checkpoint_path: Path):
+        self.repository = repository
+        self.checkpoint_path = checkpoint_path
+
+    def _read(self) -> dict[str, Any]:
+        if not self.checkpoint_path.exists():
+            return {"phase": "JSON_ACTIVE"}
+        try:
+            value = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StateError("cutover checkpoint is malformed") from exc
+        if not isinstance(value, dict) or value.get("schemaVersion") != 1 or value.get("phase") not in {"PREPARED", "SQLITE_ACTIVE", "ROLLED_BACK"}:
+            raise StateError("cutover checkpoint has an invalid schema")
+        return value
+
+    def prepare(self, snapshot: list[dict[str, Any]], *, journal_digest: str) -> dict[str, Any]:
+        """Record a parity-proven candidate before pausing legacy writes."""
+        if not journal_digest.startswith("sha256:"):
+            raise StateError("cutover requires a journal digest")
+        if self._read()["phase"] != "JSON_ACTIVE":
+            raise StateError("cutover is already prepared, active, or rolled back")
+        if not self.repository.semantic_parity(snapshot):
+            raise StateError("SQLite shadow store does not have semantic parity")
+        checkpoint = {
+            "schemaVersion": 1,
+            "phase": "PREPARED",
+            "journalDigest": journal_digest,
+            "snapshotDigest": _canonical_digest(snapshot),
+            "snapshot": snapshot,
+        }
+        _atomic_json_replace(self.checkpoint_path, checkpoint)
+        return checkpoint
+
+    def activate(self, snapshot: list[dict[str, Any]], *, journal_digest: str) -> dict[str, Any]:
+        """Activate SQLite only after the final paused-write replay still matches."""
+        checkpoint = self._read()
+        if checkpoint["phase"] != "PREPARED":
+            raise StateError("SQLite activation requires a prepared checkpoint")
+        if journal_digest != checkpoint.get("journalDigest") or _canonical_digest(snapshot) != checkpoint.get("snapshotDigest"):
+            raise StateError("cutover final replay differs from the prepared checkpoint")
+        if not self.repository.semantic_parity(snapshot):
+            raise StateError("SQLite final replay does not have semantic parity")
+        active = {**checkpoint, "phase": "SQLITE_ACTIVE"}
+        _atomic_json_replace(self.checkpoint_path, active)
+        return active
+
+    def rollback(self) -> list[dict[str, Any]]:
+        """Return the retained JSON snapshot only while parity still holds."""
+        checkpoint = self._read()
+        if checkpoint["phase"] != "SQLITE_ACTIVE":
+            raise StateError("rollback requires active SQLite")
+        snapshot = checkpoint.get("snapshot")
+        if not isinstance(snapshot, list) or _canonical_digest(snapshot) != checkpoint.get("snapshotDigest"):
+            raise StateError("rollback checkpoint snapshot is invalid")
+        if not self.repository.semantic_parity(snapshot):
+            raise StateError("SQLite changed after activation; rollback is unsafe")
+        _atomic_json_replace(self.checkpoint_path, {**checkpoint, "phase": "ROLLED_BACK"})
+        return snapshot
 
 
 class AuditLedger:
