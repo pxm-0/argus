@@ -43,6 +43,15 @@ class ArgusStateTest(unittest.TestCase):
                 repository.put_entity("project-a", "project", state, expected_revision=1)
             self.assertEqual(2, repository.get_entity("project-a")["revision"])
 
+    def test_snapshot_import_requires_semantic_parity(self) -> None:
+        state = EntityState(legacy(), legacy(), legacy()).as_dict()
+        snapshot = [{"id": "project-a", "kind": "project", "state": state}]
+        with tempfile.TemporaryDirectory() as directory:
+            repository = SQLiteRepository(Path(directory) / "argus.sqlite3")
+            repository.import_snapshot(snapshot)
+            self.assertTrue(repository.semantic_parity(snapshot))
+            self.assertFalse(repository.semantic_parity([{**snapshot[0], "kind": "service"}]))
+
     def test_json_store_journals_and_recovers_applied_write_without_commit_marker(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
