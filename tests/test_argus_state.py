@@ -10,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_mutation, authorize_relationship  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, authorize_mutation, authorize_relationship, legacy_workload_snapshot  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -41,6 +41,11 @@ class ArgusStateTest(unittest.TestCase):
         dependencies["audit"] = False
         with self.assertRaises(StateError):
             authorize_mutation(**dependencies)
+
+    def test_legacy_snapshot_preserves_quarantine(self) -> None:
+        snapshot = legacy_workload_snapshot([{"id": "legacy-a"}], {"legacy-a": {"realm": "unclassified", "zone": "legacy", "stage": "none", "trustDomain": "legacy-rootful"}})
+        self.assertEqual("legacy-a", snapshot[0]["id"])
+        self.assertEqual("legacy", snapshot[0]["state"]["effective"]["domainKind"])
 
     def test_effective_state_cannot_claim_more_than_observed(self) -> None:
         observed = legacy()

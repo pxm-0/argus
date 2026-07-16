@@ -43,6 +43,23 @@ def authorize_mutation(**dependencies: bool) -> None:
         raise StateError(f"mutation denied: unavailable dependency {detail}")
 
 
+def legacy_workload_snapshot(workloads: list[dict[str, Any]], classifications: dict[str, dict[str, Any]]) -> list[dict[str, Any]]:
+    """Map legacy registry entries into quarantined M1 project entities."""
+    result = []
+    for workload in workloads:
+        workload_id = str(workload.get("id", ""))
+        classification = classifications.get(workload_id)
+        if not workload_id or not isinstance(classification, dict):
+            raise StateError("every legacy workload requires a quarantine classification")
+        state = Classification(
+            classification.get("realm"), classification.get("zone"), classification.get("stage"),
+            str(classification.get("trustDomain", "")), "legacy",
+        )
+        entity_state = EntityState(state, state, state).as_dict()
+        result.append({"id": workload_id, "kind": "project", "state": entity_state})
+    return result
+
+
 def _canonical_digest(value: Any) -> str:
     import hashlib
 
