@@ -241,3 +241,54 @@ class SQLiteRepository:
             "revision": row["revision"],
             "state": json.loads(row["state_json"]),
         }
+
+
+class AuditLedger:
+    """Append-only, hash-chained mutation intent and outcome ledger."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS audit_events (sequence INTEGER PRIMARY KEY, payload_json TEXT NOT NULL, previous_hash TEXT NOT NULL, event_hash TEXT NOT NULL UNIQUE)"
+            )
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def append(self, payload: dict[str, Any]) -> str:
+        required = {"actor", "operation", "outcome", "target", "trustDomain"}
+        if not required.issubset(payload) or not all(isinstance(payload[key], str) and payload[key] for key in required):
+            raise StateError("audit event is missing required identity, operation, outcome, target, or domain")
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            previous = connection.execute("SELECT sequence, event_hash FROM audit_events ORDER BY sequence DESC LIMIT 1").fetchone()
+            sequence = 1 if previous is None else int(previous["sequence"]) + 1
+            previous_hash = "" if previous is None else str(previous["event_hash"])
+            event_hash = _canonical_digest({"sequence": sequence, "previousHash": previous_hash, "payload": payload})
+            connection.execute(
+                "INSERT INTO audit_events(sequence, payload_json, previous_hash, event_hash) VALUES (?, ?, ?, ?)",
+                (sequence, encoded, previous_hash, event_hash),
+            )
+            return event_hash
+
+    def verify(self) -> bool:
+        previous_hash = ""
+        with self._connect() as connection:
+            rows = connection.execute("SELECT sequence, payload_json, previous_hash, event_hash FROM audit_events ORDER BY sequence").fetchall()
+        for expected_sequence, row in enumerate(rows, start=1):
+            if row["sequence"] != expected_sequence or row["previous_hash"] != previous_hash:
+                return False
+            try:
+                payload = json.loads(row["payload_json"])
+            except json.JSONDecodeError:
+                return False
+            expected_hash = _canonical_digest({"sequence": expected_sequence, "previousHash": previous_hash, "payload": payload})
+            if row["event_hash"] != expected_hash:
+                return False
+            previous_hash = row["event_hash"]
+        return True
