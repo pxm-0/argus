@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+import sqlite3
 from pathlib import Path
 
 import sys
@@ -9,7 +10,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, Classification, EntityState, SQLiteRepository, StateError  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -60,3 +61,20 @@ class ArgusStateTest(unittest.TestCase):
             store = AtomicJsonStore(root / "legacy.json", root / "journal.jsonl")
             store._append({"phase": "PREPARED", "transactionId": "lost", "expectedRevision": 0, "operation": "replace", "payloadChecksum": "sha256:test"})
             self.assertEqual({"lost": "aborted"}, store.recover())
+
+    def test_audit_ledger_is_hash_chained_and_detects_tampering(self) -> None:
+        payload = {"actor": "operator-1", "operation": "approve", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful"}
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "audit.sqlite3"
+            ledger = AuditLedger(path)
+            ledger.append(payload)
+            ledger.append({**payload, "operation": "reconcile"})
+            self.assertTrue(ledger.verify())
+            with sqlite3.connect(path) as connection:
+                connection.execute("UPDATE audit_events SET payload_json = ? WHERE sequence = 1", ('{}',))
+            self.assertFalse(ledger.verify())
+
+    def test_audit_ledger_rejects_unattributed_events(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(StateError):
+                AuditLedger(Path(directory) / "audit.sqlite3").append({"operation": "approve"})
