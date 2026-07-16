@@ -78,3 +78,14 @@ class ArgusStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(StateError):
                 AuditLedger(Path(directory) / "audit.sqlite3").append({"operation": "approve"})
+
+    def test_break_glass_requires_durable_intent_and_reconciles_abandonment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            ledger = AuditLedger(Path(directory) / "audit.sqlite3")
+            with self.assertRaises(StateError):
+                ledger.begin_break_glass(actor="operator", target="project-a", trust_domain="legacy-rootful", operation="recover", correlation_id="x", bypass_non_waivable=True)
+            ledger.begin_break_glass(actor="operator", target="project-a", trust_domain="legacy-rootful", operation="recover", correlation_id="x")
+            self.assertEqual(["x"], ledger.reconcile_abandoned_break_glass(actor="reconciler"))
+            with self.assertRaises(StateError):
+                ledger.complete_break_glass(actor="operator", target="project-a", trust_domain="legacy-rootful", operation="recover", correlation_id="missing", outcome="accepted")
+            self.assertTrue(ledger.verify())
