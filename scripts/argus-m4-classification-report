@@ -1,0 +1,9 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+import json
+from pathlib import Path
+from argus_m4_report import classification_report
+root = Path(__file__).resolve().parents[1]
+workloads = json.loads((root / "config/workloads.json").read_text()).get("workloads", [])
+classes = json.loads((root / "config/argus/legacy-classification.json").read_text())
+print(json.dumps(classification_report(workloads, classes), sort_keys=True))
