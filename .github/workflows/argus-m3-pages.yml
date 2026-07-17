@@ -25,7 +25,7 @@ jobs:
           test -n "$SIGNING_KEY"
           secure="$(mktemp -d)"
           trap 'rm -rf "$secure"' EXIT
-          printf '%s' "$SIGNING_KEY" > "$secure/key.pem"
+          printf '%s' "$SIGNING_KEY" | base64 --decode > "$secure/key.pem"
           openssl pkey -in "$secure/key.pem" -pubout -out "$secure/key.pub"
           scripts/argus-m3-export --snapshot config/argus/public-portfolio.json --output public-artifact --signing-key "$secure/key.pem" --public-key "$secure/key.pub" > result.json
           scripts/argus-m3-mirror-verify --artifact public-artifact --public-key "$secure/key.pub" --receipt mirror-receipt.json
