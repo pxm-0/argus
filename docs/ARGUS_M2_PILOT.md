@@ -7,6 +7,6 @@ runtime cell:
 
 It emits only boolean prerequisite results: subordinate-ID allocation, rootless
 tooling, user lingering, cgroup v2, the rootless fuse-overlayfs storage helper,
-and namespace tooling. A nonzero status means the disposable pilot must not proceed. It
+namespace tooling, and slirp4netns rootless networking. A nonzero status means the disposable pilot must not proceed. It
 creates no user, service, network, firewall rule, runtime socket, or public
 route.
