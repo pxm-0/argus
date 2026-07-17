@@ -320,6 +320,19 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual({"sshd": 1}, review["processClassCounts"])
         self.assertNotIn("123", json.dumps(review))
 
+    def test_host_listener_review_falls_back_to_socket_inode_owner(self) -> None:
+        inventory = {
+            "evidenceDigest": "sha256:inventory",
+            "containers": [],
+            "findings": [{"id": "sha256:host", "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:22")}],
+        }
+        review = host_listener_review(
+            inventory,
+            "tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* ino:42 sk:1\n",
+            inode_processes={"42": {"sshd"}},
+        )
+        self.assertEqual({"sshd": 1}, review["processClassCounts"])
+
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):
             def run(self, command: list[str]) -> CommandResult:

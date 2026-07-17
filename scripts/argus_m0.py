@@ -153,7 +153,9 @@ def record_docker_lockdown_containment(
     return plan, record
 
 
-def host_listener_review(inventory: dict[str, Any], ss_output: str) -> dict[str, Any]:
+def host_listener_review(
+    inventory: dict[str, Any], ss_output: str, *, inode_processes: dict[str, set[str]] | None = None,
+) -> dict[str, Any]:
     """Resolve non-Docker wildcard findings to safe process-class labels privately."""
     docker_findings = docker_forwarded_wildcard_findings(inventory)
     targets = {
@@ -176,8 +178,14 @@ def host_listener_review(inventory: dict[str, Any], ss_output: str) -> dict[str,
         if reference not in discovered:
             continue
         match = re.search(r'users:\(\("([^"\\]+)"', line)
-        name = match.group(1) if match else "unknown"
-        discovered[reference].add(name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "unknown")
+        names = {match.group(1)} if match else set()
+        inode_match = re.search(r"\bino:(\d+)\b", line)
+        if not names and inode_match and inode_processes is not None:
+            names = inode_processes.get(inode_match.group(1), set())
+        discovered[reference].update(
+            name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "unknown"
+            for name in names
+        )
     cards = [
         {"findingId": finding_id, "resourceRef": reference, "processClasses": sorted(discovered[reference]) or ["unknown"]}
         for finding_id, reference in sorted(targets.items())
