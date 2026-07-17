@@ -333,6 +333,15 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         )
         self.assertEqual({"sshd": 1}, review["processClassCounts"])
 
+    def test_host_listener_review_accepts_extended_ss_wildcard_rendering(self) -> None:
+        inventory = {
+            "evidenceDigest": "sha256:inventory",
+            "containers": [],
+            "findings": [{"id": "sha256:host", "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:22")}],
+        }
+        review = host_listener_review(inventory, 'tcp LISTEN 0 128 *:22 *:* users:(("sshd",pid=123,fd=3))\n')
+        self.assertEqual({"sshd": 1}, review["processClassCounts"])
+
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):
             def run(self, command: list[str]) -> CommandResult:

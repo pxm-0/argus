@@ -172,7 +172,7 @@ def host_listener_review(
             continue
         protocol = fields[0].lower()
         address, port = _split_listener_endpoint(fields[4])
-        if not port or address not in {"0.0.0.0", "::"}:
+        if not port or address not in {"*", "0.0.0.0", "::"}:
             continue
         reference = opaque_ref(f"{protocol}:{port}")
         if reference not in discovered:
