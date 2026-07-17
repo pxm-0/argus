@@ -66,6 +66,18 @@ def _canonical_digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
+def verify_audit_checkpoint(payload: dict[str, Any]) -> bool:
+    """Validate the schema and self-hash of a transportable audit checkpoint."""
+    if not isinstance(payload, dict) or set(payload) != {"schemaVersion", "sequence", "eventHash", "checkpointHash"}:
+        return False
+    if payload.get("schemaVersion") != 1 or not isinstance(payload.get("sequence"), int) or payload["sequence"] < 0:
+        return False
+    if not isinstance(payload.get("eventHash"), str) or not isinstance(payload.get("checkpointHash"), str):
+        return False
+    expected = _canonical_digest({key: payload[key] for key in ("schemaVersion", "sequence", "eventHash")})
+    return payload["checkpointHash"] == expected
+
+
 def _sync_directory(path: Path) -> None:
     descriptor = os.open(path, os.O_RDONLY)
     try:

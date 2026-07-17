@@ -3,6 +3,9 @@ from __future__ import annotations
 import tempfile
 import unittest
 import sqlite3
+import json
+import os
+import subprocess
 from pathlib import Path
 
 import sys
@@ -10,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -166,6 +169,24 @@ class ArgusStateTest(unittest.TestCase):
             self.assertEqual(1, checkpoint["sequence"])
             self.assertEqual(event_hash, checkpoint["eventHash"])
             self.assertTrue(checkpoint["checkpointHash"].startswith("sha256:"))
+            self.assertTrue(verify_audit_checkpoint(checkpoint))
+            self.assertFalse(verify_audit_checkpoint({**checkpoint, "sequence": 2}))
+
+    def test_audit_checkpoint_cli_exports_only_a_nonempty_verified_ledger(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            ledger_path = root / "audit.sqlite3"
+            output = root / "checkpoint.json"
+            ledger = AuditLedger(ledger_path)
+            failed = subprocess.run([sys.executable, str(ROOT / "scripts" / "argus-m1-audit-checkpoint"), "--ledger", str(ledger_path), "--output", str(output)], text=True, capture_output=True)
+            self.assertNotEqual(0, failed.returncode)
+            ledger.append({"actor": "operator", "operation": "approve", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful"})
+            exported = subprocess.run([sys.executable, str(ROOT / "scripts" / "argus-m1-audit-checkpoint"), "--ledger", str(ledger_path), "--output", str(output)], text=True, capture_output=True)
+            self.assertEqual(0, exported.returncode, exported.stderr)
+            self.assertEqual(0o600, os.stat(output).st_mode & 0o777)
+            verified = subprocess.run([sys.executable, str(ROOT / "scripts" / "argus-m1-audit-checkpoint"), "--verify", str(output)], text=True, capture_output=True)
+            self.assertEqual(0, verified.returncode, verified.stderr)
+            self.assertTrue(verify_audit_checkpoint(json.loads(output.read_text())))
 
     def test_audit_ledger_rejects_unattributed_events(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
