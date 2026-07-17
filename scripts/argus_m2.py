@@ -11,10 +11,11 @@ class PilotError(ValueError):
     pass
 
 
-def evaluate_pilot(*, subordinate_ids: bool, rootless_tool: bool, linger: bool, cgroup_v2: bool, storage: bool, namespace_tool: bool, rootless_networking: bool) -> dict[str, Any]:
+def evaluate_pilot(*, subordinate_ids: bool, rootless_tool: bool, uid_mapping: bool, linger: bool, cgroup_v2: bool, storage: bool, namespace_tool: bool, rootless_networking: bool) -> dict[str, Any]:
     checks = {
         "subordinateIds": subordinate_ids,
         "rootlessTooling": rootless_tool,
+        "uidMapping": uid_mapping,
         "userLinger": linger,
         "cgroupV2": cgroup_v2,
         "storageDriver": storage,
@@ -37,6 +38,7 @@ def collect_pilot(user: str) -> dict[str, Any]:
     return evaluate_pilot(
         subordinate_ids=subordinate_ids,
         rootless_tool=shutil.which("dockerd-rootless-setuptool.sh") is not None,
+        uid_mapping=shutil.which("newuidmap") is not None and shutil.which("newgidmap") is not None,
         linger="Linger=yes" in linger_output,
         cgroup_v2=Path("/sys/fs/cgroup/cgroup.controllers").exists(),
         storage=shutil.which("fuse-overlayfs") is not None,
