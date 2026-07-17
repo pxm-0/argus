@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 
+from argus_m1 import deny_direct_legacy_mutation
 from oreo_common import audit, load_json, now, policy_decision, print_json, regenerate_dashboard, save_json
 
 
@@ -13,6 +14,7 @@ def main() -> int:
     parser.add_argument("--confirmation", default="", help="Required phrase for confirmed Cloudflare planning changes.")
     parser.add_argument("--json", action="store_true", help="Print the apply result as JSON.")
     args = parser.parse_args()
+    deny_direct_legacy_mutation("access")
 
     decision = policy_decision(args.workload_id, args.desired)
     if not decision["allowed"]:

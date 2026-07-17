@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from argus_m1 import deny_direct_legacy_mutation
 from oreo_common import audit, by_id, load_json, now, print_json, root, save_json, yaml_quote
 
 
@@ -173,6 +174,7 @@ def write_evidence(payload: dict[str, Any]) -> Path:
 
 
 def set_effective_cloudflare_protected(workload_id: str) -> None:
+    deny_direct_legacy_mutation("Cloudflare effective-state")
     access = load_json("access.json")
     item = access["workloads"][workload_id]
     item["effective"] = "cloudflare-protected"
@@ -182,6 +184,7 @@ def set_effective_cloudflare_protected(workload_id: str) -> None:
 
 
 def lower_effective(workload_id: str, effective: str = "local", reason: str = "Cloudflare activation rolled back") -> None:
+    deny_direct_legacy_mutation("Cloudflare effective-state")
     access = load_json("access.json")
     item = access["workloads"][workload_id]
     item["effective"] = effective

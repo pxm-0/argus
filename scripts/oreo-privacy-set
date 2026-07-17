@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 
+from argus_m1 import deny_direct_legacy_mutation
 from oreo_common import audit, by_id, load_json, now, print_json, regenerate_dashboard, save_json
 
 
@@ -13,6 +14,7 @@ def main() -> int:
     parser.add_argument("--reason", default="Operator change")
     parser.add_argument("--json", action="store_true", help="Print the update result as JSON.")
     args = parser.parse_args()
+    deny_direct_legacy_mutation("privacy")
 
     if args.workload_id not in by_id():
         raise SystemExit(f"unknown workload: {args.workload_id}")
