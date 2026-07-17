@@ -352,8 +352,8 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
 
     def test_host_ingress_exception_requires_only_ssh_and_tailscale_without_funnel(self) -> None:
         inventory = {
-            "sourceRevision": "abc", "evidenceDigest": "sha256:inventory", "routes": {"tailscaleFunnel": {"enabled": False}},
-            "health": [{"ok": True}],
+            "sourceRevision": "abc", "evidenceDigest": "sha256:inventory", "routeEvidence": {"tailscaleFunnel": {"enabled": False}},
+            "healthBaseline": [{"ok": True}],
             "findings": [
                 {"id": "sha256:ssh", "category": "wildcard-listener", "resourceRef": "sha256:ssh"},
                 {"id": "sha256:tail", "category": "wildcard-listener", "resourceRef": "sha256:tail"},
@@ -368,7 +368,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertTrue(all(action["approval"] == "approved" for action in updated["actions"]))
         self.assertEqual(["remote-ssh", "tailnet-transport"], record["approvedServices"])
         with self.assertRaisesRegex(ValueError, "Funnel"):
-            approve_host_ingress_exceptions(plan, {**inventory, "routes": {"tailscaleFunnel": {"enabled": True}}}, review)
+            approve_host_ingress_exceptions(plan, {**inventory, "routeEvidence": {"tailscaleFunnel": {"enabled": True}}}, review)
 
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):
