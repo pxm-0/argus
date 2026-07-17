@@ -341,6 +341,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         }
         review = host_listener_review(inventory, 'tcp LISTEN 0 128 *:22 *:* users:(("sshd",pid=123,fd=3))\n')
         self.assertEqual({"sshd": 1}, review["processClassCounts"])
+        self.assertEqual({"wildcardRows": 1, "matchedFindingRows": 1, "attributedFindingRows": 1}, review["diagnostics"])
 
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):

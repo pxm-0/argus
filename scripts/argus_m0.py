@@ -166,6 +166,7 @@ def host_listener_review(
         and str(finding.get("id", "")) not in docker_findings
     }
     discovered: dict[str, set[str]] = {reference: set() for reference in targets.values()}
+    diagnostics = {"wildcardRows": 0, "matchedFindingRows": 0, "attributedFindingRows": 0}
     for line in ss_output.splitlines():
         fields = line.split()
         if len(fields) < 5:
@@ -174,14 +175,18 @@ def host_listener_review(
         address, port = _split_listener_endpoint(fields[4])
         if not port or address not in {"*", "0.0.0.0", "::"}:
             continue
+        diagnostics["wildcardRows"] += 1
         reference = opaque_ref(f"{protocol}:{port}")
         if reference not in discovered:
             continue
+        diagnostics["matchedFindingRows"] += 1
         match = re.search(r'users:\(\("([^"\\]+)"', line)
         names = {match.group(1)} if match else set()
         inode_match = re.search(r"\bino:(\d+)\b", line)
         if not names and inode_match and inode_processes is not None:
             names = inode_processes.get(inode_match.group(1), set())
+        if names:
+            diagnostics["attributedFindingRows"] += 1
         discovered[reference].update(
             name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "unknown"
             for name in names
@@ -200,6 +205,7 @@ def host_listener_review(
         "inventoryDigest": inventory.get("evidenceDigest"),
         "cards": cards,
         "processClassCounts": dict(sorted(classes.items())),
+        "diagnostics": diagnostics,
     }
     payload["reviewDigest"] = canonical_digest(payload)
     return payload
