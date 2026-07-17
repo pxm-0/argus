@@ -154,7 +154,7 @@ def record_docker_lockdown_containment(
 
 
 def host_listener_review(
-    inventory: dict[str, Any], ss_output: str, *, inode_processes: dict[str, set[str]] | None = None,
+    inventory: dict[str, Any], ss_output: str, *, ownership_output: str | None = None, inode_processes: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
     """Resolve non-Docker wildcard findings to safe process-class labels privately."""
     docker_findings = docker_forwarded_wildcard_findings(inventory)
@@ -165,18 +165,14 @@ def host_listener_review(
         and finding.get("category") == "wildcard-listener"
         and str(finding.get("id", "")) not in docker_findings
     }
+    listener_rows = _wildcard_listener_rows(ss_output)
+    ownership_rows = _wildcard_listener_rows(ownership_output if ownership_output is not None else ss_output)
+    if ownership_output is not None and [reference for reference, _ in listener_rows] != [reference for reference, _ in ownership_rows]:
+        raise ValueError("listener and ownership snapshots differ; rerun the private review")
     discovered: dict[str, set[str]] = {reference: set() for reference in targets.values()}
     diagnostics = {"wildcardRows": 0, "matchedFindingRows": 0, "attributedFindingRows": 0}
-    for line in ss_output.splitlines():
-        fields = line.split()
-        if len(fields) < 5:
-            continue
-        protocol = fields[0].lower()
-        address, port = _split_listener_endpoint(fields[4])
-        if not port or address not in {"*", "0.0.0.0", "::"}:
-            continue
+    for reference, line in ownership_rows:
         diagnostics["wildcardRows"] += 1
-        reference = opaque_ref(f"{protocol}:{port}")
         if reference not in discovered:
             continue
         diagnostics["matchedFindingRows"] += 1
@@ -209,6 +205,19 @@ def host_listener_review(
     }
     payload["reviewDigest"] = canonical_digest(payload)
     return payload
+
+
+def _wildcard_listener_rows(output: str) -> list[tuple[str, str]]:
+    rows = []
+    for line in output.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        protocol = fields[0].lower()
+        address, port = _split_listener_endpoint(fields[4])
+        if port and address in {"*", "0.0.0.0", "::"}:
+            rows.append((opaque_ref(f"{protocol}:{port}"), line))
+    return rows
 
 
 def _split_listener_endpoint(value: str) -> tuple[str, str]:
