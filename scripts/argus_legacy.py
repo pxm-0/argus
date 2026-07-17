@@ -472,11 +472,19 @@ def ownership_reconciliation(containers: list[dict[str, Any]]) -> tuple[list[dic
         for item in configured
         if isinstance(item.get("runtime"), dict) and item.get("runtime", {}).get("composeProject")
     }
+    by_container_name = {
+        str(item.get("runtime", {}).get("service")): str(item.get("id"))
+        for item in configured
+        if isinstance(item.get("runtime"), dict)
+        and item.get("runtime", {}).get("type") == "docker"
+        and item.get("runtime", {}).get("service")
+        and not item.get("runtime", {}).get("composeProject")
+    }
     owners: list[dict[str, Any]] = []
     findings: list[dict[str, str]] = []
     for container in containers:
         project = str(container.get("composeProject", ""))
-        workload_id = by_project.get(project, "")
+        workload_id = by_project.get(project, "") or by_container_name.get(str(container.get("name", "")), "")
         owner = workload_id or "legacy-unclassified"
         owners.append({"containerRef": container.get("containerRef", ""), "workloadId": owner})
         if not workload_id:
