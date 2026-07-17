@@ -45,6 +45,8 @@ def main() -> int:
     print(f"Argus M0 host listener review cards: {len(review['cards'])}")
     for name, count in review["processClassCounts"].items():
         print(f"{count}  {name}")
+    diagnostics = review["diagnostics"]
+    print(f"diagnostics: wildcardRows={diagnostics['wildcardRows']} matchedFindingRows={diagnostics['matchedFindingRows']} attributedFindingRows={diagnostics['attributedFindingRows']}")
     print(f"review digest: {review['reviewDigest']}")
     return 0
 
