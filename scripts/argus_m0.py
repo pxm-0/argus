@@ -102,12 +102,25 @@ def docker_forwarded_wildcard_findings(inventory: dict[str, Any]) -> set[str]:
         and isinstance(port.get("publicPort"), int)
         and port["publicPort"] > 0
     }
+    container_refs = {
+        str(container.get("containerRef", ""))
+        for container in inventory.get("containers", [])
+        if isinstance(container, dict)
+        and any(
+            isinstance(port, dict)
+            and port.get("addressScope") == "wildcard"
+            and port.get("protocol") in {"tcp", "udp"}
+            and isinstance(port.get("publicPort"), int)
+            and port["publicPort"] > 0
+            for port in container.get("publishedPorts", [])
+        )
+    }
     return {
         str(finding.get("id", ""))
         for finding in inventory.get("findings", [])
         if isinstance(finding, dict)
         and finding.get("category") == "wildcard-listener"
-        and finding.get("resourceRef") in resources
+        and finding.get("resourceRef") in resources | container_refs
     }
 
 

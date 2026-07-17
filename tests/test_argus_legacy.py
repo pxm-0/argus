@@ -294,19 +294,21 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         host_listener = "sha256:host-listener"
         inventory = {
             "sourceRevision": "abc", "evidenceDigest": "sha256:inventory",
-            "containers": [{"publishedPorts": [{"protocol": "tcp", "publicPort": 1234, "addressScope": "wildcard"}]}],
+            "containers": [{"containerRef": "sha256:container", "publishedPorts": [{"protocol": "tcp", "publicPort": 1234, "addressScope": "wildcard"}]}],
             "findings": [
                 {"id": docker_listener, "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:1234")},
+                {"id": "sha256:docker-container", "category": "wildcard-listener", "resourceRef": "sha256:container"},
                 {"id": host_listener, "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:22")},
             ],
         }
-        self.assertEqual({docker_listener}, docker_forwarded_wildcard_findings(inventory))
+        self.assertEqual({docker_listener, "sha256:docker-container"}, docker_forwarded_wildcard_findings(inventory))
         plan = remediation_plan(inventory)
         updated, record = record_docker_lockdown_containment(
             plan, inventory, {"unitEnabled": True, "unitActive": True, "ipv4Guard": True, "ipv6Guard": True, "healthPassing": True},
         )
         actions = {action["findingId"]: action for action in updated["actions"]}
         self.assertEqual("contained", actions[docker_listener]["state"])
+        self.assertEqual("contained", actions["sha256:docker-container"]["state"])
         self.assertEqual("pending", actions[host_listener]["approval"])
         self.assertEqual(1, record["remainingHostListenerFindingCount"])
 
