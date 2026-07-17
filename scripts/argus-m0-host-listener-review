@@ -3,19 +3,44 @@
 
 from __future__ import annotations
 
+import os
+import re
 import subprocess
 
 from argus_m0 import host_listener_review, load_private_json, private_path, write_private
 
 
+def socket_inode_processes() -> dict[str, set[str]]:
+    owners: dict[str, set[str]] = {}
+    for process in os.scandir("/proc"):
+        if not process.name.isdigit():
+            continue
+        try:
+            with open(f"/proc/{process.name}/comm", encoding="utf-8") as handle:
+                name = handle.read().strip()
+            descriptors = os.scandir(f"/proc/{process.name}/fd")
+        except OSError:
+            continue
+        with descriptors:
+            for descriptor in descriptors:
+                try:
+                    target = os.readlink(descriptor.path)
+                except OSError:
+                    continue
+                match = re.fullmatch(r"socket:\[(\d+)\]", target)
+                if match:
+                    owners.setdefault(match.group(1), set()).add(name)
+    return owners
+
+
 def main() -> int:
     result = subprocess.run(
-        ["ss", "-H", "-lntup"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+        ["ss", "-H", "-lntupe"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
     )
     if result.returncode != 0:
         raise SystemExit("host listener inspection unavailable")
     inventory = load_private_json(private_path("legacy-inventory.json"))
-    review = host_listener_review(inventory, result.stdout)
+    review = host_listener_review(inventory, result.stdout, inode_processes=socket_inode_processes())
     write_private(review, private_path("host-listener-review.json"))
     print(f"Argus M0 host listener review cards: {len(review['cards'])}")
     for name, count in review["processClassCounts"].items():

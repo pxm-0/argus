@@ -133,7 +133,8 @@ sudo python3 scripts/argus-m0-docker-lockdown-evidence --acknowledge-reviewed-lo
 ```
 
 Resolve the remaining non-Docker wildcard listeners to process classes without
-printing raw sockets, addresses, or process IDs:
+printing raw sockets, addresses, or process IDs. The review falls back to
+root-readable socket inode ownership when `ss` has no process name:
 
 ```bash
 sudo python3 scripts/argus-m0-host-listener-review
