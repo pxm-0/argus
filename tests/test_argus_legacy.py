@@ -426,7 +426,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
             check=False,
         )
         self.assertEqual(1, result.returncode)
-        self.assertIn("new legacy-rootful workload admission is denied", result.stderr)
+        self.assertIn("writer cutover", result.stderr)
         self.assertEqual(before, {path: path.read_bytes() for path in guarded_paths})
 
     def test_doctor_quarantine_checks_fail_for_missing_and_invalid_records(self) -> None:

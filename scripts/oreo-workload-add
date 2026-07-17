@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 
+from argus_m1 import deny_direct_legacy_mutation
 from oreo_common import audit, fail, load_json, now, root, save_json, workloads
 
 
@@ -20,6 +21,7 @@ def main() -> int:
     parser.add_argument("--description", default="Workload discovered from Docker Compose.")
     parser.add_argument("--compose-project", default="")
     args = parser.parse_args()
+    deny_direct_legacy_mutation("workload registration")
 
     policy = load_json("policy.json")
     if policy.get("rules", {}).get("allowNewLegacyRootfulAdmission") is not True:

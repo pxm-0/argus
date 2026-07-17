@@ -21,6 +21,7 @@ PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
+from argus_m1 import deny_direct_legacy_mutation  # noqa: E402
 from oreo_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
 
 
@@ -132,6 +133,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": exc.__class__.__name__})
 
     def handle_privacy(self, workload_id: str, body: dict[str, Any]) -> None:
+        deny_direct_legacy_mutation("privacy")
         privacy = load_json("privacy.json")
         workloads = {item["id"] for item in load_json("workloads.json")["workloads"]}
         new_privacy = str(body.get("privacy", ""))
@@ -152,6 +154,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"workloadId": workload_id, "desired": desired, **policy_decision(workload_id, desired)})
 
     def handle_access_apply(self, workload_id: str, body: dict[str, Any]) -> None:
+        deny_direct_legacy_mutation("access")
         desired = str(body.get("desired", ""))
         decision = policy_decision(workload_id, desired)
         if not decision["allowed"]:
@@ -242,6 +245,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"ok": True, **report})
 
     def handle_workload_register(self, workload_id: str, body: dict[str, Any]) -> None:
+        deny_direct_legacy_mutation("workload registration")
         if workload_id in {str(item.get("id")) for item in load_json("workloads.json")["workloads"]}:
             raise ValueError("workload already tracked")
         name = str(body.get("name") or workload_id)

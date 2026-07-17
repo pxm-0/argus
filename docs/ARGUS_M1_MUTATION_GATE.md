@@ -30,16 +30,17 @@ artifacts are not entity mutations and remain outside this writer.
 
 ## Cutover sequence
 
-1. Build transforms for privacy and access that validate policy and represent
+1. Freeze the direct mutation surfaces listed above.
+2. Build transforms for privacy and access that validate policy and represent
    the change in both schemas.
-2. Write a durable audit intent before changing either representation.
-3. Commit the legacy JSON journal record and SQLite transaction through the
+3. Write a durable audit intent before changing either representation.
+4. Commit the legacy JSON journal record and SQLite transaction through the
    single writer.
-4. Record the audit outcome only after both representations match.
-5. Route the CLI and control API through that writer.
-6. Fail closed for registration and Cloudflare-effective mutations until their
+5. Record the audit outcome only after both representations match.
+6. Route the CLI and control API through that writer.
+7. Fail closed for registration and Cloudflare-effective mutations until their
    reverse transforms exist.
-7. Create a shadow-store parity checkpoint, activate the rollback window, and
+8. Create a shadow-store parity checkpoint, activate the rollback window, and
    verify a nonempty audit checkpoint off-host.
 
 ## Required acceptance evidence
