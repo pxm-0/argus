@@ -35,7 +35,7 @@ def socket_inode_processes() -> dict[str, set[str]]:
 
 def main() -> int:
     result = subprocess.run(
-        ["ss", "-H", "-lntupe"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+        ["ss", "-H", "-lntupe", "-n"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
     )
     if result.returncode != 0:
         raise SystemExit("host listener inspection unavailable")

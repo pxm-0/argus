@@ -267,7 +267,7 @@ def docker_named_resources(runner: CommandRunner, kind: str) -> tuple[list[dict[
 
 
 def listener_inventory(runner: CommandRunner) -> tuple[list[dict[str, Any]], list[str]]:
-    result = runner.run(["ss", "-H", "-lntu"])
+    result = runner.run(["ss", "-H", "-lntu", "-n"])
     if result.returncode != 0:
         return [], ["listener-inventory-unavailable"]
     return parse_ss_listeners(result.stdout), []

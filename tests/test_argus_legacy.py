@@ -135,7 +135,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
                 ("docker", "inspect", "container-id"): CommandResult(0, json.dumps(inspect_payload)),
                 ("docker", "network", "ls", "--format", "{{.Name}}"): CommandResult(0, "example_default\n"),
                 ("docker", "volume", "ls", "--format", "{{.Name}}"): CommandResult(0, "example_data\n"),
-                ("ss", "-H", "-lntu"): CommandResult(0, "tcp LISTEN 0 4096 127.0.0.1:22 0.0.0.0:*\n"),
+                ("ss", "-H", "-lntu", "-n"): CommandResult(0, "tcp LISTEN 0 4096 127.0.0.1:22 0.0.0.0:*\n"),
                 ("nft", "--json", "list", "ruleset"): CommandResult(0, json.dumps(nft_payload)),
                 ("tailscale", "serve", "status", "--json"): CommandResult(0, "{}"),
                 ("tailscale", "funnel", "status", "--json"): CommandResult(0, "{}"),
