@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+# Contain inbound traffic to legacy Docker workloads without touching host SSH.
+set -euo pipefail
+readonly CHAIN="ARGUS_M0_DOCKER_LOCKDOWN"
+usage() { echo "Usage: sudo $0 {--plan|--apply --acknowledge-workload-lockdown|--rollback --confirm-workload-unlock}" >&2; }
+mode="${1:-}"
+case "$mode" in
+  --plan)
+    cat <<'EOF'
+Blocks new forwarded traffic into Docker workloads. Preserves host SSH (INPUT is untouched), established connections, loopback health checks, and Docker bridge egress. Rollback removes only this Argus chain.
+EOF
+    exit 0 ;;
+  --apply) [[ "${2:-}" == "--acknowledge-workload-lockdown" && $# -eq 2 ]] || { usage; exit 2; } ;;
+  --rollback) [[ "${2:-}" == "--confirm-workload-unlock" && $# -eq 2 ]] || { usage; exit 2; } ;;
+  *) usage; exit 2 ;;
+esac
+[[ "$(id -u)" == "0" ]] || { echo "refusing: run with sudo" >&2; exit 2; }
+command -v iptables >/dev/null || { echo "refusing: iptables unavailable" >&2; exit 2; }
+iptables -S DOCKER-USER >/dev/null || { echo "refusing: DOCKER-USER unavailable" >&2; exit 2; }
+if [[ "$mode" == "--rollback" ]]; then
+  iptables -D DOCKER-USER -j "$CHAIN" 2>/dev/null || true
+  iptables -F "$CHAIN" 2>/dev/null || true
+  iptables -X "$CHAIN" 2>/dev/null || true
+  echo '{"schemaVersion":1,"removed":true,"scope":"docker-forwarded-ingress"}'
+  exit 0
+fi
+iptables -N "$CHAIN" 2>/dev/null || true
+iptables -F "$CHAIN"
+iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+iptables -A "$CHAIN" -i lo -j RETURN
+iptables -A "$CHAIN" -i 'docker+' -j RETURN
+iptables -A "$CHAIN" -i 'br+' -j RETURN
+iptables -A "$CHAIN" -j DROP
+iptables -C DOCKER-USER -j "$CHAIN" 2>/dev/null || iptables -I DOCKER-USER 1 -j "$CHAIN"
+echo '{"schemaVersion":1,"applied":true,"scope":"docker-forwarded-ingress","hostSshTouched":false}'
