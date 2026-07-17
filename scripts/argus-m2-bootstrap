@@ -153,6 +153,7 @@ After=argus-pilot-namespace.service
 [Service]
 User=argus-pilot
 Group=argus-pilot
+Environment=HOME=/home/argus-pilot
 RuntimeDirectory=argus-pilot
 RuntimeDirectoryMode=0700
 Environment=XDG_RUNTIME_DIR=/run/argus-pilot

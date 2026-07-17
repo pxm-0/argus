@@ -31,6 +31,7 @@ class M2BootstrapTest(unittest.TestCase):
     def test_daemon_unit_has_a_service_owned_runtime_directory(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
         self.assertIn("RuntimeDirectory=argus-pilot", script)
+        self.assertIn("Environment=HOME=/home/argus-pilot", script)
         self.assertIn("RuntimeDirectoryMode=0700", script)
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/argus-pilot", script)
         self.assertNotIn("Environment=XDG_RUNTIME_DIR=/run/user/", script)
