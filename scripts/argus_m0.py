@@ -172,7 +172,10 @@ def approve_host_ingress_exceptions(
     """Record the explicit M0 exception for remote SSH and tailnet transport only."""
     if plan.get("inventoryDigest") != inventory.get("evidenceDigest") or review.get("inventoryDigest") != inventory.get("evidenceDigest"):
         raise ValueError("stale remediation plan or host listener review")
-    if inventory.get("routes", {}).get("tailscaleFunnel", {}).get("enabled"):
+    route_evidence = inventory.get("routeEvidence")
+    if not isinstance(route_evidence, dict):
+        raise ValueError("host ingress approval requires route evidence")
+    if route_evidence.get("tailscaleFunnel", {}).get("enabled"):
         raise ValueError("refusing host ingress approval while Tailscale Funnel is enabled")
     if review.get("processClassCounts") != {"sshd": 1, "tailscaled": 1} or len(review.get("cards", [])) != 2:
         raise ValueError("host ingress approval requires exactly one sshd and one tailscaled listener review card")
@@ -183,7 +186,8 @@ def approve_host_ingress_exceptions(
     ]
     if len(actions) != 2 or {str(action.get("findingId", "")) for action in actions} != review_ids:
         raise ValueError("host listener review and remediation plan do not match")
-    if not all(bool(item.get("ok")) for item in inventory.get("health", [])):
+    health = inventory.get("healthBaseline")
+    if not isinstance(health, list) or not health or not all(isinstance(item, dict) and bool(item.get("ok")) for item in health):
         raise ValueError("host ingress approval requires passing workload health")
     approval = canonical_digest(
         {"inventoryDigest": inventory.get("evidenceDigest"), "reviewDigest": review.get("reviewDigest"), "exception": "remote-ssh-and-tailnet-transport"}
