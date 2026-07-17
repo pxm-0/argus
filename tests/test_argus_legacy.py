@@ -25,6 +25,7 @@ from argus_legacy import (  # noqa: E402
     inventory_summary,
     mount_finding,
     normalize_mount,
+    ownership_reconciliation,
     parse_ss_listeners,
     route_evidence,
     write_inventory,
@@ -57,6 +58,18 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
             ],
             parse_ss_listeners(output),
         )
+
+    def test_registered_standalone_docker_service_is_not_untracked(self) -> None:
+        original_workloads = ownership_reconciliation.__globals__["workloads"]
+        ownership_reconciliation.__globals__["workloads"] = lambda: [
+            {"id": "review-ui", "runtime": {"type": "docker", "composeProject": "", "service": "review-ui"}}
+        ]
+        try:
+            owners, findings = ownership_reconciliation([{"containerRef": "sha256:container", "name": "review-ui", "composeProject": ""}])
+        finally:
+            ownership_reconciliation.__globals__["workloads"] = original_workloads
+        self.assertEqual([{"containerRef": "sha256:container", "workloadId": "review-ui"}], owners)
+        self.assertEqual([], findings)
 
     def test_mount_source_is_replaced_and_prohibited_destination_blocks(self) -> None:
         mount = normalize_mount(
