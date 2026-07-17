@@ -107,6 +107,23 @@ evidence with the same finding ID. The evidence command refuses a remediation
 plan whose inventory digest no longer matches; `post` evidence also requires
 the matching typed action to be marked `approved` in the private plan.
 
+For the reviewed Docker forwarded-ingress containment control, require both
+IPv4 and IPv6 Docker forwarding chains and install the boot-time unit together:
+
+```bash
+sudo scripts/argus-m0-docker-lockdown --install-systemd --acknowledge-workload-lockdown
+sudo systemctl is-enabled argus-m0-docker-lockdown.service
+sudo iptables -C DOCKER-USER -j ARGUS_M0_DOCKER_LOCKDOWN
+sudo ip6tables -C DOCKER-USER -j ARGUS_M0_DOCKER_LOCKDOWN
+```
+
+The control does not modify the host `INPUT` chain, so it does not alter remote
+SSH. Its explicit rollback is:
+
+```bash
+sudo scripts/argus-m0-docker-lockdown --rollback --confirm-workload-unlock
+```
+
 For namespace isolation checks, an operator creates the private, mode-`0600`
 `runtime/argus/probe-targets.json` with target IDs, hosts, and ports. Then run:
 

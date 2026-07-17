@@ -2,34 +2,58 @@
 # Contain inbound traffic to legacy Docker workloads without touching host SSH.
 set -euo pipefail
 readonly CHAIN="ARGUS_M0_DOCKER_LOCKDOWN"
-usage() { echo "Usage: sudo $0 {--plan|--apply --acknowledge-workload-lockdown|--rollback --confirm-workload-unlock}" >&2; }
+readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly UNIT_NAME="argus-m0-docker-lockdown.service"
+usage() { echo "Usage: sudo $0 {--plan|--apply --acknowledge-workload-lockdown|--install-systemd --acknowledge-workload-lockdown|--rollback --confirm-workload-unlock}" >&2; }
 mode="${1:-}"
 case "$mode" in
   --plan)
     cat <<'EOF'
-Blocks new forwarded traffic into Docker workloads. Preserves host SSH (INPUT is untouched), established connections, loopback health checks, and Docker bridge egress. Rollback removes only this Argus chain.
+Blocks new forwarded traffic into Docker workloads for IPv4 and IPv6. Preserves host SSH (INPUT is untouched), established connections, loopback health checks, and Docker bridge egress. `--install-systemd` makes the guard reapply after boot. Rollback removes only this Argus chain and disables its systemd unit.
 EOF
     exit 0 ;;
   --apply) [[ "${2:-}" == "--acknowledge-workload-lockdown" && $# -eq 2 ]] || { usage; exit 2; } ;;
+  --install-systemd) [[ "${2:-}" == "--acknowledge-workload-lockdown" && $# -eq 2 ]] || { usage; exit 2; } ;;
   --rollback) [[ "${2:-}" == "--confirm-workload-unlock" && $# -eq 2 ]] || { usage; exit 2; } ;;
   *) usage; exit 2 ;;
 esac
 [[ "$(id -u)" == "0" ]] || { echo "refusing: run with sudo" >&2; exit 2; }
 command -v iptables >/dev/null || { echo "refusing: iptables unavailable" >&2; exit 2; }
-iptables -S DOCKER-USER >/dev/null || { echo "refusing: DOCKER-USER unavailable" >&2; exit 2; }
+command -v ip6tables >/dev/null || { echo "refusing: ip6tables unavailable; refusing partial IPv4-only containment" >&2; exit 2; }
+iptables -S DOCKER-USER >/dev/null || { echo "refusing: IPv4 DOCKER-USER unavailable" >&2; exit 2; }
+ip6tables -S DOCKER-USER >/dev/null || { echo "refusing: IPv6 DOCKER-USER unavailable; refusing partial IPv4-only containment" >&2; exit 2; }
+
+apply_family() {
+  local command="$1"
+  "$command" -N "$CHAIN" 2>/dev/null || true
+  "$command" -F "$CHAIN"
+  "$command" -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
+  "$command" -A "$CHAIN" -i lo -j RETURN
+  "$command" -A "$CHAIN" -i 'docker+' -j RETURN
+  "$command" -A "$CHAIN" -i 'br+' -j RETURN
+  "$command" -A "$CHAIN" -j DROP
+  "$command" -C DOCKER-USER -j "$CHAIN" 2>/dev/null || "$command" -I DOCKER-USER 1 -j "$CHAIN"
+}
+
+rollback_family() {
+  local command="$1"
+  "$command" -D DOCKER-USER -j "$CHAIN" 2>/dev/null || true
+  "$command" -F "$CHAIN" 2>/dev/null || true
+  "$command" -X "$CHAIN" 2>/dev/null || true
+}
+
 if [[ "$mode" == "--rollback" ]]; then
-  iptables -D DOCKER-USER -j "$CHAIN" 2>/dev/null || true
-  iptables -F "$CHAIN" 2>/dev/null || true
-  iptables -X "$CHAIN" 2>/dev/null || true
-  echo '{"schemaVersion":1,"removed":true,"scope":"docker-forwarded-ingress"}'
+  systemctl disable --now "$UNIT_NAME" 2>/dev/null || true
+  rollback_family iptables
+  rollback_family ip6tables
+  echo '{"schemaVersion":2,"removed":true,"scope":"docker-forwarded-ingress","ipFamilies":["ipv4","ipv6"],"persistenceRemoved":true}'
   exit 0
 fi
-iptables -N "$CHAIN" 2>/dev/null || true
-iptables -F "$CHAIN"
-iptables -A "$CHAIN" -m conntrack --ctstate ESTABLISHED,RELATED -j RETURN
-iptables -A "$CHAIN" -i lo -j RETURN
-iptables -A "$CHAIN" -i 'docker+' -j RETURN
-iptables -A "$CHAIN" -i 'br+' -j RETURN
-iptables -A "$CHAIN" -j DROP
-iptables -C DOCKER-USER -j "$CHAIN" 2>/dev/null || iptables -I DOCKER-USER 1 -j "$CHAIN"
-echo '{"schemaVersion":1,"applied":true,"scope":"docker-forwarded-ingress","hostSshTouched":false}'
+apply_family iptables
+apply_family ip6tables
+if [[ "$mode" == "--install-systemd" ]]; then
+  install -m 0644 "$ROOT_DIR/systemd/$UNIT_NAME" "/etc/systemd/system/$UNIT_NAME"
+  systemctl daemon-reload
+  systemctl enable --now "$UNIT_NAME"
+fi
+echo '{"schemaVersion":2,"applied":true,"scope":"docker-forwarded-ingress","ipFamilies":["ipv4","ipv6"],"hostSshTouched":false,"persistent":'"$([[ "$mode" == "--install-systemd" ]] && echo true || echo false)"'}'
