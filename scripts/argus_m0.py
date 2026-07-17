@@ -50,13 +50,22 @@ def remediation_plan(inventory: dict[str, Any]) -> dict[str, Any]:
     digest = str(inventory.get("evidenceDigest", ""))
     if not digest:
         raise ValueError("inventory has no evidence digest")
+    docker_forwarded = docker_forwarded_wildcard_findings(inventory)
     actions = []
     for finding in inventory.get("findings", []):
         if not isinstance(finding, dict):
             continue
         category = str(finding.get("category", ""))
-        action = ACTION_BY_CATEGORY.get(category, "investigate-and-contain")
         finding_id = str(finding.get("id", ""))
+        if category == "wildcard-listener" and finding_id in docker_forwarded:
+            action = "contain-docker-forwarded-ingress"
+            requires = ["pre-health", "dual-stack-firewall-enforcement", "post-health", "rollback"]
+        elif category == "wildcard-listener":
+            action = "review-host-listener"
+            requires = ["pre-health", "reviewed-containment-or-removal", "post-health", "rollback"]
+        else:
+            action = ACTION_BY_CATEGORY.get(category, "investigate-and-contain")
+            requires = ["pre-health", "rollback", "post-health", "isolation-check"]
         actions.append(
             {
                 "id": opaque_ref(f"{digest}|{finding_id}|{action}"),
@@ -64,7 +73,7 @@ def remediation_plan(inventory: dict[str, Any]) -> dict[str, Any]:
                 "action": action,
                 "approval": "pending",
                 "state": "planned",
-                "requires": ["pre-health", "rollback", "post-health", "isolation-check"],
+                "requires": requires,
             }
         )
     payload = {
@@ -76,6 +85,70 @@ def remediation_plan(inventory: dict[str, Any]) -> dict[str, Any]:
     }
     payload["planDigest"] = canonical_digest(payload)
     return payload
+
+
+def docker_forwarded_wildcard_findings(inventory: dict[str, Any]) -> set[str]:
+    """Return listener findings backed by a wildcard-published Docker port."""
+    resources = {
+        opaque_ref(f"{port.get('protocol')}:{port.get('publicPort')}")
+        for container in inventory.get("containers", [])
+        if isinstance(container, dict)
+        for port in container.get("publishedPorts", [])
+        if isinstance(port, dict)
+        and port.get("addressScope") == "wildcard"
+        and port.get("protocol") in {"tcp", "udp"}
+        and isinstance(port.get("publicPort"), int)
+        and port["publicPort"] > 0
+    }
+    return {
+        str(finding.get("id", ""))
+        for finding in inventory.get("findings", [])
+        if isinstance(finding, dict)
+        and finding.get("category") == "wildcard-listener"
+        and finding.get("resourceRef") in resources
+    }
+
+
+def record_docker_lockdown_containment(
+    plan: dict[str, Any], inventory: dict[str, Any], verification: dict[str, bool],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Approve and record only Docker wildcard findings covered by the reviewed guard."""
+    if plan.get("inventoryDigest") != inventory.get("evidenceDigest"):
+        raise ValueError("stale remediation plan: inventory digest changed")
+    required = {"unitEnabled", "unitActive", "ipv4Guard", "ipv6Guard", "healthPassing"}
+    if set(verification) != required or not all(verification.values()):
+        raise ValueError("dual-stack lockdown verification is incomplete")
+    affected = [
+        action for action in plan.get("actions", [])
+        if isinstance(action, dict) and action.get("action") == "contain-docker-forwarded-ingress"
+    ]
+    if not affected:
+        raise ValueError("no Docker wildcard findings are eligible for lockdown containment")
+    approval = canonical_digest(
+        {"inventoryDigest": inventory.get("evidenceDigest"), "verification": verification, "findingIds": sorted(str(item["findingId"]) for item in affected)}
+    )
+    for action in affected:
+        action["approval"] = "approved"
+        action["approvalDigest"] = approval
+        action["approvedAt"] = now()
+        action["state"] = "contained"
+    plan["planDigest"] = canonical_digest({key: value for key, value in plan.items() if key != "planDigest"})
+    record = {
+        "schemaVersion": 1,
+        "recordedAt": now(),
+        "scope": "docker-forwarded-ingress",
+        "inventoryDigest": inventory.get("evidenceDigest"),
+        "planDigest": plan["planDigest"],
+        "sourceRevision": inventory.get("sourceRevision"),
+        "verification": verification,
+        "affectedFindingIds": sorted(str(item["findingId"]) for item in affected),
+        "remainingHostListenerFindingCount": sum(
+            1 for action in plan.get("actions", [])
+            if isinstance(action, dict) and action.get("action") == "review-host-listener"
+        ),
+    }
+    record["evidenceDigest"] = canonical_digest(record)
+    return plan, record
 
 
 def record_evidence(plan: dict[str, Any], inventory: dict[str, Any], finding_id: str, phase: str) -> dict[str, Any]:

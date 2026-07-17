@@ -25,12 +25,13 @@ from argus_legacy import (  # noqa: E402
     inventory_summary,
     mount_finding,
     normalize_mount,
+    opaque_ref,
     ownership_reconciliation,
     parse_ss_listeners,
     route_evidence,
     write_inventory,
 )
-from argus_m0 import isolation_report, owner_review_cards, record_evidence, remediation_plan  # noqa: E402
+from argus_m0 import docker_forwarded_wildcard_findings, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
 
 
 class FakeRunner:
@@ -287,6 +288,27 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         changed = {**inventory, "evidenceDigest": "sha256:new"}
         with self.assertRaisesRegex(ValueError, "stale remediation plan"):
             record_evidence(plan, changed, "sha256:finding", "post")
+
+    def test_docker_lockdown_approves_only_docker_published_listener_findings(self) -> None:
+        docker_listener = "sha256:docker-listener"
+        host_listener = "sha256:host-listener"
+        inventory = {
+            "sourceRevision": "abc", "evidenceDigest": "sha256:inventory",
+            "containers": [{"publishedPorts": [{"protocol": "tcp", "publicPort": 1234, "addressScope": "wildcard"}]}],
+            "findings": [
+                {"id": docker_listener, "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:1234")},
+                {"id": host_listener, "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:22")},
+            ],
+        }
+        self.assertEqual({docker_listener}, docker_forwarded_wildcard_findings(inventory))
+        plan = remediation_plan(inventory)
+        updated, record = record_docker_lockdown_containment(
+            plan, inventory, {"unitEnabled": True, "unitActive": True, "ipv4Guard": True, "ipv6Guard": True, "healthPassing": True},
+        )
+        actions = {action["findingId"]: action for action in updated["actions"]}
+        self.assertEqual("contained", actions[docker_listener]["state"])
+        self.assertEqual("pending", actions[host_listener]["approval"])
+        self.assertEqual(1, record["remainingHostListenerFindingCount"])
 
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):

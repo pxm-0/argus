@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Record private M0 evidence for the reviewed dual-stack Docker lockdown."""
+
+from __future__ import annotations
+
+import argparse
+import subprocess
+
+from argus_m0 import load_private_json, private_path, record_docker_lockdown_containment, write_private
+
+
+def succeeds(*command: str) -> bool:
+    return subprocess.run(command, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False).returncode == 0
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Approve Docker wildcard findings only after dual-stack lockdown verification.")
+    parser.add_argument("--acknowledge-reviewed-lockdown", action="store_true")
+    args = parser.parse_args()
+    if not args.acknowledge_reviewed_lockdown:
+        raise SystemExit("refusing: pass --acknowledge-reviewed-lockdown after reviewing containment and rollback")
+    inventory_path = private_path("legacy-inventory.json")
+    plan_path = private_path("remediation-plan.json")
+    verification = {
+        "unitEnabled": succeeds("systemctl", "is-enabled", "argus-m0-docker-lockdown.service"),
+        "unitActive": succeeds("systemctl", "is-active", "argus-m0-docker-lockdown.service"),
+        "ipv4Guard": succeeds("iptables", "-C", "DOCKER-USER", "-j", "ARGUS_M0_DOCKER_LOCKDOWN"),
+        "ipv6Guard": succeeds("ip6tables", "-C", "DOCKER-USER", "-j", "ARGUS_M0_DOCKER_LOCKDOWN"),
+        "healthPassing": all(bool(item.get("ok")) for item in load_private_json(inventory_path).get("health", [])),
+    }
+    plan, record = record_docker_lockdown_containment(load_private_json(plan_path), load_private_json(inventory_path), verification)
+    write_private(plan, plan_path)
+    write_private(record, private_path("evidence", "docker-lockdown-containment.json"))
+    print(f"Argus M0 Docker lockdown findings contained: {len(record['affectedFindingIds'])}")
+    print(f"Remaining host listener review findings: {record['remainingHostListenerFindingCount']}")
+    print(f"evidence digest: {record['evidenceDigest']}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

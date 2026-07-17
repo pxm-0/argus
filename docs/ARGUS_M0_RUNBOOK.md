@@ -124,6 +124,14 @@ SSH. Its explicit rollback is:
 sudo scripts/argus-m0-docker-lockdown --rollback --confirm-workload-unlock
 ```
 
+After a fresh inventory and remediation plan, record the verified containment
+for Docker-published wildcard findings only. Non-Docker listeners remain
+separate private review records; this command never approves them.
+
+```bash
+sudo python3 scripts/argus-m0-docker-lockdown-evidence --acknowledge-reviewed-lockdown
+```
+
 For namespace isolation checks, an operator creates the private, mode-`0600`
 `runtime/argus/probe-targets.json` with target IDs, hosts, and ports. Then run:
 
