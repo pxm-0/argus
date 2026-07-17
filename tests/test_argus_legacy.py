@@ -31,7 +31,7 @@ from argus_legacy import (  # noqa: E402
     route_evidence,
     write_inventory,
 )
-from argus_m0 import docker_forwarded_wildcard_findings, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
+from argus_m0 import docker_forwarded_wildcard_findings, host_listener_review, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
 
 
 class FakeRunner:
@@ -309,6 +309,16 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual("contained", actions[docker_listener]["state"])
         self.assertEqual("pending", actions[host_listener]["approval"])
         self.assertEqual(1, record["remainingHostListenerFindingCount"])
+
+    def test_host_listener_review_uses_safe_process_classes_only(self) -> None:
+        inventory = {
+            "evidenceDigest": "sha256:inventory",
+            "containers": [],
+            "findings": [{"id": "sha256:host", "category": "wildcard-listener", "resourceRef": opaque_ref("tcp:22")}],
+        }
+        review = host_listener_review(inventory, 'tcp LISTEN 0 128 0.0.0.0:22 0.0.0.0:* users:(("sshd",pid=123,fd=3))\n')
+        self.assertEqual({"sshd": 1}, review["processClassCounts"])
+        self.assertNotIn("123", json.dumps(review))
 
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):

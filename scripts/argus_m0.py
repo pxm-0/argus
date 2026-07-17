@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import json
+import re
+from collections import Counter
 from pathlib import Path
 from typing import Any
 
@@ -149,6 +151,56 @@ def record_docker_lockdown_containment(
     }
     record["evidenceDigest"] = canonical_digest(record)
     return plan, record
+
+
+def host_listener_review(inventory: dict[str, Any], ss_output: str) -> dict[str, Any]:
+    """Resolve non-Docker wildcard findings to safe process-class labels privately."""
+    docker_findings = docker_forwarded_wildcard_findings(inventory)
+    targets = {
+        str(finding.get("id", "")): str(finding.get("resourceRef", ""))
+        for finding in inventory.get("findings", [])
+        if isinstance(finding, dict)
+        and finding.get("category") == "wildcard-listener"
+        and str(finding.get("id", "")) not in docker_findings
+    }
+    discovered: dict[str, set[str]] = {reference: set() for reference in targets.values()}
+    for line in ss_output.splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            continue
+        protocol = fields[0].lower()
+        address, port = _split_listener_endpoint(fields[4])
+        if not port or address not in {"0.0.0.0", "::"}:
+            continue
+        reference = opaque_ref(f"{protocol}:{port}")
+        if reference not in discovered:
+            continue
+        match = re.search(r'users:\(\("([^"\\]+)"', line)
+        name = match.group(1) if match else "unknown"
+        discovered[reference].add(name if re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", name) else "unknown")
+    cards = [
+        {"findingId": finding_id, "resourceRef": reference, "processClasses": sorted(discovered[reference]) or ["unknown"]}
+        for finding_id, reference in sorted(targets.items())
+    ]
+    classes = Counter(
+        process_class
+        for card in cards
+        for process_class in card["processClasses"]
+    )
+    payload = {
+        "schemaVersion": 1,
+        "inventoryDigest": inventory.get("evidenceDigest"),
+        "cards": cards,
+        "processClassCounts": dict(sorted(classes.items())),
+    }
+    payload["reviewDigest"] = canonical_digest(payload)
+    return payload
+
+
+def _split_listener_endpoint(value: str) -> tuple[str, str]:
+    if value.startswith("[") and "]:" in value:
+        return value[1:].rsplit("]:", 1)
+    return value.rsplit(":", 1) if ":" in value else (value, "")
 
 
 def record_evidence(plan: dict[str, Any], inventory: dict[str, Any], finding_id: str, phase: str) -> dict[str, Any]:
