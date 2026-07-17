@@ -34,13 +34,18 @@ def socket_inode_processes() -> dict[str, set[str]]:
 
 
 def main() -> int:
-    result = subprocess.run(
+    listeners = subprocess.run(
+        ["ss", "-H", "-lntu", "-n"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+    )
+    ownership = subprocess.run(
         ["ss", "-H", "-lntupe", "-n"], text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
     )
-    if result.returncode != 0:
+    if listeners.returncode != 0 or ownership.returncode != 0:
         raise SystemExit("host listener inspection unavailable")
     inventory = load_private_json(private_path("legacy-inventory.json"))
-    review = host_listener_review(inventory, result.stdout, inode_processes=socket_inode_processes())
+    review = host_listener_review(
+        inventory, listeners.stdout, ownership_output=ownership.stdout, inode_processes=socket_inode_processes()
+    )
     write_private(review, private_path("host-listener-review.json"))
     print(f"Argus M0 host listener review cards: {len(review['cards'])}")
     for name, count in review["processClassCounts"].items():

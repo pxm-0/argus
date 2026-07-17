@@ -343,6 +343,11 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual({"sshd": 1}, review["processClassCounts"])
         self.assertEqual({"wildcardRows": 1, "matchedFindingRows": 1, "attributedFindingRows": 1}, review["diagnostics"])
 
+    def test_host_listener_review_rejects_different_listener_and_ownership_snapshots(self) -> None:
+        inventory = {"evidenceDigest": "sha256:inventory", "containers": [], "findings": []}
+        with self.assertRaisesRegex(ValueError, "snapshots differ"):
+            host_listener_review(inventory, "tcp LISTEN 0 128 *:22 *:*\n", ownership_output="tcp LISTEN 0 128 *:23 *:*\n")
+
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):
             def run(self, command: list[str]) -> CommandResult:
