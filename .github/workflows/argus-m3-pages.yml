@@ -1,0 +1,44 @@
+name: Argus M3 public portfolio
+on:
+  push:
+    branches: [argus]
+    paths:
+      - config/argus/public-portfolio.json
+      - scripts/argus_portfolio.py
+      - python3 scripts/argus-m3-export
+      - python3 scripts/argus-m3-mirror-verify
+      - .github/workflows/argus-m3-pages.yml
+  workflow_dispatch:
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+jobs:
+  build-and-mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signed static artifact
+        run: |
+          secure="$(mktemp -d)"
+          trap 'rm -rf "$secure"' EXIT
+          openssl genpkey -algorithm ED25519 -out "$secure/key.pem"
+          openssl pkey -in "$secure/key.pem" -pubout -out "$secure/key.pub"
+          python3 scripts/argus-m3-export --snapshot config/argus/public-portfolio.json --output public-artifact --signing-key "$secure/key.pem" --public-key "$secure/key.pub" > result.json
+          python3 scripts/argus-m3-mirror-verify --artifact public-artifact --public-key "$secure/key.pub" --receipt mirror-receipt.json
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: public-artifact
+      - uses: actions/upload-artifact@v4
+        with:
+          name: argus-m3-mirror-receipt
+          path: mirror-receipt.json
+  deploy:
+    environment:
+      name: github-pages
+      url: \${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build-and-mirror
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
