@@ -31,7 +31,7 @@ from argus_legacy import (  # noqa: E402
     route_evidence,
     write_inventory,
 )
-from argus_m0 import docker_forwarded_wildcard_findings, host_listener_review, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
+from argus_m0 import approve_host_ingress_exceptions, docker_forwarded_wildcard_findings, host_listener_review, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
 
 
 class FakeRunner:
@@ -349,6 +349,26 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         inventory = {"evidenceDigest": "sha256:inventory", "containers": [], "findings": []}
         with self.assertRaisesRegex(ValueError, "snapshots differ"):
             host_listener_review(inventory, "tcp LISTEN 0 128 *:22 *:*\n", ownership_output="tcp LISTEN 0 128 *:23 *:*\n")
+
+    def test_host_ingress_exception_requires_only_ssh_and_tailscale_without_funnel(self) -> None:
+        inventory = {
+            "sourceRevision": "abc", "evidenceDigest": "sha256:inventory", "routes": {"tailscaleFunnel": {"enabled": False}},
+            "health": [{"ok": True}],
+            "findings": [
+                {"id": "sha256:ssh", "category": "wildcard-listener", "resourceRef": "sha256:ssh"},
+                {"id": "sha256:tail", "category": "wildcard-listener", "resourceRef": "sha256:tail"},
+            ],
+        }
+        plan = remediation_plan(inventory)
+        review = {
+            "inventoryDigest": "sha256:inventory", "reviewDigest": "sha256:review", "processClassCounts": {"sshd": 1, "tailscaled": 1},
+            "cards": [{"findingId": "sha256:ssh"}, {"findingId": "sha256:tail"}],
+        }
+        updated, record = approve_host_ingress_exceptions(plan, inventory, review)
+        self.assertTrue(all(action["approval"] == "approved" for action in updated["actions"]))
+        self.assertEqual(["remote-ssh", "tailnet-transport"], record["approvedServices"])
+        with self.assertRaisesRegex(ValueError, "Funnel"):
+            approve_host_ingress_exceptions(plan, {**inventory, "routes": {"tailscaleFunnel": {"enabled": True}}}, review)
 
     def test_isolation_report_redacts_target_values(self) -> None:
         class IsolationRunner(FakeRunner):

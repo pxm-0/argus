@@ -166,6 +166,51 @@ def record_docker_lockdown_containment(
     return plan, record
 
 
+def approve_host_ingress_exceptions(
+    plan: dict[str, Any], inventory: dict[str, Any], review: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Record the explicit M0 exception for remote SSH and tailnet transport only."""
+    if plan.get("inventoryDigest") != inventory.get("evidenceDigest") or review.get("inventoryDigest") != inventory.get("evidenceDigest"):
+        raise ValueError("stale remediation plan or host listener review")
+    if inventory.get("routes", {}).get("tailscaleFunnel", {}).get("enabled"):
+        raise ValueError("refusing host ingress approval while Tailscale Funnel is enabled")
+    if review.get("processClassCounts") != {"sshd": 1, "tailscaled": 1} or len(review.get("cards", [])) != 2:
+        raise ValueError("host ingress approval requires exactly one sshd and one tailscaled listener review card")
+    review_ids = {str(card.get("findingId", "")) for card in review["cards"] if isinstance(card, dict)}
+    actions = [
+        action for action in plan.get("actions", [])
+        if isinstance(action, dict) and action.get("findingId") in review_ids and action.get("action") == "review-host-listener"
+    ]
+    if len(actions) != 2 or {str(action.get("findingId", "")) for action in actions} != review_ids:
+        raise ValueError("host listener review and remediation plan do not match")
+    if not all(bool(item.get("ok")) for item in inventory.get("health", [])):
+        raise ValueError("host ingress approval requires passing workload health")
+    approval = canonical_digest(
+        {"inventoryDigest": inventory.get("evidenceDigest"), "reviewDigest": review.get("reviewDigest"), "exception": "remote-ssh-and-tailnet-transport"}
+    )
+    for action in actions:
+        action["approval"] = "approved"
+        action["approvalDigest"] = approval
+        action["approvedAt"] = now()
+        action["state"] = "explicitly-approved-host-ingress"
+    plan["planDigest"] = canonical_digest({key: value for key, value in plan.items() if key != "planDigest"})
+    record = {
+        "schemaVersion": 1,
+        "recordedAt": now(),
+        "scope": "host-ingress-exceptions",
+        "inventoryDigest": inventory.get("evidenceDigest"),
+        "planDigest": plan["planDigest"],
+        "reviewDigest": review.get("reviewDigest"),
+        "sourceRevision": inventory.get("sourceRevision"),
+        "approvedFindingIds": sorted(review_ids),
+        "approvedServices": ["remote-ssh", "tailnet-transport"],
+        "tailscaleFunnelEnabled": False,
+        "healthPassing": True,
+    }
+    record["evidenceDigest"] = canonical_digest(record)
+    return plan, record
+
+
 def host_listener_review(
     inventory: dict[str, Any], ss_output: str, *, ownership_output: str | None = None, inode_processes: dict[str, set[str]] | None = None,
 ) -> dict[str, Any]:
