@@ -1,4 +1,4 @@
-"""Fail-closed contract generator for the root-owned Argus M2 pilot bootstrap."""
+"""Fail-closed contract and deterministic subordinate-ID allocator for Argus M2."""
 from __future__ import annotations
 import hashlib
 import json
@@ -6,6 +6,40 @@ from typing import Any
 
 class BootstrapError(ValueError):
     pass
+
+
+def _ranges(contents: str) -> list[tuple[int, int]]:
+    parsed: list[tuple[int, int]] = []
+    for line in contents.splitlines():
+        parts = line.split(":")
+        if len(parts) != 3:
+            continue
+        try:
+            start, length = int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        if start >= 0 and length > 0:
+            parsed.append((start, start + length - 1))
+    return parsed
+
+
+def first_free_subid_range(*, subuid: str, subgid: str, size: int = 65536, floor: int = 100000) -> tuple[int, int]:
+    """Return the first shared, non-overlapping subordinate-ID range.
+
+    The allocator considers both files together, so the identity receives the
+    same safe range for UIDs and GIDs without overwriting another local user.
+    """
+    if size <= 0 or floor < 0:
+        raise BootstrapError("invalid subordinate-ID range request")
+    occupied = sorted(_ranges(subuid) + _ranges(subgid))
+    candidate = floor
+    for start, end in occupied:
+        if end < candidate:
+            continue
+        if candidate + size - 1 < start:
+            return candidate, candidate + size - 1
+        candidate = max(candidate, end + 1)
+    return candidate, candidate + size - 1
 
 def _digest(value: Any) -> str:
     return "sha256:" + hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

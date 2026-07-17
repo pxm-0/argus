@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# Provision the disposable Argus M2 pilot.  Root-only, idempotent, and closed by default.
+set -euo pipefail
+
+readonly PILOT_USER="argus-pilot"
+readonly PILOT_NS="argus-pilot"
+readonly ARGUS_DIR="/etc/argus"
+readonly STORAGE_ROOT="/var/lib/argus/pilot"
+readonly UNIT_DIR="/etc/systemd/system"
+readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+readonly NETNS_HELPER="/usr/local/lib/argus/argus-m2-netns"
+readonly NFT_FILE="${ARGUS_DIR}/argus-pilot.nft"
+readonly NS_UNIT="argus-pilot-namespace.service"
+readonly DAEMON_UNIT="argus-pilot-rootless-docker.service"
+
+usage() {
+    cat <<'EOF'
+Usage: sudo ./scripts/argus-m2-bootstrap [--plan | --apply --acknowledge-disposable-pilot]
+
+--plan (default) prints the fixed host changes without changing the host.
+--apply provisions only the disposable argus-pilot cell. It has no network
+uplink, published ports, host mounts, Docker socket mount, or public route.
+EOF
+}
+
+mode="plan"
+acknowledged="false"
+while (($#)); do
+    case "$1" in
+        --plan) mode="plan" ;;
+        --apply) mode="apply" ;;
+        --acknowledge-disposable-pilot) acknowledged="true" ;;
+        -h|--help) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+    shift
+done
+
+plan() {
+    cat <<'EOF'
+Argus M2 disposable-pilot bootstrap plan
+- create only the argus-pilot Unix identity and a dedicated 65,536-ID subuid/subgid range
+- enable lingering and create /var/lib/argus/pilot owned by argus-pilot
+- create an isolated network namespace with loopback-only nftables default-deny rules
+- install root-owned systemd units; the Docker daemon runs as argus-pilot inside that namespace
+- enable no public route, host networking, host mounts, Docker socket mounts, published ports, or workload deployment
+- back up /etc/subuid and /etc/subgid before any allocation change
+EOF
+}
+
+if [[ "$mode" == "plan" ]]; then
+    plan
+    exit 0
+fi
+if [[ "$acknowledged" != "true" ]]; then
+    echo "refusing apply: add --acknowledge-disposable-pilot" >&2
+    exit 2
+fi
+if [[ "$(id -u)" != "0" ]]; then
+    echo "refusing apply: run as root with sudo" >&2
+    exit 2
+fi
+for command in useradd usermod loginctl systemctl ip nft dockerd-rootless.sh fuse-overlayfs slirp4netns python3 install cp ss; do
+    command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
+done
+[[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
+
+backup_dir="/var/lib/argus/bootstrap-backups/argus-pilot-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$backup_dir"
+for config in /etc/subuid /etc/subgid; do
+    [[ -f "$config" ]] && cp --preserve=mode,ownership,timestamps "$config" "$backup_dir/"
+done
+
+if ! id "$PILOT_USER" >/dev/null 2>&1; then
+    useradd --create-home --shell /usr/sbin/nologin "$PILOT_USER"
+fi
+
+have_subuid="$(awk -F: -v user="$PILOT_USER" '$1 == user { print $2 ":" $3 }' /etc/subuid 2>/dev/null || true)"
+have_subgid="$(awk -F: -v user="$PILOT_USER" '$1 == user { print $2 ":" $3 }' /etc/subgid 2>/dev/null || true)"
+if [[ -z "$have_subuid" && -z "$have_subgid" ]]; then
+    range="$(PYTHONPATH="$SCRIPT_DIR" python3 - <<'PY'
+from pathlib import Path
+from argus_m2_bootstrap import first_free_subid_range
+start, end = first_free_subid_range(
+    subuid=Path('/etc/subuid').read_text(encoding='utf-8', errors='ignore'),
+    subgid=Path('/etc/subgid').read_text(encoding='utf-8', errors='ignore'),
+)
+print(f'{start}-{end}')
+PY
+)"
+    usermod --add-subuids "$range" --add-subgids "$range" "$PILOT_USER"
+elif [[ "$have_subuid" != "$have_subgid" ]]; then
+    echo "refusing apply: existing argus-pilot subuid/subgid allocations differ" >&2
+    exit 2
+fi
+
+loginctl enable-linger "$PILOT_USER"
+PILOT_UID="$(id -u "$PILOT_USER")"
+systemctl start "user@${PILOT_UID}.service"
+[[ -d "/run/user/${PILOT_UID}" ]] || { echo "refusing apply: no runtime directory for argus-pilot" >&2; exit 2; }
+install -d -o "$PILOT_USER" -g "$PILOT_USER" -m 0700 "$STORAGE_ROOT"
+install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
+
+install -m 0644 /dev/stdin "$NFT_FILE" <<'EOF'
+flush ruleset
+table inet argus_pilot {
+  chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
+  chain forward { type filter hook forward priority filter; policy drop; }
+  chain output { type filter hook output priority filter; policy drop; oifname "lo" accept; }
+}
+EOF
+
+install -m 0755 /dev/stdin "$NETNS_HELPER" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+readonly ns="argus-pilot"
+case "${1:-}" in
+  ensure)
+    ip netns list | awk '{print $1}' | grep -Fx "$ns" >/dev/null || ip netns add "$ns"
+    ip -n "$ns" link set lo up
+    ip netns exec "$ns" nft -f /etc/argus/argus-pilot.nft
+    ;;
+  remove)
+    ip netns list | awk '{print $1}' | grep -Fx "$ns" >/dev/null && ip netns del "$ns" || true
+    ;;
+  *) echo "usage: $0 {ensure|remove}" >&2; exit 2 ;;
+esac
+EOF
+
+install -m 0644 /dev/stdin "$UNIT_DIR/$NS_UNIT" <<'EOF'
+[Unit]
+Description=Argus M2 disposable-pilot isolated network namespace
+Before=argus-pilot-rootless-docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/lib/argus/argus-m2-netns ensure
+ExecStop=/usr/local/lib/argus/argus-m2-netns remove
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+install -m 0644 /dev/stdin "$UNIT_DIR/$DAEMON_UNIT" <<'EOF'
+[Unit]
+Description=Argus M2 disposable-pilot rootless Docker daemon
+Requires=argus-pilot-namespace.service
+After=argus-pilot-namespace.service
+
+[Service]
+User=argus-pilot
+Group=argus-pilot
+Environment=XDG_RUNTIME_DIR=/run/user/${PILOT_UID}
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/var/lib/argus/pilot/rootlesskit
+NetworkNamespacePath=/run/netns/argus-pilot
+ExecStart=/usr/bin/env dockerd-rootless.sh --data-root /var/lib/argus/pilot/docker-data --host unix:///var/lib/argus/pilot/docker.sock --iptables=false --ip6tables=false
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes
+ProtectHome=yes
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable "$NS_UNIT" "$DAEMON_UNIT"
+systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
+systemctl restart "$NS_UNIT"
+systemctl start "$DAEMON_UNIT"
+
+systemctl is-active --quiet "$NS_UNIT"
+systemctl is-active --quiet "$DAEMON_UNIT"
+[[ -z "$(ip netns exec "$PILOT_NS" ss -H -ltn)" ]] || { echo "refusing success: pilot namespace has a TCP listener" >&2; exit 1; }
+ip netns exec "$PILOT_NS" nft list table inet argus_pilot >/dev/null
+echo '{"schemaVersion":1,"applied":true,"user":"argus-pilot","network":"loopback-only-default-deny","publishedPorts":false,"publicRoute":false,"configBackup":true}'
