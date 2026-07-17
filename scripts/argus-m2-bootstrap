@@ -95,9 +95,6 @@ elif [[ "$have_subuid" != "$have_subgid" ]]; then
 fi
 
 loginctl enable-linger "$PILOT_USER"
-PILOT_UID="$(id -u "$PILOT_USER")"
-systemctl start "user@${PILOT_UID}.service"
-[[ -d "/run/user/${PILOT_UID}" ]] || { echo "refusing apply: no runtime directory for argus-pilot" >&2; exit 2; }
 install -d -o "$PILOT_USER" -g "$PILOT_USER" -m 0700 "$STORAGE_ROOT"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
 
@@ -145,9 +142,8 @@ WantedBy=multi-user.target
 EOF
 chmod 0644 "$UNIT_DIR/$NS_UNIT"
 
-# This heredoc intentionally expands PILOT_UID into the systemd unit.  Docker
-# requires a concrete, writable XDG runtime directory; a literal shell variable
-# is not expanded by systemd.
+# RuntimeDirectory is created and owned by the service identity before the
+# daemon starts. It avoids assuming this host's logind runtime path is writable.
 tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF
 [Unit]
 Description=Argus M2 disposable-pilot rootless Docker daemon
@@ -157,7 +153,9 @@ After=argus-pilot-namespace.service
 [Service]
 User=argus-pilot
 Group=argus-pilot
-Environment=XDG_RUNTIME_DIR=/run/user/${PILOT_UID}
+RuntimeDirectory=argus-pilot
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/argus-pilot
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=/var/lib/argus/pilot/rootlesskit

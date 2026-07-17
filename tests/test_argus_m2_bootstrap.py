@@ -28,10 +28,12 @@ class M2BootstrapTest(unittest.TestCase):
         self.assertIn("--iptables=false", script)
         self.assertIn("NetworkNamespacePath=/run/netns/argus-pilot", script)
 
-    def test_daemon_unit_expands_the_runtime_directory_uid(self) -> None:
+    def test_daemon_unit_has_a_service_owned_runtime_directory(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
-        self.assertIn('tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF', script)
-        self.assertNotIn('tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<\'EOF\'', script)
+        self.assertIn("RuntimeDirectory=argus-pilot", script)
+        self.assertIn("RuntimeDirectoryMode=0700", script)
+        self.assertIn("Environment=XDG_RUNTIME_DIR=/run/argus-pilot", script)
+        self.assertNotIn("Environment=XDG_RUNTIME_DIR=/run/user/", script)
 
     def test_bootstrap_uses_portable_heredoc_writes(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
