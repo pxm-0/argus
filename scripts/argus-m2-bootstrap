@@ -167,7 +167,7 @@ ExecStart=/usr/bin/env dockerd-rootless.sh --data-root /var/lib/argus/pilot/dock
 Restart=on-failure
 RestartSec=5
 PrivateTmp=yes
-ProtectHome=yes
+ProtectHome=read-only
 NoNewPrivileges=false
 
 [Install]
