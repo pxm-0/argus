@@ -27,3 +27,8 @@ class M2BootstrapTest(unittest.TestCase):
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
         self.assertIn("--iptables=false", script)
         self.assertIn("NetworkNamespacePath=/run/netns/argus-pilot", script)
+
+    def test_daemon_unit_expands_the_runtime_directory_uid(self) -> None:
+        script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
+        self.assertIn('"$UNIT_DIR/$DAEMON_UNIT" <<EOF', script)
+        self.assertNotIn('"$UNIT_DIR/$DAEMON_UNIT" <<\'EOF\'', script)

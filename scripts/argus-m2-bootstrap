@@ -142,7 +142,10 @@ ExecStop=/usr/local/lib/argus/argus-m2-netns remove
 WantedBy=multi-user.target
 EOF
 
-install -m 0644 /dev/stdin "$UNIT_DIR/$DAEMON_UNIT" <<'EOF'
+# This heredoc intentionally expands PILOT_UID into the systemd unit.  Docker
+# requires a concrete, writable XDG runtime directory; a literal shell variable
+# is not expanded by systemd.
+install -m 0644 /dev/stdin "$UNIT_DIR/$DAEMON_UNIT" <<EOF
 [Unit]
 Description=Argus M2 disposable-pilot rootless Docker daemon
 Requires=argus-pilot-namespace.service
