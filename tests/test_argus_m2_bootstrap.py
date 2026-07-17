@@ -47,5 +47,5 @@ class M2BootstrapTest(unittest.TestCase):
 
     def test_teardown_terminates_the_lingering_user_manager_first(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-pilot-teardown").read_text(encoding="utf-8")
-        self.assertIn('loginctl terminate-user "$USER"', script)
+        self.assertIn('loginctl terminate-user "$USER" || true', script)
         self.assertIn('pgrep -u "$USER"', script)

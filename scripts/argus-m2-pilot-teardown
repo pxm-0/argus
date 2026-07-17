@@ -16,7 +16,7 @@ command -v pgrep >/dev/null || { echo "refusing teardown: pgrep is required" >&2
 systemctl disable --now "$DAEMON_UNIT" "$NS_UNIT" 2>/dev/null || true
 if id "$USER" >/dev/null 2>&1; then
     loginctl disable-linger "$USER" || true
-    loginctl terminate-user "$USER"
+    loginctl terminate-user "$USER" || true
     pgrep -u "$USER" >/dev/null && { echo "refusing teardown: argus-pilot still has running processes" >&2; exit 1; }
     while IFS=: read -r name start length; do
         [[ "$name" == "$USER" ]] && usermod --del-subuids "$start-$((start + length - 1))" "$USER"
