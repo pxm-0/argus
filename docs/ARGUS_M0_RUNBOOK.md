@@ -140,6 +140,16 @@ root-readable socket inode ownership when `ss` has no process name:
 sudo python3 scripts/argus-m0-host-listener-review
 ```
 
+When that review contains exactly one `sshd` and one `tailscaled` card, the
+operator can preserve remote SSH and tailnet transport with an explicit private
+exception. The command refuses any other listener set or an enabled Funnel:
+
+```bash
+sudo python3 scripts/argus-m0-host-ingress-approval \
+  --acknowledge-remote-ssh \
+  --acknowledge-tailnet-transport
+```
+
 For namespace isolation checks, an operator creates the private, mode-`0600`
 `runtime/argus/probe-targets.json` with target IDs, hosts, and ports. Then run:
 
