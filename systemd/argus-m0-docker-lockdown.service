@@ -1,0 +1,12 @@
+[Unit]
+Description=Argus M0 dual-stack Docker forwarded-ingress lockdown
+Wants=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/srv/oreo-cloud/scripts/argus-m0-docker-lockdown --apply --acknowledge-workload-lockdown
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
