@@ -132,6 +132,13 @@ separate private review records; this command never approves them.
 sudo python3 scripts/argus-m0-docker-lockdown-evidence --acknowledge-reviewed-lockdown
 ```
 
+Resolve the remaining non-Docker wildcard listeners to process classes without
+printing raw sockets, addresses, or process IDs:
+
+```bash
+sudo python3 scripts/argus-m0-host-listener-review
+```
+
 For namespace isolation checks, an operator creates the private, mode-`0600`
 `runtime/argus/probe-targets.json` with target IDs, hosts, and ports. Then run:
 
