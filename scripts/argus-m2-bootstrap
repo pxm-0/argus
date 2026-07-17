@@ -4,6 +4,7 @@ set -euo pipefail
 
 readonly PILOT_USER="argus-pilot"
 readonly PILOT_NS="argus-pilot"
+readonly PILOT_HOME="/home/argus-pilot"
 readonly ARGUS_DIR="/etc/argus"
 readonly STORAGE_ROOT="/var/lib/argus/pilot"
 readonly UNIT_DIR="/etc/systemd/system"
@@ -94,6 +95,7 @@ elif [[ "$have_subuid" != "$have_subgid" ]]; then
     exit 2
 fi
 
+install -d -o "$PILOT_USER" -g "$PILOT_USER" -m 0700 "$PILOT_HOME"
 loginctl enable-linger "$PILOT_USER"
 install -d -o "$PILOT_USER" -g "$PILOT_USER" -m 0700 "$STORAGE_ROOT"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
