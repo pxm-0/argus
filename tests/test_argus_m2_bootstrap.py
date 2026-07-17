@@ -30,5 +30,11 @@ class M2BootstrapTest(unittest.TestCase):
 
     def test_daemon_unit_expands_the_runtime_directory_uid(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
-        self.assertIn('"$UNIT_DIR/$DAEMON_UNIT" <<EOF', script)
-        self.assertNotIn('"$UNIT_DIR/$DAEMON_UNIT" <<\'EOF\'', script)
+        self.assertIn('tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF', script)
+        self.assertNotIn('tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<\'EOF\'', script)
+
+    def test_bootstrap_uses_portable_heredoc_writes(self) -> None:
+        script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")
+        self.assertNotIn("install -m 0644 /dev/stdin", script)
+        self.assertNotIn("install -m 0755 /dev/stdin", script)
+        self.assertIn('tee "$NFT_FILE" >/dev/null', script)
