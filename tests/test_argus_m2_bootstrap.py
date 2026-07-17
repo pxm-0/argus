@@ -35,6 +35,8 @@ class M2BootstrapTest(unittest.TestCase):
         self.assertIn('install -d -o "$PILOT_USER" -g "$PILOT_USER" -m 0700 "$PILOT_HOME"', script)
         self.assertIn("RuntimeDirectoryMode=0700", script)
         self.assertIn("Environment=XDG_RUNTIME_DIR=/run/argus-pilot", script)
+        self.assertIn("ProtectHome=read-only", script)
+        self.assertNotIn("ProtectHome=yes", script)
         self.assertNotIn("Environment=XDG_RUNTIME_DIR=/run/user/", script)
 
     def test_bootstrap_uses_portable_heredoc_writes(self) -> None:
