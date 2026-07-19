@@ -17,6 +17,14 @@ cd /srv/oreo-cloud
 sudo python3 scripts/argus-m1-audit-checkpoint
 ```
 
+Before exporting, verify the canonical entity store, both writer projections,
+and the hash-chained ledger together. The command prints only counts and
+digests; it does not disclose workload data or host details.
+
+```bash
+sudo python3 scripts/argus-m1-verify
+```
+
 The private `runtime/argus/audit-checkpoint.json` file is mode `0600` and
 contains no credentials, addresses, paths, or workload data.
 
