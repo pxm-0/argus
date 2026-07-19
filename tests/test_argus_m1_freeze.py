@@ -18,9 +18,8 @@ class ArgusM1FreezeTest(unittest.TestCase):
         with self.assertRaisesRegex(StateError, "direct privacy mutation is disabled"):
             deny_direct_legacy_mutation("privacy")
 
-    def test_cli_mutation_surfaces_fail_before_writing(self) -> None:
+    def test_unimplemented_cli_mutation_surfaces_fail_before_writing(self) -> None:
         cases = [
-            ("oreo-access-apply", ["intake-os", "local"]),
             ("oreo-workload-add", ["test-workload", "Test workload"]),
         ]
         watched = [ROOT / "config" / name for name in ("workloads.json", "privacy.json", "access.json")]
