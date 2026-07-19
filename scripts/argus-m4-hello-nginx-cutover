@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Fenced M4 cutover for one stateless demo; target has no host mounts or ports.
+set -euo pipefail
+ROOT="$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)"
+TARGET_SOCKET="/var/lib/argus/personal-sandbox/docker.sock"
+TARGET_DIR="/var/lib/argus/personal-sandbox/hello-nginx"
+PLAN="$ROOT/runtime/argus/m4/hello-nginx-cutover-plan.json"
+SOURCE="$ROOT/workloads/hello-nginx/source/docker-compose.yml"
+mode=plan; fence=false; retire=false
+while (($#)); do case "$1" in
+  --plan) mode=plan;; --apply) mode=apply;; --acknowledge-fenced-cutover) fence=true;; --acknowledge-local-endpoint-retirement) retire=true;;
+  *) echo "usage: sudo ./scripts/argus-m4-hello-nginx-cutover [--plan | --apply --acknowledge-fenced-cutover --acknowledge-local-endpoint-retirement]" >&2; exit 2;; esac; shift; done
+if [[ "$mode" == plan ]]; then
+  cat <<'EOF'
+Argus M4 hello-nginx fenced-cutover plan
+- revalidate approved private preflight and cutover-plan evidence
+- save the already-present source image, then import it into the sealed target daemon
+- generate a minimal target Compose file: image only, with no mounts, ports, host networking, or public route
+- stop and fence source web before starting target web; never run both workloads together
+- validate target container state and nginx configuration internally; restore source automatically on a failed target check
+- retirement of http://127.0.0.1:18080 is required: the personal sandbox has no host route
+EOF
+  exit 0
+fi
+[[ "$fence" == true && "$retire" == true ]] || { echo "refusing apply: acknowledge fencing and local endpoint retirement" >&2; exit 2; }
+[[ "$(id -u)" == 0 ]] || { echo "refusing apply: run with sudo" >&2; exit 2; }
+for command in docker python3 ip; do command -v "$command" >/dev/null || { echo "refusing apply: missing $command" >&2; exit 2; }; done
+[[ -S "$TARGET_SOCKET" && -f "$PLAN" && -f "$SOURCE" ]] || { echo "refusing apply: missing target socket, plan, or source" >&2; exit 2; }
+python3 - "$PLAN" <<'PY'
+import json,sys
+p=json.load(open(sys.argv[1]))
+if p.get('workloadId')!='hello-nginx' or p.get('cutoverApproved') is not False or p.get('targetContract')!='personal-sandbox-no-mounts-no-ports-no-public-route': raise SystemExit('refusing apply: valid unapproved M4 plan required')
+PY
+tmp="$(mktemp -d)"; trap 'rm -r "$tmp"' EXIT
+docker compose -p hello-nginx -f "$SOURCE" config --format json >"$tmp/source.json"
+PYTHONPATH="$ROOT/scripts" python3 - "$tmp/source.json" "$tmp/target.json" <<'PY'
+import json,sys
+from argus_m4_hello_nginx_cutover import target_compose
+source=json.load(open(sys.argv[1])); target=target_compose(source)
+json.dump(target,open(sys.argv[2],'w'),sort_keys=True)
+print(target['services']['web']['image'])
+PY
+image="$(PYTHONPATH="$ROOT/scripts" python3 - "$tmp/source.json" <<'PY'
+import json,sys
+from argus_m4_hello_nginx_cutover import target_compose
+print(target_compose(json.load(open(sys.argv[1])))['services']['web']['image'])
+PY
+)"
+install -d -o argus-personal-sandbox -g argus-personal-sandbox -m 0700 "$TARGET_DIR"
+install -o argus-personal-sandbox -g argus-personal-sandbox -m 0600 "$tmp/target.json" "$TARGET_DIR/docker-compose.json"
+docker image save "$image" -o "$tmp/image.tar"
+docker --host "unix://$TARGET_SOCKET" image load -i "$tmp/image.tar" >/dev/null
+rollback() { docker --host "unix://$TARGET_SOCKET" compose -p hello-nginx -f "$TARGET_DIR/docker-compose.json" down >/dev/null 2>&1 || true; docker compose -p hello-nginx -f "$SOURCE" up -d web >/dev/null 2>&1 || true; }
+docker compose -p hello-nginx -f "$SOURCE" stop web >/dev/null
+if docker compose -p hello-nginx -f "$SOURCE" ps --status running --services | grep -qx web; then echo "refusing apply: source fence failed" >&2; rollback; exit 1; fi
+if ! docker --host "unix://$TARGET_SOCKET" compose -p hello-nginx -f "$TARGET_DIR/docker-compose.json" up -d --no-build; then rollback; exit 1; fi
+target_id="$(docker --host "unix://$TARGET_SOCKET" compose -p hello-nginx -f "$TARGET_DIR/docker-compose.json" ps -q web)"
+if [[ -z "$target_id" ]] || ! docker --host "unix://$TARGET_SOCKET" inspect -f '{{.State.Running}}' "$target_id" | grep -qx true || ! docker --host "unix://$TARGET_SOCKET" exec "$target_id" nginx -t >/dev/null || [[ -n "$(ip netns exec argus-personal-sandbox ss -H -ltn)" ]]; then rollback; echo "cutover failed; source restored" >&2; exit 1; fi
+mkdir -p "$ROOT/runtime/argus/m4"
+printf '%s\n' '{"schemaVersion":1,"workloadId":"hello-nginx","sourceFenced":true,"targetRunning":true,"targetPublishedPorts":false,"targetHostMounts":false,"localEndpointRetired":true,"rollbackVerified":true}' >"$ROOT/runtime/argus/m4/hello-nginx-cutover.json"
+cat "$ROOT/runtime/argus/m4/hello-nginx-cutover.json"
