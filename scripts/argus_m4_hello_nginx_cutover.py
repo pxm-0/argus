@@ -15,11 +15,14 @@ def target_compose(source: dict[str, Any]) -> dict[str, Any]:
     web = services["web"]
     if not isinstance(web, dict) or not isinstance(web.get("image"), str) or not web["image"]:
         raise CutoverError("source web image is required")
-    allowed = {"image", "ports", "networks"}
+    allowed = {"image", "ports", "networks", "container_name", "restart"}
     unsupported = sorted(key for key, value in web.items() if key not in allowed and value not in (None, [], {}, False, ""))
     if unsupported:
         raise CutoverError("source service has unsupported cutover fields: " + ", ".join(unsupported))
     ports = web.get("ports", [])
     if not isinstance(ports, list) or any(not isinstance(port, dict) or str(port.get("host_ip", "")) not in {"127.0.0.1", "::1"} for port in ports):
         raise CutoverError("source ports must be loopback-only")
-    return {"name": "hello-nginx", "services": {"web": {"image": web["image"]}}}
+    target_web = {"image": web["image"]}
+    if web.get("restart") not in (None, "", False):
+        target_web["restart"] = web["restart"]
+    return {"name": "hello-nginx", "services": {"web": target_web}}
