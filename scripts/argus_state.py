@@ -480,6 +480,13 @@ class AuditLedger:
             rows = connection.execute("SELECT payload_json FROM audit_events ORDER BY sequence").fetchall()
         return [json.loads(row["payload_json"]) for row in rows]
 
+    def has_correlation_outcome(self, correlation_id: str) -> bool:
+        """Return whether a durable non-intent outcome already exists."""
+        return any(
+            event.get("correlationId") == correlation_id and event.get("outcome") != "intent"
+            for event in self._events()
+        )
+
     def begin_break_glass(self, *, actor: str, target: str, trust_domain: str, operation: str, correlation_id: str, bypass_non_waivable: bool = False) -> str:
         if bypass_non_waivable:
             raise StateError("break-glass cannot bypass non-waivable isolation or exposure controls")
@@ -545,15 +552,20 @@ class AuditLedger:
 class PrivacyMutationWriter:
     """Dual-schema privacy writer with a replayable, fail-closed journal."""
 
-    def __init__(self, privacy_path: Path, state_path: Path, ledger_path: Path, journal_path: Path):
+    def __init__(self, privacy_path: Path, state_path: Path, ledger_path: Path, journal_path: Path, *, fault_hook: Callable[[str], None] | None = None):
         self.privacy_path = privacy_path
         self.state_path = state_path
         self.ledger = AuditLedger(ledger_path)
         self.journal_path = journal_path
+        self.fault_hook = fault_hook
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS privacy_projection (workload_id TEXT PRIMARY KEY, entry_json TEXT NOT NULL)")
+
+    def _fault(self, boundary: str) -> None:
+        if self.fault_hook is not None:
+            self.fault_hook(boundary)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.state_path)
@@ -597,6 +609,7 @@ class PrivacyMutationWriter:
             return
         prepared: dict[str, dict[str, Any]] = {}
         committed: set[str] = set()
+        aborted: set[str] = set()
         for line in self.journal_path.read_text(encoding="utf-8").splitlines():
             try:
                 record = json.loads(line)
@@ -607,16 +620,24 @@ class PrivacyMutationWriter:
                 prepared[transaction_id] = record
             elif record.get("phase") == "COMMITTED":
                 committed.add(transaction_id)
+            elif record.get("phase") == "ABORTED":
+                aborted.add(transaction_id)
         current = self._read_privacy()
         for transaction_id, record in prepared.items():
-            if transaction_id in committed:
+            if transaction_id in committed or transaction_id in aborted:
                 continue
             if record.get("privacyChecksum") != _canonical_digest(current):
-                raise StateError("privacy writer has an unresolved mutation; refusing a divergent write")
+                if record.get("previousChecksum") != _canonical_digest(current):
+                    raise StateError("privacy writer has an unresolved mutation; refusing a divergent write")
+                if not self.ledger.has_correlation_outcome(transaction_id):
+                    self.ledger.append({**record["outcome"], "outcome": "error"})
+                self._append({"phase": "ABORTED", "transactionId": transaction_id})
+                continue
             self._project(current)
             if not self._parity(current):
                 raise StateError("privacy writer replay did not restore parity")
-            self.ledger.append(record["outcome"])
+            if not self.ledger.has_correlation_outcome(transaction_id):
+                self.ledger.append(record["outcome"])
             self._append({"phase": "COMMITTED", "transactionId": transaction_id})
 
     def set_privacy(self, *, workload_id: str, privacy_value: str, reason: str, actor: str, timestamp: str) -> tuple[str, str]:
@@ -634,28 +655,38 @@ class PrivacyMutationWriter:
         intent = {"actor": actor, "operation": "privacy.set", "outcome": "intent", "target": workload_id, "trustDomain": "legacy-rootful", "correlationId": transaction_id}
         outcome = {**intent, "outcome": "accepted", "from": old, "to": privacy_value}
         self.ledger.append(intent)
-        self._append({"phase": "PREPARED", "transactionId": transaction_id, "privacyChecksum": _canonical_digest(replacement), "outcome": outcome})
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(current), "privacyChecksum": _canonical_digest(replacement), "outcome": outcome})
+        self._fault("privacy-after-prepared")
         _atomic_json_replace(self.privacy_path, replacement)
+        self._fault("privacy-after-json")
         self._project(replacement)
+        self._fault("privacy-after-projection")
         if not self._parity(replacement):
             raise StateError("privacy writer refused to complete without JSON/SQLite parity")
         self.ledger.append(outcome)
+        self._fault("privacy-after-outcome")
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        self._fault("privacy-after-committed")
         return old, privacy_value
 
 
 class AccessMutationWriter:
     """Dual-schema writer for policy-approved access state transitions."""
 
-    def __init__(self, access_path: Path, state_path: Path, ledger_path: Path, journal_path: Path):
+    def __init__(self, access_path: Path, state_path: Path, ledger_path: Path, journal_path: Path, *, fault_hook: Callable[[str], None] | None = None):
         self.access_path = access_path
         self.state_path = state_path
         self.ledger = AuditLedger(ledger_path)
         self.journal_path = journal_path
+        self.fault_hook = fault_hook
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
         self.journal_path.parent.mkdir(parents=True, exist_ok=True)
         with self._connect() as connection:
             connection.execute("CREATE TABLE IF NOT EXISTS access_projection (workload_id TEXT PRIMARY KEY, entry_json TEXT NOT NULL)")
+
+    def _fault(self, boundary: str) -> None:
+        if self.fault_hook is not None:
+            self.fault_hook(boundary)
 
     def _connect(self) -> sqlite3.Connection:
         connection = sqlite3.connect(self.state_path)
@@ -698,6 +729,7 @@ class AccessMutationWriter:
             return
         prepared: dict[str, dict[str, Any]] = {}
         committed: set[str] = set()
+        aborted: set[str] = set()
         for line in self.journal_path.read_text(encoding="utf-8").splitlines():
             try:
                 record = json.loads(line)
@@ -708,16 +740,24 @@ class AccessMutationWriter:
                 prepared[transaction_id] = record
             elif record.get("phase") == "COMMITTED":
                 committed.add(transaction_id)
+            elif record.get("phase") == "ABORTED":
+                aborted.add(transaction_id)
         current = self._read_access()
         for transaction_id, record in prepared.items():
-            if transaction_id in committed:
+            if transaction_id in committed or transaction_id in aborted:
                 continue
             if record.get("accessChecksum") != _canonical_digest(current):
-                raise StateError("access writer has an unresolved mutation; refusing a divergent write")
+                if record.get("previousChecksum") != _canonical_digest(current):
+                    raise StateError("access writer has an unresolved mutation; refusing a divergent write")
+                if not self.ledger.has_correlation_outcome(transaction_id):
+                    self.ledger.append({**record["outcome"], "outcome": "error"})
+                self._append({"phase": "ABORTED", "transactionId": transaction_id})
+                continue
             self._project(current)
             if not self._parity(current):
                 raise StateError("access writer replay did not restore parity")
-            self.ledger.append(record["outcome"])
+            if not self.ledger.has_correlation_outcome(transaction_id):
+                self.ledger.append(record["outcome"])
             self._append({"phase": "COMMITTED", "transactionId": transaction_id})
 
     def apply(self, *, workload_id: str, desired: str, decision: dict[str, Any], actor: str, timestamp: str) -> dict[str, Any]:
@@ -742,11 +782,16 @@ class AccessMutationWriter:
         intent = {"actor": actor, "operation": "access.apply", "outcome": "intent", "target": workload_id, "trustDomain": "legacy-rootful", "correlationId": transaction_id}
         outcome = {**intent, "outcome": "accepted", "oldDesired": str(before.get("desired", "")), "desired": desired, "oldEffective": str(before.get("effective", "")), "effective": str(entry.get("effective", "")), "plannedOnly": bool(decision.get("plannedOnly"))}
         self.ledger.append(intent)
-        self._append({"phase": "PREPARED", "transactionId": transaction_id, "accessChecksum": _canonical_digest(replacement), "outcome": outcome})
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(current), "accessChecksum": _canonical_digest(replacement), "outcome": outcome})
+        self._fault("access-after-prepared")
         _atomic_json_replace(self.access_path, replacement)
+        self._fault("access-after-json")
         self._project(replacement)
+        self._fault("access-after-projection")
         if not self._parity(replacement):
             raise StateError("access writer refused to complete without JSON/SQLite parity")
         self.ledger.append(outcome)
+        self._fault("access-after-outcome")
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        self._fault("access-after-committed")
         return {"oldDesired": before.get("desired"), "oldEffective": before.get("effective"), "effective": entry.get("effective"), "plannedOnly": bool(decision.get("plannedOnly")), "reason": str(decision.get("reason", ""))}
