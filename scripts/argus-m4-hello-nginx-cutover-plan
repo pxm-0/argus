@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Generate private, read-only M4 cutover-plan evidence for hello-nginx."""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from argus_m4_cutover_plan import CutoverPlanError, build_plan
+
+
+ROOT = Path(__file__).resolve().parents[1]
+PRE_FLIGHT = ROOT / "runtime" / "argus" / "m4" / "hello-nginx-preflight.json"
+COMPOSE = ROOT / "workloads" / "hello-nginx" / "source" / "docker-compose.yml"
+TARGET_SOCKET = "/var/lib/argus/personal-sandbox/docker.sock"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only M4 hello-nginx cutover planning; it never transfers or starts a workload.")
+    parser.parse_args()
+    if not PRE_FLIGHT.is_file():
+        raise CutoverPlanError("run the M4 hello-nginx preflight first")
+    rendered = subprocess.run(
+        ["docker", "compose", "-p", "hello-nginx", "-f", str(COMPOSE), "config", "--format", "json"],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if rendered.returncode != 0:
+        raise CutoverPlanError("source Compose configuration could not be rendered")
+    target = subprocess.run(
+        ["docker", "--host", f"unix://{TARGET_SOCKET}", "ps", "-aq"],
+        check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+    )
+    if target.returncode != 0:
+        raise CutoverPlanError("personal-sandbox Docker daemon is unavailable")
+    plan = build_plan(
+        preflight=json.loads(PRE_FLIGHT.read_text(encoding="utf-8")),
+        compose=json.loads(rendered.stdout),
+        target_empty=target.stdout.strip() == "",
+    )
+    path = ROOT / "runtime" / "argus" / "m4" / "hello-nginx-cutover-plan.json"
+    path.write_text(json.dumps(plan, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(plan, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, CutoverPlanError) as error:
+        print(f"refusing cutover plan: {error}", file=sys.stderr)
+        raise SystemExit(2)
