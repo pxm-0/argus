@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from argus_state import PrivacyMutationWriter, StateError
+from argus_state import AccessMutationWriter, PrivacyMutationWriter, StateError
 from oreo_common import root
 
 
@@ -19,3 +19,9 @@ def privacy_writer() -> PrivacyMutationWriter:
     """Return the sole M1 privacy writer; its state is private runtime data."""
     runtime = root() / "runtime" / "argus" / "m1"
     return PrivacyMutationWriter(root() / "config" / "privacy.json", runtime / "state.sqlite3", runtime / "audit.sqlite3", runtime / "privacy-journal.jsonl")
+
+
+def access_writer() -> AccessMutationWriter:
+    """Return the sole M1 access writer; its state is private runtime data."""
+    runtime = root() / "runtime" / "argus" / "m1"
+    return AccessMutationWriter(root() / "config" / "access.json", runtime / "state.sqlite3", runtime / "audit.sqlite3", runtime / "access-journal.jsonl")

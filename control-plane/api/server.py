@@ -21,7 +21,7 @@ PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
-from argus_m1 import deny_direct_legacy_mutation, privacy_writer  # noqa: E402
+from argus_m1 import access_writer, deny_direct_legacy_mutation, privacy_writer  # noqa: E402
 from oreo_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
 
 
@@ -150,7 +150,6 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, {"workloadId": workload_id, "desired": desired, **policy_decision(workload_id, desired)})
 
     def handle_access_apply(self, workload_id: str, body: dict[str, Any]) -> None:
-        deny_direct_legacy_mutation("access")
         desired = str(body.get("desired", ""))
         decision = policy_decision(workload_id, desired)
         if not decision["allowed"]:
@@ -173,31 +172,9 @@ class Handler(BaseHTTPRequestHandler):
                 },
             )
             return
-        access = load_json("access.json")
-        if workload_id not in access["workloads"]:
-            raise ValueError("unknown workload")
-        old_desired = access["workloads"][workload_id]["desired"]
-        old_effective = access["workloads"][workload_id]["effective"]
-        access["workloads"][workload_id]["desired"] = desired
-        if decision.get("plannedOnly"):
-            access["workloads"][workload_id]["lastError"] = decision["reason"]
-        else:
-            access["workloads"][workload_id]["effective"] = decision["effective"]
-            access["workloads"][workload_id]["lastError"] = ""
-        access["workloads"][workload_id]["lastAppliedAt"] = now()
-        save_json("access.json", access)
-        audit(
-            "access.apply",
-            workload_id,
-            "ok",
-            actor="admin-token",
-            oldDesired=old_desired,
-            desired=desired,
-            oldEffective=old_effective,
-            effective=access["workloads"][workload_id]["effective"],
-        )
+        result = access_writer().apply(workload_id=workload_id, desired=desired, decision=decision, actor="control-api", timestamp=now())
         regenerate_dashboard()
-        self.send_json(200, {"ok": True, "workloadId": workload_id, "desired": desired, "effective": access["workloads"][workload_id]["effective"], "plannedOnly": bool(decision.get("plannedOnly"))})
+        self.send_json(200, {"ok": True, "workloadId": workload_id, "desired": desired, "effective": result["effective"], "plannedOnly": result["plannedOnly"]})
 
     def handle_logs_preview(self, workload_id: str, body: dict[str, Any]) -> None:
         payload = logs_preview(workload_id, max_lines=int(body.get("maxLines", 100)))

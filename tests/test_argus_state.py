@@ -13,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
+from argus_state import AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -215,6 +215,23 @@ class ArgusStateTest(unittest.TestCase):
             writer._append({"phase": "PREPARED", "transactionId": "test", "privacyChecksum": "sha256:" + __import__("hashlib").sha256(json.dumps(replacement, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "outcome": outcome})
             writer.recover()
             self.assertTrue(writer._parity(replacement))
+            self.assertTrue(writer.ledger.verify())
+
+    def test_access_writer_requires_policy_and_preserves_planned_only_effective_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            access_path = root / "access.json"
+            access_path.write_text(json.dumps({"states": ["local", "cloudflare-protected"], "workloads": {"project-a": {"desired": "local", "effective": "local", "lastError": "", "lastAppliedAt": ""}}}))
+            writer = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            denied = {"allowed": False}
+            with self.assertRaises(StateError):
+                writer.apply(workload_id="project-a", desired="local", decision=denied, actor="operator", timestamp="2026-07-18T00:00:00Z")
+            result = writer.apply(workload_id="project-a", desired="cloudflare-protected", decision={"allowed": True, "plannedOnly": True, "reason": "planned only", "effective": "local"}, actor="operator", timestamp="2026-07-18T00:00:00Z")
+            stored = json.loads(access_path.read_text())["workloads"]["project-a"]
+            self.assertTrue(result["plannedOnly"])
+            self.assertEqual("cloudflare-protected", stored["desired"])
+            self.assertEqual("local", stored["effective"])
+            self.assertTrue(writer._parity(writer._read_access()))
             self.assertTrue(writer.ledger.verify())
 
     def test_break_glass_requires_durable_intent_and_reconciles_abandonment(self) -> None:
