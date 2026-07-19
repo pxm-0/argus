@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_state import AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
+from argus_m1_verify import VerificationError, verify_m1_state  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -233,6 +234,35 @@ class ArgusStateTest(unittest.TestCase):
             self.assertEqual("local", stored["effective"])
             self.assertTrue(writer._parity(writer._read_access()))
             self.assertTrue(writer.ledger.verify())
+
+    def test_m1_verifier_requires_parity_and_returns_only_safe_summary(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / "config"
+            (config / "argus").mkdir(parents=True)
+            workloads = {"workloads": [{"id": "project-a"}]}
+            classification = {"workloads": {"project-a": {"realm": "unclassified", "zone": "legacy", "stage": "none", "trustDomain": "legacy-rootful"}}}
+            privacy = {"states": ["unclassified", "internal"], "workloads": {"project-a": {"privacy": "unclassified", "reason": "initial"}}}
+            access = {"states": ["none", "local"], "workloads": {"project-a": {"desired": "none", "effective": "local", "lastError": "", "lastAppliedAt": ""}}}
+            for name, value in (("workloads.json", workloads), ("privacy.json", privacy), ("access.json", access)):
+                (config / name).write_text(json.dumps(value))
+            (config / "argus" / "legacy-classification.json").write_text(json.dumps(classification))
+            runtime = root / "runtime" / "argus"
+            snapshot = legacy_workload_snapshot(workloads["workloads"], classification["workloads"])
+            repository = SQLiteRepository(runtime / "entity-store.sqlite3")
+            repository.import_snapshot(snapshot)
+            privacy_writer = PrivacyMutationWriter(config / "privacy.json", runtime / "m1" / "state.sqlite3", runtime / "audit.sqlite3", runtime / "m1" / "privacy.jsonl")
+            privacy_writer.set_privacy(workload_id="project-a", privacy_value="internal", reason="verified", actor="operator", timestamp="2026-07-19T00:00:00Z")
+            access_writer = AccessMutationWriter(config / "access.json", runtime / "m1" / "state.sqlite3", runtime / "audit.sqlite3", runtime / "m1" / "access.jsonl")
+            access_writer.apply(workload_id="project-a", desired="local", decision={"allowed": True, "plannedOnly": False, "reason": "safe", "effective": "local"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
+            summary = verify_m1_state(root)
+            self.assertTrue(summary["verified"])
+            self.assertEqual(1, summary["entityCount"])
+            self.assertGreaterEqual(summary["auditSequence"], 4)
+            self.assertNotIn("project-a", json.dumps(summary))
+            (config / "privacy.json").write_text(json.dumps(privacy))
+            with self.assertRaises(VerificationError):
+                verify_m1_state(root)
 
     def test_break_glass_requires_durable_intent_and_reconciles_abandonment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
