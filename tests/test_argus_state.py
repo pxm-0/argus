@@ -219,6 +219,52 @@ class ArgusStateTest(unittest.TestCase):
             self.assertTrue(writer._parity(replacement))
             self.assertTrue(writer.ledger.verify())
 
+    def test_privacy_writer_recovers_each_durable_boundary_without_duplicate_outcome(self) -> None:
+        for boundary, expected in {
+            "privacy-after-prepared": "unclassified",
+            "privacy-after-json": "internal",
+            "privacy-after-projection": "internal",
+            "privacy-after-outcome": "internal",
+            "privacy-after-committed": "internal",
+        }.items():
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                privacy_path = root / "privacy.json"
+                privacy_path.write_text(json.dumps({"defaultPrivacy": "unclassified", "states": ["unclassified", "internal"], "workloads": {"project-a": {"privacy": "unclassified", "reason": "initial"}}}))
+
+                def crash(point: str) -> None:
+                    if point == boundary:
+                        raise RuntimeError(point)
+
+                writer = PrivacyMutationWriter(privacy_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl", fault_hook=crash)
+                with self.assertRaisesRegex(RuntimeError, boundary):
+                    writer.set_privacy(workload_id="project-a", privacy_value="internal", reason="reviewed", actor="operator", timestamp="2026-07-19T00:00:00Z")
+                recovered = PrivacyMutationWriter(privacy_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+                recovered.recover()
+                self.assertEqual(expected, recovered._read_privacy()["workloads"]["project-a"]["privacy"])
+                self.assertTrue(recovered.ledger.verify())
+                events = recovered.ledger._events()
+                self.assertLessEqual(sum(event.get("outcome") == "accepted" for event in events), 1)
+
+    def test_access_writer_recovers_prepared_or_applied_write(self) -> None:
+        for boundary, expected in {"access-after-prepared": "local", "access-after-json": "cloudflare-protected", "access-after-outcome": "cloudflare-protected"}.items():
+            with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                access_path = root / "access.json"
+                access_path.write_text(json.dumps({"states": ["local", "cloudflare-protected"], "workloads": {"project-a": {"desired": "local", "effective": "local", "lastError": "", "lastAppliedAt": ""}}}))
+
+                def crash(point: str) -> None:
+                    if point == boundary:
+                        raise RuntimeError(point)
+
+                writer = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl", fault_hook=crash)
+                with self.assertRaisesRegex(RuntimeError, boundary):
+                    writer.apply(workload_id="project-a", desired="cloudflare-protected", decision={"allowed": True, "plannedOnly": True, "reason": "planned", "effective": "local"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
+                recovered = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+                recovered.recover()
+                self.assertEqual(expected, recovered._read_access()["workloads"]["project-a"]["desired"])
+                self.assertTrue(recovered.ledger.verify())
+
     def test_access_writer_requires_policy_and_preserves_planned_only_effective_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
