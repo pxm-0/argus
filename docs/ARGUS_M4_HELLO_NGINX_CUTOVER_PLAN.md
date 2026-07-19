@@ -13,9 +13,10 @@ sudo python3 scripts/argus-m4-hello-nginx-cutover-plan
 ```
 
 It rejects the pilot before cutover implementation if its Compose file has more
-than the `web` service, a target-side build, a port mapping, a volume or bind
-mount, host networking, privileged capabilities, devices, or a Docker API
-socket. Its private result is written to
+than the `web` service, a target-side build, a wildcard/non-loopback port
+mapping, a volume or bind mount, host networking, privileged capabilities,
+devices, or a Docker API socket. A source loopback-only health mapping is
+accepted solely so the later target generator can remove it. Its private result is written to
 `runtime/argus/m4/hello-nginx-cutover-plan.json` and must still say
 `cutoverApproved: false`.
 

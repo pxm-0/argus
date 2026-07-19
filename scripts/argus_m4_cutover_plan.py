@@ -11,7 +11,7 @@ class CutoverPlanError(ValueError):
 
 
 FORBIDDEN_SERVICE_FIELDS = {
-    "ports", "volumes", "network_mode", "privileged", "pid", "devices",
+    "volumes", "network_mode", "privileged", "pid", "devices",
     "cap_add", "cap_drop", "security_opt", "extra_hosts", "use_api_socket",
 }
 
@@ -19,6 +19,17 @@ FORBIDDEN_SERVICE_FIELDS = {
 def digest(value: Any) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode("utf-8")
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def loopback_source_ports(web: dict[str, Any]) -> bool:
+    """Only a source-local health mapping may be removed at the target boundary."""
+    ports = web.get("ports", [])
+    if not isinstance(ports, list):
+        return False
+    for port in ports:
+        if not isinstance(port, dict) or str(port.get("host_ip", "")) not in {"127.0.0.1", "::1"}:
+            return False
+    return True
 
 
 def inspect_stateless_compose(compose: dict[str, Any]) -> dict[str, Any]:
@@ -30,6 +41,8 @@ def inspect_stateless_compose(compose: dict[str, Any]) -> dict[str, Any]:
         raise CutoverPlanError("pilot web service must use an explicit image")
     if "build" in web:
         raise CutoverPlanError("target image must be imported; target-side builds are forbidden")
+    if not loopback_source_ports(web):
+        raise CutoverPlanError("pilot source ports must be loopback-only before target removal")
     forbidden = sorted(field for field in FORBIDDEN_SERVICE_FIELDS if field in web and web[field] not in (None, [], {}, False, ""))
     if forbidden:
         raise CutoverPlanError("pilot Compose uses forbidden target fields: " + ", ".join(forbidden))
@@ -37,6 +50,7 @@ def inspect_stateless_compose(compose: dict[str, Any]) -> dict[str, Any]:
         "sourceComposeDigest": digest(compose),
         "sourceImageRefDigest": digest(web["image"]),
         "serviceCount": 1,
+        "sourceLoopbackPortsRemoved": bool(web.get("ports")),
     }
 
 

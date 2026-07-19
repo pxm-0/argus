@@ -24,6 +24,13 @@ class CutoverPlanTest(unittest.TestCase):
         self.assertFalse(plan["cutoverApproved"])
         self.assertTrue(plan["sourceComposeDigest"].startswith("sha256:"))
 
+    def test_permits_only_loopback_source_ports_for_removal(self) -> None:
+        loopback = {"services": {"web": {"image": "nginx:stable", "ports": [{"host_ip": "127.0.0.1", "published": "18080", "target": 80}]}}}
+        self.assertTrue(inspect_stateless_compose(loopback)["sourceLoopbackPortsRemoved"])
+        wildcard = {"services": {"web": {"image": "nginx:stable", "ports": [{"host_ip": "0.0.0.0", "published": "8080", "target": 80}]}}}
+        with self.assertRaises(CutoverPlanError):
+            inspect_stateless_compose(wildcard)
+
     def test_forbidden_service_capabilities_fail_closed(self) -> None:
         mounted = {"services": {"web": {"image": "nginx:stable", "volumes": ["/:/host:ro"]}}}
         with self.assertRaises(CutoverPlanError):
