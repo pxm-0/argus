@@ -25,6 +25,17 @@ digests; it does not disclose workload data or host details.
 sudo python3 scripts/argus-m1-verify
 ```
 
+If verification reports missing explicit legacy quarantine records, reconcile
+only those missing records from the existing denied default, then rerun the
+legacy import and verification. This does not admit a workload or alter its
+runtime, access, routes, or classification beyond explicit legacy quarantine.
+
+```bash
+sudo python3 scripts/argus-m1-reconcile-legacy-classifications --apply --acknowledge-quarantine-reconciliation
+sudo python3 scripts/argus-m1-import-legacy
+sudo python3 scripts/argus-m1-verify
+```
+
 The private `runtime/argus/audit-checkpoint.json` file is mode `0600` and
 contains no credentials, addresses, paths, or workload data.
 

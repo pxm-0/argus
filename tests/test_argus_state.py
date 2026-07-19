@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_state import AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 from argus_m1_verify import VerificationError, verify_m1_state  # noqa: E402
+from argus_m1_reconcile import ReconcileError, reconcile  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -263,6 +264,27 @@ class ArgusStateTest(unittest.TestCase):
             (config / "privacy.json").write_text(json.dumps(privacy))
             with self.assertRaises(VerificationError):
                 verify_m1_state(root)
+
+    def test_m1_reconciliation_adds_only_missing_fail_closed_records_with_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "config" / "argus").mkdir(parents=True)
+            (root / "config" / "workloads.json").write_text(json.dumps({"workloads": [{"id": "one"}, {"id": "two"}]}))
+            baseline = {"default": {"realm": "unclassified", "zone": "legacy", "stage": "none", "trustDomain": "legacy-rootful", "status": "legacy-unclassified", "admission": "denied"}, "workloads": {"one": {"realm": "unclassified", "zone": "legacy", "stage": "none", "trustDomain": "legacy-rootful", "status": "legacy-unclassified", "admission": "denied"}}}
+            path = root / "config" / "argus" / "legacy-classification.json"
+            path.write_text(json.dumps(baseline))
+            self.assertEqual(1, reconcile(root, apply=False)["missingCount"])
+            result = reconcile(root, apply=True)
+            self.assertTrue(result["applied"])
+            self.assertTrue(result["backupDigest"].startswith("sha256:"))
+            repaired = json.loads(path.read_text())
+            self.assertEqual({"one", "two"}, set(repaired["workloads"]))
+            self.assertEqual(baseline["default"], repaired["workloads"]["two"])
+            self.assertEqual(0, reconcile(root, apply=False)["missingCount"])
+            repaired["workloads"]["one"]["admission"] = "allowed"
+            path.write_text(json.dumps(repaired))
+            with self.assertRaises(ReconcileError):
+                reconcile(root, apply=True)
 
     def test_break_glass_requires_durable_intent_and_reconciles_abandonment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
