@@ -1,0 +1,143 @@
+#!/usr/bin/env bash
+# Provision only the sealed M4 personal-sandbox target cell; never a workload.
+set -euo pipefail
+
+readonly CELL_USER="argus-personal-sandbox"
+readonly CELL_NS="argus-personal-sandbox"
+readonly CELL_HOME="/home/${CELL_USER}"
+readonly CELL_STORAGE="/var/lib/argus/personal-sandbox"
+readonly ARGUS_DIR="/etc/argus"
+readonly UNIT_DIR="/etc/systemd/system"
+readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+readonly NFT_FILE="${ARGUS_DIR}/argus-personal-sandbox.nft"
+readonly HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-netns"
+readonly NS_UNIT="argus-personal-sandbox-namespace.service"
+readonly DAEMON_UNIT="argus-personal-sandbox-rootless-docker.service"
+
+usage() {
+  cat <<'EOF'
+Usage: sudo ./scripts/argus-m4-personal-sandbox-bootstrap [--plan | --apply --acknowledge-personal-sandbox-cell]
+
+Creates only an empty personal-sandbox rootless Docker cell. It never imports,
+mounts, copies, starts, stops, or exposes a workload.
+EOF
+}
+
+mode=plan
+ack=false
+while (($#)); do
+  case "$1" in
+    --plan) mode=plan ;;
+    --apply) mode=apply ;;
+    --acknowledge-personal-sandbox-cell) ack=true ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+if [[ "$mode" == plan ]]; then
+  cat <<'EOF'
+Argus M4 personal-sandbox target-cell plan
+- create only the argus-personal-sandbox identity with a dedicated subordinate-ID range
+- install a separate rootless Docker daemon, storage root, socket, namespace, and default-deny firewall policy
+- prohibit workload mounts, Docker-socket mounts, host networking, published ports, public routes, and cross-domain routes
+- do not deploy or migrate any workload
+EOF
+  exit 0
+fi
+[[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-personal-sandbox-cell" >&2; exit 2; }
+[[ "$(id -u)" == 0 ]] || { echo "refusing apply: run as root with sudo" >&2; exit 2; }
+for command in useradd usermod loginctl systemctl ip nft dockerd-rootless.sh fuse-overlayfs slirp4netns python3 install cp tee chmod ss; do
+  command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
+done
+[[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
+
+backup_dir="/var/lib/argus/bootstrap-backups/personal-sandbox-$(date -u +%Y%m%dT%H%M%SZ)"
+install -d -m 0700 "$backup_dir"
+for config in /etc/subuid /etc/subgid; do [[ -f "$config" ]] && cp --preserve=mode,ownership,timestamps "$config" "$backup_dir/"; done
+if ! id "$CELL_USER" >/dev/null 2>&1; then useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"; fi
+have_uid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subuid 2>/dev/null || true)"
+have_gid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subgid 2>/dev/null || true)"
+if [[ -z "$have_uid" && -z "$have_gid" ]]; then
+  range="$(PYTHONPATH="$SCRIPT_DIR" python3 - <<'PY'
+from pathlib import Path
+from argus_m2_bootstrap import first_free_subid_range
+start, end = first_free_subid_range(subuid=Path('/etc/subuid').read_text(), subgid=Path('/etc/subgid').read_text())
+print(f'{start}-{end}')
+PY
+)"
+  usermod --add-subuids "$range" --add-subgids "$range" "$CELL_USER"
+elif [[ "$have_uid" != "$have_gid" ]]; then
+  echo "refusing apply: subordinate UID/GID allocations differ" >&2; exit 2
+fi
+
+install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME" "$CELL_STORAGE"
+loginctl enable-linger "$CELL_USER"
+install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
+tee "$NFT_FILE" >/dev/null <<'EOF'
+flush ruleset
+table inet argus_personal_sandbox {
+  chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
+  chain forward { type filter hook forward priority filter; policy drop; }
+  chain output { type filter hook output priority filter; policy drop; oifname "lo" accept; }
+}
+EOF
+chmod 0644 "$NFT_FILE"
+tee "$HELPER" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+case "\${1:-}" in
+  ensure) ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null || ip netns add "$CELL_NS"; ip -n "$CELL_NS" link set lo up; ip netns exec "$CELL_NS" nft -f "$NFT_FILE" ;;
+  remove) ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null && ip netns del "$CELL_NS" || true ;;
+  *) exit 2 ;;
+esac
+EOF
+chmod 0755 "$HELPER"
+tee "$UNIT_DIR/$NS_UNIT" >/dev/null <<EOF
+[Unit]
+Description=Argus M4 personal-sandbox isolated namespace
+Before=$DAEMON_UNIT
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$HELPER ensure
+ExecStop=$HELPER remove
+[Install]
+WantedBy=multi-user.target
+EOF
+tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF
+[Unit]
+Description=Argus M4 personal-sandbox rootless Docker daemon
+Requires=$NS_UNIT
+After=$NS_UNIT
+[Service]
+User=$CELL_USER
+Group=$CELL_USER
+Environment=HOME=$CELL_HOME
+RuntimeDirectory=argus-personal-sandbox
+RuntimeDirectoryMode=0700
+Environment=XDG_RUNTIME_DIR=/run/argus-personal-sandbox
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=$CELL_STORAGE/rootlesskit
+NetworkNamespacePath=/run/netns/$CELL_NS
+ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --iptables=false --ip6tables=false
+Restart=on-failure
+RestartSec=5
+PrivateTmp=yes
+ProtectHome=read-only
+NoNewPrivileges=false
+[Install]
+WantedBy=multi-user.target
+EOF
+chmod 0644 "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT"
+systemctl daemon-reload
+systemctl enable "$NS_UNIT" "$DAEMON_UNIT"
+systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
+systemctl restart "$NS_UNIT"
+systemctl start "$DAEMON_UNIT"
+systemctl is-active --quiet "$NS_UNIT" "$DAEMON_UNIT"
+[[ -z "$(ip netns exec "$CELL_NS" ss -H -ltn)" ]] || { echo "refusing success: target namespace has a TCP listener" >&2; exit 1; }
+ip netns exec "$CELL_NS" nft list table inet argus_personal_sandbox >/dev/null
+echo '{"schemaVersion":1,"applied":true,"domain":"personal-sandbox","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}'
