@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from argus_state import StateError
+from argus_state import PrivacyMutationWriter, StateError
+from oreo_common import root
 
 
 def deny_direct_legacy_mutation(operation: str) -> None:
@@ -12,3 +13,9 @@ def deny_direct_legacy_mutation(operation: str) -> None:
     raise StateError(
         f"Argus M1 writer cutover: direct {operation} mutation is disabled until its dual-schema transform is available"
     )
+
+
+def privacy_writer() -> PrivacyMutationWriter:
+    """Return the sole M1 privacy writer; its state is private runtime data."""
+    runtime = root() / "runtime" / "argus" / "m1"
+    return PrivacyMutationWriter(root() / "config" / "privacy.json", runtime / "state.sqlite3", runtime / "audit.sqlite3", runtime / "privacy-journal.jsonl")

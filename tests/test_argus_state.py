@@ -13,7 +13,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
+from argus_state import AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -192,6 +192,30 @@ class ArgusStateTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             with self.assertRaises(StateError):
                 AuditLedger(Path(directory) / "audit.sqlite3").append({"operation": "approve"})
+
+    def test_privacy_writer_keeps_json_and_sqlite_in_parity_with_audit(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            privacy_path = root / "privacy.json"
+            privacy_path.write_text(json.dumps({"defaultPrivacy": "unclassified", "states": ["unclassified", "internal"], "workloads": {"project-a": {"privacy": "unclassified", "reason": "initial"}}}))
+            writer = PrivacyMutationWriter(privacy_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            self.assertEqual(("unclassified", "internal"), writer.set_privacy(workload_id="project-a", privacy_value="internal", reason="reviewed", actor="operator", timestamp="2026-07-18T00:00:00Z"))
+            self.assertEqual("internal", json.loads(privacy_path.read_text())["workloads"]["project-a"]["privacy"])
+            self.assertTrue(writer._parity(writer._read_privacy()))
+            self.assertTrue(writer.ledger.verify())
+
+    def test_privacy_writer_recovers_prepared_json_write(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            privacy_path = root / "privacy.json"
+            replacement = {"defaultPrivacy": "unclassified", "states": ["unclassified", "internal"], "workloads": {"project-a": {"privacy": "internal", "reason": "reviewed"}}}
+            privacy_path.write_text(json.dumps(replacement))
+            writer = PrivacyMutationWriter(privacy_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            outcome = {"actor": "operator", "operation": "privacy.set", "outcome": "accepted", "target": "project-a", "trustDomain": "legacy-rootful", "correlationId": "test"}
+            writer._append({"phase": "PREPARED", "transactionId": "test", "privacyChecksum": "sha256:" + __import__("hashlib").sha256(json.dumps(replacement, sort_keys=True, separators=(",", ":")).encode()).hexdigest(), "outcome": outcome})
+            writer.recover()
+            self.assertTrue(writer._parity(replacement))
+            self.assertTrue(writer.ledger.verify())
 
     def test_break_glass_requires_durable_intent_and_reconciles_abandonment(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
