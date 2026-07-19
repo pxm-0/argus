@@ -20,7 +20,6 @@ class ArgusM1FreezeTest(unittest.TestCase):
 
     def test_cli_mutation_surfaces_fail_before_writing(self) -> None:
         cases = [
-            ("oreo-privacy-set", ["intake-os", "internal"]),
             ("oreo-access-apply", ["intake-os", "local"]),
             ("oreo-workload-add", ["test-workload", "Test workload"]),
         ]

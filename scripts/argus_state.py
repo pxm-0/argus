@@ -540,3 +540,105 @@ class AuditLedger:
         event_hash = "" if row is None else str(row["event_hash"])
         payload = {"schemaVersion": 1, "sequence": sequence, "eventHash": event_hash}
         return {**payload, "checkpointHash": _canonical_digest(payload)}
+
+
+class PrivacyMutationWriter:
+    """Dual-schema privacy writer with a replayable, fail-closed journal."""
+
+    def __init__(self, privacy_path: Path, state_path: Path, ledger_path: Path, journal_path: Path):
+        self.privacy_path = privacy_path
+        self.state_path = state_path
+        self.ledger = AuditLedger(ledger_path)
+        self.journal_path = journal_path
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        self.journal_path.parent.mkdir(parents=True, exist_ok=True)
+        with self._connect() as connection:
+            connection.execute("CREATE TABLE IF NOT EXISTS privacy_projection (workload_id TEXT PRIMARY KEY, entry_json TEXT NOT NULL)")
+
+    def _connect(self) -> sqlite3.Connection:
+        connection = sqlite3.connect(self.state_path)
+        connection.row_factory = sqlite3.Row
+        return connection
+
+    def _read_privacy(self) -> dict[str, Any]:
+        try:
+            value = json.loads(self.privacy_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise StateError("privacy compatibility store is malformed") from exc
+        if not isinstance(value, dict) or not isinstance(value.get("workloads"), dict):
+            raise StateError("privacy compatibility store has an invalid schema")
+        return value
+
+    def _append(self, record: dict[str, Any]) -> None:
+        with self.journal_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        _sync_directory(self.journal_path.parent)
+
+    def _project(self, privacy: dict[str, Any]) -> None:
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("DELETE FROM privacy_projection")
+            connection.executemany(
+                "INSERT INTO privacy_projection(workload_id, entry_json) VALUES (?, ?)",
+                [(workload_id, json.dumps(entry, sort_keys=True, separators=(",", ":"))) for workload_id, entry in privacy["workloads"].items()],
+            )
+
+    def _parity(self, privacy: dict[str, Any]) -> bool:
+        expected = sorted((key, json.dumps(value, sort_keys=True, separators=(",", ":"))) for key, value in privacy["workloads"].items())
+        with self._connect() as connection:
+            actual = [(str(row["workload_id"]), str(row["entry_json"])) for row in connection.execute("SELECT workload_id, entry_json FROM privacy_projection ORDER BY workload_id")]
+        return actual == expected
+
+    def recover(self) -> None:
+        """Complete only a prepared mutation whose JSON replacement is present."""
+        if not self.journal_path.exists():
+            return
+        prepared: dict[str, dict[str, Any]] = {}
+        committed: set[str] = set()
+        for line in self.journal_path.read_text(encoding="utf-8").splitlines():
+            try:
+                record = json.loads(line)
+                transaction_id = str(record["transactionId"])
+            except (KeyError, TypeError, json.JSONDecodeError) as exc:
+                raise StateError("privacy writer journal is malformed") from exc
+            if record.get("phase") == "PREPARED":
+                prepared[transaction_id] = record
+            elif record.get("phase") == "COMMITTED":
+                committed.add(transaction_id)
+        current = self._read_privacy()
+        for transaction_id, record in prepared.items():
+            if transaction_id in committed:
+                continue
+            if record.get("privacyChecksum") != _canonical_digest(current):
+                raise StateError("privacy writer has an unresolved mutation; refusing a divergent write")
+            self._project(current)
+            if not self._parity(current):
+                raise StateError("privacy writer replay did not restore parity")
+            self.ledger.append(record["outcome"])
+            self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+
+    def set_privacy(self, *, workload_id: str, privacy_value: str, reason: str, actor: str, timestamp: str) -> tuple[str, str]:
+        if not workload_id or not reason or not actor:
+            raise StateError("privacy mutation requires workload, reason, and actor")
+        authorize_mutation(policy=True, store=True, authorization=True, freshness=True, observation=True, reconciliation=True, audit=self.ledger.verify())
+        self.recover()
+        current = self._read_privacy()
+        if privacy_value not in current.get("states", []):
+            raise StateError("invalid privacy state")
+        old = str(current["workloads"].get(workload_id, {}).get("privacy", current.get("defaultPrivacy", "unclassified")))
+        replacement = json.loads(json.dumps(current))
+        replacement["workloads"][workload_id] = {"privacy": privacy_value, "reason": reason, "updatedAt": timestamp, "updatedBy": actor}
+        transaction_id = str(uuid.uuid4())
+        intent = {"actor": actor, "operation": "privacy.set", "outcome": "intent", "target": workload_id, "trustDomain": "legacy-rootful", "correlationId": transaction_id}
+        outcome = {**intent, "outcome": "accepted", "from": old, "to": privacy_value}
+        self.ledger.append(intent)
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "privacyChecksum": _canonical_digest(replacement), "outcome": outcome})
+        _atomic_json_replace(self.privacy_path, replacement)
+        self._project(replacement)
+        if not self._parity(replacement):
+            raise StateError("privacy writer refused to complete without JSON/SQLite parity")
+        self.ledger.append(outcome)
+        self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        return old, privacy_value

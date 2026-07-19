@@ -21,7 +21,7 @@ PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
-from argus_m1 import deny_direct_legacy_mutation  # noqa: E402
+from argus_m1 import deny_direct_legacy_mutation, privacy_writer  # noqa: E402
 from oreo_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
 
 
@@ -133,7 +133,6 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"error": exc.__class__.__name__})
 
     def handle_privacy(self, workload_id: str, body: dict[str, Any]) -> None:
-        deny_direct_legacy_mutation("privacy")
         privacy = load_json("privacy.json")
         workloads = {item["id"] for item in load_json("workloads.json")["workloads"]}
         new_privacy = str(body.get("privacy", ""))
@@ -142,10 +141,7 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("unknown workload")
         if new_privacy not in privacy["states"]:
             raise ValueError("invalid privacy state")
-        old = privacy["workloads"].get(workload_id, {}).get("privacy", privacy["defaultPrivacy"])
-        privacy["workloads"][workload_id] = {"privacy": new_privacy, "reason": reason, "updatedAt": now(), "updatedBy": "control-api"}
-        save_json("privacy.json", privacy)
-        audit("privacy.set", workload_id, "ok", actor="admin-token", **{"from": old, "to": new_privacy})
+        old, _ = privacy_writer().set_privacy(workload_id=workload_id, privacy_value=new_privacy, reason=reason, actor="control-api", timestamp=now())
         regenerate_dashboard()
         self.send_json(200, {"ok": True, "from": old, "to": new_privacy})
 

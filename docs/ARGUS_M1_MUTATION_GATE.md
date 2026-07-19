@@ -18,9 +18,9 @@ through the writer or explicitly denied during the rollback window:
 
 | Surface | Current mutation | Required M1 disposition |
 | --- | --- | --- |
-| `oreo-privacy-set` | `privacy.json` | Writer-backed privacy transform |
+| `oreo-privacy-set` | `privacy.json` | Writer-backed privacy transform (implemented) |
 | `oreo-access-apply` | `access.json` | Writer-backed access transform |
-| Control API privacy endpoint | `privacy.json` | Call the same writer; no local duplicate logic |
+| Control API privacy endpoint | `privacy.json` | Calls the same writer (implemented) |
 | Control API access endpoint | `access.json` | Call the same writer; no local duplicate logic |
 | `oreo-workload-add` / register endpoint | workload, privacy, and access registries | Deny until a complete dual-schema registration transform exists |
 | Cloudflare effective-state helpers | `access.json` | Deny until an explicit dual-schema transform exists |
@@ -32,7 +32,8 @@ artifacts are not entity mutations and remain outside this writer.
 
 1. Freeze the direct mutation surfaces listed above.
 2. Build transforms for privacy and access that validate policy and represent
-   the change in both schemas.
+   the change in both schemas. Privacy is narrowly enabled; access remains
+   frozen until it has equivalent recovery and parity coverage.
 3. Write a durable audit intent before changing either representation.
 4. Commit the legacy JSON journal record and SQLite transaction through the
    single writer.
