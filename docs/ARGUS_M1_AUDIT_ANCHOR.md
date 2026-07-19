@@ -43,10 +43,19 @@ contains no credentials, addresses, paths, or workload data.
 
 Create an operator-managed directory on the PC and copy the checkpoint there.
 Do not place the copy under the server checkout or a server-mounted directory.
+Because the exported server file is intentionally root-owned mode `0600`, stage
+a temporary owner-readable copy first. The checkpoint contains only its sequence
+and hashes, but remove this staging file immediately after copying it.
+
+```bash
+sudo install -o oreo -g oreo -m 0600 \
+  /srv/oreo-cloud/runtime/argus/audit-checkpoint.json \
+  /home/oreo/argus-m1-audit-checkpoint.json
+```
 
 ```powershell
 New-Item -ItemType Directory -Force C:\Users\Admin\Argus\audit-anchors
-scp oreo@oreochiserver:/srv/oreo-cloud/runtime/argus/audit-checkpoint.json C:\Users\Admin\Argus\audit-anchors\audit-checkpoint.json
+scp oreo@oreochiserver:/home/oreo/argus-m1-audit-checkpoint.json C:\Users\Admin\Argus\audit-anchors\audit-checkpoint.json
 ```
 
 From the PC's repository checkout, verify the copied file before recording the
@@ -58,3 +67,9 @@ python3 scripts/argus-m1-audit-checkpoint --verify /mnt/c/Users/Admin/Argus/audi
 
 Keep prior checkpoint files; do not overwrite them. The PC copy is the
 independently managed off-host anchor for M1.
+
+After the PC verification succeeds, remove only the temporary server copy:
+
+```bash
+rm /home/oreo/argus-m1-audit-checkpoint.json
+```
