@@ -6,6 +6,7 @@ readonly CELL_USER="argus-personal-sandbox"
 readonly CELL_NS="argus-personal-sandbox"
 readonly CELL_HOME="/home/${CELL_USER}"
 readonly CELL_STORAGE="/var/lib/argus/personal-sandbox"
+readonly USER_UNIT_DIR="$CELL_HOME/.config/systemd/user"
 readonly ARGUS_DIR="/etc/argus"
 readonly UNIT_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -13,6 +14,10 @@ readonly NFT_FILE="${ARGUS_DIR}/argus-personal-sandbox.nft"
 readonly HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-netns"
 readonly NS_UNIT="argus-personal-sandbox-namespace.service"
 readonly DAEMON_UNIT="argus-personal-sandbox-rootless-docker.service"
+
+user_systemctl() {
+  runuser -u "$CELL_USER" -- env HOME="$CELL_HOME" XDG_RUNTIME_DIR="$CELL_RUNTIME" systemctl --user "$@"
+}
 
 usage() {
   cat <<'EOF'
@@ -48,7 +53,7 @@ EOF
 fi
 [[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-personal-sandbox-cell" >&2; exit 2; }
 [[ "$(id -u)" == 0 ]] || { echo "refusing apply: run as root with sudo" >&2; exit 2; }
-for command in useradd usermod loginctl systemctl ip nft dockerd-rootless.sh fuse-overlayfs slirp4netns python3 install cp tee chmod ss; do
+for command in useradd usermod loginctl systemctl runuser ip nft dockerd-rootless.sh fuse-overlayfs rootlesskit python3 install cp tee chmod ss; do
   command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
 done
 [[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
@@ -74,6 +79,10 @@ fi
 
 install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME" "$CELL_STORAGE"
 loginctl enable-linger "$CELL_USER"
+CELL_RUNTIME="/run/user/$(id -u "$CELL_USER")"
+for _ in {1..50}; do [[ -S "$CELL_RUNTIME/bus" ]] && break; sleep 0.1; done
+[[ -S "$CELL_RUNTIME/bus" ]] || { echo "refusing apply: sandbox user manager is unavailable" >&2; exit 1; }
+install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME/.config" "$USER_UNIT_DIR"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
 tee "$NFT_FILE" >/dev/null <<'EOF'
 flush ruleset
@@ -106,40 +115,36 @@ ExecStop=$HELPER remove
 [Install]
 WantedBy=multi-user.target
 EOF
-tee "$UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF
+tee "$USER_UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF
 [Unit]
 Description=Argus M4 personal-sandbox rootless Docker daemon
-Requires=$NS_UNIT
-After=$NS_UNIT
 [Service]
-User=$CELL_USER
-Group=$CELL_USER
 Environment=HOME=$CELL_HOME
-RuntimeDirectory=argus-personal-sandbox
-RuntimeDirectoryMode=0700
-Environment=XDG_RUNTIME_DIR=/run/argus-personal-sandbox
-Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
+Environment=XDG_RUNTIME_DIR=$CELL_RUNTIME
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=$CELL_STORAGE/rootlesskit
-NetworkNamespacePath=/run/netns/$CELL_NS
 Delegate=yes
 TasksMax=infinity
-ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --exec-opt native.cgroupdriver=cgroupfs --iptables=false --ip6tables=false
+ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --exec-opt native.cgroupdriver=systemd --iptables=false --ip6tables=false
 Restart=on-failure
 RestartSec=5
-PrivateTmp=yes
-ProtectHome=read-only
-NoNewPrivileges=false
 [Install]
-WantedBy=multi-user.target
+WantedBy=default.target
 EOF
-chmod 0644 "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT"
+chown "$CELL_USER:$CELL_USER" "$USER_UNIT_DIR/$DAEMON_UNIT"
+chmod 0644 "$UNIT_DIR/$NS_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT"
 systemctl daemon-reload
-systemctl enable "$NS_UNIT" "$DAEMON_UNIT"
-systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
+systemctl disable --now "$DAEMON_UNIT" 2>/dev/null || true
+rm -f "$UNIT_DIR/$DAEMON_UNIT"
+systemctl daemon-reload
+user_systemctl daemon-reload
+user_systemctl enable "$DAEMON_UNIT"
+user_systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
 systemctl restart "$NS_UNIT"
-systemctl start "$DAEMON_UNIT"
-systemctl is-active --quiet "$NS_UNIT" "$DAEMON_UNIT"
+user_systemctl start "$DAEMON_UNIT"
+systemctl is-active --quiet "$NS_UNIT"
+user_systemctl is-active --quiet "$DAEMON_UNIT"
 [[ -z "$(ip netns exec "$CELL_NS" ss -H -ltn)" ]] || { echo "refusing success: target namespace has a TCP listener" >&2; exit 1; }
 ip netns exec "$CELL_NS" nft list table inet argus_personal_sandbox >/dev/null
 echo '{"schemaVersion":1,"applied":true,"domain":"personal-sandbox","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}'

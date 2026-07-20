@@ -17,6 +17,7 @@ SOCKET = "/var/lib/argus/personal-sandbox/docker.sock"
 TARGET_COMPOSE = "/var/lib/argus/personal-sandbox/hello-nginx/docker-compose.json"
 SOURCE_COMPOSE = ROOT / "workloads" / "hello-nginx" / "source" / "docker-compose.yml"
 SERVICE = "argus-personal-sandbox-rootless-docker.service"
+CELL_USER = "argus-personal-sandbox"
 CUTOVER = dt.datetime(2026, 7, 20, 6, 51, 23, tzinfo=dt.timezone.utc)
 
 
@@ -25,12 +26,14 @@ def run(*command: str) -> subprocess.CompletedProcess[str]:
 
 
 def main() -> int:
+    uid = run("id", "-u", CELL_USER).stdout.strip()
+    user_systemctl = ("runuser", "-u", CELL_USER, "--", "env", f"HOME=/home/{CELL_USER}", f"XDG_RUNTIME_DIR=/run/user/{uid}", "systemctl", "--user")
     target_id = run("docker", "--host", f"unix://{SOCKET}", "compose", "-p", "hello-nginx", "-f", TARGET_COMPOSE, "ps", "-q", "web").stdout.strip()
     inspect = run("docker", "--host", f"unix://{SOCKET}", "inspect", target_id, "--format", "{{.State.Running}}|{{json .HostConfig.PortBindings}}|{{json .Mounts}}") if target_id else None
     fields = inspect.stdout.strip().split("|", 2) if inspect and inspect.returncode == 0 else []
     source = run("docker", "compose", "-p", "hello-nginx", "-f", str(SOURCE_COMPOSE), "ps", "--status", "running", "--services")
-    listeners = run("ip", "netns", "exec", "argus-personal-sandbox", "ss", "-H", "-ltn")
-    delegation = run("systemctl", "show", SERVICE, "--property=Delegate", "--value")
+    daemon_pid = run("pgrep", "-u", CELL_USER, "-x", "dockerd").stdout.strip().splitlines()
+    listeners = run("nsenter", "-t", daemon_pid[0], "-n", "ss", "-H", "-ltn") if len(daemon_pid) == 1 else None
     driver = run("docker", "--host", f"unix://{SOCKET}", "info", "--format", "{{.CgroupDriver}}")
     try:
         boot_epoch = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
@@ -38,15 +41,15 @@ def main() -> int:
     except (OSError, StopIteration, ValueError, IndexError):
         booted_after_cutover = False
     facts = {
-        "daemonActive": run("systemctl", "is-active", "--quiet", SERVICE).returncode == 0,
+        "daemonActive": run(*user_systemctl, "is-active", "--quiet", SERVICE).returncode == 0,
         "targetRunning": len(fields) == 3 and fields[0] == "true",
         "targetHealthy": bool(target_id) and run("docker", "--host", f"unix://{SOCKET}", "exec", target_id, "nginx", "-t").returncode == 0,
         "sourceFenced": source.returncode == 0 and not source.stdout.strip(),
         "publishedPortsAbsent": len(fields) == 3 and fields[1] in {"{}", "null"},
         "hostMountsAbsent": len(fields) == 3 and fields[2] == "[]",
-        "namespaceListenersAbsent": listeners.returncode == 0 and not listeners.stdout.strip(),
-        "delegationEnabled": delegation.returncode == 0 and delegation.stdout.strip().lower() == "yes",
-        "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "cgroupfs",
+        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip(),
+        "delegationEnabled": driver.returncode == 0 and driver.stdout.strip() == "systemd",
+        "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "hostRebootedAfterCutover": booted_after_cutover,
     }
     result = evaluate_persistence(facts)
