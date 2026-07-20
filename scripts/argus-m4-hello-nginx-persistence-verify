@@ -34,6 +34,9 @@ def main() -> int:
     source = run("docker", "compose", "-p", "hello-nginx", "-f", str(SOURCE_COMPOSE), "ps", "--status", "running", "--services")
     daemon_pid = run("pgrep", "-u", CELL_USER, "-x", "dockerd").stdout.strip().splitlines()
     listeners = run("nsenter", "-t", daemon_pid[0], "-n", "ss", "-H", "-ltn") if len(daemon_pid) == 1 else None
+    firewall = run("nsenter", "-t", daemon_pid[0], "-n", "nft", "list", "table", "inet", "argus_personal_sandbox") if len(daemon_pid) == 1 else None
+    daemon_netns = run("readlink", f"/proc/{daemon_pid[0]}/ns/net") if len(daemon_pid) == 1 else None
+    host_netns = run("readlink", "/proc/1/ns/net")
     driver = run("docker", "--host", f"unix://{SOCKET}", "info", "--format", "{{.CgroupDriver}}")
     try:
         boot_epoch = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
@@ -47,7 +50,7 @@ def main() -> int:
         "sourceFenced": source.returncode == 0 and not source.stdout.strip(),
         "publishedPortsAbsent": len(fields) == 3 and fields[1] in {"{}", "null"},
         "hostMountsAbsent": len(fields) == 3 and fields[2] == "[]",
-        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip(),
+        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip() and firewall is not None and firewall.returncode == 0 and daemon_netns is not None and daemon_netns.returncode == 0 and host_netns.returncode == 0 and daemon_netns.stdout.strip() != host_netns.stdout.strip(),
         "delegationEnabled": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "hostRebootedAfterCutover": booted_after_cutover,
