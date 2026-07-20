@@ -219,6 +219,55 @@ class ArgusStateTest(unittest.TestCase):
             self.assertTrue(writer._parity(replacement))
             self.assertTrue(writer.ledger.verify())
 
+    def test_access_writer_reconciles_only_exact_reviewed_deployment(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "access.json"
+            before = {"desired": "cloudflare-protected", "effective": "local"}
+            after = {"desired": "cloudflare-protected", "effective": "none"}
+            deployed = {"states": ["none", "local", "cloudflare-protected"], "workloads": {"project-a": after}}
+            path.write_text(json.dumps(deployed))
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            writer._project({"states": deployed["states"], "workloads": {"project-a": before}})
+            result = writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox")
+            self.assertEqual({"reconciled": True, "alreadyApplied": False}, result)
+            self.assertTrue(writer._parity(deployed))
+            self.assertEqual({"reconciled": True, "alreadyApplied": True}, writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox"))
+
+    def test_access_writer_rejects_unreviewed_deployment_or_projection(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "access.json"
+            before = {"desired": "local", "effective": "local"}
+            after = {"desired": "none", "effective": "none"}
+            path.write_text(json.dumps({"states": ["none", "local"], "workloads": {"project-a": after}}))
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            writer._project({"states": ["none", "local"], "workloads": {"project-a": {"desired": "local", "effective": "none"}}})
+            with self.assertRaisesRegex(StateError, "pre-deployment"):
+                writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox")
+
+    def test_access_deployment_reconciliation_recovers_after_prepared_record(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "access.json"
+            before = {"desired": "local", "effective": "local"}
+            after = {"desired": "none", "effective": "none"}
+            deployed = {"states": ["none", "local"], "workloads": {"project-a": after}}
+            path.write_text(json.dumps(deployed))
+
+            def crash(boundary: str) -> None:
+                if boundary == "access-reconcile-after-prepared":
+                    raise RuntimeError("injected crash")
+
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl", fault_hook=crash)
+            writer._project({"states": deployed["states"], "workloads": {"project-a": before}})
+            with self.assertRaisesRegex(RuntimeError, "injected crash"):
+                writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox")
+            recovered = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            recovered.recover()
+            self.assertTrue(recovered._parity(deployed))
+            self.assertTrue(recovered.ledger.verify())
+
     def test_privacy_writer_recovers_each_durable_boundary_without_duplicate_outcome(self) -> None:
         for boundary, expected in {
             "privacy-after-prepared": "unclassified",

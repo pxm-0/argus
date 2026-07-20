@@ -23,6 +23,19 @@ loopback endpoint. Direct health, logs, restart, and access actions are disabled
 until a domain-local typed agent can perform them without giving the central
 control plane the sandbox Docker socket.
 
+After pulling this reviewed change on `oreochiserver`, reconcile the Git-deployed
+compatibility entry into the private M1 SQLite projection through the exact,
+journaled writer transform, then verify M1 parity:
+
+```bash
+cd /srv/oreo-cloud
+sudo python3 scripts/argus-m4-hello-nginx-reconcile-deployed
+sudo python3 scripts/argus-m1-verify
+```
+
+The transform refuses any JSON or projection state other than the reviewed
+before/after pair and requires the successful private cutover evidence.
+
 ## Remaining gate
 
 This reconciliation does not close M4. Before the personal-sandbox pilot is an

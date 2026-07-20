@@ -1,0 +1,62 @@
+#!/usr/bin/env python3
+"""Reconcile the reviewed hello-nginx M4 deployment into private M1 state."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from argus_m1 import access_writer
+from argus_state import StateError
+
+
+ROOT = Path(__file__).resolve().parents[1]
+EVIDENCE = ROOT / "runtime" / "argus" / "m4" / "hello-nginx-cutover.json"
+BEFORE = {
+    "desired": "cloudflare-protected",
+    "effective": "local",
+    "urls": {"local": "http://127.0.0.1:18080", "tailnet": "", "cloudflare": "https://hello-nginx.oreo-cloud.invalid"},
+    "lastAppliedAt": "2026-06-30T18:48:04Z",
+    "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled.",
+}
+AFTER = {
+    "desired": "cloudflare-protected",
+    "effective": "none",
+    "urls": {"local": "", "tailnet": "", "cloudflare": "https://hello-nginx.oreo-cloud.invalid"},
+    "lastAppliedAt": "2026-07-20T06:51:23Z",
+    "lastError": "M4 moved the workload into the sealed personal sandbox. No local, tailnet, or public ingress is configured.",
+}
+
+
+def main() -> int:
+    try:
+        evidence = json.loads(EVIDENCE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit("refusing reconciliation: valid private cutover evidence is required") from exc
+    required = {
+        "workloadId": "hello-nginx",
+        "sourceFenced": True,
+        "targetRunning": True,
+        "targetPublishedPorts": False,
+        "targetHostMounts": False,
+        "localEndpointRetired": True,
+        "rollbackVerified": True,
+    }
+    if evidence.get("schemaVersion") != 1 or any(evidence.get(key) != value for key, value in required.items()):
+        raise SystemExit("refusing reconciliation: cutover evidence does not prove the reviewed transition")
+    try:
+        result = access_writer().reconcile_deployed(
+            workload_id="hello-nginx",
+            expected_before=BEFORE,
+            expected_after=AFTER,
+            actor="argus-m4-hello-nginx-reconcile-deployed",
+            trust_domain="personal-sandbox",
+        )
+    except StateError as exc:
+        raise SystemExit(f"refusing reconciliation: {exc}") from exc
+    print(json.dumps({"schemaVersion": 1, "workloadId": "hello-nginx", **result}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
