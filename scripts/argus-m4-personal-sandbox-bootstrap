@@ -61,6 +61,13 @@ done
 backup_dir="/var/lib/argus/bootstrap-backups/personal-sandbox-$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_dir"
 for config in /etc/subuid /etc/subgid; do [[ -f "$config" ]] && cp --preserve=mode,ownership,timestamps "$config" "$backup_dir/"; done
+for config in "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT" "$NFT_FILE" "$HELPER"; do
+  if [[ -f "$config" ]]; then
+    destination="$backup_dir$config"
+    install -d -m 0700 "$(dirname "$destination")"
+    cp --preserve=mode,ownership,timestamps "$config" "$destination"
+  fi
+done
 if ! id "$CELL_USER" >/dev/null 2>&1; then useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"; fi
 have_uid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subuid 2>/dev/null || true)"
 have_gid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subgid 2>/dev/null || true)"
