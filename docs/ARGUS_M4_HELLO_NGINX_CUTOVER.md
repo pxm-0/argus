@@ -29,3 +29,7 @@ The sandbox rootless Docker unit delegates its cgroup subtree to its dedicated
 identity. This is required for the daemon to create container scopes without
 interactive systemd authorization; it does not grant host Docker access or add
 any network route.
+
+The daemon uses the delegated cgroup filesystem driver rather than requesting
+systemd to create a container scope. This keeps rootless container lifecycle
+inside the dedicated unit's delegated subtree.

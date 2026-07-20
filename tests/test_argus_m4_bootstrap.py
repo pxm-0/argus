@@ -27,5 +27,6 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("--iptables=false", script)
         self.assertIn("Delegate=yes", script)
         self.assertIn("TasksMax=infinity", script)
+        self.assertIn("--exec-opt native.cgroupdriver=cgroupfs", script)
         self.assertIn("workloadsDeployed", script)
         self.assertNotIn("docker compose", script)
