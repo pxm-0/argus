@@ -122,6 +122,8 @@ Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=$CELL_STORAGE/rootlesskit
 NetworkNamespacePath=/run/netns/$CELL_NS
+Delegate=yes
+TasksMax=infinity
 ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --iptables=false --ip6tables=false
 Restart=on-failure
 RestartSec=5
