@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Read-only M4 persistence and isolation verification on oreochiserver."""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+from argus_m4_persistence import evaluate_persistence
+
+
+ROOT = Path(__file__).resolve().parents[1]
+SOCKET = "/var/lib/argus/personal-sandbox/docker.sock"
+TARGET_COMPOSE = "/var/lib/argus/personal-sandbox/hello-nginx/docker-compose.json"
+SOURCE_COMPOSE = ROOT / "workloads" / "hello-nginx" / "source" / "docker-compose.yml"
+SERVICE = "argus-personal-sandbox-rootless-docker.service"
+CUTOVER = dt.datetime(2026, 7, 20, 6, 51, 23, tzinfo=dt.timezone.utc)
+
+
+def run(*command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def main() -> int:
+    target_id = run("docker", "--host", f"unix://{SOCKET}", "compose", "-p", "hello-nginx", "-f", TARGET_COMPOSE, "ps", "-q", "web").stdout.strip()
+    inspect = run("docker", "--host", f"unix://{SOCKET}", "inspect", target_id, "--format", "{{.State.Running}}|{{json .HostConfig.PortBindings}}|{{json .Mounts}}") if target_id else None
+    fields = inspect.stdout.strip().split("|", 2) if inspect and inspect.returncode == 0 else []
+    source = run("docker", "compose", "-p", "hello-nginx", "-f", str(SOURCE_COMPOSE), "ps", "--status", "running", "--services")
+    listeners = run("ip", "netns", "exec", "argus-personal-sandbox", "ss", "-H", "-ltn")
+    delegation = run("systemctl", "show", SERVICE, "--property=Delegate", "--value")
+    driver = run("docker", "--host", f"unix://{SOCKET}", "info", "--format", "{{.CgroupDriver}}")
+    try:
+        boot_epoch = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+        booted_after_cutover = boot_epoch > int(CUTOVER.timestamp())
+    except (OSError, StopIteration, ValueError, IndexError):
+        booted_after_cutover = False
+    facts = {
+        "daemonActive": run("systemctl", "is-active", "--quiet", SERVICE).returncode == 0,
+        "targetRunning": len(fields) == 3 and fields[0] == "true",
+        "targetHealthy": bool(target_id) and run("docker", "--host", f"unix://{SOCKET}", "exec", target_id, "nginx", "-t").returncode == 0,
+        "sourceFenced": source.returncode == 0 and not source.stdout.strip(),
+        "publishedPortsAbsent": len(fields) == 3 and fields[1] in {"{}", "null"},
+        "hostMountsAbsent": len(fields) == 3 and fields[2] == "[]",
+        "namespaceListenersAbsent": listeners.returncode == 0 and not listeners.stdout.strip(),
+        "delegationEnabled": delegation.returncode == 0 and delegation.stdout.strip().lower() == "yes",
+        "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "cgroupfs",
+        "hostRebootedAfterCutover": booted_after_cutover,
+    }
+    result = evaluate_persistence(facts)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["verified"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

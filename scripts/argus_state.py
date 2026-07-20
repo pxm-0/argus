@@ -724,6 +724,19 @@ class AccessMutationWriter:
             actual = [(str(row["workload_id"]), str(row["entry_json"])) for row in connection.execute("SELECT workload_id, entry_json FROM access_projection ORDER BY workload_id")]
         return actual == expected
 
+    def _projected_entry(self, workload_id: str) -> dict[str, Any] | None:
+        with self._connect() as connection:
+            row = connection.execute("SELECT entry_json FROM access_projection WHERE workload_id = ?", (workload_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["entry_json"]))
+        except json.JSONDecodeError as exc:
+            raise StateError("access projection entry is malformed") from exc
+        if not isinstance(value, dict):
+            raise StateError("access projection entry has an invalid schema")
+        return value
+
     def recover(self) -> None:
         if not self.journal_path.exists():
             return
@@ -795,3 +808,35 @@ class AccessMutationWriter:
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
         self._fault("access-after-committed")
         return {"oldDesired": before.get("desired"), "oldEffective": before.get("effective"), "effective": entry.get("effective"), "plannedOnly": bool(decision.get("plannedOnly")), "reason": str(decision.get("reason", ""))}
+
+    def reconcile_deployed(self, *, workload_id: str, expected_before: dict[str, Any], expected_after: dict[str, Any], actor: str, trust_domain: str) -> dict[str, Any]:
+        """Reconcile one reviewed Git deployment into the private projection."""
+        if not workload_id or not actor or not trust_domain or not isinstance(expected_before, dict) or not isinstance(expected_after, dict):
+            raise StateError("deployed access reconciliation requires exact before and after state")
+        authorize_mutation(policy=True, store=True, authorization=True, freshness=True, observation=True, reconciliation=True, audit=self.ledger.verify())
+        self.recover()
+        current = self._read_access()
+        if current.get("workloads", {}).get(workload_id) != expected_after:
+            raise StateError("deployed access state does not match the reviewed transition")
+        projected = self._projected_entry(workload_id)
+        if projected == expected_after:
+            if not self._parity(current):
+                raise StateError("access projection differs outside the reviewed transition")
+            return {"reconciled": True, "alreadyApplied": True}
+        if projected != expected_before:
+            raise StateError("access projection does not match the reviewed pre-deployment state")
+        transaction_id = str(uuid.uuid4())
+        intent = {"actor": actor, "operation": "access.reconcile-deployed", "outcome": "intent", "target": workload_id, "trustDomain": trust_domain, "correlationId": transaction_id}
+        outcome = {**intent, "outcome": "accepted", "oldEffective": str(expected_before.get("effective", "")), "effective": str(expected_after.get("effective", ""))}
+        self.ledger.append(intent)
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(current), "accessChecksum": _canonical_digest(current), "outcome": outcome})
+        self._fault("access-reconcile-after-prepared")
+        self._project(current)
+        self._fault("access-reconcile-after-projection")
+        if not self._parity(current):
+            raise StateError("deployed access reconciliation did not restore parity")
+        self.ledger.append(outcome)
+        self._fault("access-reconcile-after-outcome")
+        self._append({"phase": "COMMITTED", "transactionId": transaction_id})
+        self._fault("access-reconcile-after-committed")
+        return {"reconciled": True, "alreadyApplied": False}

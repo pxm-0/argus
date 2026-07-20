@@ -657,10 +657,13 @@ def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
     activation_doc = repo / "docs" / "P3_CLOUDFLARE_ACTIVATION.md"
     access = load_json_file(repo / "config" / "access.json")
     exposure = load_json_file(repo / "config" / "exposure.json")
+    placements = load_json_file(repo / "config" / "argus" / "workload-classification.json")
     hello = access.get("workloads", {}).get("hello-nginx", {})
+    hello_placement = placements.get("workloads", {}).get("hello-nginx")
     cloudflare = exposure.get("providers", {}).get("cloudflare", {})
+    expected_effective = "none" if hello_placement else "local"
     deferred = (
-        hello.get("effective") == "local"
+        hello.get("effective") == expected_effective
         and str(hello.get("urls", {}).get("cloudflare", "")).endswith(".invalid")
         and cloudflare.get("enabled") is False
         and cloudflare.get("provisioned") is False
@@ -668,7 +671,7 @@ def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
     smoke.check(deferred, "P3 Cloudflare activation remains deferred")
     if activation_doc.exists():
         content = activation_doc.read_text()
-        smoke.check("Decision: `defer`" in content and "effective access remains `local`" in content, "P3 deferral evidence recorded")
+        smoke.check("Decision: `defer`" in content and "effective access remains `local`" in content, "P3 historical deferral evidence recorded")
 
 
 def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
