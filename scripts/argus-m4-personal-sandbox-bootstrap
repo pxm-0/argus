@@ -53,7 +53,7 @@ EOF
 fi
 [[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-personal-sandbox-cell" >&2; exit 2; }
 [[ "$(id -u)" == 0 ]] || { echo "refusing apply: run as root with sudo" >&2; exit 2; }
-for command in useradd usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp tee chmod pgrep stat ss; do
+for command in useradd usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp tee chmod pgrep ps readlink stat tr ss; do
   command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
 done
 [[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
@@ -155,12 +155,15 @@ user_systemctl is-active --quiet "$DAEMON_UNIT"
 daemon_pid="$(pgrep -u "$CELL_USER" -x dockerd)"
 [[ -n "$daemon_pid" ]] || { echo "refusing success: sandbox dockerd is absent" >&2; exit 1; }
 [[ "$daemon_pid" != *$'\n'* ]] || { echo "refusing success: expected exactly one sandbox dockerd" >&2; exit 1; }
-rootless_netns="$CELL_STORAGE/rootlesskit/netns"
-[[ -e "$rootless_netns" ]] || { echo "refusing success: rootless network namespace handle is absent" >&2; exit 1; }
-[[ "$(stat -Lc %i "$rootless_netns")" != "$(stat -Lc %i /proc/1/ns/net)" ]] || { echo "refusing success: sandbox shares the host network namespace" >&2; exit 1; }
-nsenter --net="$rootless_netns" nft -f "$NFT_FILE"
-[[ -z "$(nsenter --net="$rootless_netns" ss -H -ltn)" ]] || { echo "refusing success: sandbox namespace has a TCP listener" >&2; exit 1; }
-nsenter --net="$rootless_netns" nft list table inet argus_personal_sandbox >/dev/null
+rootless_child_pid="$(ps -o ppid= -p "$daemon_pid" | tr -d ' ')"
+[[ -n "$rootless_child_pid" ]] || { echo "refusing success: RootlessKit child process is absent" >&2; exit 1; }
+[[ "$(stat -c %U "/proc/$rootless_child_pid")" == "$CELL_USER" ]] || { echo "refusing success: RootlessKit child owner mismatch" >&2; exit 1; }
+rootless_child_command="$(tr '\0' ' ' < "/proc/$rootless_child_pid/cmdline")"
+[[ "$rootless_child_command" == *"--state-dir=$CELL_STORAGE/rootlesskit"* ]] || { echo "refusing success: RootlessKit child identity mismatch" >&2; exit 1; }
+[[ "$(readlink "/proc/$rootless_child_pid/ns/net")" != "$(readlink /proc/1/ns/net)" ]] || { echo "refusing success: sandbox shares the host network namespace" >&2; exit 1; }
+nsenter -t "$rootless_child_pid" -n nft -f "$NFT_FILE"
+[[ -z "$(nsenter -t "$rootless_child_pid" -n ss -H -ltn)" ]] || { echo "refusing success: sandbox namespace has a TCP listener" >&2; exit 1; }
+nsenter -t "$rootless_child_pid" -n nft list table inet argus_personal_sandbox >/dev/null
 [[ -z "$(ip netns exec "$CELL_NS" ss -H -ltn)" ]] || { echo "refusing success: target namespace has a TCP listener" >&2; exit 1; }
 ip netns exec "$CELL_NS" nft list table inet argus_personal_sandbox >/dev/null
 echo '{"schemaVersion":1,"applied":true,"domain":"personal-sandbox","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}'

@@ -14,7 +14,6 @@ from argus_m4_persistence import evaluate_persistence
 
 ROOT = Path(__file__).resolve().parents[1]
 SOCKET = "/var/lib/argus/personal-sandbox/docker.sock"
-ROOTLESS_NETNS = "/var/lib/argus/personal-sandbox/rootlesskit/netns"
 TARGET_COMPOSE = "/var/lib/argus/personal-sandbox/hello-nginx/docker-compose.json"
 SOURCE_COMPOSE = ROOT / "workloads" / "hello-nginx" / "source" / "docker-compose.yml"
 SERVICE = "argus-personal-sandbox-rootless-docker.service"
@@ -33,10 +32,13 @@ def main() -> int:
     inspect = run("docker", "--host", f"unix://{SOCKET}", "inspect", target_id, "--format", "{{.State.Running}}|{{json .HostConfig.PortBindings}}|{{json .Mounts}}") if target_id else None
     fields = inspect.stdout.strip().split("|", 2) if inspect and inspect.returncode == 0 else []
     source = run("docker", "compose", "-p", "hello-nginx", "-f", str(SOURCE_COMPOSE), "ps", "--status", "running", "--services")
-    listeners = run("nsenter", f"--net={ROOTLESS_NETNS}", "ss", "-H", "-ltn")
-    firewall = run("nsenter", f"--net={ROOTLESS_NETNS}", "nft", "list", "table", "inet", "argus_personal_sandbox")
-    sandbox_netns = run("stat", "-Lc", "%i", ROOTLESS_NETNS)
-    host_netns = run("stat", "-Lc", "%i", "/proc/1/ns/net")
+    daemon_pid = run("pgrep", "-u", CELL_USER, "-x", "dockerd").stdout.strip().splitlines()
+    parent = run("ps", "-o", "ppid=", "-p", daemon_pid[0]) if len(daemon_pid) == 1 else None
+    rootless_child_pid = parent.stdout.strip() if parent and parent.returncode == 0 else ""
+    listeners = run("nsenter", "-t", rootless_child_pid, "-n", "ss", "-H", "-ltn") if rootless_child_pid else None
+    firewall = run("nsenter", "-t", rootless_child_pid, "-n", "nft", "list", "table", "inet", "argus_personal_sandbox") if rootless_child_pid else None
+    sandbox_netns = run("readlink", f"/proc/{rootless_child_pid}/ns/net") if rootless_child_pid else None
+    host_netns = run("readlink", "/proc/1/ns/net")
     driver = run("docker", "--host", f"unix://{SOCKET}", "info", "--format", "{{.CgroupDriver}}")
     try:
         boot_epoch = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
@@ -50,7 +52,7 @@ def main() -> int:
         "sourceFenced": source.returncode == 0 and not source.stdout.strip(),
         "publishedPortsAbsent": len(fields) == 3 and fields[1] in {"{}", "null"},
         "hostMountsAbsent": len(fields) == 3 and fields[2] == "[]",
-        "namespaceListenersAbsent": listeners.returncode == 0 and not listeners.stdout.strip() and firewall.returncode == 0 and sandbox_netns.returncode == 0 and host_netns.returncode == 0 and sandbox_netns.stdout.strip() != host_netns.stdout.strip(),
+        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip() and firewall is not None and firewall.returncode == 0 and sandbox_netns is not None and sandbox_netns.returncode == 0 and host_netns.returncode == 0 and sandbox_netns.stdout.strip() != host_netns.stdout.strip(),
         "delegationEnabled": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "hostRebootedAfterCutover": booted_after_cutover,
