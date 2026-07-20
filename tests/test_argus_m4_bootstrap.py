@@ -25,5 +25,7 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("policy drop", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
         self.assertIn("--iptables=false", script)
+        self.assertIn("Delegate=yes", script)
+        self.assertIn("TasksMax=infinity", script)
         self.assertIn("workloadsDeployed", script)
         self.assertNotIn("docker compose", script)

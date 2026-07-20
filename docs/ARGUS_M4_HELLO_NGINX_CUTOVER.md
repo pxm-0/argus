@@ -24,3 +24,8 @@ sudo ./scripts/argus-m4-hello-nginx-cutover --apply \
 If target startup or validation fails, the tool stops the target and restores
 the source automatically. A successful run records only redacted private
 evidence under `runtime/argus/m4/`.
+
+The sandbox rootless Docker unit delegates its cgroup subtree to its dedicated
+identity. This is required for the daemon to create container scopes without
+interactive systemd authorization; it does not grant host Docker access or add
+any network route.
