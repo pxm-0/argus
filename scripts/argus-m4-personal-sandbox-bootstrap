@@ -92,7 +92,7 @@ for _ in {1..50}; do [[ -S "$CELL_RUNTIME/bus" ]] && break; sleep 0.1; done
 install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME/.config" "$USER_UNIT_DIR"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
 tee "$NFT_FILE" >/dev/null <<'EOF'
-flush ruleset
+destroy table inet argus_personal_sandbox
 table inet argus_personal_sandbox {
   chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
   chain forward { type filter hook forward priority filter; policy drop; }

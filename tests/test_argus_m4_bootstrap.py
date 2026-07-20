@@ -23,6 +23,8 @@ class M4BootstrapTest(unittest.TestCase):
         script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text(encoding="utf-8")
         self.assertIn("--acknowledge-personal-sandbox-cell", script)
         self.assertIn("policy drop", script)
+        self.assertNotIn("flush ruleset", script)
+        self.assertIn("destroy table inet argus_personal_sandbox", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
         self.assertIn('rootless network namespace handle is absent', script)
