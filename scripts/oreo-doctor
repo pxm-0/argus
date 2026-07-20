@@ -50,12 +50,13 @@ def config_valid(checks: list[dict[str, Any]]) -> None:
             add(checks, False, f"config/{name} valid", error=exc.__class__.__name__)
         else:
             add(checks, True, f"config/{name} valid")
-    try:
-        json.loads((root() / "config" / "argus" / "legacy-classification.json").read_text())
-    except Exception as exc:  # noqa: BLE001 - doctor should report concise failures.
-        add(checks, False, "config/argus/legacy-classification.json valid", error=exc.__class__.__name__)
-    else:
-        add(checks, True, "config/argus/legacy-classification.json valid")
+    for name in ["legacy-classification.json", "workload-classification.json"]:
+        try:
+            json.loads((root() / "config" / "argus" / name).read_text())
+        except Exception as exc:  # noqa: BLE001 - doctor should report concise failures.
+            add(checks, False, f"config/argus/{name} valid", error=exc.__class__.__name__)
+        else:
+            add(checks, True, f"config/argus/{name} valid")
 
 
 def argus_quarantine_checks(checks: list[dict[str, Any]]) -> None:

@@ -6,4 +6,5 @@ from argus_m4_report import classification_report
 root = Path(__file__).resolve().parents[1]
 workloads = json.loads((root / "config/workloads.json").read_text()).get("workloads", [])
 classes = json.loads((root / "config/argus/legacy-classification.json").read_text())
-print(json.dumps(classification_report(workloads, classes), sort_keys=True))
+placements = json.loads((root / "config/argus/workload-classification.json").read_text())
+print(json.dumps(classification_report(workloads, classes, placements), sort_keys=True))

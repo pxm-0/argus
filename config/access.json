@@ -66,14 +66,14 @@
     },
     "hello-nginx": {
       "desired": "cloudflare-protected",
-      "effective": "local",
+      "effective": "none",
       "urls": {
-        "local": "http://127.0.0.1:18080",
+        "local": "",
         "tailnet": "",
         "cloudflare": "https://hello-nginx.oreo-cloud.invalid"
       },
-      "lastAppliedAt": "2026-06-30T18:48:04Z",
-      "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled."
+      "lastAppliedAt": "2026-07-20T06:51:23Z",
+      "lastError": "M4 moved the workload into the sealed personal sandbox. No local, tailnet, or public ingress is configured."
     },
     "locigraph": {
       "desired": "none",

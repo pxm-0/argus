@@ -409,25 +409,23 @@
         "service": "web"
       },
       "network": {
-        "localUrl": "http://127.0.0.1:18080",
+        "localUrl": "",
         "internalPort": 80,
-        "observedBindings": [
-          "127.0.0.1:18080->80/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
-        "enabled": true,
-        "url": "http://127.0.0.1:18080",
+        "enabled": false,
+        "url": "",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
-        "open": true,
-        "health": true,
-        "logs": true,
-        "restart": true,
+        "open": false,
+        "health": false,
+        "logs": false,
+        "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
         "privacyToggle": true
       },
       "migration": {
@@ -436,11 +434,12 @@
         "backupPath": "/srv/oreo-cloud/runtime/migration-backups/hello-nginx.20260630-182044",
         "compatibilitySymlink": true,
         "migratedAt": "2026-06-30T18:20:44Z",
-        "lastHealthCheck": "2026-06-30T18:20:44Z",
+        "lastHealthCheck": "2026-07-20T06:51:23Z",
         "bindMountRisks": [],
         "namedVolumeRisks": [],
         "notes": [
-          "Original host port 8080 conflicted with Intake OS; migrated Compose binds localhost-only 127.0.0.1:18080."
+          "M4 moved the stateless service into personal-sandbox with no published port, host mount, or public route.",
+          "Runtime operations remain disabled until the domain-local typed agent is available."
         ]
       }
     }

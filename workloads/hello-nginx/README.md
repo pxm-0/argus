@@ -9,8 +9,8 @@ Low-risk demo workload used for the first P1 migration.
 - Runtime: Docker Compose
 - Compose project: `hello-nginx`
 - Service: `web`
-- Health: `http://127.0.0.1:18080`
-- Access: local effective, Cloudflare protected planned
+- Health: internal target validation only until a domain-local agent is available
+- Access: none effective, Cloudflare protected planned
 
 ## Cloudflare Protected Demo Plan
 
@@ -21,9 +21,10 @@ Cloudflare planning. The route uses the intentionally non-routable hostname:
 hello-nginx.oreo-cloud.invalid
 ```
 
-The desired access state is `cloudflare-protected`, but effective access remains
-`local`. No Cloudflare tunnel, DNS record, public route, or `cloudflared`
-service is enabled by this plan.
+The desired access state is `cloudflare-protected`, but effective access is
+`none`. M4 retired the legacy loopback endpoint and did not add a replacement
+route. No Cloudflare tunnel, DNS record, public route, or `cloudflared` service
+is enabled by this plan.
 
 ## Layout
 

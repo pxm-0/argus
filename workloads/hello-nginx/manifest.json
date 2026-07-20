@@ -30,30 +30,30 @@
     "backupPath": "/srv/oreo-cloud/runtime/migration-backups/hello-nginx.20260630-182044",
     "compatibilitySymlink": true,
     "migratedAt": "2026-06-30T18:20:44Z",
-    "lastHealthCheck": "2026-06-30T18:20:44Z",
-    "rollback": "Stop the migrated stack, remove /srv/apps/hello-nginx symlink, and restore backupPath to /srv/apps/hello-nginx.",
+    "lastHealthCheck": "2026-07-20T06:51:23Z",
+    "rollback": "Use the fenced M4 rollback path: stop and fence the personal-sandbox target before restoring the legacy Compose source.",
     "notes": [
       "Original host port 8080 conflicted with Intake OS.",
-      "Migrated Compose binds localhost-only 127.0.0.1:18080."
+      "M4 moved the service into personal-sandbox without a published port, host mount, or public route."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:18080",
+    "url": "",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
   "operations": {
     "logs": {
-      "allowed": true
+      "allowed": false
     },
     "restart": {
-      "allowed": true
+      "allowed": false
     },
     "backup": {
       "allowed": true
     },
-    "logsAllowed": true,
-    "restartAllowed": true,
+    "logsAllowed": false,
+    "restartAllowed": false,
     "backupAllowed": true,
     "dashboardActionsAllowed": false,
     "approvedForCloudflareProtectedDemo": true,
