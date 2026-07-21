@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Collect only redacted prerequisite results for a disposable M2 pilot."""
+from __future__ import annotations
+import argparse
+import json
+import os
+from argus_m2 import PilotError, collect_pilot
+
+parser = argparse.ArgumentParser()
+parser.add_argument("--user", default=os.environ.get("USER", ""))
+args = parser.parse_args()
+try:
+    payload = collect_pilot(args.user)
+except PilotError as exc:
+    parser.error(str(exc))
+print(json.dumps(payload, sort_keys=True))
+raise SystemExit(0 if payload["complete"] else 2)

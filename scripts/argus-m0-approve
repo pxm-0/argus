@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Approve one private Argus M0 remediation action after independent review."""
+from __future__ import annotations
+import argparse
+from argus_m0 import approve_action, load_private_json, private_path, write_private
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--finding", required=True)
+    parser.add_argument("--approval-digest", required=True)
+    args = parser.parse_args()
+    plan_path = private_path("remediation-plan.json")
+    plan = approve_action(load_private_json(plan_path), load_private_json(private_path("legacy-inventory.json")), args.finding, args.approval_digest)
+    write_private(plan, plan_path)
+    print("Argus M0 action approved")
+    return 0
+if __name__ == "__main__": raise SystemExit(main())

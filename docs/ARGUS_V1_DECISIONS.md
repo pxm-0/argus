@@ -214,7 +214,7 @@ Evidence was collected read-only from the primary host on 2026-07-14. Detailed o
 - Hardware-backed VM isolation was not available to the observed host configuration.
 - OS-container tooling exists but no corresponding service was observed active.
 
-**Conclusion:** A rootless trust-domain pilot is feasible. Four-cell readiness remains conditional on the pilot gate in D021.
+**Conclusion:** The first rootless trust-domain pilot passed D021 on 2026-07-21. The personal-sandbox cell proved subordinate-ID allocation, cgroup v2 delegation through a lingering user manager, rootless overlay storage, a no-port RootlessKit namespace with a boot-restored default-drop firewall, private socket ownership, daemon restart recovery, and host reboot recovery. This accepts the pilot architecture; it does not authorize automatic rollout to additional trust domains or workloads without their own reviewed classification, capacity, migration, and rollback evidence.
 
 ### Current containment gaps
 

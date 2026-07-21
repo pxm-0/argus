@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Collect private, read-only M4 evidence before a hello-nginx cutover exists."""
+from __future__ import annotations
+
+import argparse
+import json
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+from argus_m4_hello_nginx import PreflightError, evaluate_preflight, sha256_file
+
+
+ROOT = Path(__file__).resolve().parents[1]
+WORKLOAD = "hello-nginx"
+TARGET_SERVICE = "argus-personal-sandbox-rootless-docker.service"
+TARGET_SOCKET = Path("/var/lib/argus/personal-sandbox/docker.sock")
+TARGET_NAMESPACE = "argus-personal-sandbox"
+
+
+def run(*command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def checksum_from_file(path: Path, filename: str) -> str:
+    for row in path.read_text(encoding="utf-8").splitlines():
+        digest, separator, recorded = row.partition("  ")
+        if separator and recorded == filename and len(digest) == 64:
+            return "sha256:" + digest
+    raise PreflightError(f"backup checksum missing for {filename}")
+
+
+def source_is_healthy() -> bool:
+    try:
+        with urllib.request.urlopen("http://127.0.0.1:18080", timeout=5) as response:
+            return response.status == 200
+    except urllib.error.URLError:
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Read-only M4 hello-nginx preflight; it never starts, stops, imports, or moves a workload.")
+    parser.add_argument("--backup", required=True, type=Path, help="Fresh hello-nginx backup directory under runtime/backups.")
+    parser.add_argument("--restore-test", required=True, type=Path, help="Matching non-destructive restore-test directory.")
+    args = parser.parse_args()
+
+    backup_root = ROOT / "runtime" / "backups" / WORKLOAD
+    restore_root = ROOT / "runtime" / "restore-tests" / WORKLOAD
+    backup = args.backup.resolve()
+    restore_test = args.restore_test.resolve()
+    if backup.parent != backup_root.resolve() or restore_test.parent != restore_root.resolve() or backup.name != restore_test.name:
+        raise PreflightError("backup and restore-test must be matching Argus runtime artifacts")
+    archive = backup / "files.tar.gz"
+    summary_path = backup / "backup-summary.json"
+    manifest_path = backup / "manifest.json"
+    checksums_path = backup / "checksums.sha256"
+    if not all(path.is_file() for path in (archive, summary_path, manifest_path, checksums_path)):
+        raise PreflightError("backup artifact is incomplete")
+
+    daemon_active = run("systemctl", "is-active", "--quiet", TARGET_SERVICE).returncode == 0
+    target_empty = run("docker", "--host", f"unix://{TARGET_SOCKET}", "ps", "-aq").stdout.strip() == ""
+    listener_result = run("ip", "netns", "exec", TARGET_NAMESPACE, "ss", "-H", "-ltn")
+    result = evaluate_preflight(
+        backup_summary=json.loads(summary_path.read_text(encoding="utf-8")),
+        backup_manifest=json.loads(manifest_path.read_text(encoding="utf-8")),
+        archive_digest=sha256_file(archive),
+        expected_archive_digest=checksum_from_file(checksums_path, "files.tar.gz"),
+        restore_compose_present=(restore_test / "source" / "docker-compose.yml").is_file(),
+        source_health=source_is_healthy(),
+        target_daemon_active=daemon_active,
+        target_socket_present=TARGET_SOCKET.is_socket(),
+        target_empty=target_empty,
+        target_has_no_tcp_listeners=listener_result.returncode == 0 and listener_result.stdout.strip() == "",
+    )
+    evidence_dir = ROOT / "runtime" / "argus" / "m4"
+    evidence_dir.mkdir(parents=True, exist_ok=True)
+    (evidence_dir / "hello-nginx-preflight.json").write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, ValueError, PreflightError) as error:
+        print(f"refusing preflight: {error}", file=sys.stderr)
+        raise SystemExit(2)

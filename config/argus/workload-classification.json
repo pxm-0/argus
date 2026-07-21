@@ -1,0 +1,13 @@
+{
+  "schemaVersion": 1,
+  "workloads": {
+    "hello-nginx": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    }
+  }
+}

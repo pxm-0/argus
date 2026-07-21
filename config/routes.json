@@ -88,7 +88,7 @@
     "hello-nginx": {
       "tailnet": {
         "enabled": false,
-        "mode": "local-only",
+        "mode": "blocked",
         "url": ""
       },
       "cloudflare": {

@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""Run private namespace-isolation probes without creating containers."""
+
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+from argus_m0 import isolation_report, load_private_json, private_path, write_private
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run private Argus M0 namespace isolation probes.")
+    parser.add_argument("--targets", type=Path, default=private_path("probe-targets.json"))
+    parser.add_argument("--output", type=Path, default=private_path("isolation-report.json"))
+    args = parser.parse_args()
+    report = isolation_report(load_private_json(args.targets))
+    write_private(report, args.output)
+    reachable = sum(1 for check in report["checks"] if check["state"] == "reachable")
+    print(f"Argus M0 isolation complete: {report['complete']}")
+    print(f"reachable protected targets: {reachable}")
+    print(f"evidence digest: {report['evidenceDigest']}")
+    return 0 if report["complete"] and not reachable else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 
+from argus_m1 import deny_direct_legacy_mutation
 from oreo_common import audit, fail, load_json, now, root, save_json, workloads
 
 
@@ -20,6 +21,15 @@ def main() -> int:
     parser.add_argument("--description", default="Workload discovered from Docker Compose.")
     parser.add_argument("--compose-project", default="")
     args = parser.parse_args()
+    deny_direct_legacy_mutation("workload registration")
+
+    policy = load_json("policy.json")
+    if policy.get("rules", {}).get("allowNewLegacyRootfulAdmission") is not True:
+        audit("workload.add", args.id, "blocked", reason="new legacy-rootful admission denied")
+        fail(
+            "new legacy-rootful workload admission is denied by Argus M0; "
+            "discovery remains read-only until an isolated trust-domain runtime is approved"
+        )
 
     if args.id in {str(w.get("id")) for w in workloads()}:
         fail(f"workload already tracked: {args.id}")

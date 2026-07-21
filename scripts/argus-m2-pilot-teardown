@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# Remove only the disposable M2 pilot after its evidence and data are no longer needed.
+set -euo pipefail
+readonly USER="argus-pilot"
+readonly NS_UNIT="argus-pilot-namespace.service"
+readonly DAEMON_UNIT="argus-pilot-rootless-docker.service"
+
+if [[ "${1:-}" != "--apply" || "${2:-}" != "--confirm-destroy-disposable-pilot" || $# -ne 2 ]]; then
+    echo "Usage: sudo ./scripts/argus-m2-pilot-teardown --apply --confirm-destroy-disposable-pilot" >&2
+    exit 2
+fi
+[[ "$(id -u)" == "0" ]] || { echo "refusing teardown: run as root with sudo" >&2; exit 2; }
+command -v loginctl >/dev/null || { echo "refusing teardown: loginctl is required" >&2; exit 2; }
+command -v pgrep >/dev/null || { echo "refusing teardown: pgrep is required" >&2; exit 2; }
+
+systemctl disable --now "$DAEMON_UNIT" "$NS_UNIT" 2>/dev/null || true
+if id "$USER" >/dev/null 2>&1; then
+    loginctl disable-linger "$USER" || true
+    loginctl terminate-user "$USER" || true
+    pgrep -u "$USER" >/dev/null && { echo "refusing teardown: argus-pilot still has running processes" >&2; exit 1; }
+    while IFS=: read -r name start length; do
+        [[ "$name" == "$USER" ]] && usermod --del-subuids "$start-$((start + length - 1))" "$USER"
+    done < /etc/subuid
+    while IFS=: read -r name start length; do
+        [[ "$name" == "$USER" ]] && usermod --del-subgids "$start-$((start + length - 1))" "$USER"
+    done < /etc/subgid
+    userdel --remove "$USER"
+fi
+rm -f /etc/systemd/system/argus-pilot-rootless-docker.service /etc/systemd/system/argus-pilot-namespace.service
+rm -f /etc/argus/argus-pilot.nft /usr/local/lib/argus/argus-m2-netns
+rm -rf /var/lib/argus/pilot
+systemctl daemon-reload
+echo '{"schemaVersion":1,"removed":true,"user":"argus-pilot"}'

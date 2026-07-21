@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""Write private M0 ownership review cards without printing inventory details."""
+from __future__ import annotations
+
+from argus_m0 import load_private_json, owner_review_cards, private_path, write_private
+
+
+def main() -> int:
+    inventory = load_private_json(private_path("legacy-inventory.json"))
+    cards = owner_review_cards(inventory)
+    write_private(cards, private_path("owner-review-cards.json"))
+    print(f"Argus M0 private owner review cards: {len(cards['cards'])}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

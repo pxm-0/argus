@@ -14,7 +14,9 @@
     "allowSensitiveToCloudflareProtected": true,
     "allowUnclassifiedToCloudflarePublic": true,
     "allowTailnetForAll": true,
-    "allowFunnelInP0": false
+    "allowFunnelInP0": false,
+    "allowNewLegacyRootfulAdmission": false,
+    "requireLegacyUnclassifiedQuarantine": true
   },
   "blockedTargets": [
     "postgres",
