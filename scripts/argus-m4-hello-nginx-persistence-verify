@@ -17,6 +17,7 @@ SOCKET = "/var/lib/argus/personal-sandbox/docker.sock"
 TARGET_COMPOSE = "/var/lib/argus/personal-sandbox/hello-nginx/docker-compose.json"
 SOURCE_COMPOSE = ROOT / "workloads" / "hello-nginx" / "source" / "docker-compose.yml"
 SERVICE = "argus-personal-sandbox-rootless-docker.service"
+FIREWALL_SERVICE = "argus-personal-sandbox-firewall.service"
 CELL_USER = "argus-personal-sandbox"
 CUTOVER = dt.datetime(2026, 7, 20, 6, 51, 23, tzinfo=dt.timezone.utc)
 
@@ -39,6 +40,8 @@ def main() -> int:
     firewall = run("nsenter", "-t", rootless_child_pid, "-n", "nft", "list", "table", "inet", "argus_personal_sandbox") if rootless_child_pid else None
     sandbox_netns = run("readlink", f"/proc/{rootless_child_pid}/ns/net") if rootless_child_pid else None
     host_netns = run("readlink", "/proc/1/ns/net")
+    firewall_active = run("systemctl", "is-active", "--quiet", FIREWALL_SERVICE)
+    firewall_enabled = run("systemctl", "is-enabled", "--quiet", FIREWALL_SERVICE)
     driver = run("docker", "--host", f"unix://{SOCKET}", "info", "--format", "{{.CgroupDriver}}")
     try:
         boot_epoch = next(int(line.split()[1]) for line in Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
@@ -52,7 +55,7 @@ def main() -> int:
         "sourceFenced": source.returncode == 0 and not source.stdout.strip(),
         "publishedPortsAbsent": len(fields) == 3 and fields[1] in {"{}", "null"},
         "hostMountsAbsent": len(fields) == 3 and fields[2] == "[]",
-        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip() and firewall is not None and firewall.returncode == 0 and sandbox_netns is not None and sandbox_netns.returncode == 0 and host_netns.returncode == 0 and sandbox_netns.stdout.strip() != host_netns.stdout.strip(),
+        "namespaceListenersAbsent": listeners is not None and listeners.returncode == 0 and not listeners.stdout.strip() and firewall is not None and firewall.returncode == 0 and firewall_active.returncode == 0 and firewall_enabled.returncode == 0 and sandbox_netns is not None and sandbox_netns.returncode == 0 and host_netns.returncode == 0 and sandbox_netns.stdout.strip() != host_netns.stdout.strip(),
         "delegationEnabled": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "cgroupDriverCorrect": driver.returncode == 0 and driver.stdout.strip() == "systemd",
         "hostRebootedAfterCutover": booted_after_cutover,

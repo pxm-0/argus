@@ -12,8 +12,10 @@ readonly UNIT_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 readonly NFT_FILE="${ARGUS_DIR}/argus-personal-sandbox.nft"
 readonly HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-netns"
+readonly FIREWALL_HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-firewall"
 readonly NS_UNIT="argus-personal-sandbox-namespace.service"
 readonly DAEMON_UNIT="argus-personal-sandbox-rootless-docker.service"
+readonly FIREWALL_UNIT="argus-personal-sandbox-firewall.service"
 
 user_systemctl() {
   runuser -u "$CELL_USER" -- env HOME="$CELL_HOME" XDG_RUNTIME_DIR="$CELL_RUNTIME" systemctl --user "$@"
@@ -61,7 +63,7 @@ done
 backup_dir="/var/lib/argus/bootstrap-backups/personal-sandbox-$(date -u +%Y%m%dT%H%M%SZ)"
 install -d -m 0700 "$backup_dir"
 for config in /etc/subuid /etc/subgid; do [[ -f "$config" ]] && cp --preserve=mode,ownership,timestamps "$config" "$backup_dir/"; done
-for config in "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT" "$NFT_FILE" "$HELPER"; do
+for config in "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT" "$UNIT_DIR/$FIREWALL_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT" "$NFT_FILE" "$HELPER" "$FIREWALL_HELPER"; do
   if [[ -f "$config" ]]; then
     destination="$backup_dir$config"
     install -d -m 0700 "$(dirname "$destination")"
@@ -110,6 +112,29 @@ case "\${1:-}" in
 esac
 EOF
 chmod 0755 "$HELPER"
+tee "$FIREWALL_HELPER" >/dev/null <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+for _ in {1..300}; do
+  daemon_pid="\$(pgrep -u "$CELL_USER" -x dockerd 2>/dev/null || true)"
+  if [[ -n "\$daemon_pid" && "\$daemon_pid" != *\$'\n'* ]]; then
+    rootless_child_pid="\$(ps -o ppid= -p "\$daemon_pid" | tr -d ' ')"
+    if [[ -n "\$rootless_child_pid" ]] &&
+       [[ "\$(stat -c %U "/proc/\$rootless_child_pid")" == "$CELL_USER" ]] &&
+       tr '\0' ' ' < "/proc/\$rootless_child_pid/cmdline" | grep -F -- "--state-dir=$CELL_STORAGE/rootlesskit" >/dev/null &&
+       [[ "\$(readlink "/proc/\$rootless_child_pid/ns/net")" != "\$(readlink /proc/1/ns/net)" ]]; then
+      nsenter -t "\$rootless_child_pid" -n nft -f "$NFT_FILE"
+      [[ -z "\$(nsenter -t "\$rootless_child_pid" -n ss -H -ltn)" ]]
+      nsenter -t "\$rootless_child_pid" -n nft list table inet argus_personal_sandbox >/dev/null
+      exit 0
+    fi
+  fi
+  sleep 0.1
+done
+echo "refusing success: verified RootlessKit child did not become ready" >&2
+exit 1
+EOF
+chmod 0755 "$FIREWALL_HELPER"
 tee "$UNIT_DIR/$NS_UNIT" >/dev/null <<EOF
 [Unit]
 Description=Argus M4 personal-sandbox isolated namespace
@@ -119,6 +144,18 @@ Type=oneshot
 RemainAfterExit=yes
 ExecStart=$HELPER ensure
 ExecStop=$HELPER remove
+[Install]
+WantedBy=multi-user.target
+EOF
+tee "$UNIT_DIR/$FIREWALL_UNIT" >/dev/null <<EOF
+[Unit]
+Description=Argus M4 personal-sandbox namespace firewall
+Requires=user@$(id -u "$CELL_USER").service
+After=user@$(id -u "$CELL_USER").service
+[Service]
+Type=oneshot
+ExecStart=$FIREWALL_HELPER
+RemainAfterExit=yes
 [Install]
 WantedBy=multi-user.target
 EOF
@@ -140,7 +177,7 @@ RestartSec=5
 WantedBy=default.target
 EOF
 chown "$CELL_USER:$CELL_USER" "$USER_UNIT_DIR/$DAEMON_UNIT"
-chmod 0644 "$UNIT_DIR/$NS_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT"
+chmod 0644 "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$FIREWALL_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT"
 systemctl daemon-reload
 systemctl disable --now "$DAEMON_UNIT" 2>/dev/null || true
 rm -f "$UNIT_DIR/$DAEMON_UNIT"
@@ -152,18 +189,9 @@ systemctl restart "$NS_UNIT"
 user_systemctl start "$DAEMON_UNIT"
 systemctl is-active --quiet "$NS_UNIT"
 user_systemctl is-active --quiet "$DAEMON_UNIT"
-daemon_pid="$(pgrep -u "$CELL_USER" -x dockerd)"
-[[ -n "$daemon_pid" ]] || { echo "refusing success: sandbox dockerd is absent" >&2; exit 1; }
-[[ "$daemon_pid" != *$'\n'* ]] || { echo "refusing success: expected exactly one sandbox dockerd" >&2; exit 1; }
-rootless_child_pid="$(ps -o ppid= -p "$daemon_pid" | tr -d ' ')"
-[[ -n "$rootless_child_pid" ]] || { echo "refusing success: RootlessKit child process is absent" >&2; exit 1; }
-[[ "$(stat -c %U "/proc/$rootless_child_pid")" == "$CELL_USER" ]] || { echo "refusing success: RootlessKit child owner mismatch" >&2; exit 1; }
-rootless_child_command="$(tr '\0' ' ' < "/proc/$rootless_child_pid/cmdline")"
-[[ "$rootless_child_command" == *"--state-dir=$CELL_STORAGE/rootlesskit"* ]] || { echo "refusing success: RootlessKit child identity mismatch" >&2; exit 1; }
-[[ "$(readlink "/proc/$rootless_child_pid/ns/net")" != "$(readlink /proc/1/ns/net)" ]] || { echo "refusing success: sandbox shares the host network namespace" >&2; exit 1; }
-nsenter -t "$rootless_child_pid" -n nft -f "$NFT_FILE"
-[[ -z "$(nsenter -t "$rootless_child_pid" -n ss -H -ltn)" ]] || { echo "refusing success: sandbox namespace has a TCP listener" >&2; exit 1; }
-nsenter -t "$rootless_child_pid" -n nft list table inet argus_personal_sandbox >/dev/null
+systemctl enable "$FIREWALL_UNIT"
+systemctl restart "$FIREWALL_UNIT"
+systemctl is-active --quiet "$FIREWALL_UNIT"
 [[ -z "$(ip netns exec "$CELL_NS" ss -H -ltn)" ]] || { echo "refusing success: target namespace has a TCP listener" >&2; exit 1; }
 ip netns exec "$CELL_NS" nft list table inet argus_personal_sandbox >/dev/null
 echo '{"schemaVersion":1,"applied":true,"domain":"personal-sandbox","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}'
