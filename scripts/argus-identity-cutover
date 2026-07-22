@@ -73,7 +73,9 @@ migrate_caddy() {
     sed -i 's#OreoCloudDashboard\.Caddyfile#ArgusDashboard.Caddyfile#g; s#/srv/oreo-cloud#/srv/argus#g' /etc/caddy/Caddyfile
   fi
   caddy validate --config /etc/caddy/Caddyfile
-  systemctl is-active --quiet caddy && systemctl reload caddy
+  if systemctl is-active --quiet caddy; then
+    systemctl reload caddy
+  fi
 }
 
 install_units() {
@@ -126,15 +128,22 @@ verify() {
 apply_cutover() {
   local backup_dir
   preflight
-  [[ -d "$OLD_ROOT" && ! -e "$NEW_ROOT" ]] || fail "apply requires $OLD_ROOT present and $NEW_ROOT absent"
-  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
-  mkdir -p "$backup_dir"
-  backup_state "$backup_dir"
-  mv "$OLD_ROOT" "$NEW_ROOT"
-  git -C "$NEW_ROOT" remote set-url origin https://github.com/pxm-0/argus.git
-  for unit in "${OLD_UNITS[@]}"; do
-    systemctl stop "$unit" 2>/dev/null || true
-  done
+  if [[ -d "$OLD_ROOT" && ! -e "$NEW_ROOT" ]]; then
+    backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+    mkdir -p "$backup_dir"
+    backup_state "$backup_dir"
+    mv "$OLD_ROOT" "$NEW_ROOT"
+    git -C "$NEW_ROOT" remote set-url origin https://github.com/pxm-0/argus.git
+    for unit in "${OLD_UNITS[@]}"; do
+      systemctl stop "$unit" 2>/dev/null || true
+    done
+  elif [[ -d "$NEW_ROOT/.git" && ! -e "$OLD_ROOT" ]]; then
+    backup_dir="$(find "$BACKUP_ROOT" -mindepth 1 -maxdepth 1 -type d -printf '%p\n' | sort | tail -1)"
+    [[ -n "$backup_dir" && -f "$backup_dir/old-active-units.txt" && -f "$backup_dir/old-enabled-units.txt" ]] || fail "resume backup state missing"
+    printf 'RESUMING_ARGUS_IDENTITY_CUTOVER backup=%s\n' "$backup_dir"
+  else
+    fail "identity roots are ambiguous; expected exactly one platform checkout"
+  fi
   install_units "$backup_dir"
   "$NEW_ROOT/scripts/install-operator-links" --force
   migrate_caddy
