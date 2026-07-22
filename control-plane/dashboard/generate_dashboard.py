@@ -1,11 +1,8 @@
 #!/usr/bin/env python3
 """Generate the private Oreo Cloud dashboard static files.
 
-THESIS: Orbital Operations Plot makes containment and drift spatial, not decorative.
-OWN-WORLD: Night operations instrument; void, spectral blue, photon gold, denial red.
-STORY: Orient on estate topology, inspect one object, then act through guarded controls.
-FIRST VIEWPORT: Persistent rail, fluid orbital plot, 360px evidence inspector.
-FORM: Operate mode; seed 89f8c3e6, assigned direction 5.
+The M5 estate matrix prioritizes categorical comparison: trust domain, workload,
+declared access, effective access, and drift remain visible in one scanning path.
 """
 
 from __future__ import annotations
@@ -68,8 +65,8 @@ def render_html() -> str:
         <span>loading exposure state</span>
       </section>
       <section class="instrument-head">
-        <div><p class="eyebrow">LIVE ESTATE MODEL</p><h2>Orbital operations plot</h2></div>
-        <p>Containment bands encode trust domains. Select an object to inspect evidence and control eligibility.</p>
+        <div><p class="eyebrow">LIVE ESTATE MODEL</p><h2>Estate matrix</h2></div>
+        <p>Compare containment, placement, and access state across every trust domain. Select a workload to inspect its evidence.</p>
       </section>
       <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
       <section class="command-panel" id="command-panel" hidden>
@@ -761,51 +758,33 @@ function renderTopology() {
   const workloadNodes = (topology.nodes || []).filter((node) => node.kind === "workload");
   const nodes = new Map(workloadNodes.map((node) => [node.id, node]));
   const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
-  const radii = [105, 155, 205, 255, 302];
-  const center = { x: 420, y: 310 };
   if (!selectedTopologyId || !nodes.has(selectedTopologyId)) {
     selectedTopologyId = nodes.has("hello-nginx") ? "hello-nginx" : workloadNodes[0]?.id;
   }
   const selected = nodes.get(selectedTopologyId) || {};
-  const pointFor = (domain, domainIndex, itemIndex) => {
-    const count = Math.max(domain.workloadIds.length, 1);
-    const angle = ((itemIndex / count) * 300 + 210 + domainIndex * 11) * Math.PI / 180;
-    const radius = radii[domainIndex] || radii[radii.length - 1];
-    return { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
-  };
-  const rings = domains.map((domain, index) => {
-    const radius = radii[index];
-    return `<circle class="orbit-ring ${domain.kind === "legacy" ? "legacy" : ""}" cx="${center.x}" cy="${center.y}" r="${radius}" />
-      <text class="orbit-label" x="${center.x + 8}" y="${center.y - radius + 14}">${escapeHtml(domain.id)} · ${escapeHtml(domain.state)}</text>`;
+  const domainRows = domains.map((domain) => {
+    const rows = domain.workloadIds.map((id) => {
+      const node = nodes.get(id) || {};
+      const active = id === selectedTopologyId ? " selected" : "";
+      return `<button class="matrix-row${active}" type="button" data-focus-workload="${escapeHtml(id)}" aria-pressed="${id === selectedTopologyId}">
+        <span class="matrix-workload"><b>${escapeHtml(node.label || id)}</b><small>${escapeHtml(node.classificationStatus || "unknown")}</small></span>
+        <span class="access-value">${escapeHtml(node.declaredAccess || "none")}</span>
+        <span class="access-arrow" aria-hidden="true">→</span>
+        <span class="access-value">${escapeHtml(node.effectiveAccess || "none")}</span>
+        <span class="drift-state ${node.drift ? "has-drift" : "aligned"}">${node.drift ? "DRIFT" : "ALIGNED"}</span>
+      </button>`;
+    }).join("") || `<div class="matrix-empty"><span>No workloads assigned</span><small>Available target domain</small></div>`;
+    return `<section class="domain-group" data-domain-state="${escapeHtml(domain.state)}">
+      <header><span class="domain-state" aria-hidden="true"></span><div><h3>${escapeHtml(domain.id)}</h3><p>${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p></div></header>
+      <div class="domain-workloads">${rows}</div>
+    </section>`;
   }).join("");
-  const objects = domains.flatMap((domain, domainIndex) => domain.workloadIds.map((id, itemIndex) => {
-    const node = nodes.get(id) || {};
-    const point = pointFor(domain, domainIndex, itemIndex);
-    const dx = point.x - center.x;
-    const dy = point.y - center.y;
-    const length = Math.max(Math.hypot(dx, dy), 1);
-    const driftEnd = { x: point.x + dx / length * 28, y: point.y + dy / length * 28 };
-    const drift = node.drift ? `<line class="drift-vector" x1="${point.x}" y1="${point.y}" x2="${driftEnd.x}" y2="${driftEnd.y}"/><text class="drift-mark" x="${driftEnd.x + 5}" y="${driftEnd.y}">DRIFT</text>` : "";
-    const active = id === selectedTopologyId ? " selected" : "";
-    const label = `${node.label || id}. ${node.trustDomain}. ${node.declaredAccess} declared, ${node.effectiveAccess} effective. ${node.drift ? "Access drift detected." : "Access aligned."}`;
-    return `${drift}<g class="orbit-node${active}" role="button" tabindex="0" data-focus-workload="${escapeHtml(id)}" aria-label="${escapeHtml(label)}" transform="translate(${point.x} ${point.y})"><circle r="28"/><text y="-2">${escapeHtml((node.label || id).slice(0, 14))}</text><text class="node-status" y="11">${escapeHtml(node.effectiveAccess || "none")}</text></g>`;
-  })).join("");
   const controlBlocked = selected.controlMode === "domain-agent-required";
   const verdict = controlBlocked ? "Controls require a domain agent; direct management-plane execution remains disabled." : "Legacy-local controls remain manifest-gated and require Admin Mode acknowledgement.";
   topologyEl.innerHTML = `
-    <div class="orbit-stage">
-      <svg viewBox="0 0 840 620" role="img" aria-labelledby="plot-title plot-desc">
-        <title id="plot-title">Argus estate trust-domain topology</title>
-        <desc id="plot-desc">Workloads orbit oreochiserver on trust-domain containment bands. Gold vectors identify access drift.</desc>
-        <defs><marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#F5C85B"/></marker></defs>
-        ${rings}
-        <circle class="host-pulse" cx="${center.x}" cy="${center.y}" r="66"/>
-        <circle class="host-core" cx="${center.x}" cy="${center.y}" r="52"/>
-        <text class="host-title" x="${center.x}" y="${center.y - 2}">oreochiserver</text>
-        <text class="host-sub" x="${center.x}" y="${center.y + 14}">MANAGEMENT</text>
-        ${objects}
-      </svg>
-      <div class="orbit-index" aria-label="Topology object index">${workloadNodes.map((node) => `<button type="button" data-focus-workload="${escapeHtml(node.id)}" aria-pressed="${node.id === selectedTopologyId}">${escapeHtml(node.label || node.id)}${node.drift ? " · drift" : ""}</button>`).join("")}</div>
+    <div class="matrix-stage">
+      <div class="matrix-columns" aria-hidden="true"><span>Trust domain</span><span>Workload</span><span>Declared</span><span></span><span>Effective</span><span>Status</span></div>
+      ${domainRows}
     </div>
     <aside class="topology-inspector" aria-live="polite">
       <p class="inspector-kicker">SELECTED OBJECT / ${escapeHtml(selected.trustDomain || "unknown")}</p>
