@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Generate the private Oreo Cloud dashboard static files."""
+"""Generate the private Argus dashboard static files.
+
+The M5 estate matrix prioritizes categorical comparison: trust domain, workload,
+declared access, effective access, and drift remain visible in one scanning path.
+"""
 
 from __future__ import annotations
 
@@ -25,32 +29,46 @@ def render_html() -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Argus Estate Control</title>
+    <title>Argus</title>
     <link rel="icon" href="data:,">
+    <script>const requestedTheme = new URLSearchParams(location.search).get("theme"); document.documentElement.dataset.theme = ["light", "dark"].includes(requestedTheme) ? requestedTheme : (localStorage.getItem("argus-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
+    <div class="app-shell">
+      <aside class="nav-rail" aria-label="Primary navigation">
+        <a class="brand" href="#overview" aria-label="Argus overview">A</a>
+        <nav>
+          <a href="#overview" aria-current="page"><span>01</span>Topology</a>
+          <a href="#workloads-heading"><span>02</span>Workloads</a>
+          <a href="#evidence"><span>03</span>Evidence</a>
+        </nav>
+        <div class="private-state"><i aria-hidden="true"></i><span>Private<br>control plane</span></div>
+      </aside>
+      <div class="app-main">
     <header class="topbar">
-      <div>
-        <h1>Argus Estate Control</h1>
+      <div class="title-lockup">
+        <p class="eyebrow">PRIVATE CONTROL PLANE</p>
+        <h1>Argus</h1>
         <p id="route-summary">loading dashboard state</p>
       </div>
-      <div class="top-actions">
+      <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="control token" hidden>
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
+        <button id="theme-toggle" type="button" aria-pressed="false">Light Mode</button>
         <button id="admin-toggle" type="button">Admin Mode</button>
       </div>
     </header>
-    <main>
+    <main id="overview">
       <section class="summary" id="summary" aria-label="System summary"></section>
       <section class="alert" id="exposure-alert">
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
-      <section class="section-head">
-        <h2>Estate topology</h2>
-        <span>Containment, placement, routes, and drift</span>
+      <section class="instrument-head">
+        <div><p class="eyebrow">LIVE ESTATE MODEL</p><h2>Estate matrix</h2></div>
+        <p>Compare containment, placement, and access state across every trust domain. Select a workload to inspect its evidence.</p>
       </section>
       <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
       <section class="command-panel" id="command-panel" hidden>
@@ -68,12 +86,12 @@ def render_html() -> str:
         </div>
         <div id="metrics" class="metrics-grid"></div>
       </section>
-      <section class="section-head">
+      <section class="section-head" id="workloads-heading">
         <h2>Workloads</h2>
         <span>Migration, backup, access, and operations</span>
       </section>
       <section class="workloads" id="workloads"></section>
-      <section class="plan-grid">
+      <section class="plan-grid" id="evidence">
         <article id="access-plan">
           <h2>Access Plan</h2>
           <p>loading access state</p>
@@ -100,6 +118,8 @@ def render_html() -> str:
         </article>
       </section>
     </main>
+      </div>
+    </div>
     <script src="./app.js"></script>
   </body>
 </html>
@@ -589,6 +609,7 @@ const monitorPanel = document.getElementById("monitor-panel");
 const monitorStatus = document.getElementById("monitor-status");
 const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
+const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
@@ -602,6 +623,14 @@ const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
+let selectedTopologyId = null;
+
+function setTheme(theme) {
+  const light = theme === "light";
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  themeToggle.textContent = light ? "Dark Mode" : "Light Mode";
+  themeToggle.setAttribute("aria-pressed", String(light));
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -736,27 +765,52 @@ function renderSummary() {
 
 function renderTopology() {
   const topology = state?.topology || {};
-  const nodes = new Map((topology.nodes || []).map((node) => [node.id, node]));
+  const workloadNodes = (topology.nodes || []).filter((node) => node.kind === "workload");
+  const nodes = new Map(workloadNodes.map((node) => [node.id, node]));
   const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
+  if (!selectedTopologyId || !nodes.has(selectedTopologyId)) {
+    selectedTopologyId = nodes.has("hello-nginx") ? "hello-nginx" : workloadNodes[0]?.id;
+  }
+  const selected = nodes.get(selectedTopologyId) || {};
+  const domainRows = domains.map((domain) => {
+    const rows = domain.workloadIds.map((id) => {
+      const node = nodes.get(id) || {};
+      const active = id === selectedTopologyId ? " selected" : "";
+      return `<button class="matrix-row${active}" type="button" data-focus-workload="${escapeHtml(id)}" aria-pressed="${id === selectedTopologyId}">
+        <span class="matrix-workload"><b>${escapeHtml(node.label || id)}</b><small>${escapeHtml(node.classificationStatus || "unknown")}</small></span>
+        <span class="access-value">${escapeHtml(node.declaredAccess || "none")}</span>
+        <span class="access-arrow" aria-hidden="true">→</span>
+        <span class="access-value">${escapeHtml(node.effectiveAccess || "none")}</span>
+        <span class="drift-state ${node.drift ? "has-drift" : "aligned"}">${node.drift ? "DRIFT" : "ALIGNED"}</span>
+      </button>`;
+    }).join("") || `<div class="matrix-empty"><span>No workloads assigned</span><small>Available target domain</small></div>`;
+    return `<section class="domain-group" data-domain-state="${escapeHtml(domain.state)}">
+      <header><span class="domain-state" aria-hidden="true"></span><div><h3>${escapeHtml(domain.id)}</h3><p>${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p></div></header>
+      <div class="domain-workloads">${rows}</div>
+    </section>`;
+  }).join("");
+  const controlBlocked = selected.controlMode === "domain-agent-required";
+  const verdict = controlBlocked ? "Controls require a domain agent; direct management-plane execution remains disabled." : "Legacy-local controls remain manifest-gated and require Admin Mode acknowledgement.";
   topologyEl.innerHTML = `
-    <div class="host-rail">
-      <h3>oreochiserver</h3>
-      <p><b>Management plane</b><br><span class="muted">Private operator UI and loopback API. Domain agents available: ${escapeHtml(topology.summary?.domainAgentsAvailable ?? 0)}.</span></p>
+    <div class="matrix-stage">
+      <div class="matrix-columns" aria-hidden="true"><span>Trust domain</span><span>Workload</span><span>Declared</span><span></span><span>Effective</span><span>Status</span></div>
+      ${domainRows}
     </div>
-    <div class="domain-rail">
-      ${domains.map((domain) => `
-        <article class="domain" data-kind="${escapeHtml(domain.kind)}">
-          <h3>${escapeHtml(domain.id)}</h3>
-          <p class="domain-meta">${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p>
-          <ul class="node-list">
-            ${domain.workloadIds.map((id) => {
-              const node = nodes.get(id) || {};
-              return `<li><button class="node" type="button" data-focus-workload="${escapeHtml(id)}" data-drift="${escapeHtml(node.drift)}"><b>${escapeHtml(node.label || id)}</b><br><span>${escapeHtml(node.classificationStatus)} · ${escapeHtml(node.declaredAccess)} → ${escapeHtml(node.effectiveAccess)}</span></button></li>`;
-            }).join("") || '<li class="muted">No workloads assigned</li>'}
-          </ul>
-        </article>`).join("")}
-    </div>
-    <div class="edge-legend"><span><b>Boundary</b> containment</span><span><b>Placement</b> domain to workload</span><span><b>Route</b> workload to approved ingress</span><span><b>Blue rule</b> declared/effective drift</span></div>`;
+    <aside class="topology-inspector" aria-live="polite">
+      <p class="inspector-kicker">SELECTED OBJECT / ${escapeHtml(selected.trustDomain || "unknown")}</p>
+      <h3>${escapeHtml(selected.label || selected.id || "No workload")}</h3>
+      <p class="inspector-state">${escapeHtml(selected.classificationStatus || "unclassified")} · admission ${escapeHtml(selected.admission || "unknown")}</p>
+      <dl class="inspector-facts">
+        <div><dt>Trust domain</dt><dd>${escapeHtml(selected.trustDomain || "-")}</dd></div>
+        <div><dt>Realm / zone</dt><dd>${escapeHtml(selected.realm || "-")} / ${escapeHtml(selected.zone || "-")}</dd></div>
+        <div><dt>Declared access</dt><dd>${escapeHtml(selected.declaredAccess || "-")}</dd></div>
+        <div><dt>Effective access</dt><dd>${escapeHtml(selected.effectiveAccess || "-")}</dd></div>
+        <div><dt>Access drift</dt><dd>${selected.drift ? "Detected" : "Aligned"}</dd></div>
+        <div><dt>Control mode</dt><dd>${escapeHtml(selected.controlMode || "-")}</dd></div>
+      </dl>
+      <div class="control-verdict ${controlBlocked ? "blocked" : ""}"><strong>${controlBlocked ? "Execution boundary enforced" : "Guarded legacy control"}</strong><span>${escapeHtml(verdict)}</span></div>
+      <button class="inspect-action" type="button" data-focus-workload="${escapeHtml(selected.id || "")}" data-open-detail="true">View workload evidence</button>
+    </aside>`;
 }
 
 function workloadActions(urls) {
@@ -953,6 +1007,11 @@ workloadDiscoverButton.addEventListener("click", async () => {
 });
 
 monitorToggle.addEventListener("click", () => setMonitor(monitorPanel.hidden));
+themeToggle.addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  localStorage.setItem("argus-theme", theme);
+  setTheme(theme);
+});
 adminToggle.addEventListener("click", () => {
   if (!adminEnabled) {
     showCommandResult("Admin mode", "Enter the control token above before applying changes.");
@@ -971,7 +1030,11 @@ commandClose.addEventListener("click", () => {
 document.addEventListener("click", async (event) => {
   const focus = event.target.closest("[data-focus-workload]");
   if (focus) {
-    document.querySelector(`[data-workload="${CSS.escape(focus.dataset.focusWorkload)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    selectedTopologyId = focus.dataset.focusWorkload;
+    renderTopology();
+    if (focus.dataset.openDetail === "true") {
+      document.querySelector(`[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
     return;
   }
   const register = event.target.closest("[data-register]");
@@ -1087,6 +1150,15 @@ document.addEventListener("click", async (event) => {
   }
 });
 
+document.addEventListener("keydown", (event) => {
+  const focus = event.target.closest('[role="button"][data-focus-workload]');
+  if (!focus || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  selectedTopologyId = focus.dataset.focusWorkload;
+  renderTopology();
+});
+
+setTheme(document.documentElement.dataset.theme);
 loadDashboardState();
 """
 
