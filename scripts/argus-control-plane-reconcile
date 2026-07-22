@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+# Reconcile only the private Argus API and dashboard service prerequisites.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly API_USER="oreo"
+readonly API_GROUP="oreo"
+readonly BACKUP_ROOT="/var/lib/argus/control-plane-backups"
+readonly CADDY_DROPIN_DIR="/etc/systemd/system/caddy.service.d"
+readonly CADDY_DROPIN="$CADDY_DROPIN_DIR/argus-tailnet-readiness.conf"
+readonly ACK="--acknowledge-control-plane-reconcile"
+readonly STATE_FILES=(
+  "$ROOT/config/access.json"
+  "$ROOT/config/privacy.json"
+)
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo ./scripts/argus-control-plane-reconcile --preflight
+  sudo ./scripts/argus-control-plane-reconcile --apply --acknowledge-control-plane-reconcile
+
+Reconciles private control-plane file access and Caddy boot retry behavior.
+It does not change routes, listeners, firewall policy, or workloads.
+EOF
+}
+
+preflight() {
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  for command in caddy systemctl install cp chown chmod curl; do
+    command -v "$command" >/dev/null || fail "missing required command: $command"
+  done
+  [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
+  [[ -f /etc/caddy/Caddyfile ]] || fail "/etc/caddy/Caddyfile is missing"
+  for path in "${STATE_FILES[@]}"; do [[ -f "$path" ]] || fail "missing state file: $path"; done
+  [[ "$(systemctl show argus-control-api.service -p User --value)" == "$API_USER" ]] || fail "control API user is not $API_USER"
+  [[ "$(systemctl show argus-control-api.service -p Group --value)" == "$API_GROUP" ]] || fail "control API group is not $API_GROUP"
+  caddy validate --config /etc/caddy/Caddyfile
+  printf 'repository=%s apiIdentity=%s:%s caddyValid=true\n' "$(git -C "$ROOT" rev-parse --short HEAD)" "$API_USER" "$API_GROUP"
+  printf 'publicExposureChanged=false routesChanged=false workloadsChanged=false\n'
+}
+
+apply_reconcile() {
+  local backup_dir path
+  preflight
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -m 0700 "$backup_dir/config" "$backup_dir/systemd"
+  for path in "${STATE_FILES[@]}"; do
+    cp --preserve=mode,ownership,timestamps "$path" "$backup_dir/config/"
+  done
+  [[ ! -f "$CADDY_DROPIN" ]] || cp --preserve=mode,ownership,timestamps "$CADDY_DROPIN" "$backup_dir/systemd/"
+
+  chown "$API_USER:$API_GROUP" "${STATE_FILES[@]}"
+  chmod 0600 "${STATE_FILES[@]}"
+
+  install -d -o root -g root -m 0755 "$CADDY_DROPIN_DIR"
+  install -o root -g root -m 0644 "$ROOT/systemd/caddy.service.d/argus-tailnet-readiness.conf" "$CADDY_DROPIN"
+
+  caddy validate --config /etc/caddy/Caddyfile
+  systemctl daemon-reload
+  systemctl restart argus-control-api.service
+  systemctl restart caddy.service
+
+  systemctl is-active --quiet argus-control-api.service || fail "control API is not active"
+  systemctl is-active --quiet caddy.service || fail "Caddy is not active"
+  curl --fail --silent --show-error http://127.0.0.1:8099/api/dashboard-state >/dev/null
+  printf 'CONTROL_PLANE_RECONCILED backup=%s publicExposureChanged=false routesChanged=false workloadsChanged=false\n' "$backup_dir"
+}
+
+case "${1:-}" in
+  --preflight) [[ $# -eq 1 ]] || { usage; exit 2; }; preflight ;;
+  --apply) [[ "${2:-}" == "$ACK" && $# -eq 2 ]] || { usage; exit 2; }; apply_reconcile ;;
+  *) usage; exit 2 ;;
+esac
