@@ -11,11 +11,19 @@ Run on `oreochiserver` from the existing checkout:
 
 ```bash
 cd /srv/oreo-cloud
+sudo mkdir -p /var/lib/argus/config-backups
+backup_dir="$(sudo mktemp -d /var/lib/argus/config-backups/identity-XXXXXXXX)"
+sudo cp -a config/access.json config/argus/legacy-classification.json \
+  config/privacy.json config/workloads.json "$backup_dir/"
 git fetch origin main
 git switch main
-git pull --ff-only origin main
+git -c rebase.autoStash=true pull --rebase origin main
 sudo ./scripts/argus-identity-cutover --preflight
 ```
+
+If autostash reports a conflict, stop before applying the cutover. The four
+server-local configuration files are preserved in the printed `backup_dir` and
+must be reconciled with the renamed `/srv/argus` paths before proceeding.
 
 ## Apply
 

@@ -78,6 +78,7 @@ migrate_caddy() {
 
 install_units() {
   local backup_dir="$1" index old_unit new_unit
+  install -m 0644 "$NEW_ROOT/systemd/argus-m0-docker-lockdown.service" "/etc/systemd/system/argus-m0-docker-lockdown.service"
   for index in "${!OLD_UNITS[@]}"; do
     old_unit="${OLD_UNITS[$index]}"
     new_unit="${NEW_UNITS[$index]}"
