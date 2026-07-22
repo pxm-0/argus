@@ -68,6 +68,12 @@ class Handler(BaseHTTPRequestHandler):
         return True
 
     def do_GET(self) -> None:  # noqa: N802
+        try:
+            self.handle_get()
+        except Exception as exc:  # noqa: BLE001 - API must not drop local clients on state errors.
+            self.send_json(500, {"error": exc.__class__.__name__})
+
+    def handle_get(self) -> None:
         path = urlparse(self.path).path
         if path == "/api/workloads":
             self.send_json(200, merged_workloads())

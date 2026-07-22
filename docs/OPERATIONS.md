@@ -151,6 +151,22 @@ sudo chmod 0640 /etc/argus/control-token
 
 Do not paste the token into logs or commits.
 
+If the private dashboard API returns an empty response after config reconciliation,
+or Caddy remains failed after a reboot because its Tailscale address was not ready,
+run the scoped control-plane reconciliation:
+
+```bash
+sudo ./scripts/argus-control-plane-reconcile --preflight
+sudo ./scripts/argus-control-plane-reconcile \
+  --apply \
+  --acknowledge-control-plane-reconcile
+```
+
+The apply step backs up the two mutable state files and any prior Caddy drop-in,
+restores mode-`0600` access for the API service identity, validates Caddy before
+restart, and installs failure retry ordering for `tailscaled.service`. It does not
+change the configured Tailscale-only route or any workload.
+
 ## Preview Access Change
 
 ```bash
