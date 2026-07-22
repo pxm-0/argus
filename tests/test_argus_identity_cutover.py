@@ -28,6 +28,12 @@ class ArgusIdentityCutoverTests(unittest.TestCase):
         reload_at = text.index("systemctl reload caddy")
         self.assertLess(validate_at, reload_at)
 
+    def test_cutover_can_resume_after_the_root_move(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertIn("RESUMING_ARGUS_IDENTITY_CUTOVER", text)
+        self.assertIn('[[ -d "$NEW_ROOT/.git" && ! -e "$OLD_ROOT" ]]', text)
+        self.assertIn('if systemctl is-active --quiet caddy; then', text)
+
 
 if __name__ == "__main__":
     unittest.main()
