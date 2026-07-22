@@ -120,6 +120,7 @@ verify() {
   [[ ! -e "$OLD_ROOT" ]] || fail "old checkout remains"
   git -C "$NEW_ROOT" remote set-url origin https://github.com/pxm-0/argus.git
   "$NEW_ROOT/scripts/install-operator-links" --check
+  python3 "$NEW_ROOT/scripts/argus-m1-reconcile-identity" --apply --acknowledge-identity-reconciliation
   python3 "$NEW_ROOT/scripts/argus-m1-verify"
   python3 "$NEW_ROOT/scripts/argus-m4-hello-nginx-persistence-verify"
   printf 'ARGUS_IDENTITY_CUTOVER_VERIFIED\n'
