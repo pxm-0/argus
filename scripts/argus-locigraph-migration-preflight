@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Collect redacted LociGraph migration evidence without changing runtime state."""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+from argus_locigraph_preflight import PreflightError, build_report
+
+
+ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
+COMPOSE = Path("/home/oreo/LociGraph/docker-compose.yml")
+
+
+def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, check=False, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+
+
+def main() -> int:
+    argparse.ArgumentParser(description="Read-only, secret-safe LociGraph migration preflight.").parse_args()
+    manifest = json.loads((ROOT / "workloads" / "locigraph" / "manifest.json").read_text(encoding="utf-8"))
+    rendered = run(["docker", "compose", "-p", "locigraph", "-f", str(COMPOSE), "config", "--format", "json"])
+    if rendered.returncode != 0:
+        raise PreflightError("legacy Compose configuration could not be rendered")
+    observed = run(
+        [
+            "docker", "ps", "-a", "--filter", "label=com.docker.compose.project=locigraph",
+            "--format", '{{.Label "com.docker.compose.service"}}\t{{.State}}',
+        ]
+    )
+    if observed.returncode != 0:
+        raise PreflightError("Docker container state could not be inspected")
+    containers = []
+    for line in observed.stdout.splitlines():
+        if not line.strip():
+            continue
+        try:
+            service, state = line.split("\t", 1)
+        except ValueError as error:
+            raise PreflightError("Docker returned an unsupported container-state record") from error
+        containers.append(
+            {
+                "service": str(service),
+                "running": str(state).lower() == "running",
+            }
+        )
+    report = build_report(compose=json.loads(rendered.stdout), containers=containers, manifest=manifest)
+    print(json.dumps(report, sort_keys=True))
+    return 0 if report["safeForMigrationApply"] else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (OSError, json.JSONDecodeError, PreflightError) as error:
+        print(f"refusing LociGraph migration preflight: {error}", file=sys.stderr)
+        raise SystemExit(2)
