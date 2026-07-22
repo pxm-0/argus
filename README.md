@@ -1,6 +1,6 @@
-# Oreo Cloud P0 Package
+# Argus P0 Package
 
-This package is the P0 handoff for building **Oreo Cloud**: a private, Git-tracked, personal ECS-style control plane for `oreochiserver`.
+This package is the P0 handoff for building **Argus**: a private, Git-tracked, personal ECS-style control plane for `oreochiserver`.
 
 P0 is not a public hosting platform. P0 is the minimum safe foundation:
 
@@ -11,7 +11,7 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 - authenticated dashboard toggles for privacy and desired access
 - read-only workload health/status commands
 - btop-style monitoring panel behind a dashboard toggle
-- workload migration planning into `/srv/oreo-cloud/workloads/<id>`
+- workload migration planning into `/srv/argus/workloads/<id>`
 - Cloudflare exposure planning, disabled by default
 - no public exposure unless a future task explicitly enables it
 
@@ -19,7 +19,7 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 
 | File | Purpose |
 |---|---|
-| `ARGUS_V1_BRIDGE.md` | Accepted bridge from Oreo Cloud into the Argus V1 trust-domain and portfolio architecture |
+| `ARGUS_V1_BRIDGE.md` | Accepted bridge from Argus into the Argus V1 trust-domain and portfolio architecture |
 | `docs/ARGUS_V1_DECISIONS.md` | Public-safe architecture decisions, viability evidence, limits, and delivery ledger |
 | `docs/ARGUS_M0_RUNBOOK.md` | Read-only legacy quarantine inventory and evidence runbook |
 | `docs/PRD.md` | Product requirements for P0 |

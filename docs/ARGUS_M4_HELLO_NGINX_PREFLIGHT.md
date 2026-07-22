@@ -8,10 +8,10 @@ After creating a fresh source-only backup and matching non-destructive restore
 test, run this only on `oreochiserver`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 sudo python3 scripts/argus-m4-hello-nginx-preflight \
-  --backup /srv/oreo-cloud/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS \
-  --restore-test /srv/oreo-cloud/runtime/restore-tests/hello-nginx/YYYYMMDD-HHMMSS
+  --backup /srv/argus/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS \
+  --restore-test /srv/argus/runtime/restore-tests/hello-nginx/YYYYMMDD-HHMMSS
 ```
 
 The command verifies the backup archive checksum, restored Compose source,

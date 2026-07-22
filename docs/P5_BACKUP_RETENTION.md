@@ -8,26 +8,26 @@ backups for additional workloads.
 Preview:
 
 ```bash
-scripts/oreo-backup-prune
+scripts/argus-backup-prune
 ```
 
 JSON preview:
 
 ```bash
-scripts/oreo-backup-prune --json
+scripts/argus-backup-prune --json
 ```
 
 Apply:
 
 ```bash
-scripts/oreo-backup-prune --apply --confirm "prune oreo backups"
+scripts/argus-backup-prune --apply --confirm "prune argus backups"
 ```
 
 ## Rules
 
 - Only workloads with `backup.backupAllowed=true` are considered.
 - The destination must be under
-  `/srv/oreo-cloud/runtime/backups/<workload-id>`.
+  `/srv/argus/runtime/backups/<workload-id>`.
 - `backup.retention.keepLast` decides how many newest run directories stay.
 - Apply mode requires the exact confirmation phrase.
 - Pruning writes an audit event.

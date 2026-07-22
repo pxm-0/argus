@@ -1,4 +1,4 @@
-# Oreo Cloud P1 Closeout
+# Argus P1 Closeout
 
 P1 status: complete when this closeout PR is merged and `p1-complete` is tagged on `main`.
 
@@ -8,11 +8,11 @@ Verified on `oreochiserver`: 2026-06-30T18:56Z.
 
 | Phase | Result |
 | --- | --- |
-| P1 spec | PR #28 added `docs/OREO_CLOUD_P1.md`. |
+| P1 spec | PR #28 added `docs/ARGUS_P1.md`. |
 | P1-01 baseline | PR #40 recorded server baseline evidence in `docs/P1_BASELINE.md`. |
 | P1-02 manifest schema | PR #41 added workload manifest documentation and an example schema. |
 | P1-03 first migration metadata | PR #42 recorded `hello-nginx` as the first migrated workload. |
-| P1-04 logs CLI | PR #43 added safe `oreo-logs`. |
+| P1-04 logs CLI | PR #43 added safe `argus-logs`. |
 | P1-05 restart CLI | PR #44 added safe restart preview/apply commands. |
 | P1-06 backup/restore planning | PR #45 added backup and restore planning commands and docs. |
 | P1-07 dashboard V2 | PR #46 added manifest, backup, operation, and audit context to the dashboard/API. |
@@ -24,8 +24,8 @@ Verified on `oreochiserver`: 2026-06-30T18:56Z.
 
 `hello-nginx` is the only P1 migrated workload.
 
-- Canonical root: `/srv/oreo-cloud/workloads/hello-nginx`
-- Source path: `/srv/oreo-cloud/workloads/hello-nginx/source`
+- Canonical root: `/srv/argus/workloads/hello-nginx`
+- Source path: `/srv/argus/workloads/hello-nginx/source`
 - Legacy compatibility path: `/srv/apps/hello-nginx`
 - Runtime: Docker Compose project `hello-nginx`, service `web`
 - Health URL: `http://127.0.0.1:18080`
@@ -37,16 +37,16 @@ Verified on `oreochiserver`: 2026-06-30T18:56Z.
 
 Added during P1:
 
-- `scripts/oreo-logs`
-- `scripts/oreo-action-preview`
-- `scripts/oreo-action-apply`
-- `scripts/oreo-backup-plan`
-- `scripts/oreo-backup-run`
-- `scripts/oreo-restore-plan`
-- `scripts/oreo-events`
+- `scripts/argus-logs`
+- `scripts/argus-action-preview`
+- `scripts/argus-action-apply`
+- `scripts/argus-backup-plan`
+- `scripts/argus-backup-run`
+- `scripts/argus-restore-plan`
+- `scripts/argus-events`
 
-Server note: these commands work from `/srv/oreo-cloud/scripts/...`. Only
-`oreo-events` is currently symlinked in `/usr/local/bin`; the newer operation
+Server note: these commands work from `/srv/argus/scripts/...`. Only
+`argus-events` is currently symlinked in `/usr/local/bin`; the newer operation
 commands still need an operator sudo symlink refresh if short command names are
 desired.
 
@@ -68,11 +68,11 @@ and `lastAuditEvent`.
 
 `hello-nginx` has a backup plan:
 
-- destination: `/srv/oreo-cloud/runtime/backups/hello-nginx`
+- destination: `/srv/argus/runtime/backups/hello-nginx`
 - `backupAllowed`: `false`
-- `oreo-backup-run hello-nginx` remains blocked unless the manifest explicitly
+- `argus-backup-run hello-nginx` remains blocked unless the manifest explicitly
   enables backup execution.
-- restore remains manual through `oreo-restore-plan hello-nginx`.
+- restore remains manual through `argus-restore-plan hello-nginx`.
 
 ## Cloudflare Status
 
@@ -84,7 +84,7 @@ Cloudflare remains plan-only.
 - Router ports opened: none
 - Public route exposed: none
 - Planned demo workload: `hello-nginx`
-- Planned hostname: `hello-nginx.oreo-cloud.invalid`
+- Planned hostname: `hello-nginx.argus.invalid`
 - Effective access: `local`
 - Desired access: `cloudflare-protected`
 - Planned ingress requires Cloudflare Access before any future activation.
@@ -94,7 +94,7 @@ Cloudflare remains plan-only.
 Final live command:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 scripts/smoke-test
 ```
 

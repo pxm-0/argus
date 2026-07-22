@@ -1,6 +1,6 @@
 # Tailscale Access Standard
 
-One pattern for putting an Oreo Cloud workload on the tailnet. `nodens` is the
+One pattern for putting an Argus workload on the tailnet. `nodens` is the
 reference implementation; every other tailnet workload conforms to this.
 
 ## The standard
@@ -74,7 +74,7 @@ Run per workload; attach output to the PR:
 4. From another tailnet device:
    `curl -sS -o /dev/null -w '%{http_code}' https://oreochiserver.tail0a3a58.ts.net:<PORT>`
    returns the workload's expected status.
-5. `scripts/oreo-access-reconcile` clean and `scripts/oreo-doctor` ok.
+5. `scripts/argus-access-reconcile` clean and `scripts/argus-doctor` ok.
 6. Set `access.json` `effective: "tailnet"`, `lastAppliedAt`, clear `lastError`.
 
 ### Per-workload plan

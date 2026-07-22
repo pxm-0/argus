@@ -13,7 +13,7 @@ not create a ledger, contact a network service, or copy files off-host.
 After the M1 mutation service has produced at least one accepted audit event:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 sudo python3 scripts/argus-m1-audit-checkpoint
 ```
 
@@ -48,8 +48,8 @@ a temporary owner-readable copy first. The checkpoint contains only its sequence
 and hashes, but remove this staging file immediately after copying it.
 
 ```bash
-sudo install -o oreo -g oreo -m 0600 \
-  /srv/oreo-cloud/runtime/argus/audit-checkpoint.json \
+sudo install -o argus -g argus -m 0600 \
+  /srv/argus/runtime/argus/audit-checkpoint.json \
   /home/oreo/argus-m1-audit-checkpoint.json
 ```
 

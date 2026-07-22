@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect safe host metrics for the private Oreo Cloud dashboard."""
+"""Collect safe host metrics for the private Argus dashboard."""
 
 from __future__ import annotations
 

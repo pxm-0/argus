@@ -3,8 +3,8 @@
   "name": "Review UI",
   "description": "Internal review UI container discovered without Compose labels.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/review-ui",
-  "sourcePath": "/srv/oreo-cloud/workloads/review-ui/source",
+  "canonicalRoot": "/srv/argus/workloads/review-ui",
+  "sourcePath": "/srv/argus/workloads/review-ui/source",
   "privacyCompatibility": "internal",
   "accessCompatibility": "tailnet",
   "runtime": {
@@ -68,7 +68,7 @@
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/review-ui",
+    "destination": "/srv/argus/runtime/backups/review-ui",
     "retention": {
       "keepLast": 5
     },
@@ -88,7 +88,7 @@
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "internal",
     "publicExposureAllowed": false,
     "forbiddenTargets": [],

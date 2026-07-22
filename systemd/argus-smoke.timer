@@ -1,0 +1,10 @@
+[Unit]
+Description=Run Argus smoke test daily
+
+[Timer]
+OnCalendar=daily
+Persistent=true
+RandomizedDelaySec=15m
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,174 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import tarfile
+from pathlib import Path
+import os
+
+from argus_common import audit, fail, load_manifest, now, operation_allowed
+
+
+def timestamp_for_path() -> str:
+    return now().replace("-", "").replace(":", "").replace("Z", "").replace("T", "-")
+
+
+def approved_destination(workload_id: str, destination: Path) -> bool:
+    expected = Path(f"/srv/argus/runtime/backups/{workload_id}")
+    try:
+        destination.relative_to(expected)
+    except ValueError:
+        if destination == expected:
+            return True
+    else:
+        return True
+    test_root = os.environ.get("ARGUS_ROOT")
+    if test_root:
+        expected_test = Path(test_root).expanduser().resolve() / "runtime" / "backups" / workload_id
+        try:
+            destination.resolve().relative_to(expected_test)
+        except ValueError:
+            return destination.resolve() == expected_test
+        return True
+    return False
+
+
+def safe_tar_filter(item: tarfile.TarInfo) -> tarfile.TarInfo | None:
+    name = Path(item.name).name.lower()
+    if name == ".env" or name.startswith(".env.") or "secret" in name or "credential" in name:
+        return None
+    item.uid = item.gid = 0
+    item.uname = item.gname = ""
+    return item
+
+
+def add_source_archive(archive: Path, source: Path) -> bool:
+    if not source.exists():
+        return False
+    with tarfile.open(archive, "w:gz") as tar:
+        tar.add(source, arcname="source", recursive=True, filter=safe_tar_filter)
+    return True
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def write_checksums(run_dir: Path) -> None:
+    rows = []
+    for path in sorted(run_dir.iterdir()):
+        if path.name == "checksums.sha256" or not path.is_file():
+            continue
+        rows.append(f"{sha256(path)}  {path.name}")
+    (run_dir / "checksums.sha256").write_text("\n".join(rows) + "\n")
+
+
+def write_restore_plan(run_dir: Path, workload_id: str, manifest: dict) -> None:
+    migration = manifest.get("migration", {})
+    content = f"""# Restore Plan: {workload_id}
+
+Backup artifact: `{run_dir}`
+
+This P2 restore plan is non-destructive. It does not replace the live workload.
+
+## Contents
+
+- `manifest.json`: manifest snapshot at backup time
+- `files.tar.gz`: approved source-only archive
+- `checksums.sha256`: artifact checksums
+- `backup-summary.json`: redacted backup metadata
+
+## Non-Destructive Test
+
+```bash
+mkdir -p /srv/argus/runtime/restore-tests/{workload_id}
+tar -xzf {run_dir}/files.tar.gz -C /srv/argus/runtime/restore-tests/{workload_id}
+test -f /srv/argus/runtime/restore-tests/{workload_id}/source/docker-compose.yml
+```
+
+## Production Rollback Context
+
+{migration.get("rollback", "Review the workload manifest and backup contents before any manual restore.")}
+"""
+    (run_dir / "restore-plan.md").write_text(content)
+
+
+def write_summary(run_dir: Path, workload_id: str, manifest: dict, source_included: bool) -> None:
+    backup = manifest.get("backup", {})
+    summary = {
+        "version": 1,
+        "workloadId": workload_id,
+        "createdAt": now(),
+        "sourceIncluded": source_included,
+        "envIncluded": False,
+        "volumesIncluded": False,
+        "databaseIncluded": False,
+        "artifactPath": str(run_dir),
+        "redacted": True,
+        "destination": str(backup.get("destination", "")),
+    }
+    (run_dir / "backup-summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run an explicitly allowed workload backup.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--confirm", default="", help="Exact workload ID required to run backup.")
+    args = parser.parse_args()
+    manifest = load_manifest(args.workload_id)
+    if not manifest:
+        fail(f"missing manifest for {args.workload_id}")
+    if args.confirm != args.workload_id:
+        audit("backup.run", args.workload_id, "blocked", reason="confirmation required")
+        fail(f"confirmation required: rerun with --confirm {args.workload_id}")
+    if not operation_allowed(args.workload_id, "backupAllowed"):
+        audit("backup.run", args.workload_id, "blocked", reason="backup not allowed")
+        fail(f"backup is not allowed for {args.workload_id}")
+
+    backup = manifest.get("backup", {})
+    destination_root = Path(str(backup.get("destination", "")))
+    if not approved_destination(args.workload_id, destination_root):
+        audit("backup.run", args.workload_id, "blocked", reason="invalid destination")
+        fail(f"backup destination must be under /srv/argus/runtime/backups/{args.workload_id}")
+    if backup.get("env", False):
+        audit("backup.run", args.workload_id, "blocked", reason="env backup not allowed in P2")
+        fail("env backup is not allowed for this P2 backup")
+    if backup.get("bindMounts", []) or backup.get("namedVolumes", []):
+        audit("backup.run", args.workload_id, "blocked", reason="volume backup not implemented")
+        fail("volume backups require a later explicit implementation")
+    database = backup.get("database", {})
+    if database.get("type", "none") != "none":
+        audit("backup.run", args.workload_id, "blocked", reason="database backup not implemented")
+        fail("database backup requires a later explicit implementation")
+
+    run_dir = destination_root / timestamp_for_path()
+    run_dir.mkdir(parents=True, exist_ok=False)
+
+    source_included = False
+    if backup.get("source", False):
+        source = Path(str(manifest.get("sourcePath", "")))
+        source_included = add_source_archive(run_dir / "files.tar.gz", source)
+        if not source_included:
+            audit("backup.run", args.workload_id, "blocked", reason="source path missing")
+            fail(f"source path missing: {source}")
+    else:
+        with tarfile.open(run_dir / "files.tar.gz", "w:gz"):
+            pass
+    (run_dir / "manifest.json").write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    write_restore_plan(run_dir, args.workload_id, manifest)
+    write_summary(run_dir, args.workload_id, manifest, source_included)
+    write_checksums(run_dir)
+
+    audit("backup.run", args.workload_id, "ok", destination=str(run_dir), copied=["source"] if source_included else [])
+    print(f"backup written to {run_dir}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

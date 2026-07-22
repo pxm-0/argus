@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus scheduled workload discovery
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/argus
+ExecStart=/srv/argus/scripts/argus-workload-discover
+User=oreo
+Group=oreo

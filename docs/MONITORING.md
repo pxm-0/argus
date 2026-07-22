@@ -156,24 +156,24 @@ Use plain CSS. No CDN. No external JS. No remote fonts.
 Templates:
 
 ```text
-templates/systemd/oreo-metrics.service
-templates/systemd/oreo-metrics.timer
+templates/systemd/argus-metrics.service
+templates/systemd/argus-metrics.timer
 ```
 
 P0 install command:
 
 ```bash
-sudo cp /srv/oreo-cloud/systemd/oreo-metrics.service /etc/systemd/system/oreo-metrics.service
-sudo cp /srv/oreo-cloud/systemd/oreo-metrics.timer /etc/systemd/system/oreo-metrics.timer
+sudo cp /srv/argus/systemd/argus-metrics.service /etc/systemd/system/argus-metrics.service
+sudo cp /srv/argus/systemd/argus-metrics.timer /etc/systemd/system/argus-metrics.timer
 sudo systemctl daemon-reload
-sudo systemctl enable --now oreo-metrics.timer
+sudo systemctl enable --now argus-metrics.timer
 ```
 
 ## Acceptance
 
 ```bash
-python3 /srv/oreo-cloud/control-plane/monitoring/collect_metrics.py
-python3 -m json.tool /srv/oreo-cloud/control-plane/dashboard/public/metrics.json >/dev/null
+python3 /srv/argus/control-plane/monitoring/collect_metrics.py
+python3 -m json.tool /srv/argus/control-plane/dashboard/public/metrics.json >/dev/null
 ```
 
 Then dashboard must show monitor only after toggle.

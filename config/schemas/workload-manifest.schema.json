@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://oreo-cloud.local/schemas/workload-manifest.schema.json",
-  "title": "Oreo Cloud Workload Manifest",
+  "$id": "https://argus.local/schemas/workload-manifest.schema.json",
+  "title": "Argus Workload Manifest",
   "type": "object",
   "required": [
     "id",

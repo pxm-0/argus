@@ -1,8 +1,8 @@
 # Template only. Do not use directly without replacing placeholders.
 # Do not commit credentials files or tokens.
 
-tunnel: OREO_CLOUD_TUNNEL_ID
-credentials-file: /etc/cloudflared/OREO_CLOUD_TUNNEL_ID.json
+tunnel: ARGUS_TUNNEL_ID
+credentials-file: /etc/cloudflared/ARGUS_TUNNEL_ID.json
 
 ingress:
   # Generated workload routes go here.

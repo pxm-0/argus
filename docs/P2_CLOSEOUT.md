@@ -1,4 +1,4 @@
-# Oreo Cloud P2 Closeout
+# Argus P2 Closeout
 
 P2 status: complete when this closeout PR is merged and `p2-complete` is tagged
 on `main`.
@@ -18,14 +18,14 @@ Verified on `oreochiserver`: 2026-06-30T21:15Z.
 | P2-06 workload migration | Merged in PR #67. Documented safe deferral because no additional low-risk workload was suitable for P2. |
 | P2-07 Cloudflare protected activation | Merged in PR #69. Added guarded activation, preview, and rollback commands; real activation remains blocked on external prerequisites. |
 | P2-08 access reconcile | Merged in PR #71. Added effective access reconciliation and reconciled stale Funnel observation. |
-| P2-09 smoke expansion | Merged in PR #73. Expanded smoke and `oreo-doctor` security audit coverage. |
+| P2-09 smoke expansion | Merged in PR #73. Expanded smoke and `argus-doctor` security audit coverage. |
 
 ## Live Server State
 
-- `/srv/oreo-cloud` is on `main` at commit `11e542d`.
+- `/srv/argus` is on `main` at commit `11e542d`.
 - `scripts/install-operator-links --check` passes for all approved operator links.
 - `scripts/validate-manifests` passes.
-- `scripts/oreo-doctor --json` reports `ok=true`, `failures=0`, `checks=21`.
+- `scripts/argus-doctor --json` reports `ok=true`, `failures=0`, `checks=21`.
 - `scripts/smoke-test` passes with `0 failure(s), 0 warning(s)`.
 - The control API binds only to localhost.
 - Caddy planned and live validation pass.
@@ -48,7 +48,7 @@ Verified on `oreochiserver`: 2026-06-30T21:15Z.
 - Provider enabled: false
 - Named tunnel active: false
 - Quick tunnels allowed: false
-- Planned hostname: `hello-nginx.oreo-cloud.invalid`
+- Planned hostname: `hello-nginx.argus.invalid`
 - Access protection verified: false, because no real Cloudflare activation occurred in P2
 - Public unauthenticated route: none
 - Blocked workloads exposed: none
@@ -108,5 +108,5 @@ Smoke summary: 0 failure(s), 0 warning(s)
   state, data, and rollback are documented.
 - Add richer restore drills for stateful workloads before migration.
 - Revisit Tailnet-only private routing for internal services.
-- Periodically run `scripts/oreo-doctor` and `scripts/smoke-test` from
+- Periodically run `scripts/argus-doctor` and `scripts/smoke-test` from
   `oreochiserver` as the platform evolves.

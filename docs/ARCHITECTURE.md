@@ -1,4 +1,4 @@
-# Architecture: Oreo Cloud P0
+# Architecture: Argus P0
 
 ## High-Level Architecture
 
@@ -17,11 +17,11 @@ Caddy bound to Tailscale IP on :8088
       +--> /api/* -> 127.0.0.1:8099
                          |
                          v
-                    Oreo Control API
+                    Argus Control API
                          |
                          +--> config/*.json
-                         +--> scripts/oreo-access-*
-                         +--> scripts/oreo-privacy-set
+                         +--> scripts/argus-access-*
+                         +--> scripts/argus-privacy-set
                          +--> runtime/audit.log
 
 Metrics timer
@@ -47,7 +47,7 @@ The control API must bind only to `127.0.0.1:8099`. It is not a public API. It i
 
 ### Admin Mutation Boundary
 
-View-only dashboard access does not require a token. Any mutation requires admin mode with a bearer token from `/etc/oreo-cloud/control-token`.
+View-only dashboard access does not require a token. Any mutation requires admin mode with a bearer token from `/etc/argus/control-token`.
 
 ### Cloudflare Boundary
 
@@ -58,14 +58,14 @@ Cloudflare configuration is planned only in P0. No tunnel should be started and 
 ### 1. Platform Root
 
 ```text
-/srv/oreo-cloud
+/srv/argus
 ```
 
 The platform root contains tracked docs, config, templates, dashboard, API, scripts, systemd unit templates, and workload manifests.
 
 ### 2. Git Repo
 
-`/srv/oreo-cloud` is a local Git repo. Git tracks platform definitions, not secrets or workload source code.
+`/srv/argus` is a local Git repo. Git tracks platform definitions, not secrets or workload source code.
 
 ### 3. Neutral Workload Registry
 
@@ -183,10 +183,10 @@ This distinction avoids lying in the dashboard. Example:
 Canonical workload layout:
 
 ```text
-/srv/oreo-cloud/workloads/<id>/
+/srv/argus/workloads/<id>/
 ├── README.md
 ├── manifest.json
-└── source/      # ignored by Oreo Cloud Git
+└── source/      # ignored by Argus Git
 ```
 
 Migration should use copy-first, validate, cut over, symlink old path, health check, and rollback if needed.

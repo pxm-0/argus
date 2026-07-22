@@ -52,7 +52,7 @@ Required manual checks remain incomplete:
 
 ## Activation Preview
 
-`scripts/oreo-cloudflare-activate-preview --json hello-nginx` returned
+`scripts/argus-cloudflare-activate-preview --json hello-nginx` returned
 `"ok": false`:
 
 ```json
@@ -65,8 +65,8 @@ Required manual checks remain incomplete:
     "Cloudflare provider is not provisioned",
     "named tunnels are not allowed by exposure policy"
   ],
-  "configPath": "/etc/cloudflared/oreo-cloud.yml",
-  "hostname": "hello-nginx.oreo-cloud.invalid",
+  "configPath": "/etc/cloudflared/argus.yml",
+  "hostname": "hello-nginx.argus.invalid",
   "ok": false,
   "providerEnabled": false,
   "providerProvisioned": false,
@@ -85,7 +85,7 @@ The generated ingress remains a plan-only file:
 ```yaml
 # Generated plan only. No tunnel is enabled by this file.
 ingress:
-  - hostname: hello-nginx.oreo-cloud.invalid
+  - hostname: hello-nginx.argus.invalid
     service: http://127.0.0.1:18080
     # Cloudflare Access policy required before activation.
   - service: http_status:404
@@ -101,7 +101,7 @@ created, and no Cloudflare process was started.
 ```text
 desired=cloudflare-protected
 effective=local
-cloudflare=https://hello-nginx.oreo-cloud.invalid
+cloudflare=https://hello-nginx.argus.invalid
 lastError=Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled.
 ```
 

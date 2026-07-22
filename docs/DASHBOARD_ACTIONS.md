@@ -19,11 +19,11 @@ All `POST` endpoints require:
 Authorization: Bearer <control-token>
 ```
 
-The token is read from `/etc/oreo-cloud/control-token` by default. It is never embedded in dashboard HTML and the browser stores it only in `sessionStorage`.
+The token is read from `/etc/argus/control-token` by default. It is never embedded in dashboard HTML and the browser stores it only in `sessionStorage`.
 
 ## Response Rules
 
-Action responses are structured JSON. They include operation class names such as `docker-compose-restart` or `oreo-backup-run`, but they do not expose raw shell command strings.
+Action responses are structured JSON. They include operation class names such as `docker-compose-restart` or `argus-backup-run`, but they do not expose raw shell command strings.
 
 Logs preview returns sanitized, capped output:
 
@@ -52,7 +52,7 @@ Restart apply also requires:
 Backup apply also requires:
 
 - manifest backup permission
-- destination under `/srv/oreo-cloud/runtime/backups/<id>`
+- destination under `/srv/argus/runtime/backups/<id>`
 - exact confirmation
 - audit event
 

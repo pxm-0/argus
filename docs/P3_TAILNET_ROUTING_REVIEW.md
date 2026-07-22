@@ -1,6 +1,6 @@
 # P3 Tailnet-Only Routing Review
 
-P3-02 verifies that the Oreo Cloud dashboard and control API remain private
+P3-02 verifies that the Argus dashboard and control API remain private
 before any real Cloudflare protected activation work begins.
 
 - Verified on: 2026-06-30T22:06Z
@@ -39,7 +39,7 @@ The live Caddy import for the dashboard is bound to the Tailscale IP:
 ```caddy
 http://oreochiserver:8088, http://100.75.210.83:8088 {
     bind 100.75.210.83
-    root * /srv/oreo-cloud/control-plane/dashboard/public
+    root * /srv/argus/control-plane/dashboard/public
     handle /api/* {
         reverse_proxy 127.0.0.1:8099
     }
@@ -57,7 +57,7 @@ Observed listeners relevant to P3-02:
 ```text
 100.75.210.83:8088  caddy dashboard route
 127.0.0.1:8765      review-ui container
-127.0.0.1:8099      oreo-control-api
+127.0.0.1:8099      argus-control-api
 127.0.0.1:8080      local workload listener
 127.0.0.1:8081      local workload listener
 *:80                existing default Caddy site
@@ -66,7 +66,7 @@ Observed listeners relevant to P3-02:
 No `0.0.0.0:8088`, wildcard `:8088`, or non-localhost `:8099` listener was
 observed.
 
-The existing `*:80` Caddy default site is not the Oreo Cloud dashboard or
+The existing `*:80` Caddy default site is not the Argus dashboard or
 control API route. It remains a separate host-level Caddy default and should be
 reviewed before any broader external exposure work, but P3-02 dashboard/API
 privacy acceptance is satisfied.
@@ -74,7 +74,7 @@ privacy acceptance is satisfied.
 ## Service State
 
 ```text
-oreo-control-api.service active
+argus-control-api.service active
 caddy active
 cloudflared inactive
 ```

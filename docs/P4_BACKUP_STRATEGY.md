@@ -89,9 +89,9 @@ Before `backupAllowed` can become true for a stateful workload:
 1. Document exact source paths or volumes.
 2. Document exact exclusions.
 3. Document whether the app must be stopped or quiesced.
-4. Produce an artifact under `/srv/oreo-cloud/runtime/backups/<id>`.
+4. Produce an artifact under `/srv/argus/runtime/backups/<id>`.
 5. Verify checksums.
-6. Restore into `/srv/oreo-cloud/runtime/restore-tests/<id>/...`.
+6. Restore into `/srv/argus/runtime/restore-tests/<id>/...`.
 7. Confirm live services are unaffected.
 8. Run `scripts/smoke-test` on `oreochiserver`.
 

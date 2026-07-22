@@ -1,4 +1,4 @@
-# Oreo Cloud P3 Closeout
+# Argus P3 Closeout
 
 P3 status: complete when this closeout PR is merged and `p3-complete` is tagged
 on `main`.
@@ -49,7 +49,7 @@ Verified locally before closeout PR: 2026-06-30T22:17Z.
 - Provider provisioned: false
 - Named tunnels allowed: false
 - Quick tunnels allowed: false
-- Planned hostname: `hello-nginx.oreo-cloud.invalid`
+- Planned hostname: `hello-nginx.argus.invalid`
 - Access/Auth evidence: absent, so activation is deferred
 - DNS route: absent
 - `cloudflared`: inactive
@@ -81,7 +81,7 @@ PASS hello-nginx manifest valid
 ```
 
 ```text
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 ok=True failures=0 checks=22
 ```
 
@@ -104,15 +104,15 @@ and Caddy are skipped or unavailable locally.
 After this PR merges, run on `oreochiserver`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git checkout main
 git pull --ff-only
 scripts/install-operator-links --check
 scripts/validate-manifests
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 scripts/smoke-test
 git status --short
-git tag -a p3-complete -m "Oreo Cloud P3 complete"
+git tag -a p3-complete -m "Argus P3 complete"
 git push origin p3-complete
 ```
 

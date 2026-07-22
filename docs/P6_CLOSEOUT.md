@@ -1,16 +1,16 @@
-# Oreo Cloud P6 Closeout
+# Argus P6 Closeout
 
 P6 status: complete. Server closeout verified on `oreochiserver`.
 
 ## Scope
 
 P6 is optional productization. It makes templates safer to reuse without
-turning Oreo Cloud into a hosted product or one-command installer.
+turning Argus into a hosted product or one-command installer.
 
 Completed locally:
 
 - added `templates/README.md`
-- added `scripts/oreo-template-check`
+- added `scripts/argus-template-check`
 - added `docs/P6_TEMPLATE_ONBOARDING.md`
 - added P6 smoke invariants for productization assets and template validation
 
@@ -26,7 +26,7 @@ Completed locally:
 ## Local Verification
 
 ```text
-scripts/oreo-template-check --json
+scripts/argus-template-check --json
 ok=True failures=0
 ```
 
@@ -46,10 +46,10 @@ unavailable locally.
 On `oreochiserver`, after merge to `main`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git checkout main
 git pull --ff-only
-scripts/oreo-template-check --json
+scripts/argus-template-check --json
 scripts/smoke-test
 git status --short
 ```
@@ -62,7 +62,7 @@ and the P6 tag is pushed from `main`.
 Run on `oreochiserver` at commit `5efb620` on `main`:
 
 ```text
-scripts/oreo-template-check --json
+scripts/argus-template-check --json
 ok=True failures=0
 
 scripts/smoke-test

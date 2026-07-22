@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/pxm-0/oreo-cloud/config/schemas/workload-manifest.schema.example.json",
-  "title": "Oreo Cloud Workload Manifest",
+  "$id": "https://github.com/pxm-0/argus/config/schemas/workload-manifest.schema.example.json",
+  "title": "Argus Workload Manifest",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -30,11 +30,11 @@
     },
     "canonicalRoot": {
       "type": "string",
-      "pattern": "^/srv/oreo-cloud/workloads/[a-z0-9][a-z0-9-]*$"
+      "pattern": "^/srv/argus/workloads/[a-z0-9][a-z0-9-]*$"
     },
     "sourcePath": {
       "type": "string",
-      "pattern": "^/srv/oreo-cloud/workloads/[a-z0-9][a-z0-9-]*/source$"
+      "pattern": "^/srv/argus/workloads/[a-z0-9][a-z0-9-]*/source$"
     },
     "runtime": {
       "type": "object",
@@ -240,7 +240,7 @@
         },
         "destination": {
           "type": "string",
-          "pattern": "^/srv/oreo-cloud/runtime/backups/[a-z0-9][a-z0-9-]*$"
+          "pattern": "^/srv/argus/runtime/backups/[a-z0-9][a-z0-9-]*$"
         },
         "retention": {
           "type": "string"
@@ -261,14 +261,14 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "trackedByOreoCloudGit",
+        "trackedByArgusGit",
         "classification",
         "publicExposureAllowed",
         "forbiddenTargets",
         "notes"
       ],
       "properties": {
-        "trackedByOreoCloudGit": {
+        "trackedByArgusGit": {
           "type": "boolean",
           "default": false
         },

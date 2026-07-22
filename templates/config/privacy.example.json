@@ -13,13 +13,13 @@
       "privacy": "sensitive",
       "reason": "Initial operator classification.",
       "updatedAt": "",
-      "updatedBy": "oreo-cloud"
+      "updatedBy": "argus"
     },
     "uptime-kuma": {
       "privacy": "restricted",
       "reason": "Infrastructure/admin dashboard.",
       "updatedAt": "",
-      "updatedBy": "oreo-cloud"
+      "updatedBy": "argus"
     }
   }
 }

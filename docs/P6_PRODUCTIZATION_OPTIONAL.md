@@ -1,6 +1,6 @@
 # P6 Productization Optional
 
-P6 makes Oreo Cloud easier to reuse without turning it into a hosted product.
+P6 makes Argus easier to reuse without turning it into a hosted product.
 The phase is optional and remains private-first.
 
 ## Goals
@@ -22,7 +22,7 @@ The phase is optional and remains private-first.
 ## Deliverables
 
 - `templates/README.md`
-- `scripts/oreo-template-check`
+- `scripts/argus-template-check`
 - `docs/P6_TEMPLATE_ONBOARDING.md`
 - P6 smoke coverage for template validation
 
@@ -31,5 +31,5 @@ The phase is optional and remains private-first.
 - Template files required for a private starter checkout exist.
 - JSON template examples parse.
 - Template files do not contain obvious secret markers.
-- `scripts/oreo-template-check --json` passes.
+- `scripts/argus-template-check --json` passes.
 - `scripts/smoke-test --offline` passes locally.

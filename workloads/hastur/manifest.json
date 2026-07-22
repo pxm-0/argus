@@ -3,21 +3,21 @@
   "name": "Hastur",
   "description": "Sensitive workload with SSH, auth, and data bind mounts.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/hastur",
-  "sourcePath": "/srv/oreo-cloud/workloads/hastur/source",
+  "canonicalRoot": "/srv/argus/workloads/hastur",
+  "sourcePath": "/srv/argus/workloads/hastur/source",
   "privacyCompatibility": "sensitive",
   "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
-      "path": "/srv/oreo-cloud/workloads/hastur/source/compose.yml",
+      "path": "/srv/argus/workloads/hastur/source/compose.yml",
       "project": "hastur",
       "service": "hastur",
       "legacyPaths": [
         "/home/oreo/hastur/compose.yml"
       ]
     },
-    "composePath": "/srv/oreo-cloud/workloads/hastur/source/compose.yml",
+    "composePath": "/srv/argus/workloads/hastur/source/compose.yml",
     "composeProject": "hastur",
     "service": "hastur",
     "legacyComposePaths": [
@@ -71,7 +71,7 @@
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/hastur",
+    "destination": "/srv/argus/runtime/backups/hastur",
     "retention": {
       "keepLast": 5
     },
@@ -94,7 +94,7 @@
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "sensitive",
     "publicExposureAllowed": false,
     "forbiddenTargets": [

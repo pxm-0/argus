@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OUT="${1:-/tmp/oreo-cloud-discovery.md}"
+OUT="${1:-/tmp/argus-discovery.md}"
 {
-  echo "# Oreo Cloud Discovery"
+  echo "# Argus Discovery"
   echo
   echo "## Host"
   hostname || true
@@ -45,8 +45,8 @@ OUT="${1:-/tmp/oreo-cloud-discovery.md}"
   echo
   echo "## Git"
   git --version || true
-  cd /srv/oreo-cloud 2>/dev/null && git status --short || true
-  cd /srv/oreo-cloud 2>/dev/null && git remote -v || true
+  cd /srv/argus 2>/dev/null && git status --short || true
+  cd /srv/argus 2>/dev/null && git remote -v || true
   echo
   echo "## Cloudflare"
   cloudflared --version || true

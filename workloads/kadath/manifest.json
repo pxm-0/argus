@@ -3,8 +3,8 @@
   "name": "Kadath",
   "description": "Personal strategic HQ: Next.js web + Node API + Postgres, running as the kadath-live Docker Compose stack.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/kadath",
-  "sourcePath": "/srv/oreo-cloud/workloads/kadath/source",
+  "canonicalRoot": "/srv/argus/workloads/kadath",
+  "sourcePath": "/srv/argus/workloads/kadath/source",
   "privacyCompatibility": "personal",
   "accessCompatibility": "tailnet",
   "runtime": {
@@ -33,7 +33,7 @@
       "Running as Docker Compose project kadath-live from /home/oreo/kadath/deploy/compose.yml.",
       "Web and API bind only to 127.0.0.1 on ports 3000 and 3001; Tailscale Serve provides tailnet-only HTTPS on port 8443.",
       "Postgres is not published on a host port and uses the kadath-live_postgres-data named volume.",
-      "Canonical Oreo Cloud source migration into /srv/oreo-cloud/workloads/kadath/source is still pending.",
+      "Canonical Argus source migration into /srv/argus/workloads/kadath/source is still pending.",
       "Release, health, backup, restore, and client-replica procedures are documented in /home/oreo/kadath/deploy/README.md."
     ]
   },
@@ -74,7 +74,7 @@
       "dumpCommand": "/home/oreo/kadath/deploy/scripts/backup-postgres.sh",
       "restoreCommand": "/home/oreo/kadath/deploy/scripts/restore-postgres.sh"
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/kadath",
+    "destination": "/srv/argus/runtime/backups/kadath",
     "applicationDestination": "/home/oreo/kadath-backups",
     "retention": {
       "keepLast": 14
@@ -84,13 +84,13 @@
     "lastRestoreTestAt": "2026-07-10T21:03:15Z",
     "exclusions": [],
     "requirements": [
-      "Kadath owns backup execution; Oreo Cloud records and validates the operator contract but does not expose a dashboard backup action.",
+      "Kadath owns backup execution; Argus records and validates the operator contract but does not expose a dashboard backup action.",
       "The server timer retains 14 daily dumps and 8 weekly snapshots; every dump has a checksum and must pass an isolated restore drill."
     ]
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "personal",
     "publicExposureAllowed": false,
     "forbiddenTargets": [],

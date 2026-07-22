@@ -5,7 +5,7 @@ Use these as separate Codex tasks. Do not give Codex the whole project as one va
 ## Task 1: Discovery Only
 
 ```text
-Perform read-only discovery for Oreo Cloud P0.
+Perform read-only discovery for Argus P0.
 
 Collect:
 - hostname and user
@@ -16,7 +16,7 @@ Collect:
 - container bind mounts and named volumes
 - listening ports
 - Caddy status
-- Git version and existing /srv/oreo-cloud state
+- Git version and existing /srv/argus state
 - cloudflared version/service/config hints
 - existing workload paths
 - existing health URLs where inferable
@@ -27,13 +27,13 @@ Do not restart services.
 Do not start tunnels.
 Do not expose anything.
 Do not print .env contents.
-Write docs/DISCOVERY.md or /tmp/oreo-cloud-discovery.md if the project root does not exist yet.
+Write docs/DISCOVERY.md or /tmp/argus-discovery.md if the project root does not exist yet.
 ```
 
 ## Task 2: Create Git-Tracked Base Layout
 
 ```text
-Create /srv/oreo-cloud as a local Git repo on main.
+Create /srv/argus as a local Git repo on main.
 
 Create directories:
 config, config/schemas, workloads, control-plane/dashboard/public, control-plane/api, control-plane/monitoring, cloudflare, scripts, systemd, runtime, runtime/metrics-history, runtime/migration-backups, docs.
@@ -50,7 +50,7 @@ Create:
 Do not configure Caddy.
 Do not move workloads.
 Do not expose anything.
-Commit: Initialize Oreo Cloud repo
+Commit: Initialize Argus repo
 ```
 
 ## Task 3: Create Neutral Registries
@@ -80,9 +80,9 @@ Commit: Add neutral workload and access registries
 ## Task 4: Add Workload Migration Planner
 
 ```text
-Create scripts/oreo-migrate-workload-plan.
+Create scripts/argus-migrate-workload-plan.
 
-It should read workloads.json and print a safe plan to move one workload to /srv/oreo-cloud/workloads/<id>/source.
+It should read workloads.json and print a safe plan to move one workload to /srv/argus/workloads/<id>/source.
 
 It must show:
 - current path
@@ -108,7 +108,7 @@ Commit: Add workload migration planning
 ## Task 5: Optional Workload Organization
 
 ```text
-Move selected workloads one at a time into /srv/oreo-cloud/workloads/<id>/source.
+Move selected workloads one at a time into /srv/argus/workloads/<id>/source.
 
 Use copy-validate-cutover-rollback.
 Preserve Compose project name with -p or COMPOSE_PROJECT_NAME.
@@ -118,27 +118,27 @@ Do not commit source, .env, secrets, runtime data, backups, or database files.
 Run health checks after each move.
 Rollback if health fails.
 Commit only manifests, registry updates, and docs.
-Commit: Organize workloads under Oreo Cloud
+Commit: Organize workloads under Argus
 ```
 
 ## Task 6: Read-Only CLI
 
 ```text
 Create scripts:
-- oreo-inventory
-- oreo-workloads
-- oreo-health
-- oreo-open
-- oreo-doctor
-- oreo-git-checkpoint
-- oreo-events
+- argus-inventory
+- argus-workloads
+- argus-health
+- argus-open
+- argus-doctor
+- argus-git-checkpoint
+- argus-events
 
 Symlink them into /usr/local/bin.
 Use Python standard library where practical.
 Do not require jq.
 Do not print secrets.
 Do not mutate services except git checkpoint when explicitly called.
-Commit: Add read-only Oreo Cloud CLI
+Commit: Add read-only Argus CLI
 ```
 
 ## Task 7: Dashboard Generator
@@ -161,9 +161,9 @@ Commit: Add private dashboard generator
 ```text
 Create:
 - control-plane/monitoring/collect_metrics.py
-- systemd/oreo-metrics.service
-- systemd/oreo-metrics.timer
-- scripts/oreo-monitor
+- systemd/argus-metrics.service
+- systemd/argus-metrics.timer
+- scripts/argus-monitor
 
 Collector writes valid JSON to control-plane/dashboard/public/metrics.json.
 Dashboard monitor panel is hidden by default and fetches metrics only while open.
@@ -176,7 +176,7 @@ Commit: Add btop-style monitoring
 ```text
 Create local-only control API at control-plane/api/server.py.
 Bind only to 127.0.0.1:8099.
-Use token file /etc/oreo-cloud/control-token.
+Use token file /etc/argus/control-token.
 Never commit or print the token.
 
 Implement:
@@ -189,7 +189,7 @@ Implement:
 - GET /api/metrics
 - GET /api/events
 
-Create systemd/oreo-control-api.service.
+Create systemd/argus-control-api.service.
 Commit: Add dashboard control API
 ```
 
@@ -197,9 +197,9 @@ Commit: Add dashboard control API
 
 ```text
 Create:
-- scripts/oreo-access-preview
-- scripts/oreo-access-apply
-- scripts/oreo-privacy-set
+- scripts/argus-access-preview
+- scripts/argus-access-apply
+- scripts/argus-privacy-set
 
 Behavior:
 - preview policy decisions before apply
@@ -223,7 +223,7 @@ Create:
 - cloudflare/planned-ingress.yml
 - cloudflare/generate_cloudflare_config.py
 - cloudflare/quick-tunnel-notes.md
-- scripts/oreo-cloudflare-plan
+- scripts/argus-cloudflare-plan
 - docs/CLOUDFLARE.md
 
 Generate plans only.
@@ -251,7 +251,7 @@ Commit docs/template change: Add private Caddy dashboard route
 ## Task 13: Smoke Test
 
 ```text
-Create scripts/smoke-test and symlink as /usr/local/bin/oreo-cloud-smoke-test.
+Create scripts/smoke-test and symlink as /usr/local/bin/argus-smoke-test.
 
 Check:
 - Git repo exists
@@ -268,5 +268,5 @@ Check:
 - health CLI works
 - Caddy validates
 
-Commit: Add Oreo Cloud smoke test
+Commit: Add Argus smoke test
 ```

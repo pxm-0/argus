@@ -11,13 +11,13 @@ P3-04 deferred activation, rollback was previewed but not applied.
 
 ## Rollback Preview
 
-`scripts/oreo-cloudflare-rollback hello-nginx` is non-mutating without
+`scripts/argus-cloudflare-rollback hello-nginx` is non-mutating without
 `--apply` and returned:
 
 ```json
 {
   "apply": false,
-  "hostname": "hello-nginx.oreo-cloud.invalid",
+  "hostname": "hello-nginx.argus.invalid",
   "ok": true,
   "workloadId": "hello-nginx",
   "wouldLowerEffectiveTo": "local",
@@ -30,7 +30,7 @@ Rollback was not applied because no Cloudflare activation occurred and
 
 ## Reconcile Proof
 
-`scripts/oreo-access-reconcile --json` passed with live local probes:
+`scripts/argus-access-reconcile --json` passed with live local probes:
 
 ```json
 {
@@ -68,7 +68,7 @@ uptime-kuma privacy=restricted desired=tailnet effective=local cloudflare=
 `hello-nginx` remains local until a verified protected activation exists:
 
 ```text
-hello-nginx privacy=unclassified desired=cloudflare-protected effective=local cloudflare=https://hello-nginx.oreo-cloud.invalid
+hello-nginx privacy=unclassified desired=cloudflare-protected effective=local cloudflare=https://hello-nginx.argus.invalid
 ```
 
 ## Post-Preview Verification

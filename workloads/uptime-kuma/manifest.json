@@ -3,21 +3,21 @@
   "name": "Uptime Kuma",
   "description": "Restricted stateful monitoring workload.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/uptime-kuma",
-  "sourcePath": "/srv/oreo-cloud/workloads/uptime-kuma/source",
+  "canonicalRoot": "/srv/argus/workloads/uptime-kuma",
+  "sourcePath": "/srv/argus/workloads/uptime-kuma/source",
   "privacyCompatibility": "restricted",
   "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
-      "path": "/srv/oreo-cloud/workloads/uptime-kuma/source/docker-compose.yml",
+      "path": "/srv/argus/workloads/uptime-kuma/source/docker-compose.yml",
       "project": "uptime-kuma",
       "service": "uptime-kuma",
       "legacyPaths": [
         "/srv/apps/uptime-kuma/docker-compose.yml"
       ]
     },
-    "composePath": "/srv/oreo-cloud/workloads/uptime-kuma/source/docker-compose.yml",
+    "composePath": "/srv/argus/workloads/uptime-kuma/source/docker-compose.yml",
     "composeProject": "uptime-kuma",
     "service": "uptime-kuma",
     "legacyComposePaths": [
@@ -71,7 +71,7 @@
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/uptime-kuma",
+    "destination": "/srv/argus/runtime/backups/uptime-kuma",
     "retention": {
       "keepLast": 5
     },
@@ -91,7 +91,7 @@
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "restricted",
     "publicExposureAllowed": false,
     "forbiddenTargets": [],

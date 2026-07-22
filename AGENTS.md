@@ -1,4 +1,4 @@
-# Codex Instructions for Oreo Cloud
+# Codex Instructions for Argus
 
 This project manages private self-hosted infrastructure on `oreochiserver`.
 

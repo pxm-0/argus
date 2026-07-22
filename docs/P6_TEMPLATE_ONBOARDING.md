@@ -1,13 +1,13 @@
 # P6 Template Onboarding
 
-Use this flow when adapting Oreo Cloud templates for another private server.
+Use this flow when adapting Argus templates for another private server.
 This is a planning and bootstrap guide, not an installer.
 
 ## 1. Create A Private Checkout
 
 ```bash
-mkdir -p /srv/oreo-cloud
-cd /srv/oreo-cloud
+mkdir -p /srv/argus
+cd /srv/argus
 git init
 ```
 
@@ -66,5 +66,5 @@ the server. Back up config files and validate Caddy before reload.
 From this repo:
 
 ```bash
-scripts/oreo-template-check
+scripts/argus-template-check
 ```

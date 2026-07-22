@@ -15,8 +15,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
-from oreo_actions import sanitize_log_text
-from oreo_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS
+from argus_actions import sanitize_log_text
+from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS
 
 
 MIGRATION_STATUSES = {"planned", "needs-discovery", "migrated", "blocked", "deprecated"}
@@ -119,7 +119,7 @@ def check_dashboard(repo: Path, smoke: Smoke) -> None:
 def check_dashboard_runtime_cleanliness(repo: Path, smoke: Smoke) -> None:
     assets = [repo / "control-plane" / "dashboard" / "public" / name for name in ["index.html", "style.css", "app.js"]]
     before = {path: path.read_bytes() for path in assets if path.exists()}
-    state_result = run([str(repo / "scripts" / "oreo-dashboard-state")], repo)
+    state_result = run([str(repo / "scripts" / "argus-dashboard-state")], repo)
     if state_result.returncode != 0:
         smoke.fail("dashboard runtime state generated")
         return
@@ -159,8 +159,8 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
         token_file = Path(tempdir) / "control-token"
         token_file.write_text(token)
         env = os.environ.copy()
-        env["OREO_CLOUD_API_PORT"] = "18104"
-        env["OREO_CLOUD_TOKEN_FILE"] = str(token_file)
+        env["ARGUS_API_PORT"] = "18104"
+        env["ARGUS_TOKEN_FILE"] = str(token_file)
         process = subprocess.Popen(
             ["python3", str(repo / "control-plane" / "api" / "server.py")],
             cwd=repo,
@@ -265,7 +265,7 @@ def check_metrics(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cloudflare_plan(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "oreo-cloudflare-plan"), "--json"], repo)
+    result = run([str(repo / "scripts" / "argus-cloudflare-plan"), "--json"], repo)
     if result.returncode != 0:
         smoke.fail("Cloudflare plan generated")
         return
@@ -340,7 +340,7 @@ def check_tracked_runtime_and_source(repo: Path, smoke: Smoke) -> None:
         if len(parts) >= 3 and parts[0] == "workloads" and parts[2] == "source":
             manifest = manifests.get(parts[1], {})
             security = manifest.get("security", {}) if manifest else {}
-            if not security.get("trackedByOreoCloudGit", False):
+            if not security.get("trackedByArgusGit", False):
                 tracked_source.append(item)
         if parts and parts[0] == "runtime" and Path(item).name != ".gitkeep":
             tracked_runtime.append(item)
@@ -522,7 +522,7 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
         return
     html = html_path.read_text()
     js = js_path.read_text() if js_path.exists() else ""
-    required = ["Estate topology", "Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", "Argus Estate Control", 'id="topology"', 'id="workloads"', 'id="command-panel"']
+    required = ["Estate matrix", "Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", "<title>Argus</title>", 'id="topology"', 'id="workloads"', 'id="command-panel"']
     forbidden = ["control-token", "Authorization: Bearer", "PRIVATE KEY", "BEGIN ", ".env="]
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
@@ -565,7 +565,7 @@ def check_policy_effective_access(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "oreo-cloudflare-plan"), "--json"], repo)
+    result = run([str(repo / "scripts" / "argus-cloudflare-plan"), "--json"], repo)
     if result.returncode != 0:
         smoke.fail("Cloudflare policy plan generated")
         return
@@ -610,7 +610,7 @@ def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cloudflare_activation_guard(repo: Path, smoke: Smoke) -> None:
-    preview = run([str(repo / "scripts" / "oreo-cloudflare-activate-preview"), "--json"], repo)
+    preview = run([str(repo / "scripts" / "argus-cloudflare-activate-preview"), "--json"], repo)
     try:
         payload = json.loads(preview.stdout)
     except json.JSONDecodeError:
@@ -620,12 +620,12 @@ def check_cloudflare_activation_guard(repo: Path, smoke: Smoke) -> None:
     invalid_blocker = any(".invalid" in str(item) for item in blockers)
     smoke.check(preview.returncode == 2 and invalid_blocker, "Cloudflare activation blocks placeholder hostname")
     smoke.check(payload.get("allowQuickTunnels") is False, "Cloudflare activation refuses quick tunnel mode")
-    rollback = run([str(repo / "scripts" / "oreo-cloudflare-rollback")], repo)
+    rollback = run([str(repo / "scripts" / "argus-cloudflare-rollback")], repo)
     smoke.check(rollback.returncode == 0, "Cloudflare rollback preview works")
 
 
 def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "oreo-access-reconcile"), "--offline", "--json"], repo)
+    result = run([str(repo / "scripts" / "argus-access-reconcile"), "--offline", "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -715,22 +715,22 @@ def check_p5_evidence(repo: Path, smoke: Smoke) -> None:
         "docs/P5_SCHEDULED_SMOKE.md",
         "docs/P5_BACKUP_RETENTION.md",
         "docs/RUNBOOKS/stateful-restore-gates.md",
-        "systemd/oreo-smoke.service",
-        "systemd/oreo-smoke.timer",
-        "templates/systemd/oreo-smoke.service",
-        "templates/systemd/oreo-smoke.timer",
+        "systemd/argus-smoke.service",
+        "systemd/argus-smoke.timer",
+        "templates/systemd/argus-smoke.service",
+        "templates/systemd/argus-smoke.timer",
     ]
     missing = [path for path in required if not (repo / path).is_file()]
     smoke.check(not missing, "P5 maturity assets exist")
 
-    prune = run([str(repo / "scripts" / "oreo-backup-prune"), "--json"], repo)
+    prune = run([str(repo / "scripts" / "argus-backup-prune"), "--json"], repo)
     try:
         payload = json.loads(prune.stdout)
     except json.JSONDecodeError:
         smoke.fail("backup prune preview JSON valid")
         return
     hello = next((item for item in payload.get("workloads", []) if item.get("workloadId") == "hello-nginx"), {})
-    smoke.check(prune.returncode == 0 and payload.get("confirmationPhrase") == "prune oreo backups", "backup prune previews by default")
+    smoke.check(prune.returncode == 0 and payload.get("confirmationPhrase") == "prune argus backups", "backup prune previews by default")
     smoke.check(hello.get("destinationOk") is True and hello.get("keepLast") == 5, "backup retention policy recognized")
 
 
@@ -739,12 +739,12 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
         "docs/P6_PRODUCTIZATION_OPTIONAL.md",
         "docs/P6_TEMPLATE_ONBOARDING.md",
         "templates/README.md",
-        "scripts/oreo-template-check",
+        "scripts/argus-template-check",
     ]
     missing = [path for path in required if not (repo / path).is_file()]
     smoke.check(not missing, "P6 productization assets exist")
 
-    result = run([str(repo / "scripts" / "oreo-template-check"), "--json"], repo)
+    result = run([str(repo / "scripts" / "argus-template-check"), "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -754,7 +754,7 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
 
 
 def check_doctor(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "oreo-doctor"), "--json"], repo)
+    result = run([str(repo / "scripts" / "argus-doctor"), "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -764,9 +764,9 @@ def check_doctor(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
-    workloads = run([str(repo / "scripts" / "oreo-workloads")], repo)
+    workloads = run([str(repo / "scripts" / "argus-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
-    health = run([str(repo / "scripts" / "oreo-health")], repo)
+    health = run([str(repo / "scripts" / "argus-health")], repo)
     if health.returncode == 0:
         smoke.pass_("health CLI works")
     elif offline:
@@ -776,7 +776,7 @@ def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def check_caddy(repo: Path, smoke: Smoke, offline: bool) -> None:
-    plan = run([str(repo / "scripts" / "oreo-caddy-dashboard-plan"), "--json"], repo)
+    plan = run([str(repo / "scripts" / "argus-caddy-dashboard-plan"), "--json"], repo)
     smoke.check(plan.returncode == 0, "Caddy dashboard route generated")
     planned = repo / "caddy" / "dashboard.Caddyfile"
     if planned.exists():
@@ -797,7 +797,7 @@ def check_caddy(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Run Oreo Cloud P0 smoke checks.")
+    parser = argparse.ArgumentParser(description="Run Argus P0 smoke checks.")
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--offline", action="store_true", help="Skip live listener/service checks.")
     args = parser.parse_args()

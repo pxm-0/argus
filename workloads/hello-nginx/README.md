@@ -18,7 +18,7 @@ Low-risk demo workload used for the first P1 migration.
 Cloudflare planning. The route uses the intentionally non-routable hostname:
 
 ```text
-hello-nginx.oreo-cloud.invalid
+hello-nginx.argus.invalid
 ```
 
 The desired access state is `cloudflare-protected`, but effective access is
@@ -29,13 +29,13 @@ is enabled by this plan.
 ## Layout
 
 ```text
-/srv/oreo-cloud/workloads/hello-nginx/
+/srv/argus/workloads/hello-nginx/
 ├── README.md
 ├── manifest.json
 └── source/
 ```
 
-`source/` is ignored by Oreo Cloud Git. The migrated source contains the
+`source/` is ignored by Argus Git. The migrated source contains the
 workload Compose file and is intentionally not tracked here.
 
 ## Migration Notes
@@ -49,7 +49,7 @@ Original path:
 The old path is preserved as a compatibility symlink to:
 
 ```text
-/srv/oreo-cloud/workloads/hello-nginx/source
+/srv/argus/workloads/hello-nginx/source
 ```
 
 The original Compose file used host port `8080`, which conflicts with Intake OS.
@@ -64,7 +64,7 @@ The migrated Compose file binds Nginx to localhost only:
 Stop the migrated stack:
 
 ```bash
-docker compose -p hello-nginx -f /srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml down
+docker compose -p hello-nginx -f /srv/argus/workloads/hello-nginx/source/docker-compose.yml down
 ```
 
 Remove the compatibility symlink and restore the backup directory recorded in

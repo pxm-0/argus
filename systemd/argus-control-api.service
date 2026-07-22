@@ -1,0 +1,17 @@
+[Unit]
+Description=Argus control API
+After=network.target
+
+[Service]
+Type=simple
+User=oreo
+Group=oreo
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+Environment=ARGUS_TOKEN_FILE=/etc/argus/control-token
+ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

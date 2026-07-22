@@ -1,6 +1,6 @@
 # P2 Smoke and Security Audit
 
-P2-09 expands continuous safety checks for Oreo Cloud.
+P2-09 expands continuous safety checks for Argus.
 
 ## Smoke Additions
 
@@ -17,11 +17,11 @@ P2-09 expands continuous safety checks for Oreo Cloud.
 - quick tunnels remain disabled
 - rollback preview is available
 - effective access reconcile is clean
-- `oreo-doctor` security audit is clean
+- `argus-doctor` security audit is clean
 
 ## Doctor Coverage
 
-`scripts/oreo-doctor` audits:
+`scripts/argus-doctor` audits:
 
 - JSON config validity
 - tracked secret-shaped files
@@ -39,13 +39,13 @@ P2-09 expands continuous safety checks for Oreo Cloud.
 Run text output:
 
 ```bash
-scripts/oreo-doctor
+scripts/argus-doctor
 ```
 
 Run machine-readable output:
 
 ```bash
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 ```
 
 ## P2-09 Result

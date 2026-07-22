@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-OWNER="${OREO_CLOUD_USER:-oreo}"
-GROUP="${OREO_CLOUD_GROUP:-oreo}"
-ROOT="/srv/oreo-cloud"
+OWNER="${ARGUS_USER:-argus}"
+GROUP="${ARGUS_GROUP:-argus}"
+ROOT="/srv/argus"
 
 sudo install -d -o "$OWNER" -g "$GROUP" "$ROOT"
 sudo install -d -o "$OWNER" -g "$GROUP" "$ROOT/config/schemas"

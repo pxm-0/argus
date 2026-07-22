@@ -5,7 +5,7 @@ After=docker.service
 
 [Service]
 Type=oneshot
-ExecStart=/srv/oreo-cloud/scripts/argus-m0-docker-lockdown --apply --acknowledge-workload-lockdown
+ExecStart=/srv/argus/scripts/argus-m0-docker-lockdown --apply --acknowledge-workload-lockdown
 RemainAfterExit=yes
 
 [Install]

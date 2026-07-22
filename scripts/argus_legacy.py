@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from oreo_common import http_status, load_json, now, root, workloads
+from argus_common import http_status, load_json, now, root, workloads
 
 
 LEGACY_CLASSIFICATION = {

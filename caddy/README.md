@@ -1,6 +1,6 @@
 # Private Dashboard Caddy Route
 
-This directory contains the planned Caddy route for the Oreo Cloud dashboard.
+This directory contains the planned Caddy route for the Argus dashboard.
 
 P0 intent:
 
@@ -12,7 +12,7 @@ P0 intent:
 Generate the route:
 
 ```bash
-oreo-caddy-dashboard-plan
+argus-caddy-dashboard-plan
 ```
 
 The command writes `caddy/dashboard.Caddyfile` and prints the manual backup,

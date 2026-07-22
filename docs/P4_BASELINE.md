@@ -30,19 +30,19 @@ Server Git status:
 Operator links:
 
 ```text
-PASS /usr/local/bin/oreo-logs -> /srv/oreo-cloud/scripts/oreo-logs
-PASS /usr/local/bin/oreo-backup-plan -> /srv/oreo-cloud/scripts/oreo-backup-plan
-PASS /usr/local/bin/oreo-backup-run -> /srv/oreo-cloud/scripts/oreo-backup-run
-PASS /usr/local/bin/oreo-restore-plan -> /srv/oreo-cloud/scripts/oreo-restore-plan
-PASS /usr/local/bin/oreo-events -> /srv/oreo-cloud/scripts/oreo-events
-PASS /usr/local/bin/oreo-cloud-smoke-test -> /srv/oreo-cloud/scripts/smoke-test
-PASS /usr/local/bin/oreo-access-preview -> /srv/oreo-cloud/scripts/oreo-access-preview
-PASS /usr/local/bin/oreo-access-apply -> /srv/oreo-cloud/scripts/oreo-access-apply
-PASS /usr/local/bin/oreo-access-reconcile -> /srv/oreo-cloud/scripts/oreo-access-reconcile
-PASS /usr/local/bin/oreo-cloudflare-plan -> /srv/oreo-cloud/scripts/oreo-cloudflare-plan
-PASS /usr/local/bin/oreo-cloudflare-activate-preview -> /srv/oreo-cloud/scripts/oreo-cloudflare-activate-preview
-PASS /usr/local/bin/oreo-cloudflare-activate -> /srv/oreo-cloud/scripts/oreo-cloudflare-activate
-PASS /usr/local/bin/oreo-cloudflare-rollback -> /srv/oreo-cloud/scripts/oreo-cloudflare-rollback
+PASS /usr/local/bin/argus-logs -> /srv/argus/scripts/argus-logs
+PASS /usr/local/bin/argus-backup-plan -> /srv/argus/scripts/argus-backup-plan
+PASS /usr/local/bin/argus-backup-run -> /srv/argus/scripts/argus-backup-run
+PASS /usr/local/bin/argus-restore-plan -> /srv/argus/scripts/argus-restore-plan
+PASS /usr/local/bin/argus-events -> /srv/argus/scripts/argus-events
+PASS /usr/local/bin/argus-smoke-test -> /srv/argus/scripts/smoke-test
+PASS /usr/local/bin/argus-access-preview -> /srv/argus/scripts/argus-access-preview
+PASS /usr/local/bin/argus-access-apply -> /srv/argus/scripts/argus-access-apply
+PASS /usr/local/bin/argus-access-reconcile -> /srv/argus/scripts/argus-access-reconcile
+PASS /usr/local/bin/argus-cloudflare-plan -> /srv/argus/scripts/argus-cloudflare-plan
+PASS /usr/local/bin/argus-cloudflare-activate-preview -> /srv/argus/scripts/argus-cloudflare-activate-preview
+PASS /usr/local/bin/argus-cloudflare-activate -> /srv/argus/scripts/argus-cloudflare-activate
+PASS /usr/local/bin/argus-cloudflare-rollback -> /srv/argus/scripts/argus-cloudflare-rollback
 ```
 
 Manifest validation:
@@ -66,7 +66,7 @@ Smoke summary: 0 failure(s), 0 warning(s)
 ## Service State
 
 ```text
-oreo-control-api.service active
+argus-control-api.service active
 caddy active
 cloudflared inactive
 ```
@@ -82,8 +82,8 @@ No serve config
 Relevant listeners at P4 start:
 
 ```text
-100.75.210.83:8088  Oreo Cloud dashboard, Tailscale-bound Caddy route
-127.0.0.1:8099      Oreo Cloud control API
+100.75.210.83:8088  Argus dashboard, Tailscale-bound Caddy route
+127.0.0.1:8099      Argus control API
 127.0.0.1:8765      review-ui
 127.0.0.1:8080      intake-os local proxy
 127.0.0.1:8081      dozzle
@@ -95,7 +95,7 @@ Relevant listeners at P4 start:
 *:80                existing default Caddy site
 ```
 
-No unexpected Oreo Cloud public exposure was found:
+No unexpected Argus public exposure was found:
 
 - dashboard remains bound to the Tailscale IP on `:8088`
 - control API remains bound to `127.0.0.1:8099`
@@ -143,4 +143,4 @@ P4-00 acceptance is satisfied:
 - `p3-complete` tag exists
 - smoke passes
 - doctor passes
-- no unexpected Oreo Cloud public exposure found
+- no unexpected Argus public exposure found

@@ -6,11 +6,11 @@ product
 
 ## Users
 
-The primary user is the Oreo Cloud operator managing `oreochiserver` over a private tailnet. They are usually checking exposure state, workload health, migration status, backups, audit events, and safe operations from a task-focused dashboard.
+The primary user is the Argus operator managing `oreochiserver` over a private tailnet. They are usually checking exposure state, workload health, migration status, backups, audit events, and safe operations from a task-focused dashboard.
 
 ## Product Purpose
 
-Oreo Cloud is a private control plane for server workload visibility and guarded operations. It exists to make the server understandable, auditable, and safer to change without accidentally exposing private services or secrets.
+Argus is a private control plane for server workload visibility and guarded operations. It exists to make the server understandable, auditable, and safer to change without accidentally exposing private services or secrets.
 
 ## Brand Personality
 

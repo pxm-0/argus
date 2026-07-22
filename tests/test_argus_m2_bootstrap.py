@@ -15,8 +15,8 @@ class M2BootstrapTest(unittest.TestCase):
 
     def test_subordinate_range_avoids_both_uid_and_gid_allocations(self) -> None:
         start, end = first_free_subid_range(
-            subuid="oreo:100000:65536\nother:231072:65536\n",
-            subgid="oreo:165536:65536\n",
+            subuid="argus:100000:65536\nother:231072:65536\n",
+            subgid="argus:165536:65536\n",
         )
         self.assertEqual((296608, 362143), (start, end))
 

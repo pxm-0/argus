@@ -6,10 +6,10 @@ Verified: 2026-06-30T18:15:54Z on `oreochiserver`
 
 P0 remains healthy and ready for P1 implementation.
 
-- `/srv/oreo-cloud` is a Git repo on `main`.
-- `oreo-cloud-smoke-test` passes with `0 failure(s), 0 warning(s)`.
-- `oreo-control-api.service` is active and enabled.
-- `oreo-metrics.timer` is active and enabled.
+- `/srv/argus` is a Git repo on `main`.
+- `argus-smoke-test` passes with `0 failure(s), 0 warning(s)`.
+- `argus-control-api.service` is active and enabled.
+- `argus-metrics.timer` is active and enabled.
 - Caddy validates successfully.
 - Tailscale Funnel is disabled.
 - Dashboard is bound to the Tailscale IP on port `8088`.
@@ -27,7 +27,7 @@ P0 remains healthy and ready for P1 implementation.
 Command:
 
 ```bash
-oreo-cloud-smoke-test
+argus-smoke-test
 ```
 
 Result:
@@ -66,8 +66,8 @@ Smoke summary: 0 failure(s), 0 warning(s)
 ## Services
 
 ```text
-oreo-control-api.service active enabled
-oreo-metrics.timer active enabled
+argus-control-api.service active enabled
+argus-metrics.timer active enabled
 ```
 
 ## Caddy
@@ -88,7 +88,7 @@ exit=0
 Dashboard route import:
 
 ```text
-/etc/caddy/Caddyfile imports /etc/caddy/OreoCloudDashboard.Caddyfile
+/etc/caddy/Caddyfile imports /etc/caddy/ArgusDashboard.Caddyfile
 ```
 
 Dashboard route:
@@ -96,7 +96,7 @@ Dashboard route:
 ```caddyfile
 http://oreochiserver:8088, http://100.75.210.83:8088 {
     bind 100.75.210.83
-    root * /srv/oreo-cloud/control-plane/dashboard/public
+    root * /srv/argus/control-plane/dashboard/public
     handle /api/* {
         reverse_proxy 127.0.0.1:8099
     }
@@ -129,7 +129,7 @@ No serve config
 
 ```text
 100.75.210.83:8088  caddy dashboard route
-127.0.0.1:8099      oreo-control-api.service
+127.0.0.1:8099      argus-control-api.service
 ```
 
 No `0.0.0.0:8088` or non-localhost `:8099` listener was observed.

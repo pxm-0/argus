@@ -2,8 +2,8 @@
 
 - **Status:** Accepted architecture decisions
 - **Date:** 2026-07-14
-- **Architecture issue:** [#130](https://github.com/pxm-0/oreo-cloud/issues/130)
-- **Draft PR:** [#136](https://github.com/pxm-0/oreo-cloud/pull/136)
+- **Architecture issue:** [#130](https://github.com/pxm-0/argus/issues/130)
+- **Draft PR:** [#136](https://github.com/pxm-0/argus/pull/136)
 
 ## Logging Boundary
 
@@ -33,7 +33,7 @@ stage: none | dev | staging | production
 
 **Reason:** Current runtime state contains unclassified resources and violations of target containment controls. Calling it `lab` would turn uncertainty into a false maturity claim.
 
-**Follow-up:** [#131](https://github.com/pxm-0/oreo-cloud/issues/131)
+**Follow-up:** [#131](https://github.com/pxm-0/argus/issues/131)
 
 ### D003: Use four target trust domains
 
@@ -48,7 +48,7 @@ work-managed
 
 **Reason:** Both ownership and operational maturity require containment. A shared sandbox would allow work and personal credentials or data to mix. A shared managed runtime would weaken the same boundary for durable deployments.
 
-**Follow-up:** [#133](https://github.com/pxm-0/oreo-cloud/issues/133)
+**Follow-up:** [#133](https://github.com/pxm-0/argus/issues/133)
 
 ### D004: Use rootless runtime separation on the current host
 
@@ -84,7 +84,7 @@ work-managed
 
 **Excluded categories:** Internal hostnames, addresses, ports, paths, logs, audit actors, security findings, backup locations, credentials, private project names, and live resource identifiers.
 
-**Follow-up:** [#134](https://github.com/pxm-0/oreo-cloud/issues/134)
+**Follow-up:** [#134](https://github.com/pxm-0/argus/issues/134)
 
 ### D008: Give the public origin one ingress route and no return route
 
@@ -104,7 +104,7 @@ work-managed
 
 **Reason:** Stateful workloads require copy, validate, cut over, health check, and rollback. A big-bang rehome would mix infrastructure redesign with application recovery risk.
 
-**Follow-up:** [#135](https://github.com/pxm-0/oreo-cloud/issues/135)
+**Follow-up:** [#135](https://github.com/pxm-0/argus/issues/135)
 
 ### D011: Use SQLite behind a repository boundary
 
@@ -112,7 +112,7 @@ work-managed
 
 **Reason:** Argus needs transactions, constraints, indexed relationship queries, and atomic reconciliation. SQLite fits the single-host scope, requires no exposed database service, and is available through Python's standard library on the target host.
 
-**Follow-up:** [#132](https://github.com/pxm-0/oreo-cloud/issues/132)
+**Follow-up:** [#132](https://github.com/pxm-0/argus/issues/132)
 
 ### D012: Enforce network isolation outside Docker
 
@@ -120,7 +120,7 @@ work-managed
 
 **Reason:** Containers attached to separate daemons can still attempt to reach host and routed network addresses. The trust boundary must be enforced where traffic crosses the host network stack.
 
-**Follow-up:** [#133](https://github.com/pxm-0/oreo-cloud/issues/133)
+**Follow-up:** [#133](https://github.com/pxm-0/argus/issues/133)
 
 ### D013: Make resource separation non-waivable
 
@@ -224,13 +224,13 @@ Evidence was collected read-only from the primary host on 2026-07-14. Detailed o
 - Legacy resource and registry/runtime identity drift exists.
 - Tailscale protects intended operator ingress but does not by itself isolate containers, mounts, credentials, data stores, or local-network listeners.
 
-**Conclusion:** The host is viable for Argus, but existing resources must remain quarantined until [#131](https://github.com/pxm-0/oreo-cloud/issues/131) closes the containment and evidence gaps.
+**Conclusion:** The host is viable for Argus, but existing resources must remain quarantined until [#131](https://github.com/pxm-0/argus/issues/131) closes the containment and evidence gaps.
 
 ### Evidence gap
 
 The unprivileged session could observe reachability indicators but could not verify privileged firewall policy. Firewall behavior therefore remains unknown rather than assumed safe.
 
-**Required resolution:** Capture privileged firewall and Docker-forwarding evidence under [#131](https://github.com/pxm-0/oreo-cloud/issues/131) before declaring the containment baseline complete.
+**Required resolution:** Capture privileged firewall and Docker-forwarding evidence under [#131](https://github.com/pxm-0/argus/issues/131) before declaring the containment baseline complete.
 
 ## Read-only Commands Used
 
@@ -251,12 +251,12 @@ Status snapshot: 2026-07-14. Follow the linked GitHub items for current state.
 
 | Item | Tracking | State |
 |---|---|---|
-| Trust-domain and portfolio architecture | [#130](https://github.com/pxm-0/oreo-cloud/issues/130) | In progress in [PR #136](https://github.com/pxm-0/oreo-cloud/pull/136) |
-| Legacy quarantine and containment baseline | [#131](https://github.com/pxm-0/oreo-cloud/issues/131) | Planned; server required |
-| Trust-domain model, policy, and evidence | [#132](https://github.com/pxm-0/oreo-cloud/issues/132) | Planned |
-| Isolated runtime cells and scoped agents | [#133](https://github.com/pxm-0/oreo-cloud/issues/133) | Planned; server required |
-| Portfolio export, mirror, and public origin | [#134](https://github.com/pxm-0/oreo-cloud/issues/134) | Planned |
-| Workload classification and migration | [#135](https://github.com/pxm-0/oreo-cloud/issues/135) | Planned; server required |
+| Trust-domain and portfolio architecture | [#130](https://github.com/pxm-0/argus/issues/130) | In progress in [PR #136](https://github.com/pxm-0/argus/pull/136) |
+| Legacy quarantine and containment baseline | [#131](https://github.com/pxm-0/argus/issues/131) | Planned; server required |
+| Trust-domain model, policy, and evidence | [#132](https://github.com/pxm-0/argus/issues/132) | Planned |
+| Isolated runtime cells and scoped agents | [#133](https://github.com/pxm-0/argus/issues/133) | Planned; server required |
+| Portfolio export, mirror, and public origin | [#134](https://github.com/pxm-0/argus/issues/134) | Planned |
+| Workload classification and migration | [#135](https://github.com/pxm-0/argus/issues/135) | Planned; server required |
 
 ## Change Protocol
 

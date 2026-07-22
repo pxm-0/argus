@@ -1,8 +1,8 @@
-# PRD: Oreo Cloud P0
+# PRD: Argus P0
 
 ## Product Summary
 
-Oreo Cloud is a private personal ECS-style server control plane. It organizes local Docker/Docker Compose workloads, tracks them in Git-backed configuration, exposes a private dashboard over Tailscale, and provides safe controls for visibility and access state.
+Argus is a private personal ECS-style server control plane. It organizes local Docker/Docker Compose workloads, tracks them in Git-backed configuration, exposes a private dashboard over Tailscale, and provides safe controls for visibility and access state.
 
 P0 focuses on the platform foundation, not full deployment automation.
 
@@ -18,7 +18,7 @@ Secondary users: future collaborators or testers who may access specific workloa
 
 ## Goals
 
-1. Create `/srv/oreo-cloud` as the canonical platform root.
+1. Create `/srv/argus` as the canonical platform root.
 2. Track platform configuration and docs in Git.
 3. Model workloads as agnostic units by default.
 4. Separate workload identity from privacy and access policy.
@@ -26,7 +26,7 @@ Secondary users: future collaborators or testers who may access specific workloa
 6. Provide dashboard toggles for privacy and desired access in authenticated admin mode.
 7. Keep desired access separate from effective access.
 8. Add a btop-style monitoring panel hidden behind a toggle.
-9. Provide safe workload migration planning into `/srv/oreo-cloud/workloads/<id>/source`.
+9. Provide safe workload migration planning into `/srv/argus/workloads/<id>/source`.
 10. Provision Cloudflare access planning without enabling public exposure by default.
 
 ## Non-Goals for P0

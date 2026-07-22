@@ -9,14 +9,14 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/intake-os",
-        "source": "/srv/oreo-cloud/workloads/intake-os/source",
-        "manifest": "/srv/oreo-cloud/workloads/intake-os/manifest.json",
+        "root": "/srv/argus/workloads/intake-os",
+        "source": "/srv/argus/workloads/intake-os/source",
+        "manifest": "/srv/argus/workloads/intake-os/manifest.json",
         "legacy": "/home/oreo/intake-os"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+        "composePath": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
         "legacyComposePaths": [
           "/home/oreo/intake-os/docker-compose.yml",
           "/home/oreo/intake-os/docker-compose.server.yml"
@@ -69,14 +69,14 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/hastur",
-        "source": "/srv/oreo-cloud/workloads/hastur/source",
-        "manifest": "/srv/oreo-cloud/workloads/hastur/manifest.json",
+        "root": "/srv/argus/workloads/hastur",
+        "source": "/srv/argus/workloads/hastur/source",
+        "manifest": "/srv/argus/workloads/hastur/manifest.json",
         "legacy": "/home/oreo/hastur"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/hastur/source/compose.yml",
+        "composePath": "/srv/argus/workloads/hastur/source/compose.yml",
         "legacyComposePaths": [
           "/home/oreo/hastur/compose.yml"
         ],
@@ -124,14 +124,14 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/uptime-kuma",
-        "source": "/srv/oreo-cloud/workloads/uptime-kuma/source",
-        "manifest": "/srv/oreo-cloud/workloads/uptime-kuma/manifest.json",
+        "root": "/srv/argus/workloads/uptime-kuma",
+        "source": "/srv/argus/workloads/uptime-kuma/source",
+        "manifest": "/srv/argus/workloads/uptime-kuma/manifest.json",
         "legacy": "/srv/apps/uptime-kuma"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/uptime-kuma/source/docker-compose.yml",
+        "composePath": "/srv/argus/workloads/uptime-kuma/source/docker-compose.yml",
         "legacyComposePaths": [
           "/srv/apps/uptime-kuma/docker-compose.yml"
         ],
@@ -177,9 +177,9 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/review-ui",
-        "source": "/srv/oreo-cloud/workloads/review-ui/source",
-        "manifest": "/srv/oreo-cloud/workloads/review-ui/manifest.json",
+        "root": "/srv/argus/workloads/review-ui",
+        "source": "/srv/argus/workloads/review-ui/source",
+        "manifest": "/srv/argus/workloads/review-ui/manifest.json",
         "legacy": ""
       },
       "runtime": {
@@ -230,9 +230,9 @@
       "lifecycle": "discovered",
       "kind": "admin-tool",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/dozzle",
-        "source": "/srv/oreo-cloud/workloads/dozzle/source",
-        "manifest": "/srv/oreo-cloud/workloads/dozzle/manifest.json",
+        "root": "/srv/argus/workloads/dozzle",
+        "source": "/srv/argus/workloads/dozzle/source",
+        "manifest": "/srv/argus/workloads/dozzle/manifest.json",
         "legacy": ""
       },
       "runtime": {
@@ -282,9 +282,9 @@
       "lifecycle": "discovered",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/locigraph",
-        "source": "/srv/oreo-cloud/workloads/locigraph/source",
-        "manifest": "/srv/oreo-cloud/workloads/locigraph/manifest.json",
+        "root": "/srv/argus/workloads/locigraph",
+        "source": "/srv/argus/workloads/locigraph/source",
+        "manifest": "/srv/argus/workloads/locigraph/manifest.json",
         "legacy": "/home/oreo/LociGraph"
       },
       "runtime": {
@@ -342,9 +342,9 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/kadath",
-        "source": "/srv/oreo-cloud/workloads/kadath/source",
-        "manifest": "/srv/oreo-cloud/workloads/kadath/manifest.json",
+        "root": "/srv/argus/workloads/kadath",
+        "source": "/srv/argus/workloads/kadath/source",
+        "manifest": "/srv/argus/workloads/kadath/manifest.json",
         "legacy": "/home/oreo/kadath"
       },
       "runtime": {
@@ -394,14 +394,14 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/hello-nginx",
-        "source": "/srv/oreo-cloud/workloads/hello-nginx/source",
-        "manifest": "/srv/oreo-cloud/workloads/hello-nginx/manifest.json",
+        "root": "/srv/argus/workloads/hello-nginx",
+        "source": "/srv/argus/workloads/hello-nginx/source",
+        "manifest": "/srv/argus/workloads/hello-nginx/manifest.json",
         "legacy": "/srv/apps/hello-nginx"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml",
+        "composePath": "/srv/argus/workloads/hello-nginx/source/docker-compose.yml",
         "legacyComposePaths": [
           "/srv/apps/hello-nginx/docker-compose.yml"
         ],
@@ -431,7 +431,7 @@
       "migration": {
         "status": "migrated",
         "originalPath": "/srv/apps/hello-nginx",
-        "backupPath": "/srv/oreo-cloud/runtime/migration-backups/hello-nginx.20260630-182044",
+        "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
         "compatibilitySymlink": true,
         "migratedAt": "2026-06-30T18:20:44Z",
         "lastHealthCheck": "2026-07-20T06:51:23Z",
