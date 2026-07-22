@@ -1,6 +1,6 @@
-# Oreo Cloud Agent Notes
+# Argus Agent Notes
 
-This repository is the P0 handoff and source of truth for Oreo Cloud work.
+This repository is the P0 handoff and source of truth for Argus work.
 
 ## Hard Rules
 

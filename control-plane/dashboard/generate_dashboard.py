@@ -100,7 +100,7 @@ def render_html() -> str:
         <article id="backup-plan">
           <h2>Backups</h2>
           <p>loading backup state</p>
-          <code>/srv/oreo-cloud/runtime/backups</code>
+          <code>/srv/argus/runtime/backups</code>
         </article>
         <article id="cloudflare-plan">
           <h2>Cloudflare Plan</h2>
@@ -680,7 +680,7 @@ function renderDiscoveryCandidates(candidates) {
 }
 
 function tokenFor() {
-  return adminTokenInput.value || sessionStorage.getItem("oreoControlToken") || "";
+  return adminTokenInput.value || sessionStorage.getItem("argusControlToken") || "";
 }
 
 function selectedValue(row, selector) {
@@ -974,7 +974,7 @@ function setAdmin(open) {
   adminToggle.textContent = open ? "Exit Admin" : "Admin Mode";
   adminTokenInput.hidden = !open;
   if (open) {
-    adminTokenInput.value = sessionStorage.getItem("oreoControlToken") || "";
+    adminTokenInput.value = sessionStorage.getItem("argusControlToken") || "";
     fillAdminControls();
   }
   document.querySelectorAll(".admin-row").forEach((row) => {
@@ -983,7 +983,7 @@ function setAdmin(open) {
 }
 
 adminTokenInput.addEventListener("input", () => {
-  sessionStorage.setItem("oreoControlToken", adminTokenInput.value);
+  sessionStorage.setItem("argusControlToken", adminTokenInput.value);
 });
 
 workloadDiscoverButton.addEventListener("click", async () => {
@@ -1016,7 +1016,7 @@ adminToggle.addEventListener("click", () => {
   if (!adminEnabled) {
     showCommandResult("Admin mode", "Enter the control token above before applying changes.");
   } else {
-    sessionStorage.removeItem("oreoControlToken");
+    sessionStorage.removeItem("argusControlToken");
     adminTokenInput.value = "";
   }
   setAdmin(!adminEnabled);

@@ -73,7 +73,7 @@ Notes:
 | --- | --- |
 | id | `hello-nginx` |
 | runtime | `docker-compose` |
-| compose path | `/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml` |
+| compose path | `/srv/argus/workloads/hello-nginx/source/docker-compose.yml` |
 | compose project | `hello-nginx` |
 | service | `web` |
 | image | `nginx:alpine` |
@@ -93,7 +93,7 @@ Notes:
 | --- | --- |
 | id | `uptime-kuma` |
 | runtime | `docker-compose` |
-| compose path | `/srv/oreo-cloud/workloads/uptime-kuma/source/docker-compose.yml` |
+| compose path | `/srv/argus/workloads/uptime-kuma/source/docker-compose.yml` |
 | compose project | `uptime-kuma` |
 | service | `uptime-kuma` |
 | image | `louislam/uptime-kuma:1` |
@@ -113,7 +113,7 @@ Notes:
 | --- | --- |
 | id | `hastur` |
 | runtime | `docker-compose` |
-| compose path | `/srv/oreo-cloud/workloads/hastur/source/compose.yml` |
+| compose path | `/srv/argus/workloads/hastur/source/compose.yml` |
 | compose project | `hastur` |
 | service | `hastur` |
 | image | `hastur:local` |
@@ -133,7 +133,7 @@ Notes:
 | --- | --- |
 | id | `intake-os` |
 | runtime | `docker-compose` |
-| compose path | `/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml` |
+| compose path | `/srv/argus/workloads/intake-os/source/docker-compose.server.yml` |
 | compose project | `intake-os` |
 | service | not tracked |
 | images | `intake-os-web`; `caddy:2` |

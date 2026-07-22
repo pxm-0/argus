@@ -1,7 +1,7 @@
 # Argus M0 Legacy Quarantine Runbook
 
 This runbook implements the read-only evidence and quarantine portion of
-[Argus M0](https://github.com/pxm-0/oreo-cloud/issues/131). It does not authorize
+[Argus M0](https://github.com/pxm-0/argus/issues/131). It does not authorize
 server mutations. Remediation requires a reviewed command, rollback command,
 health check, and private before/after evidence for each finding.
 
@@ -54,7 +54,7 @@ Run:
 
 ```bash
 python3 -m json.tool config/argus/legacy-classification.json >/dev/null
-scripts/oreo-doctor
+scripts/argus-doctor
 python3 -m unittest discover -s tests -p 'test_*.py'
 ```
 
@@ -71,8 +71,8 @@ admission: denied
 
 `config/policy.json` must keep `allowNewLegacyRootfulAdmission` false. The
 baseline records existing resources; it does not permit new admission.
-`scripts/oreo-workload-add` enforces the rule and fails closed while M0 is
-active. Discovery remains read-only through `scripts/oreo-workload-discover`.
+`scripts/argus-workload-add` enforces the rule and fails closed while M0 is
+active. Discovery remains read-only through `scripts/argus-workload-discover`.
 
 ## Remediation evidence contract
 

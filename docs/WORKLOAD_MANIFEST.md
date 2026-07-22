@@ -1,6 +1,6 @@
 # Workload Manifest
 
-P1 workload manifests describe the safe metadata Oreo Cloud needs for migration,
+P1 workload manifests describe the safe metadata Argus needs for migration,
 operations, backup planning, and dashboard display.
 
 Manifests live at:
@@ -12,7 +12,7 @@ workloads/<workload-id>/manifest.json
 On the server, the canonical workload layout is:
 
 ```text
-/srv/oreo-cloud/workloads/<workload-id>/
+/srv/argus/workloads/<workload-id>/
 ├── README.md
 ├── manifest.json
 ├── source/
@@ -22,7 +22,7 @@ On the server, the canonical workload layout is:
 └── runtime/
 ```
 
-Only safe metadata should be tracked by Oreo Cloud Git:
+Only safe metadata should be tracked by Argus Git:
 
 - `README.md`
 - `manifest.json`
@@ -39,8 +39,8 @@ files, logs, backups, or Cloudflare credentials.
 - `id`: stable workload ID matching `config/workloads.json`
 - `name`: human-readable name
 - `description`: short operator-facing description
-- `canonicalRoot`: `/srv/oreo-cloud/workloads/<id>`
-- `sourcePath`: `/srv/oreo-cloud/workloads/<id>/source`
+- `canonicalRoot`: `/srv/argus/workloads/<id>`
+- `sourcePath`: `/srv/argus/workloads/<id>/source`
 
 ### Runtime
 
@@ -73,9 +73,9 @@ layout and how to roll it back.
 The `operations` object is policy-facing. Commands must refuse actions that are
 not explicitly allowed here.
 
-- `logsAllowed`: allows `oreo-logs`
-- `restartAllowed`: allows `oreo-action-apply restart`
-- `backupAllowed`: allows `oreo-backup-run`
+- `logsAllowed`: allows `argus-logs`
+- `restartAllowed`: allows `argus-action-apply restart`
+- `backupAllowed`: allows `argus-backup-run`
 - `dashboardActionsAllowed`: allows authenticated dashboard operation previews
 - `approvedForCloudflareProtectedDemo`: marks a low-risk demo candidate
 - `requiresConfirmation`: requires exact workload ID confirmation for mutations
@@ -102,7 +102,7 @@ should point.
 Backups belong under ignored runtime paths such as:
 
 ```text
-/srv/oreo-cloud/runtime/backups/<workload-id>
+/srv/argus/runtime/backups/<workload-id>
 ```
 
 Backup commands must not include secrets unless explicitly configured and
@@ -112,7 +112,7 @@ documented for that workload.
 
 The `security` object keeps sensitive boundaries visible.
 
-- `trackedByOreoCloudGit`: normally false for source/runtime content
+- `trackedByArgusGit`: normally false for source/runtime content
 - `classification`: mirrors or summarizes privacy state
 - `publicExposureAllowed`: normally false
 - `forbiddenTargets`: blocked exposure targets such as `postgres`, `docker-socket`, or `ssh`
@@ -125,11 +125,11 @@ The `security` object keeps sensitive boundaries visible.
   "id": "demo-app",
   "name": "Demo App",
   "description": "Low-risk demo workload.",
-  "canonicalRoot": "/srv/oreo-cloud/workloads/demo-app",
-  "sourcePath": "/srv/oreo-cloud/workloads/demo-app/source",
+  "canonicalRoot": "/srv/argus/workloads/demo-app",
+  "sourcePath": "/srv/argus/workloads/demo-app/source",
   "runtime": {
     "type": "docker-compose",
-    "composePath": "/srv/oreo-cloud/workloads/demo-app/source/docker-compose.yml",
+    "composePath": "/srv/argus/workloads/demo-app/source/docker-compose.yml",
     "composeProject": "demo-app",
     "service": "",
     "legacyComposePaths": []
@@ -163,14 +163,14 @@ The `security` object keeps sensitive boundaries visible.
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/demo-app",
+    "destination": "/srv/argus/runtime/backups/demo-app",
     "retention": "manual",
     "restoreTested": false,
     "lastBackupAt": "",
     "lastRestoreTestAt": ""
   },
   "security": {
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "unclassified",
     "publicExposureAllowed": false,
     "forbiddenTargets": [],

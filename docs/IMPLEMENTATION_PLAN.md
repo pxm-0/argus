@@ -1,4 +1,4 @@
-# Implementation Plan: Oreo Cloud P0
+# Implementation Plan: Argus P0
 
 ## Phase 0: Discovery Only
 
@@ -26,7 +26,7 @@ docs/DISCOVERY.md
 
 ## Phase 1: Git-Tracked Base Layout
 
-Create `/srv/oreo-cloud` and initialize a local Git repo.
+Create `/srv/argus` and initialize a local Git repo.
 
 Create directories:
 
@@ -59,7 +59,7 @@ Create:
 Commit:
 
 ```text
-Initialize Oreo Cloud repo
+Initialize Argus repo
 ```
 
 ## Phase 2: Neutral Registries
@@ -93,7 +93,7 @@ Add neutral workload and access registries
 Create:
 
 ```text
-scripts/oreo-migrate-workload-plan
+scripts/argus-migrate-workload-plan
 ```
 
 This command prints a safe migration plan. It must not move files or restart workloads.
@@ -109,7 +109,7 @@ Add workload migration planning
 Move selected workloads one at a time into:
 
 ```text
-/srv/oreo-cloud/workloads/<id>/source
+/srv/argus/workloads/<id>/source
 ```
 
 Only after:
@@ -132,27 +132,27 @@ Do not commit source, `.env`, runtime data, backups, or secrets.
 Commit:
 
 ```text
-Organize workloads under Oreo Cloud
+Organize workloads under Argus
 ```
 
 ## Phase 5: Read-Only CLI
 
 Create:
 
-- `oreo-inventory`
-- `oreo-workloads`
-- `oreo-health`
-- `oreo-open`
-- `oreo-doctor`
-- `oreo-git-checkpoint`
-- `oreo-events`
+- `argus-inventory`
+- `argus-workloads`
+- `argus-health`
+- `argus-open`
+- `argus-doctor`
+- `argus-git-checkpoint`
+- `argus-events`
 
 Symlink them into `/usr/local/bin`.
 
 Commit:
 
 ```text
-Add read-only Oreo Cloud CLI
+Add read-only Argus CLI
 ```
 
 ## Phase 6: Dashboard Generator
@@ -195,9 +195,9 @@ Create:
 
 ```text
 control-plane/monitoring/collect_metrics.py
-systemd/oreo-metrics.service
-systemd/oreo-metrics.timer
-scripts/oreo-monitor
+systemd/argus-metrics.service
+systemd/argus-metrics.timer
+scripts/argus-monitor
 ```
 
 Collector writes:
@@ -220,7 +220,7 @@ Create:
 
 ```text
 control-plane/api/server.py
-systemd/oreo-control-api.service
+systemd/argus-control-api.service
 ```
 
 Bind only to:
@@ -232,7 +232,7 @@ Bind only to:
 Token file:
 
 ```text
-/etc/oreo-cloud/control-token
+/etc/argus/control-token
 ```
 
 Never commit or print the token.
@@ -248,9 +248,9 @@ Add dashboard control API
 Create:
 
 ```text
-scripts/oreo-access-preview
-scripts/oreo-access-apply
-scripts/oreo-privacy-set
+scripts/argus-access-preview
+scripts/argus-access-apply
+scripts/argus-privacy-set
 ```
 
 Behavior:
@@ -279,7 +279,7 @@ cloudflare/cloudflared-config.template.yml
 cloudflare/planned-ingress.yml
 cloudflare/generate_cloudflare_config.py
 cloudflare/quick-tunnel-notes.md
-scripts/oreo-cloudflare-plan
+scripts/argus-cloudflare-plan
 docs/CLOUDFLARE.md
 ```
 
@@ -326,7 +326,7 @@ scripts/smoke-test
 Symlink:
 
 ```text
-/usr/local/bin/oreo-cloud-smoke-test
+/usr/local/bin/argus-smoke-test
 ```
 
 Smoke test checks:
@@ -346,5 +346,5 @@ Smoke test checks:
 Commit:
 
 ```text
-Add Oreo Cloud smoke test
+Add Argus smoke test
 ```

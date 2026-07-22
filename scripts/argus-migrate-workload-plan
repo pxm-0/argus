@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""Print a safe workload migration plan.
+
+This command is intentionally read-only. It does not copy files, edit configs,
+restart services, or mutate Git state.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+
+def repo_root() -> Path:
+    override = os.environ.get("ARGUS_ROOT")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[1]
+
+
+def load_workloads(root: Path) -> list[dict[str, Any]]:
+    path = root / "config" / "workloads.json"
+    try:
+        data = json.loads(path.read_text())
+    except FileNotFoundError:
+        raise SystemExit(f"Missing {path}") from None
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Invalid JSON in {path}: {exc}") from None
+    workloads = data.get("workloads")
+    if not isinstance(workloads, list):
+        raise SystemExit(f"{path} must contain a workloads list")
+    return workloads
+
+
+def workload_by_id(workloads: list[dict[str, Any]], workload_id: str) -> dict[str, Any]:
+    for workload in workloads:
+        if workload.get("id") == workload_id:
+            return workload
+    known = ", ".join(sorted(str(w.get("id", "")) for w in workloads if w.get("id")))
+    raise SystemExit(f"Unknown workload '{workload_id}'. Known workloads: {known}")
+
+
+def as_list(value: Any) -> list[str]:
+    if value is None or value == "":
+        return []
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    return [str(value)]
+
+
+def first_existing(values: list[str], fallback: str = "") -> str:
+    for value in values:
+        if value:
+            return value
+    return fallback
+
+
+def risk_lines(workload: dict[str, Any]) -> tuple[list[str], list[str]]:
+    migration = workload.get("migration", {})
+    network = workload.get("network", {})
+    observed = as_list(network.get("observedBindings"))
+    explicit = as_list(migration.get("risks"))
+    bind_risks: list[str] = as_list(migration.get("bindMountRisks"))
+    named_volume_risks: list[str] = as_list(migration.get("namedVolumeRisks"))
+
+    for item in observed + explicit:
+        lower = item.lower()
+        if "docker.sock" in lower:
+            bind_risks.append(f"{item} (blocked from public exposure)")
+        elif "bind:" in lower or lower.startswith("bind "):
+            bind_risks.append(item)
+        if "volume" in lower or "pgdata" in lower or "caddy_data" in lower:
+            named_volume_risks.append(item)
+
+    if not bind_risks:
+        bind_risks.append("No bind mount risk recorded in workloads.json; review docs/DISCOVERY.md before moving.")
+    if not named_volume_risks:
+        named_volume_risks.append("No named volume risk recorded in workloads.json; review docker compose config before moving.")
+    return bind_risks, named_volume_risks
+
+
+def print_section(title: str, value: str | list[str]) -> None:
+    print(f"## {title}")
+    if isinstance(value, list):
+        for item in value:
+            print(f"- {item}")
+    else:
+        print(value)
+    print()
+
+
+def render_plan(workload: dict[str, Any]) -> None:
+    wid = str(workload["id"])
+    paths = workload.get("paths", {})
+    runtime = workload.get("runtime", {})
+    health = workload.get("health", {})
+    migration = workload.get("migration", {})
+
+    original_path = str(migration.get("originalPath") or paths.get("legacy") or "")
+    target_source = str(paths.get("source") or f"/srv/argus/workloads/{wid}/source")
+    target_root = str(paths.get("root") or f"/srv/argus/workloads/{wid}")
+    legacy_compose_paths = as_list(runtime.get("legacyComposePaths"))
+    current_compose = first_existing(legacy_compose_paths, str(runtime.get("composePath") or ""))
+    target_compose = str(runtime.get("composePath") or "")
+    compose_project = str(runtime.get("composeProject") or wid)
+    health_url = str(health.get("url") or "")
+    bind_risks, named_volume_risks = risk_lines(workload)
+
+    print(f"# Migration Plan: {wid}")
+    print()
+    print("This is a read-only plan. Review every command before running it.")
+    print()
+    print_section("Current Path", original_path or "Unknown; discovery did not identify a source path.")
+    print_section("Target Path", target_source)
+    print_section("Compose File", current_compose or "Unknown; no Compose file recorded.")
+    print_section("Target Compose File", target_compose or "Unknown; set composePath before migration.")
+    print_section("Compose Project Name", compose_project)
+    print_section("Health URL", health_url or "Unknown; set health.url before cutover.")
+    print_section("Legacy Path", str(paths.get("legacy") or original_path or ""))
+    print_section("Bind Mount Risks", bind_risks)
+    print_section("Named Volume Risks", named_volume_risks)
+
+    if original_path:
+        copy_cmd = f"rsync -a --delete --exclude .env --exclude '.env.*' {original_path.rstrip('/')}/ {target_source.rstrip('/')}/"
+    else:
+        copy_cmd = "# No source path recorded. Fill originalPath before copying."
+    print_section("Copy Command", f"```bash\nmkdir -p {target_source}\n{copy_cmd}\n```")
+
+    if target_compose:
+        validate_cmd = f"docker compose -p {compose_project} -f {target_compose} config >/tmp/{wid}-compose.validated.yml"
+        cutover_cmd = f"docker compose -p {compose_project} -f {target_compose} up -d"
+    else:
+        validate_cmd = "# No target composePath recorded. Fill runtime.composePath before validation."
+        cutover_cmd = "# No target composePath recorded. Do not cut over yet."
+    print_section("Validation Command", f"```bash\n{validate_cmd}\n```")
+    print_section("Cutover Command", f"```bash\n{cutover_cmd}\n```")
+
+    rollback = [
+        "Do not delete the legacy path until health checks pass.",
+        f"If cutover fails, stop the new Compose stack: docker compose -p {compose_project} -f {target_compose or '<target-compose>'} down",
+    ]
+    if current_compose:
+        rollback.append(f"Restore the legacy stack: docker compose -p {compose_project} -f {current_compose} up -d")
+    else:
+        rollback.append("Restore using the previously documented legacy start command.")
+    print_section("Rollback Command", "```bash\n" + "\n".join(rollback) + "\n```")
+
+
+def main(argv: list[str]) -> int:
+    parser = argparse.ArgumentParser(description="Print a safe Argus workload migration plan.")
+    parser.add_argument("workload_id", nargs="?", help="Workload id from config/workloads.json")
+    parser.add_argument("--root", default=None, help="Argus root; defaults to script repository root")
+    args = parser.parse_args(argv)
+
+    root = Path(args.root).resolve() if args.root else repo_root()
+    workloads = load_workloads(root)
+    if not args.workload_id:
+        print("Known workloads:")
+        for workload in workloads:
+            print(f"- {workload.get('id')}")
+        return 0
+
+    render_plan(workload_by_id(workloads, args.workload_id))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

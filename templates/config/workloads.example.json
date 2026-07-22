@@ -8,14 +8,14 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/intake-os",
-        "source": "/srv/oreo-cloud/workloads/intake-os/source",
-        "manifest": "/srv/oreo-cloud/workloads/intake-os/manifest.json",
+        "root": "/srv/argus/workloads/intake-os",
+        "source": "/srv/argus/workloads/intake-os/source",
+        "manifest": "/srv/argus/workloads/intake-os/manifest.json",
         "legacy": "/home/oreo/intake-os"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+        "composePath": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
         "composeProject": "intake-os",
         "service": ""
       },
@@ -51,9 +51,9 @@
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/uptime-kuma",
+        "root": "/srv/argus/workloads/uptime-kuma",
         "source": "",
-        "manifest": "/srv/oreo-cloud/workloads/uptime-kuma/manifest.json",
+        "manifest": "/srv/argus/workloads/uptime-kuma/manifest.json",
         "legacy": ""
       },
       "runtime": {

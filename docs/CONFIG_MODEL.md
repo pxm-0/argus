@@ -47,14 +47,14 @@ Example:
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
-        "root": "/srv/oreo-cloud/workloads/intake-os",
-        "source": "/srv/oreo-cloud/workloads/intake-os/source",
-        "manifest": "/srv/oreo-cloud/workloads/intake-os/manifest.json",
+        "root": "/srv/argus/workloads/intake-os",
+        "source": "/srv/argus/workloads/intake-os/source",
+        "manifest": "/srv/argus/workloads/intake-os/manifest.json",
         "legacy": "/home/oreo/intake-os"
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+        "composePath": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
         "composeProject": "intake-os",
         "service": ""
       },
@@ -113,13 +113,13 @@ Example:
       "privacy": "sensitive",
       "reason": "Initial operator classification.",
       "updatedAt": "",
-      "updatedBy": "oreo-cloud"
+      "updatedBy": "argus"
     },
     "uptime-kuma": {
       "privacy": "restricted",
       "reason": "Infrastructure/admin dashboard.",
       "updatedAt": "",
-      "updatedBy": "oreo-cloud"
+      "updatedBy": "argus"
     }
   }
 }
@@ -258,7 +258,7 @@ Example:
       "allowQuickTunnels": false,
       "allowNamedTunnels": false,
       "requireAccessPolicy": true,
-      "configPath": "/srv/oreo-cloud/cloudflare/planned-ingress.yml"
+      "configPath": "/srv/argus/cloudflare/planned-ingress.yml"
     }
   }
 }
@@ -277,9 +277,9 @@ Example:
   "mode": "snapshot",
   "refreshSeconds": 3,
   "dashboardToggle": true,
-  "publicMetricsPath": "/srv/oreo-cloud/control-plane/dashboard/public/metrics.json",
+  "publicMetricsPath": "/srv/argus/control-plane/dashboard/public/metrics.json",
   "historyEnabled": true,
-  "historyPath": "/srv/oreo-cloud/runtime/metrics-history/metrics.jsonl",
+  "historyPath": "/srv/argus/runtime/metrics-history/metrics.jsonl",
   "include": {
     "cpu": true,
     "load": true,

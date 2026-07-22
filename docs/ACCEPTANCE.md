@@ -3,8 +3,8 @@
 ## P0 Definition of Done
 
 ```text
-[ ] /srv/oreo-cloud exists
-[ ] /srv/oreo-cloud is a Git repo
+[ ] /srv/argus exists
+[ ] /srv/argus is a Git repo
 [ ] .gitignore blocks secrets/runtime/workload source
 [ ] .gitattributes exists
 [ ] README.md exists
@@ -44,14 +44,14 @@
 [ ] no Docker socket exposure
 [ ] no control token tracked by Git
 [ ] no .env files tracked by Git
-[ ] no workload source tracked by Oreo Cloud Git
-[ ] oreo-workloads works
-[ ] oreo-health works
-[ ] oreo-open works
-[ ] oreo-monitor works
-[ ] oreo-cloudflare-plan works
-[ ] oreo-doctor works
-[ ] oreo-cloud-smoke-test works
+[ ] no workload source tracked by Argus Git
+[ ] argus-workloads works
+[ ] argus-health works
+[ ] argus-open works
+[ ] argus-monitor works
+[ ] argus-cloudflare-plan works
+[ ] argus-doctor works
+[ ] argus-smoke-test works
 ```
 
 ## Manual Smoke Tests
@@ -59,7 +59,7 @@
 ### JSON Validation
 
 ```bash
-for f in /srv/oreo-cloud/config/*.json; do
+for f in /srv/argus/config/*.json; do
   python3 -m json.tool "$f" >/dev/null || exit 1
 done
 ```
@@ -67,23 +67,23 @@ done
 ### Git Secret Check
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git ls-files | grep -E '(^|/)\.env($|\.)|token|credential|secret|\.key$|\.pem$' && exit 1 || true
 ```
 
 ### Dashboard Generated
 
 ```bash
-test -f /srv/oreo-cloud/control-plane/dashboard/public/index.html
-test -f /srv/oreo-cloud/control-plane/dashboard/public/style.css
-test -f /srv/oreo-cloud/control-plane/dashboard/public/app.js
+test -f /srv/argus/control-plane/dashboard/public/index.html
+test -f /srv/argus/control-plane/dashboard/public/style.css
+test -f /srv/argus/control-plane/dashboard/public/app.js
 ```
 
 ### Metrics Valid
 
 ```bash
-python3 /srv/oreo-cloud/control-plane/monitoring/collect_metrics.py
-python3 -m json.tool /srv/oreo-cloud/control-plane/dashboard/public/metrics.json >/dev/null
+python3 /srv/argus/control-plane/monitoring/collect_metrics.py
+python3 -m json.tool /srv/argus/control-plane/dashboard/public/metrics.json >/dev/null
 ```
 
 ### Control API Local Only
@@ -113,7 +113,7 @@ curl -I "http://$TS_IP:8088"
 tailscale funnel status || true
 ```
 
-Review output. P0 should not show Oreo Cloud dashboard or workloads exposed publicly.
+Review output. P0 should not show Argus dashboard or workloads exposed publicly.
 
 ### Cloudflare Not Active Unexpectedly
 
@@ -126,8 +126,8 @@ P0 expects inactive unless a future phase explicitly changes this.
 ### Cloudflare Plan Only
 
 ```bash
-oreo-cloudflare-plan
-cat /srv/oreo-cloud/cloudflare/planned-ingress.yml
+argus-cloudflare-plan
+cat /srv/argus/cloudflare/planned-ingress.yml
 ```
 
 This must not start tunnels.
@@ -135,11 +135,11 @@ This must not start tunnels.
 ### CLI Checks
 
 ```bash
-oreo-workloads
-oreo-health
-oreo-open intake-os || true
-oreo-doctor
-oreo-cloud-smoke-test
+argus-workloads
+argus-health
+argus-open intake-os || true
+argus-doctor
+argus-smoke-test
 ```
 
 ## Policy Tests
@@ -147,8 +147,8 @@ oreo-cloud-smoke-test
 ### Restricted Public Block
 
 ```bash
-oreo-privacy-set uptime-kuma restricted --reason "admin dashboard"
-oreo-access-preview uptime-kuma cloudflare-public
+argus-privacy-set uptime-kuma restricted --reason "admin dashboard"
+argus-access-preview uptime-kuma cloudflare-public
 ```
 
 Expected: blocked.
@@ -156,7 +156,7 @@ Expected: blocked.
 ### Tailnet Allowed
 
 ```bash
-oreo-access-preview uptime-kuma tailnet
+argus-access-preview uptime-kuma tailnet
 ```
 
 Expected: allowed.
@@ -164,7 +164,7 @@ Expected: allowed.
 ### Cloudflare Protected Planned
 
 ```bash
-oreo-access-preview intake-os cloudflare-protected
+argus-access-preview intake-os cloudflare-protected
 ```
 
 Expected: allowed or confirmation-required by policy, but P0 should not make it effective unless Cloudflare activation is implemented.

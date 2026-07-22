@@ -13,31 +13,31 @@
       "privacy": "sensitive",
       "reason": "Application data classification pending operator review.",
       "updatedAt": "2026-06-30T16:59:57Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "hastur": {
       "privacy": "sensitive",
       "reason": "Application mounts SSH and auth-related paths according to discovery.",
       "updatedAt": "2026-06-30T16:59:57Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "uptime-kuma": {
       "privacy": "restricted",
       "reason": "Infrastructure monitoring dashboard.",
       "updatedAt": "2026-06-30T16:59:57Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "review-ui": {
       "privacy": "internal",
       "reason": "Internal review UI discovered behind an existing Funnel route.",
       "updatedAt": "2026-06-30T16:59:57Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "dozzle": {
       "privacy": "restricted",
       "reason": "Admin tool with Docker socket access.",
       "updatedAt": "2026-06-30T16:59:57Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "hello-nginx": {
       "privacy": "unclassified",
@@ -49,7 +49,7 @@
       "privacy": "sensitive",
       "reason": "Handles JWT auth, an OpenAI API key, an app login password, and a Postgres/pgvector database of extracted claims.",
       "updatedAt": "2026-07-03T12:43:40Z",
-      "updatedBy": "oreo-cloud-discovery"
+      "updatedBy": "argus-discovery"
     },
     "kadath": {
       "privacy": "personal",

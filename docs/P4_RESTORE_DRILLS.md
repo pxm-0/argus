@@ -102,7 +102,7 @@ Smoke summary: 0 failure(s), 0 warning(s)
 Future stateful restore drills must meet this bar before backup execution or
 restore execution is enabled:
 
-- restore into `/srv/oreo-cloud/runtime/restore-tests/<id>/...`
+- restore into `/srv/argus/runtime/restore-tests/<id>/...`
 - validate artifact checksums before extraction
 - keep restore-test artifacts ignored by Git
 - avoid overwriting live bind mounts, volumes, databases, env files, or auth

@@ -1,11 +1,11 @@
-# Oreo Cloud P2 Baseline
+# Argus P2 Baseline
 
 Baseline recorded from `oreochiserver` for P2-00.
 
 - Verified at: `2026-06-30T20:00:43Z`
 - GitHub issue: `#54`
 - Target branch: `p2/00-closeout-baseline`
-- Source spec: `docs/OREO_CLOUD_P2.md`
+- Source spec: `docs/ARGUS_P2.md`
 
 ## Git State
 
@@ -28,7 +28,7 @@ p1-complete
 Command:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 scripts/smoke-test
 ```
 
@@ -79,19 +79,19 @@ Smoke summary: 0 failure(s), 0 warning(s)
 ## Service Status
 
 ```text
-oreo-control-api.service: active
-oreo-metrics.timer: active
+argus-control-api.service: active
+argus-metrics.timer: active
 cloudflared: inactive
 tailscale funnel status: No serve config
 ```
 
 ## Network Bindings
 
-Observed listeners relevant to Oreo Cloud:
+Observed listeners relevant to Argus:
 
 ```text
 100.75.210.83:8088  caddy dashboard listener
-127.0.0.1:8099      oreo-control-api.service
+127.0.0.1:8099      argus-control-api.service
 127.0.0.1:2019      caddy admin API
 *:80                caddy HTTP listener
 ```
@@ -103,7 +103,7 @@ P2 starts with the control API bound to localhost only and the dashboard route b
 Command:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 caddy validate --config caddy/dashboard.Caddyfile
 ```
 

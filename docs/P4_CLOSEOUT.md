@@ -1,4 +1,4 @@
-# Oreo Cloud P4 Closeout
+# Argus P4 Closeout
 
 P4 status: complete when this closeout PR is merged and `p4-complete` is tagged
 on `main`.
@@ -50,7 +50,7 @@ P4 intentionally prioritizes readiness over migration:
 - Cloudflare activation remains deferred.
 - Dashboard remains bound to the Tailscale IP.
 - Control API remains localhost-only.
-- Sensitive/restricted/admin workloads are not exposed through Oreo Cloud
+- Sensitive/restricted/admin workloads are not exposed through Argus
   routes.
 - No source, env, runtime data, backups, or secrets were committed.
 
@@ -84,7 +84,7 @@ PASS uptime-kuma manifest valid
 ```
 
 ```text
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 ok=True failures=0 checks=22
 ```
 
@@ -106,14 +106,14 @@ and Caddy are skipped or unavailable locally.
 After this PR merges, run on `oreochiserver`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git checkout main
 git pull --ff-only
 scripts/validate-manifests
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 scripts/smoke-test
 git status --short
-git tag -a p4-complete -m "Oreo Cloud P4 complete"
+git tag -a p4-complete -m "Argus P4 complete"
 git push origin p4-complete
 ```
 

@@ -5,6 +5,6 @@ credentials-file: /etc/cloudflared/<named-tunnel-id>.json
 ingress:
   # Generated entries from cloudflare/planned-ingress.yml go here in a future
   # activation phase after explicit review.
-  - hostname: example.oreo-cloud.invalid
+  - hostname: example.argus.invalid
     service: http://127.0.0.1:8080
   - service: http_status:404

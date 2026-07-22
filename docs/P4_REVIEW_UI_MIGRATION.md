@@ -56,7 +56,7 @@ this PR. P4-02 adds only a plan-only manifest.
 Migration is deferred because:
 
 - no source/build provenance is documented for `dupe-engine-worker:v0.10.9`
-- no Compose or reproducible runtime definition is available in the Oreo Cloud
+- no Compose or reproducible runtime definition is available in the Argus
   repo
 - `/data/runs` ownership and backup requirements are not classified
 - `/data/review_ui_jobs` ownership and backup requirements are not classified

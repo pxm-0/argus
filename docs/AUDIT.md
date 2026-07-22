@@ -1,9 +1,9 @@
-# Oreo Cloud Audit Events
+# Argus Audit Events
 
-Oreo Cloud writes local audit events to:
+Argus writes local audit events to:
 
 ```text
-/srv/oreo-cloud/runtime/audit.log
+/srv/argus/runtime/audit.log
 ```
 
 The file is JSONL: one JSON object per line. `runtime/*` and `*.log` are ignored by Git, so audit logs must stay untracked.
@@ -30,7 +30,7 @@ Extra fields are allowed when they are operationally useful and non-sensitive.
 
 Audit events must not contain secrets, tokens, passwords, private keys, bearer headers, raw environment values, or private key material.
 
-The shared CLI audit helper redacts secret-shaped keys before writing events. `oreo-events` also sanitizes events while reading so older or hand-written lines do not dump secret-shaped fields.
+The shared CLI audit helper redacts secret-shaped keys before writing events. `argus-events` also sanitizes events while reading so older or hand-written lines do not dump secret-shaped fields.
 
 Do not add raw command output, `.env` content, control tokens, Cloudflare credentials, SSH keys, or request headers to audit events.
 
@@ -55,21 +55,21 @@ Manual migration events should use `migration.plan` for dry-run planning and `mi
 Print recent events:
 
 ```bash
-/srv/oreo-cloud/scripts/oreo-events
+/srv/argus/scripts/argus-events
 ```
 
 Print sanitized JSONL:
 
 ```bash
-/srv/oreo-cloud/scripts/oreo-events --json
+/srv/argus/scripts/argus-events --json
 ```
 
 Filter by workload, action, or result:
 
 ```bash
-/srv/oreo-cloud/scripts/oreo-events --workload hello-nginx
-/srv/oreo-cloud/scripts/oreo-events --action restart.apply
-/srv/oreo-cloud/scripts/oreo-events --result blocked
+/srv/argus/scripts/argus-events --workload hello-nginx
+/srv/argus/scripts/argus-events --action restart.apply
+/srv/argus/scripts/argus-events --result blocked
 ```
 
 ## Dashboard And API
@@ -89,7 +89,7 @@ Useful checks:
 
 ```bash
 git check-ignore runtime/audit.log
-/srv/oreo-cloud/scripts/oreo-events --limit 20
-/srv/oreo-cloud/scripts/oreo-events --limit 20 --json
-/srv/oreo-cloud/scripts/smoke-test
+/srv/argus/scripts/argus-events --limit 20
+/srv/argus/scripts/argus-events --limit 20 --json
+/srv/argus/scripts/smoke-test
 ```

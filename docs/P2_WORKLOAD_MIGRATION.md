@@ -1,6 +1,6 @@
 # P2 Workload Migration Evaluation
 
-P2-06 evaluated whether Oreo Cloud should migrate one additional low-risk
+P2-06 evaluated whether Argus should migrate one additional low-risk
 workload after `hello-nginx`.
 
 - GitHub issue: `#66`
@@ -30,12 +30,12 @@ stateful workloads under deadline pressure.
 ## Server Evidence Command
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 python3 - <<'PY'
 import json
 from pathlib import Path
 
-root = Path("/srv/oreo-cloud")
+root = Path("/srv/argus")
 workloads = json.loads((root / "config/workloads.json").read_text())["workloads"]
 privacy = json.loads((root / "config/privacy.json").read_text())["workloads"]
 

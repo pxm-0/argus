@@ -1,6 +1,6 @@
 # Git Workflow
 
-`/srv/oreo-cloud` is the Git-tracked source of truth for P0 platform configuration on `oreochiserver`.
+`/srv/argus` is the Git-tracked source of truth for P0 platform configuration on `oreochiserver`.
 
 ## Repository Rules
 
@@ -14,23 +14,23 @@
 Expected target path:
 
 ```text
-/srv/oreo-cloud
+/srv/argus
 ```
 
 The server checkout should track:
 
 ```text
-https://github.com/pxm-0/oreo-cloud.git
+https://github.com/pxm-0/argus.git
 ```
 
-If `/srv/oreo-cloud` does not exist yet, create it with the operator user as owner, then clone or initialize from this repository.
+If `/srv/argus` does not exist yet, create it with the operator user as owner, then clone or initialize from this repository.
 
 ## Checkpointing
 
 Before and after server-affecting work:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git status --short
 git add <intentional-files>
 git commit -m "<phase commit message>"

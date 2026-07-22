@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate plan-only Cloudflare ingress from Oreo Cloud config."""
+"""Generate plan-only Cloudflare ingress from Argus config."""
 
 from __future__ import annotations
 
@@ -11,10 +11,10 @@ from pathlib import Path
 from typing import Any
 
 
-ROOT = Path(os.environ.get("OREO_CLOUD_ROOT", Path(__file__).resolve().parents[1])).resolve()
+ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from oreo_common import audit, load_json, policy_decision, yaml_quote  # noqa: E402
+from argus_common import audit, load_json, policy_decision, yaml_quote  # noqa: E402
 
 
 PLAN_PATH = ROOT / "cloudflare" / "planned-ingress.yml"

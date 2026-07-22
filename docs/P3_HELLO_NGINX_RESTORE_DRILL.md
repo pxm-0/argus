@@ -6,8 +6,8 @@ into an ignored runtime test directory without replacing the live workload.
 - Verified on: 2026-06-30T22:03Z
 - Server: `oreochiserver`
 - Branch during drill: `main`
-- Backup artifact: `/srv/oreo-cloud/runtime/backups/hello-nginx/20260630-202443`
-- Restore test directory: `/srv/oreo-cloud/runtime/restore-tests/hello-nginx/20260630-220308`
+- Backup artifact: `/srv/argus/runtime/backups/hello-nginx/20260630-202443`
+- Restore test directory: `/srv/argus/runtime/restore-tests/hello-nginx/20260630-220308`
 - P3 issue: `#79`
 
 ## Backup Artifact
@@ -32,10 +32,10 @@ Backup summary:
 
 ```json
 {
-  "artifactPath": "/srv/oreo-cloud/runtime/backups/hello-nginx/20260630-202443",
+  "artifactPath": "/srv/argus/runtime/backups/hello-nginx/20260630-202443",
   "createdAt": "2026-06-30T20:24:43Z",
   "databaseIncluded": false,
-  "destination": "/srv/oreo-cloud/runtime/backups/hello-nginx",
+  "destination": "/srv/argus/runtime/backups/hello-nginx",
   "envIncluded": false,
   "redacted": true,
   "sourceIncluded": true,
@@ -57,7 +57,7 @@ f2adc05c10c6888609a4ac627afc7318828678c990fa8d77448df89929a5ed9c  restore-plan.m
 ## Drill Commands
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 latest=$(find runtime/backups/hello-nginx -maxdepth 1 -mindepth 1 -type d -print | sort | tail -1)
 restore_dir="runtime/restore-tests/hello-nginx/20260630-220308"
 mkdir -p "$restore_dir/extracted"

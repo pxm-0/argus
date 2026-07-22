@@ -3,21 +3,21 @@
   "name": "Hello Nginx",
   "description": "Low-risk demo workload migrated during P1 to prove the canonical layout.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/hello-nginx",
-  "sourcePath": "/srv/oreo-cloud/workloads/hello-nginx/source",
+  "canonicalRoot": "/srv/argus/workloads/hello-nginx",
+  "sourcePath": "/srv/argus/workloads/hello-nginx/source",
   "privacyCompatibility": "unclassified",
   "accessCompatibility": "cloudflare-protected",
   "runtime": {
     "type": "docker-compose",
     "compose": {
-      "path": "/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml",
+      "path": "/srv/argus/workloads/hello-nginx/source/docker-compose.yml",
       "project": "hello-nginx",
       "service": "web",
       "legacyPaths": [
         "/srv/apps/hello-nginx/docker-compose.yml"
       ]
     },
-    "composePath": "/srv/oreo-cloud/workloads/hello-nginx/source/docker-compose.yml",
+    "composePath": "/srv/argus/workloads/hello-nginx/source/docker-compose.yml",
     "composeProject": "hello-nginx",
     "service": "web",
     "legacyComposePaths": [
@@ -27,7 +27,7 @@
   "migration": {
     "status": "migrated",
     "originalPath": "/srv/apps/hello-nginx",
-    "backupPath": "/srv/oreo-cloud/runtime/migration-backups/hello-nginx.20260630-182044",
+    "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
     "compatibilitySymlink": true,
     "migratedAt": "2026-06-30T18:20:44Z",
     "lastHealthCheck": "2026-07-20T06:51:23Z",
@@ -72,7 +72,7 @@
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/hello-nginx",
+    "destination": "/srv/argus/runtime/backups/hello-nginx",
     "retention": {
       "keepLast": 5
     },
@@ -82,7 +82,7 @@
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "unclassified",
     "publicExposureAllowed": false,
     "forbiddenTargets": [],

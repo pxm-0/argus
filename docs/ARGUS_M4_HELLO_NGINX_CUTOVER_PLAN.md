@@ -8,7 +8,7 @@ expose a workload.
 Run it only on `oreochiserver`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 sudo python3 scripts/argus-m4-hello-nginx-cutover-plan
 ```
 

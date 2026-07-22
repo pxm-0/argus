@@ -18,11 +18,11 @@ through the writer or explicitly denied during the rollback window:
 
 | Surface | Current mutation | Required M1 disposition |
 | --- | --- | --- |
-| `oreo-privacy-set` | `privacy.json` | Writer-backed privacy transform (implemented) |
-| `oreo-access-apply` | `access.json` | Writer-backed access transform (implemented) |
+| `argus-privacy-set` | `privacy.json` | Writer-backed privacy transform (implemented) |
+| `argus-access-apply` | `access.json` | Writer-backed access transform (implemented) |
 | Control API privacy endpoint | `privacy.json` | Calls the same writer (implemented) |
 | Control API access endpoint | `access.json` | Calls the same writer (implemented) |
-| `oreo-workload-add` / register endpoint | workload, privacy, and access registries | Deny until a complete dual-schema registration transform exists |
+| `argus-workload-add` / register endpoint | workload, privacy, and access registries | Deny until a complete dual-schema registration transform exists |
 | Cloudflare effective-state helpers | `access.json` | Deny until an explicit dual-schema transform exists |
 
 Generated dashboard files, private evidence, monitoring output, and backup

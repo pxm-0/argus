@@ -1,9 +1,9 @@
-# Oreo Cloud P3 Baseline
+# Argus P3 Baseline
 
 P3 baseline recorded from `oreochiserver` before P3 implementation work.
 
 - Verified on: 2026-06-30T22:00Z
-- Server path: `/srv/oreo-cloud`
+- Server path: `/srv/argus`
 - Branch: `main`
 - Commit: `c2d3018`
 - Required prior tag: `p2-complete`
@@ -21,7 +21,7 @@ Cloudflare tunnel is active.
 ## Verification Commands
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git checkout main
 git pull --ff-only
 git status --short --branch
@@ -29,9 +29,9 @@ git rev-parse --short HEAD
 git tag --list "p2-complete"
 scripts/install-operator-links --check
 scripts/validate-manifests
-scripts/oreo-doctor --json
-systemctl is-active oreo-control-api.service
-systemctl is-active oreo-metrics.timer
+scripts/argus-doctor --json
+systemctl is-active argus-control-api.service
+systemctl is-active argus-metrics.timer
 systemctl is-active caddy
 systemctl is-active cloudflared
 tailscale funnel status
@@ -50,8 +50,8 @@ p2-complete
 Services:
 
 ```text
-oreo-control-api.service active
-oreo-metrics.timer active
+argus-control-api.service active
+argus-metrics.timer active
 caddy active
 cloudflared inactive
 ```
@@ -68,19 +68,19 @@ No serve config
 links:
 
 ```text
-PASS /usr/local/bin/oreo-logs -> /srv/oreo-cloud/scripts/oreo-logs
-PASS /usr/local/bin/oreo-backup-plan -> /srv/oreo-cloud/scripts/oreo-backup-plan
-PASS /usr/local/bin/oreo-backup-run -> /srv/oreo-cloud/scripts/oreo-backup-run
-PASS /usr/local/bin/oreo-restore-plan -> /srv/oreo-cloud/scripts/oreo-restore-plan
-PASS /usr/local/bin/oreo-events -> /srv/oreo-cloud/scripts/oreo-events
-PASS /usr/local/bin/oreo-cloud-smoke-test -> /srv/oreo-cloud/scripts/smoke-test
-PASS /usr/local/bin/oreo-access-preview -> /srv/oreo-cloud/scripts/oreo-access-preview
-PASS /usr/local/bin/oreo-access-apply -> /srv/oreo-cloud/scripts/oreo-access-apply
-PASS /usr/local/bin/oreo-access-reconcile -> /srv/oreo-cloud/scripts/oreo-access-reconcile
-PASS /usr/local/bin/oreo-cloudflare-plan -> /srv/oreo-cloud/scripts/oreo-cloudflare-plan
-PASS /usr/local/bin/oreo-cloudflare-activate-preview -> /srv/oreo-cloud/scripts/oreo-cloudflare-activate-preview
-PASS /usr/local/bin/oreo-cloudflare-activate -> /srv/oreo-cloud/scripts/oreo-cloudflare-activate
-PASS /usr/local/bin/oreo-cloudflare-rollback -> /srv/oreo-cloud/scripts/oreo-cloudflare-rollback
+PASS /usr/local/bin/argus-logs -> /srv/argus/scripts/argus-logs
+PASS /usr/local/bin/argus-backup-plan -> /srv/argus/scripts/argus-backup-plan
+PASS /usr/local/bin/argus-backup-run -> /srv/argus/scripts/argus-backup-run
+PASS /usr/local/bin/argus-restore-plan -> /srv/argus/scripts/argus-restore-plan
+PASS /usr/local/bin/argus-events -> /srv/argus/scripts/argus-events
+PASS /usr/local/bin/argus-smoke-test -> /srv/argus/scripts/smoke-test
+PASS /usr/local/bin/argus-access-preview -> /srv/argus/scripts/argus-access-preview
+PASS /usr/local/bin/argus-access-apply -> /srv/argus/scripts/argus-access-apply
+PASS /usr/local/bin/argus-access-reconcile -> /srv/argus/scripts/argus-access-reconcile
+PASS /usr/local/bin/argus-cloudflare-plan -> /srv/argus/scripts/argus-cloudflare-plan
+PASS /usr/local/bin/argus-cloudflare-activate-preview -> /srv/argus/scripts/argus-cloudflare-activate-preview
+PASS /usr/local/bin/argus-cloudflare-activate -> /srv/argus/scripts/argus-cloudflare-activate
+PASS /usr/local/bin/argus-cloudflare-rollback -> /srv/argus/scripts/argus-cloudflare-rollback
 ```
 
 ## Manifest And Doctor

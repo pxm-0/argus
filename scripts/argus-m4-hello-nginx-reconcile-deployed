@@ -15,14 +15,14 @@ EVIDENCE = ROOT / "runtime" / "argus" / "m4" / "hello-nginx-cutover.json"
 BEFORE = {
     "desired": "cloudflare-protected",
     "effective": "local",
-    "urls": {"local": "http://127.0.0.1:18080", "tailnet": "", "cloudflare": "https://hello-nginx.oreo-cloud.invalid"},
+    "urls": {"local": "http://127.0.0.1:18080", "tailnet": "", "cloudflare": "https://hello-nginx.argus.invalid"},
     "lastAppliedAt": "2026-06-30T18:48:04Z",
     "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled.",
 }
 AFTER = {
     "desired": "cloudflare-protected",
     "effective": "none",
-    "urls": {"local": "", "tailnet": "", "cloudflare": "https://hello-nginx.oreo-cloud.invalid"},
+    "urls": {"local": "", "tailnet": "", "cloudflare": "https://hello-nginx.argus.invalid"},
     "lastAppliedAt": "2026-07-20T06:51:23Z",
     "lastError": "M4 moved the workload into the sealed personal sandbox. No local, tailnet, or public ingress is configured.",
 }

@@ -1,13 +1,13 @@
 # Argus V1 Bridge
 
-## From Oreo Cloud to Argus
+## From Argus to Argus
 
 - **Status:** Accepted architecture; implementation pending
 - **Target:** Argus V1
-- **Predecessor:** Oreo Cloud
+- **Predecessor:** Argus
 - **Scope:** Single-host infrastructure control plane and topology model
 - **Primary host:** private single-host deployment
-- **Tracking:** [#130](https://github.com/pxm-0/oreo-cloud/issues/130)
+- **Tracking:** [#130](https://github.com/pxm-0/argus/issues/130)
 - **Decision log:** [`docs/ARGUS_V1_DECISIONS.md`](docs/ARGUS_V1_DECISIONS.md)
 - **Decision date:** 2026-07-14
 
@@ -15,9 +15,9 @@
 
 ## 1. Purpose
 
-This document defines the transition from Oreo Cloud into Argus V1.
+This document defines the transition from Argus into Argus V1.
 
-Oreo Cloud began as a private, Git-tracked control plane for workloads running on the primary host. Its original purpose was to make existing Docker workloads visible, safer to operate, and harder to expose accidentally.
+Argus began as a private, Git-tracked control plane for workloads running on the primary host. Its original purpose was to make existing Docker workloads visible, safer to operate, and harder to expose accidentally.
 
 Argus preserves that foundation while expanding the system from:
 
@@ -29,13 +29,13 @@ into:
 
 Argus V1 is not a rewrite.
 
-It is a structural migration that keeps Oreo Cloud’s working operational machinery and introduces a more expressive infrastructure model underneath it.
+It is a structural migration that keeps Argus’s working operational machinery and introduces a more expressive infrastructure model underneath it.
 
 ---
 
 ## 2. Current State
 
-Oreo Cloud already provides a substantial operational foundation.
+Argus already provides a substantial operational foundation.
 
 Its current capabilities include:
 
@@ -71,7 +71,7 @@ These capabilities are retained.
 
 ## 3. Why the Transition Is Needed
 
-Oreo Cloud models most operational reality through one central object:
+Argus models most operational reality through one central object:
 
 ```text
 Workload
@@ -191,7 +191,7 @@ Environment maturity is earned through actual isolation and operational evidence
 
 ### 5.2 Declared, observed, and effective state
 
-Argus generalizes Oreo Cloud’s existing desired-versus-effective access model.
+Argus generalizes Argus’s existing desired-versus-effective access model.
 
 For every managed entity, Argus distinguishes:
 
@@ -225,7 +225,7 @@ Example:
 Locigraph staging is running, but the deployed image differs from the declared release.
 ```
 
-Oreo Cloud already applies this principle to access state by separating desired and effective values.
+Argus already applies this principle to access state by separating desired and effective values.
 
 Argus extends it across the entire infrastructure.
 
@@ -233,7 +233,7 @@ Argus extends it across the entire infrastructure.
 
 ### 5.3 Private by default
 
-Argus retains Oreo Cloud’s existing security posture:
+Argus retains Argus’s existing security posture:
 
 ```text
 private first, public never by accident
@@ -278,7 +278,7 @@ Each project retains ownership of:
 
 Argus may record and validate project-owned operational contracts without taking over their execution.
 
-The current Nodens workload already demonstrates this distinction: Nodens owns its application backup and restore process, while Oreo Cloud records and validates the contract.
+The current Nodens workload already demonstrates this distinction: Nodens owns its application backup and restore process, while Argus records and validates the contract.
 
 ---
 
@@ -737,7 +737,7 @@ Typed relationships describe topology but do not grant connectivity. Docker sock
 
 ## 8. Discovery Model
 
-Oreo Cloud currently discovers unregistered Docker Compose project names by comparing running Compose labels against registered workloads.
+Argus currently discovers unregistered Docker Compose project names by comparing running Compose labels against registered workloads.
 
 Argus V1 expands discovery into normalized observations.
 
@@ -1191,7 +1191,7 @@ This becomes a first-class Argus view.
 
 ### Phase A: Rename and preserve
 
-- Rename Oreo Cloud to Argus.
+- Rename Argus to Argus.
 - Preserve the current CLI, dashboard, API, monitoring, registries, scripts, and systemd units.
 - Provide temporary compatibility command names.
 - Avoid changing runtime behavior.
@@ -1199,9 +1199,9 @@ This becomes a first-class Argus view.
 Example:
 
 ```text
-oreo-health → argus-health
-oreo-workloads → argus-projects
-oreo-events → argus-events
+argus-health → argus-health
+argus-workloads → argus-projects
+argus-events → argus-events
 ```
 
 Old command names may remain as compatibility aliases during V1.
@@ -1521,9 +1521,9 @@ During migration:
 
 ## 21. Initial Data Mapping
 
-The current Oreo Cloud workload maps into Argus as follows:
+The current Argus workload maps into Argus as follows:
 
-| Oreo Cloud field | Argus entity or field |
+| Argus field | Argus entity or field |
 |---|---|
 | workload ID | Project ID |
 | lifecycle | Project lifecycle |
@@ -1619,7 +1619,7 @@ Argus V1 is complete when:
 
 ### Model
 
-- Every registered Oreo Cloud workload is represented as a project.
+- Every registered Argus workload is represented as a project.
 - Every current project has at least one legacy environment or an explicitly classified environment.
 - Existing deployments initially map to `legacy-unclassified` unless classification evidence already exists.
 - Realm, zone, stage, and trust-domain membership are first-class state.
@@ -1718,7 +1718,7 @@ The first milestone establishes safe ground truth before a new model or runtime 
 
 ### Argus M0: Legacy Quarantine and Containment Baseline
 
-Tracked by [#131](https://github.com/pxm-0/oreo-cloud/issues/131).
+Tracked by [#131](https://github.com/pxm-0/argus/issues/131).
 
 Deliver:
 
@@ -1739,7 +1739,7 @@ Which findings block classification or migration?
 Can every containment change be verified and rolled back safely?
 ```
 
-The entity model follows in [#132](https://github.com/pxm-0/oreo-cloud/issues/132), runtime cells in [#133](https://github.com/pxm-0/oreo-cloud/issues/133), the portfolio pipeline in [#134](https://github.com/pxm-0/oreo-cloud/issues/134), and workload migration in [#135](https://github.com/pxm-0/oreo-cloud/issues/135).
+The entity model follows in [#132](https://github.com/pxm-0/argus/issues/132), runtime cells in [#133](https://github.com/pxm-0/argus/issues/133), the portfolio pipeline in [#134](https://github.com/pxm-0/argus/issues/134), and workload migration in [#135](https://github.com/pxm-0/argus/issues/135).
 
 ---
 
@@ -1767,7 +1767,7 @@ Its public portfolio demonstrates that capability through a deliberately separat
 
 ## 26. Final Principle
 
-Oreo Cloud answered:
+Argus answered:
 
 > What workloads are running on my server, and how can I operate them safely?
 
@@ -1775,7 +1775,7 @@ Argus answers:
 
 > What systems exist, how are they connected, what state should they be in, and what state are they actually in?
 
-The transition preserves the operator discipline already built into Oreo Cloud.
+The transition preserves the operator discipline already built into Argus.
 
 The graph does not replace the control plane.
 

@@ -13,7 +13,7 @@ documentation or by activation preview.
 The checked-in P2 config still uses the planning hostname:
 
 ```text
-hello-nginx.oreo-cloud.invalid
+hello-nginx.argus.invalid
 ```
 
 Activation must not proceed until an operator provides:
@@ -33,7 +33,7 @@ and sensitive workloads remain forbidden for P2 activation.
 Run:
 
 ```bash
-scripts/oreo-cloudflare-activate-preview hello-nginx
+scripts/argus-cloudflare-activate-preview hello-nginx
 ```
 
 The preview reads:
@@ -55,7 +55,7 @@ After external prerequisites are satisfied, activation requires exact
 confirmations:
 
 ```bash
-scripts/oreo-cloudflare-activate hello-nginx \
+scripts/argus-cloudflare-activate hello-nginx \
   --confirm-workload hello-nginx \
   --confirm-hostname hello-nginx.example.com \
   --confirm-access-protected "cloudflare access protects this hostname"
@@ -80,13 +80,13 @@ The runtime evidence directory is ignored by Git.
 Preview rollback:
 
 ```bash
-scripts/oreo-cloudflare-rollback hello-nginx
+scripts/argus-cloudflare-rollback hello-nginx
 ```
 
 Apply rollback only after confirmation:
 
 ```bash
-scripts/oreo-cloudflare-rollback hello-nginx \
+scripts/argus-cloudflare-rollback hello-nginx \
   --apply \
   --confirm-workload hello-nginx
 ```

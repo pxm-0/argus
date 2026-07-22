@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Argus metrics collector regularly
+
+[Timer]
+OnBootSec=15
+OnUnitActiveSec=3
+AccuracySec=1
+Unit=argus-metrics.service
+
+[Install]
+WantedBy=timers.target

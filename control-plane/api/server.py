@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Local-only Oreo Cloud control API."""
+"""Local-only Argus control API."""
 
 from __future__ import annotations
 
@@ -14,15 +14,15 @@ from typing import Any
 from urllib.parse import urlparse
 
 
-ROOT = Path(os.environ.get("OREO_CLOUD_ROOT", Path(__file__).resolve().parents[2])).resolve()
-TOKEN_FILE = Path(os.environ.get("OREO_CLOUD_TOKEN_FILE", "/etc/oreo-cloud/control-token"))
+ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[2])).resolve()
+TOKEN_FILE = Path(os.environ.get("ARGUS_TOKEN_FILE", "/etc/argus/control-token"))
 HOST = "127.0.0.1"
-PORT = int(os.environ.get("OREO_CLOUD_API_PORT", "8099"))
+PORT = int(os.environ.get("ARGUS_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from oreo_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
+from argus_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
 from argus_m1 import access_writer, deny_direct_legacy_mutation, privacy_writer  # noqa: E402
-from oreo_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
+from argus_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
 
 
 def token() -> str:
@@ -38,7 +38,7 @@ def merged_workloads() -> dict[str, Any]:
 
 
 class Handler(BaseHTTPRequestHandler):
-    server_version = "OreoCloudControl/0.1"
+    server_version = "ArgusControl/0.1"
 
     def log_message(self, fmt: str, *args: Any) -> None:
         # Avoid logging headers or request bodies; never risk token leakage.
@@ -200,7 +200,7 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_workload_discover(self) -> None:
         result = subprocess.run(
-            [sys.executable, str(ROOT / "scripts" / "oreo-workload-discover"), "--json"],
+            [sys.executable, str(ROOT / "scripts" / "argus-workload-discover"), "--json"],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -227,7 +227,7 @@ class Handler(BaseHTTPRequestHandler):
         result = subprocess.run(
             [
                 sys.executable,
-                str(ROOT / "scripts" / "oreo-workload-add"),
+                str(ROOT / "scripts" / "argus-workload-add"),
                 workload_id,
                 name,
                 "--compose-project",
@@ -250,7 +250,7 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     server = ThreadingHTTPServer((HOST, PORT), Handler)
-    print(f"Oreo Cloud control API listening on {HOST}:{PORT}")
+    print(f"Argus control API listening on {HOST}:{PORT}")
     server.serve_forever()
     return 0
 

@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+readonly OLD_ROOT="/srv/oreo-cloud"
+readonly NEW_ROOT="/srv/argus"
+readonly BACKUP_ROOT="/var/lib/argus/identity-backups"
+readonly ACK="--acknowledge-argus-identity-cutover"
+readonly OLD_UNITS=(
+  oreo-control-api.service
+  oreo-metrics.service oreo-metrics.timer
+  oreo-smoke.service oreo-smoke.timer
+  oreo-workload-discover.service oreo-workload-discover.timer
+)
+readonly NEW_UNITS=(
+  argus-control-api.service
+  argus-metrics.service argus-metrics.timer
+  argus-smoke.service argus-smoke.timer
+  argus-workload-discover.service argus-workload-discover.timer
+)
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo ./scripts/argus-identity-cutover --preflight
+  sudo ./scripts/argus-identity-cutover --apply --acknowledge-argus-identity-cutover
+
+Renames only the Argus platform identity. It does not change workload Compose
+project names, routes, listeners, firewall policy, mounts, or exposure state.
+EOF
+}
+
+unit_was_enabled() { systemctl is-enabled --quiet "$1" 2>/dev/null; }
+unit_was_active() { systemctl is-active --quiet "$1" 2>/dev/null; }
+
+preflight() {
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  [[ -d "$OLD_ROOT/.git" || -d "$NEW_ROOT/.git" ]] || fail "neither platform checkout exists"
+  [[ ! -e "$NEW_ROOT" || -d "$NEW_ROOT/.git" ]] || fail "$NEW_ROOT exists but is not the platform checkout"
+  command -v git >/dev/null || fail "git is required"
+  command -v systemctl >/dev/null || fail "systemctl is required"
+  command -v python3 >/dev/null || fail "python3 is required"
+  printf 'oldRoot=%s newRoot=%s\n' "$([[ -d "$OLD_ROOT" ]] && echo present || echo absent)" "$([[ -d "$NEW_ROOT" ]] && echo present || echo absent)"
+  printf 'repository=%s\n' "$(git -C "$([[ -d "$NEW_ROOT" ]] && echo "$NEW_ROOT" || echo "$OLD_ROOT")" rev-parse --short HEAD)"
+  printf 'publicExposureChanged=false composeProjectsChanged=false\n'
+}
+
+backup_state() {
+  local backup_dir="$1"
+  mkdir -p "$backup_dir/systemd" "$backup_dir/caddy"
+  systemctl list-unit-files 'oreo-*' --no-legend >"$backup_dir/old-unit-files.txt" || true
+  systemctl list-units 'oreo-*' --all --no-legend >"$backup_dir/old-unit-state.txt" || true
+  : >"$backup_dir/old-enabled-units.txt"
+  : >"$backup_dir/old-active-units.txt"
+  for unit in "${OLD_UNITS[@]}"; do
+    unit_was_enabled "$unit" && printf '%s\n' "$unit" >>"$backup_dir/old-enabled-units.txt"
+    unit_was_active "$unit" && printf '%s\n' "$unit" >>"$backup_dir/old-active-units.txt"
+  done
+  find /usr/local/bin -maxdepth 1 -type l -name 'oreo-*' -printf '%f -> %l\n' | sort >"$backup_dir/old-operator-links.txt"
+  for unit in "${OLD_UNITS[@]}"; do
+    [[ -e "/etc/systemd/system/$unit" ]] && cp -a "/etc/systemd/system/$unit" "$backup_dir/systemd/"
+  done
+  [[ -e /etc/caddy/Caddyfile ]] && cp -a /etc/caddy/Caddyfile "$backup_dir/caddy/Caddyfile"
+  [[ -e /etc/caddy/OreoCloudDashboard.Caddyfile ]] && cp -a /etc/caddy/OreoCloudDashboard.Caddyfile "$backup_dir/caddy/"
+}
+
+migrate_caddy() {
+  [[ -e /etc/caddy/OreoCloudDashboard.Caddyfile ]] || return 0
+  cp -a /etc/caddy/OreoCloudDashboard.Caddyfile /etc/caddy/ArgusDashboard.Caddyfile
+  sed -i 's#/srv/oreo-cloud#/srv/argus#g' /etc/caddy/ArgusDashboard.Caddyfile
+  if [[ -e /etc/caddy/Caddyfile ]]; then
+    sed -i 's#OreoCloudDashboard\.Caddyfile#ArgusDashboard.Caddyfile#g; s#/srv/oreo-cloud#/srv/argus#g' /etc/caddy/Caddyfile
+  fi
+  caddy validate --config /etc/caddy/Caddyfile
+  systemctl is-active --quiet caddy && systemctl reload caddy
+}
+
+install_units() {
+  local backup_dir="$1" index old_unit new_unit
+  for index in "${!OLD_UNITS[@]}"; do
+    old_unit="${OLD_UNITS[$index]}"
+    new_unit="${NEW_UNITS[$index]}"
+    install -m 0644 "$NEW_ROOT/systemd/$new_unit" "/etc/systemd/system/$new_unit"
+    if grep -Fxq "$old_unit" "$backup_dir/old-enabled-units.txt"; then
+      systemctl enable "$new_unit"
+    fi
+  done
+  systemctl daemon-reload
+  for index in "${!OLD_UNITS[@]}"; do
+    old_unit="${OLD_UNITS[$index]}"
+    new_unit="${NEW_UNITS[$index]}"
+    if grep -Fxq "$old_unit" "$backup_dir/old-active-units.txt"; then
+      systemctl start "$new_unit"
+    fi
+  done
+}
+
+retire_old_identity() {
+  local unit link target
+  for unit in "${OLD_UNITS[@]}"; do
+    systemctl disable --now "$unit" 2>/dev/null || true
+    rm -f "/etc/systemd/system/$unit"
+  done
+  systemctl daemon-reload
+  while IFS= read -r -d '' link; do
+    target="$(readlink "$link")"
+    if [[ "$target" == "$OLD_ROOT"/* || "$target" == */scripts/oreo-* ]]; then
+      rm -f "$link"
+    fi
+  done < <(find /usr/local/bin -maxdepth 1 -type l -name 'oreo-*' -print0)
+  rm -f /etc/caddy/OreoCloudDashboard.Caddyfile
+}
+
+verify() {
+  [[ -d "$NEW_ROOT/.git" ]] || fail "new checkout missing"
+  [[ ! -e "$OLD_ROOT" ]] || fail "old checkout remains"
+  git -C "$NEW_ROOT" remote set-url origin https://github.com/pxm-0/argus.git
+  "$NEW_ROOT/scripts/install-operator-links" --check
+  python3 "$NEW_ROOT/scripts/argus-m1-verify"
+  python3 "$NEW_ROOT/scripts/argus-m4-hello-nginx-persistence-verify"
+  printf 'ARGUS_IDENTITY_CUTOVER_VERIFIED\n'
+}
+
+apply_cutover() {
+  local backup_dir
+  preflight
+  [[ -d "$OLD_ROOT" && ! -e "$NEW_ROOT" ]] || fail "apply requires $OLD_ROOT present and $NEW_ROOT absent"
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  mkdir -p "$backup_dir"
+  backup_state "$backup_dir"
+  mv "$OLD_ROOT" "$NEW_ROOT"
+  git -C "$NEW_ROOT" remote set-url origin https://github.com/pxm-0/argus.git
+  for unit in "${OLD_UNITS[@]}"; do
+    systemctl stop "$unit" 2>/dev/null || true
+  done
+  install_units "$backup_dir"
+  "$NEW_ROOT/scripts/install-operator-links" --force
+  migrate_caddy
+  retire_old_identity
+  verify
+  printf 'backup=%s\n' "$backup_dir"
+}
+
+case "${1:-}" in
+  --preflight) [[ $# -eq 1 ]] || { usage; exit 2; }; preflight ;;
+  --apply) [[ "${2:-}" == "$ACK" && $# -eq 2 ]] || { usage; exit 2; }; apply_cutover ;;
+  *) usage; exit 2 ;;
+esac

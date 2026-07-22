@@ -1,13 +1,13 @@
-# Oreo Cloud Discovery
+# Argus Discovery
 
 Generated: 2026-06-30T16:59:57Z
-Scope: read-only discovery for Oreo Cloud P0 on oreochiserver
+Scope: read-only discovery for Argus P0 on oreochiserver
 
 ## Key Findings
 
 - Target host is Ubuntu 26.04 on `oreochiserver`; current operator user is `oreo`.
 - Tailscale IPv4 is `100.75.210.83`.
-- `/srv/oreo-cloud` does not exist yet.
+- `/srv/argus` does not exist yet.
 - Docker Compose projects detected: `hastur`, `intake-os`, and `uptime-kuma`.
 - Additional running containers without Compose labels: `review-ui` and `dozzle`.
 - Current public or broad listeners include `0.0.0.0:3000`, `0.0.0.0:4173`, and `0.0.0.0:54321`.
@@ -36,8 +36,8 @@ Tue Jun 30 16:59:58 UTC 2026
  16:59:58 up 18 days, 20:22,  2 users,  load average: 0.10, 0.05, 0.01
 
 ## User
-oreo
-uid=1000(oreo) gid=1000(oreo) groups=1000(oreo),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),100(users),101(lxd),983(docker)
+argus
+uid=1000(argus) gid=1000(argus) groups=1000(argus),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),100(users),101(lxd),983(docker)
 
 ## Network Addresses
 lo               UNKNOWN        127.0.0.1/8 ::1/128
@@ -99,7 +99,7 @@ tcp   LISTEN 0      4096          [fd7a:115c:a1e0::2e38:d254]:57162         [::]
 100.75.210.83   oreochiserver      pxm.0003@  linux    -
 100.125.169.56  ipad161            pxm.0003@  iOS      -
 100.97.144.94   iphone172          pxm.0003@  iOS      -
-100.92.0.118    oreo-mothership    pxm.0003@  windows  active; direct 192.168.1.19:41641, tx 89599268 rx 9335580
+100.92.0.118    argus-mothership    pxm.0003@  windows  active; direct 192.168.1.19:41641, tx 89599268 rx 9335580
 100.97.28.122   oreochibattleship  pxm.0003@  macOS    active; direct 192.168.1.11:41641, tx 31228628 rx 1345636
 
 # Funnel on:
@@ -253,7 +253,7 @@ v2.11.4 h1:XKxkMTgNSizEvKG6QHue6cAsFOteU2qA61w2tKkCWi0=
 
 ## Git
 git version 2.53.0
-/srv/oreo-cloud does not exist
+/srv/argus does not exist
 
 ## Cloudflare
 cloudflared not found

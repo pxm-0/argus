@@ -67,7 +67,7 @@ cloudflare/cloudflared-config.template.yml
 cloudflare/planned-ingress.yml
 cloudflare/generate_cloudflare_config.py
 cloudflare/quick-tunnel-notes.md
-scripts/oreo-cloudflare-plan
+scripts/argus-cloudflare-plan
 ```
 
 ## Planned Ingress Generator
@@ -101,13 +101,13 @@ ingress:
 Create:
 
 ```text
-scripts/oreo-cloudflare-plan
+scripts/argus-cloudflare-plan
 ```
 
 Usage:
 
 ```bash
-oreo-cloudflare-plan
+argus-cloudflare-plan
 ```
 
 Output:
@@ -148,7 +148,7 @@ Only after P0:
 
 1. Install/configure `cloudflared` if needed.
 2. Store credentials under `/etc/cloudflared`, not Git.
-3. Generate ingress from Oreo Cloud.
+3. Generate ingress from Argus.
 4. Validate ingress.
 5. Start/reload `cloudflared`.
 6. Verify Cloudflare Access policy.

@@ -14,7 +14,7 @@ approved low-risk workload, `hello-nginx`.
 
 | Field | Value |
 | --- | --- |
-| hostname | `https://hello-nginx.oreo-cloud.invalid` |
+| hostname | `https://hello-nginx.argus.invalid` |
 | named tunnel id | not present |
 | credentials location | not present |
 | credentials tracked by Git | no |
@@ -36,7 +36,7 @@ Cloudflare remains disabled and unprovisioned:
   "allowQuickTunnels": false,
   "allowNamedTunnels": false,
   "requireAccessPolicy": true,
-  "configPath": "/srv/oreo-cloud/cloudflare/planned-ingress.yml",
+  "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
   "observedCloudflared": "not-installed"
 }
 ```
@@ -50,7 +50,7 @@ Cloudflare remains disabled and unprovisioned:
   "urls": {
     "local": "http://127.0.0.1:18080",
     "tailnet": "",
-    "cloudflare": "https://hello-nginx.oreo-cloud.invalid"
+    "cloudflare": "https://hello-nginx.argus.invalid"
   },
   "lastError": "Cloudflare protected access is planned only; no tunnel, DNS record, or public route is enabled."
 }
@@ -67,7 +67,7 @@ Cloudflare runtime state:
 cloudflared command: not found
 cloudflared service: inactive
 missing /etc/cloudflared
-/srv/oreo-cloud/cloudflare/planned-ingress.yml exists
+/srv/argus/cloudflare/planned-ingress.yml exists
 ```
 
 Tracked credential search found only templates, not credentials:
@@ -82,7 +82,7 @@ found in tracked files.
 
 ## Plan Evidence
 
-`scripts/oreo-cloudflare-plan` generated the planning config only:
+`scripts/argus-cloudflare-plan` generated the planning config only:
 
 ```text
 Cloudflare Exposure Plan
@@ -90,26 +90,26 @@ Cloudflare Exposure Plan
 Provider enabled: false
 
 Requested:
-- hello-nginx: cloudflare-protected, hello-nginx.oreo-cloud.invalid
+- hello-nginx: cloudflare-protected, hello-nginx.argus.invalid
 
 Blocked:
 - none
 
 Generated:
-/srv/oreo-cloud/cloudflare/planned-ingress.yml
+/srv/argus/cloudflare/planned-ingress.yml
 
 No cloudflared process, tunnel, DNS record, token, or public route was created.
 ```
 
 ## Activation Preview
 
-`scripts/oreo-cloudflare-activate-preview hello-nginx` blocked activation:
+`scripts/argus-cloudflare-activate-preview hello-nginx` blocked activation:
 
 ```text
 hello-nginx Cloudflare protected activation: blocked
-Hostname: hello-nginx.oreo-cloud.invalid
+Hostname: hello-nginx.argus.invalid
 Service: http://127.0.0.1:18080
-Config path: /etc/cloudflared/oreo-cloud.yml
+Config path: /etc/cloudflared/argus.yml
 Blockers:
 - real hostname required; .invalid is only a planning placeholder
 - Cloudflare provider is disabled
@@ -152,7 +152,7 @@ P3-03 activation prerequisites are not satisfied, so activation is safely
 deferred:
 
 - credentials path is outside Git only as an intended future path,
-  `/etc/cloudflared/oreo-cloud.yml`; no credential currently exists
+  `/etc/cloudflared/argus.yml`; no credential currently exists
 - Access policy evidence does not exist, so activation is deferred
 - hostname remains `.invalid`, so activation is blocked
 - `hello-nginx` remains `local` effective access

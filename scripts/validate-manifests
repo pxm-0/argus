@@ -16,7 +16,7 @@ SENSITIVE_PRIVACY = {"sensitive", "restricted"}
 
 
 def repo_root() -> Path:
-    override = os.environ.get("OREO_CLOUD_ROOT")
+    override = os.environ.get("ARGUS_ROOT")
     if override:
         return Path(override).expanduser().resolve()
     return Path(__file__).resolve().parents[1]
@@ -88,7 +88,7 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
         add_error(errors, workload_id, "schemaVersion", "must be 1")
 
     canonical_root = require_type(manifest, workload_id, "canonicalRoot", str, errors)
-    expected_root = f"/srv/oreo-cloud/workloads/{workload_id}"
+    expected_root = f"/srv/argus/workloads/{workload_id}"
     if canonical_root and canonical_root != expected_root:
         add_error(errors, workload_id, "canonicalRoot", f"must be {expected_root}")
     source_path = require_type(manifest, workload_id, "sourcePath", str, errors)
@@ -134,7 +134,7 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
     backup_allowed = require_type(manifest, workload_id, "backup.backupAllowed", bool, errors)
     require_type(manifest, workload_id, "backup.restoreAllowed", bool, errors)
     destination = manifest.get("backup", {}).get("destination")
-    approved_backup_root = f"/srv/oreo-cloud/runtime/backups/{workload_id}"
+    approved_backup_root = f"/srv/argus/runtime/backups/{workload_id}"
     if destination is not None:
         if not isinstance(destination, str):
             add_error(errors, workload_id, "backup.destination", "must be string")
@@ -155,7 +155,7 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Validate Oreo Cloud workload manifests.")
+    parser = argparse.ArgumentParser(description="Validate Argus workload manifests.")
     parser.add_argument("--root", type=Path, default=repo_root())
     args = parser.parse_args()
 

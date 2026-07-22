@@ -9,8 +9,8 @@ had drifted away from the source-of-truth model.
 - removed tracked generated Caddy and Cloudflare plan outputs
 - ignored generated dashboard, Caddy, and Cloudflare output files
 - removed the P0 combined mega-doc now covered by split canonical docs
-- removed legacy restart CLI wrappers in favor of `oreo-action-preview restart`
-  and `oreo-action-apply restart`
+- removed legacy restart CLI wrappers in favor of `argus-action-preview restart`
+  and `argus-action-apply restart`
 - removed the runpy-only smoke wrapper while keeping the operator symlink target
   as `scripts/smoke-test`
 - centralized dashboard state, recent audit events, operator command lists, and

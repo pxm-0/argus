@@ -3,14 +3,14 @@
   "name": "Intake OS",
   "description": "Sensitive company workload with PostgreSQL and Caddy state.",
   "schemaVersion": 1,
-  "canonicalRoot": "/srv/oreo-cloud/workloads/intake-os",
-  "sourcePath": "/srv/oreo-cloud/workloads/intake-os/source",
+  "canonicalRoot": "/srv/argus/workloads/intake-os",
+  "sourcePath": "/srv/argus/workloads/intake-os/source",
   "privacyCompatibility": "sensitive",
   "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
-      "path": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+      "path": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
       "project": "intake-os",
       "service": "",
       "legacyPaths": [
@@ -18,7 +18,7 @@
         "/home/oreo/intake-os/docker-compose.server.yml"
       ]
     },
-    "composePath": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+    "composePath": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
     "composeProject": "intake-os",
     "service": "",
     "legacyComposePaths": [
@@ -75,7 +75,7 @@
       "dumpCommand": "",
       "restoreCommand": ""
     },
-    "destination": "/srv/oreo-cloud/runtime/backups/intake-os",
+    "destination": "/srv/argus/runtime/backups/intake-os",
     "retention": {
       "keepLast": 5
     },
@@ -97,7 +97,7 @@
   },
   "security": {
     "publicAllowed": false,
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "classification": "sensitive",
     "publicExposureAllowed": false,
     "forbiddenTargets": [

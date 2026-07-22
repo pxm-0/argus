@@ -2,10 +2,10 @@
 
 ## Goal
 
-Allow existing workload files to move into Oreo Cloud's canonical organization:
+Allow existing workload files to move into Argus's canonical organization:
 
 ```text
-/srv/oreo-cloud/workloads/<workload-id>/source
+/srv/argus/workloads/<workload-id>/source
 ```
 
 while preserving runtime behavior, volumes, paths, and rollback options.
@@ -13,10 +13,10 @@ while preserving runtime behavior, volumes, paths, and rollback options.
 ## Canonical Layout
 
 ```text
-/srv/oreo-cloud/workloads/<id>/
+/srv/argus/workloads/<id>/
 ├── README.md
 ├── manifest.json
-└── source/          # ignored by Oreo Cloud Git
+└── source/          # ignored by Argus Git
 ```
 
 Optional ignored directories:
@@ -68,13 +68,13 @@ Do not print `.env` contents.
 Create:
 
 ```text
-scripts/oreo-migrate-workload-plan
+scripts/argus-migrate-workload-plan
 ```
 
 Usage:
 
 ```bash
-oreo-migrate-workload-plan intake-os
+argus-migrate-workload-plan intake-os
 ```
 
 Output must include:
@@ -102,16 +102,16 @@ Example variables:
 ```bash
 WORKLOAD_ID="intake-os"
 OLD_ROOT="/home/oreo/intake-os"
-NEW_ROOT="/srv/oreo-cloud/workloads/intake-os"
-NEW_SOURCE="/srv/oreo-cloud/workloads/intake-os/source"
+NEW_ROOT="/srv/argus/workloads/intake-os"
+NEW_SOURCE="/srv/argus/workloads/intake-os/source"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_ROOT="/srv/oreo-cloud/runtime/migration-backups/${WORKLOAD_ID}.${TIMESTAMP}"
+BACKUP_ROOT="/srv/argus/runtime/migration-backups/${WORKLOAD_ID}.${TIMESTAMP}"
 ```
 
 Copy:
 
 ```bash
-sudo install -d -o oreo -g oreo "$NEW_ROOT"
+sudo install -d -o argus -g argus "$NEW_ROOT"
 rsync -aH --numeric-ids "$OLD_ROOT/" "$NEW_SOURCE/"
 ```
 
@@ -134,7 +134,7 @@ docker compose \
 
 sudo mv "$OLD_ROOT" "$BACKUP_ROOT"
 sudo ln -s "$NEW_SOURCE" "$OLD_ROOT"
-sudo chown -h oreo:oreo "$OLD_ROOT"
+sudo chown -h argus:argus "$OLD_ROOT"
 
 docker compose \
   -f "$NEW_SOURCE/docker-compose.server.yml" \
@@ -145,7 +145,7 @@ docker compose \
 Health check:
 
 ```bash
-oreo-health
+argus-health
 docker compose -f "$NEW_SOURCE/docker-compose.server.yml" -p intake-os ps
 ```
 
@@ -171,7 +171,7 @@ docker compose \
 Each workload should have:
 
 ```text
-/srv/oreo-cloud/workloads/<id>/manifest.json
+/srv/argus/workloads/<id>/manifest.json
 ```
 
 Example:
@@ -180,12 +180,12 @@ Example:
 {
   "id": "intake-os",
   "name": "Intake OS",
-  "canonicalRoot": "/srv/oreo-cloud/workloads/intake-os",
-  "sourcePath": "/srv/oreo-cloud/workloads/intake-os/source",
+  "canonicalRoot": "/srv/argus/workloads/intake-os",
+  "sourcePath": "/srv/argus/workloads/intake-os/source",
   "legacyPaths": ["/home/oreo/intake-os"],
   "compose": {
     "enabled": true,
-    "path": "/srv/oreo-cloud/workloads/intake-os/source/docker-compose.server.yml",
+    "path": "/srv/argus/workloads/intake-os/source/docker-compose.server.yml",
     "project": "intake-os",
     "service": ""
   },
@@ -198,7 +198,7 @@ Example:
     "rollback": "Restore original directory from backup path and restart compose with preserved project name."
   },
   "git": {
-    "trackedByOreoCloudGit": false,
+    "trackedByArgusGit": false,
     "notes": ["Do not commit source, secrets, env, data, logs, or backups."]
   }
 }

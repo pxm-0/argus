@@ -23,10 +23,10 @@ turn on backup execution for sensitive/restricted/admin workloads.
 
 ## Deliverables
 
-- `scripts/oreo-smoke-scheduled`
-- `systemd/oreo-smoke.service`
-- `systemd/oreo-smoke.timer`
-- `scripts/oreo-backup-prune`
+- `scripts/argus-smoke-scheduled`
+- `systemd/argus-smoke.service`
+- `systemd/argus-smoke.timer`
+- `scripts/argus-backup-prune`
 - `docs/P5_SCHEDULED_SMOKE.md`
 - `docs/P5_BACKUP_RETENTION.md`
 - `docs/RUNBOOKS/stateful-restore-gates.md`
@@ -37,7 +37,7 @@ turn on backup execution for sensitive/restricted/admin workloads.
 - Scheduled smoke writes `runtime/smoke/latest.log` and
   `runtime/smoke/latest.json`.
 - Backup pruning previews by default.
-- Backup pruning apply requires the exact phrase `prune oreo backups`.
+- Backup pruning apply requires the exact phrase `prune argus backups`.
 - Backup pruning only acts under approved per-workload backup destinations.
 - P4 stateful/admin backup execution remains disabled.
 - `scripts/smoke-test --offline` passes locally.

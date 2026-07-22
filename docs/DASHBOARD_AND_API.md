@@ -2,7 +2,7 @@
 
 ## Dashboard Purpose
 
-The dashboard is the single private access point for Oreo Cloud.
+The dashboard is the single private access point for Argus.
 
 It should be mobile-first and reachable from Tailscale-connected devices:
 
@@ -193,13 +193,13 @@ Auth: optional for read-only or required depending on final preference.
 Token file:
 
 ```text
-/etc/oreo-cloud/control-token
+/etc/argus/control-token
 ```
 
 Permissions:
 
 ```text
-root:oreo
+root:argus
 0640
 ```
 
@@ -216,7 +216,7 @@ The API must never log the token.
 Audit file:
 
 ```text
-/srv/oreo-cloud/runtime/audit.log
+/srv/argus/runtime/audit.log
 ```
 
 JSONL format:
@@ -246,5 +246,5 @@ select new access -> preview -> confirmation if needed -> apply -> desired -> ro
 See:
 
 ```text
-templates/systemd/oreo-control-api.service
+templates/systemd/argus-control-api.service
 ```

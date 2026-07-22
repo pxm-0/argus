@@ -1,6 +1,6 @@
-# Oreo Cloud Templates
+# Argus Templates
 
-These templates are starter material for another private Oreo Cloud-style
+These templates are starter material for another private Argus-style
 checkout. They are not deployment automation.
 
 ## Rules
@@ -23,5 +23,5 @@ checkout. They are not deployment automation.
 Run from a checkout:
 
 ```bash
-scripts/oreo-template-check
+scripts/argus-template-check
 ```

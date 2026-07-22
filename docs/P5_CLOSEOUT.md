@@ -1,4 +1,4 @@
-# Oreo Cloud P5 Closeout
+# Argus P5 Closeout
 
 P5 status: complete. Server closeout verified on `oreochiserver`.
 
@@ -9,9 +9,9 @@ changing exposure posture.
 
 Completed locally:
 
-- added scheduled smoke runner: `scripts/oreo-smoke-scheduled`
+- added scheduled smoke runner: `scripts/argus-smoke-scheduled`
 - added scheduled smoke systemd units and templates
-- added backup retention preview/apply command: `scripts/oreo-backup-prune`
+- added backup retention preview/apply command: `scripts/argus-backup-prune`
 - added stateful restore gate runbook
 - added P5 smoke invariants
 
@@ -29,17 +29,17 @@ Completed locally:
 ## Local Verification
 
 ```text
-scripts/oreo-backup-prune --json
-ok=True totalPrunable=0 confirmationPhrase="prune oreo backups"
+scripts/argus-backup-prune --json
+ok=True totalPrunable=0 confirmationPhrase="prune argus backups"
 ```
 
 ```text
-scripts/oreo-backup-prune --apply --json
+scripts/argus-backup-prune --apply --json
 exit=2 reason="confirmation required"
 ```
 
 ```text
-scripts/oreo-smoke-scheduled --offline
+scripts/argus-smoke-scheduled --offline
 ok=True failures=0 warnings=7
 ```
 
@@ -60,14 +60,14 @@ unavailable locally.
 On `oreochiserver`, after merge to `main`:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git checkout main
 git pull --ff-only
 scripts/validate-manifests
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 scripts/smoke-test
-scripts/oreo-backup-prune --json
-scripts/oreo-smoke-scheduled
+scripts/argus-backup-prune --json
+scripts/argus-smoke-scheduled
 git status --short
 ```
 
@@ -82,16 +82,16 @@ Run on `oreochiserver` at commit `5efb620` on `main`:
 scripts/validate-manifests
 PASS (all 7 workload manifests valid)
 
-scripts/oreo-doctor --json
+scripts/argus-doctor --json
 ok=True failures=0
 
 scripts/smoke-test
 Smoke summary: 0 failure(s), 0 warning(s)
 
-scripts/oreo-backup-prune --json
-ok=True totalPrunable=0 confirmationPhrase="prune oreo backups"
+scripts/argus-backup-prune --json
+ok=True totalPrunable=0 confirmationPhrase="prune argus backups"
 
-scripts/oreo-smoke-scheduled
+scripts/argus-smoke-scheduled
 ok=True exitCode=0 failures=0 warnings=0
 
 git status --short

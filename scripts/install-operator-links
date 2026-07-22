@@ -5,11 +5,11 @@ import argparse
 import os
 from pathlib import Path
 
-from oreo_common import APPROVED_OPERATOR_LINKS
+from argus_common import APPROVED_OPERATOR_LINKS
 
 
 def repo_root() -> Path:
-    override = os.environ.get("OREO_CLOUD_ROOT")
+    override = os.environ.get("ARGUS_ROOT")
     if override:
         return Path(override).expanduser().resolve()
     return Path(__file__).resolve().parents[1]
@@ -24,7 +24,7 @@ def fail(message: str) -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Install approved Oreo Cloud operator command symlinks.")
+    parser = argparse.ArgumentParser(description="Install approved Argus operator command symlinks.")
     parser.add_argument("--prefix", type=Path, default=Path("/usr/local/bin"), help="directory where symlinks are managed")
     parser.add_argument("--check", action="store_true", help="verify links without changing anything")
     parser.add_argument("--dry-run", action="store_true", help="show intended changes without changing anything")

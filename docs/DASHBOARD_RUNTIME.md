@@ -40,7 +40,7 @@ GET /api/dashboard-state
 The same sanitized state can be written for inspection or refresh jobs with:
 
 ```bash
-scripts/oreo-dashboard-state
+scripts/argus-dashboard-state
 ```
 
 The script writes:
@@ -73,7 +73,7 @@ Secret-like audit fields are redacted by shared audit sanitization before they r
 1. Running `python3 control-plane/dashboard/generate_dashboard.py`.
 2. Confirming generated static assets exist.
 3. Confirming generated static assets are ignored.
-4. Running `scripts/oreo-dashboard-state`.
+4. Running `scripts/argus-dashboard-state`.
 5. Running the generator again.
 6. Confirming generation is stable.
 7. Confirming `runtime/dashboard-state.json` is ignored.

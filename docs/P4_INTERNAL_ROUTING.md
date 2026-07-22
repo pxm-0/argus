@@ -12,12 +12,12 @@ state was changed.
 
 ## Dashboard And API
 
-The Oreo Cloud dashboard remains private on the Tailscale-bound Caddy route:
+The Argus dashboard remains private on the Tailscale-bound Caddy route:
 
 ```caddy
 http://oreochiserver:8088, http://100.75.210.83:8088 {
     bind 100.75.210.83
-    root * /srv/oreo-cloud/control-plane/dashboard/public
+    root * /srv/argus/control-plane/dashboard/public
     handle /api/* {
         reverse_proxy 127.0.0.1:8099
     }
@@ -58,8 +58,8 @@ access remains `local` for all workloads.
 Relevant listeners:
 
 ```text
-100.75.210.83:8088  Oreo Cloud dashboard, Tailscale-bound Caddy route
-127.0.0.1:8099      Oreo Cloud control API
+100.75.210.83:8088  Argus dashboard, Tailscale-bound Caddy route
+127.0.0.1:8099      Argus control API
 127.0.0.1:8765      review-ui
 127.0.0.1:8080      intake-os local proxy
 127.0.0.1:8081      dozzle
@@ -74,7 +74,7 @@ Relevant listeners:
 P4 should not add private routing on top of unclear or unsafe workload state.
 The existing wildcard binds for `hastur` and `uptime-kuma` are legacy exposure
 risks to remediate before any internal route promotion. The existing default
-Caddy `:80` site is also host-level state outside the Oreo Cloud dashboard
+Caddy `:80` site is also host-level state outside the Argus dashboard
 route and should be reviewed before broader routing work.
 
 ## Routing Recommendations
@@ -127,6 +127,6 @@ P4-05 acceptance is satisfied:
 
 - dashboard remains private
 - API remains localhost-only
-- sensitive/admin tools are not externally exposed by Oreo Cloud routes
+- sensitive/admin tools are not externally exposed by Argus routes
 - no Funnel is configured
 - smoke passes

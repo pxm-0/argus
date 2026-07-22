@@ -14,7 +14,7 @@
       "allowQuickTunnels": false,
       "allowNamedTunnels": false,
       "requireAccessPolicy": true,
-      "configPath": "/srv/oreo-cloud/cloudflare/planned-ingress.yml"
+      "configPath": "/srv/argus/cloudflare/planned-ingress.yml"
     }
   }
 }

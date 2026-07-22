@@ -3,7 +3,7 @@
 This directory contains planning artifacts for Cloudflare exposure and P2
 protected activation guardrails.
 
-Oreo Cloud must not:
+Argus must not:
 
 - start `cloudflared`
 - create a tunnel
@@ -16,8 +16,8 @@ Oreo Cloud must not:
 Run:
 
 ```bash
-oreo-cloudflare-plan
-oreo-cloudflare-activate-preview hello-nginx
+argus-cloudflare-plan
+argus-cloudflare-activate-preview hello-nginx
 ```
 
 The command rewrites `cloudflare/planned-ingress.yml` from the current config and

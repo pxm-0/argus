@@ -1,6 +1,6 @@
 # P0 PR Workflow
 
-Every Oreo Cloud P0 plan, phase, and task lands through a pull request.
+Every Argus P0 plan, phase, and task lands through a pull request.
 
 ## Branches
 

@@ -418,7 +418,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         ]
         before = {path: path.read_bytes() for path in guarded_paths}
         result = subprocess.run(
-            [str(ROOT / "scripts" / "oreo-workload-add"), "new-legacy-app", "New Legacy App"],
+            [str(ROOT / "scripts" / "argus-workload-add"), "new-legacy-app", "New Legacy App"],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
@@ -430,7 +430,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertEqual(before, {path: path.read_bytes() for path in guarded_paths})
 
     def test_doctor_quarantine_checks_fail_for_missing_and_invalid_records(self) -> None:
-        namespace = runpy.run_path(str(ROOT / "scripts" / "oreo-doctor"))
+        namespace = runpy.run_path(str(ROOT / "scripts" / "argus-doctor"))
         quarantine_checks = namespace["argus_quarantine_checks"]
         original_load_json = namespace["load_json"]
 

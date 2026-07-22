@@ -44,13 +44,13 @@ Caddy may proxy it only through the Tailscale-bound dashboard route.
 Control token path:
 
 ```text
-/etc/oreo-cloud/control-token
+/etc/argus/control-token
 ```
 
 Permissions:
 
 ```text
-root:oreo
+root:argus
 0640
 ```
 
@@ -107,7 +107,7 @@ P0 rules:
 Write audit events to:
 
 ```text
-/srv/oreo-cloud/runtime/audit.log
+/srv/argus/runtime/audit.log
 ```
 
 Do not track audit logs in Git.
@@ -119,7 +119,7 @@ Audit events must not contain secrets.
 Generate the planned dashboard route without touching live Caddy:
 
 ```bash
-oreo-caddy-dashboard-plan
+argus-caddy-dashboard-plan
 ```
 
 Before editing Caddyfile:
@@ -154,7 +154,7 @@ Do not:
 
 ## Doctor Checks
 
-`oreo-doctor` must warn if:
+`argus-doctor` must warn if:
 
 - dashboard listener is not bound to Tailscale IP
 - control API binds to non-localhost

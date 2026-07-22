@@ -1,4 +1,4 @@
-# Oreo Cloud Manifest Schema
+# Argus Manifest Schema
 
 P2 makes workload manifests enforceable. The machine-readable schema lives at:
 
@@ -54,16 +54,16 @@ accessCompatibility: none | local | tailnet | cloudflare-protected | cloudflare-
 For workload `<id>`, these paths must match:
 
 ```text
-canonicalRoot = /srv/oreo-cloud/workloads/<id>
-sourcePath = /srv/oreo-cloud/workloads/<id>/source
-backup.destination = /srv/oreo-cloud/runtime/backups/<id>...
+canonicalRoot = /srv/argus/workloads/<id>
+sourcePath = /srv/argus/workloads/<id>/source
+backup.destination = /srv/argus/runtime/backups/<id>...
 ```
 
 Docker Compose manifests must keep compose files under `sourcePath` and must name the Compose project explicitly. This preserves project names during migration.
 
 ## Safety Rules
 
-- `backup.destination` must stay under `/srv/oreo-cloud/runtime/backups/<id>`.
+- `backup.destination` must stay under `/srv/argus/runtime/backups/<id>`.
 - `backup.destination` is required when `backup.backupAllowed` is true.
 - `security.publicAllowed` cannot be true for sensitive or restricted workloads.
 - Manifest validation fails closed; smoke fails if any tracked manifest is invalid.

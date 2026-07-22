@@ -20,7 +20,7 @@ class ArgusM1FreezeTest(unittest.TestCase):
 
     def test_unimplemented_cli_mutation_surfaces_fail_before_writing(self) -> None:
         cases = [
-            ("oreo-workload-add", ["test-workload", "Test workload"]),
+            ("argus-workload-add", ["test-workload", "Test workload"]),
         ]
         watched = [ROOT / "config" / name for name in ("workloads.json", "privacy.json", "access.json")]
         before = {path: path.read_bytes() for path in watched}

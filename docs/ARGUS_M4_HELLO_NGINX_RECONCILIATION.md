@@ -28,7 +28,7 @@ compatibility entry into the private M1 SQLite projection through the exact,
 journaled writer transform, then verify M1 parity:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 sudo python3 scripts/argus-m4-hello-nginx-reconcile-deployed
 sudo python3 scripts/argus-m1-verify
 ```
@@ -56,7 +56,7 @@ Post-reboot evidence verified all of the following:
 Run the read-only gate on `oreochiserver` after the required host reboot:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 sudo python3 scripts/argus-m4-hello-nginx-persistence-verify
 ```
 

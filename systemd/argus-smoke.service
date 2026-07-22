@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus scheduled smoke test
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/argus
+ExecStart=/srv/argus/scripts/argus-smoke-scheduled
+User=oreo
+Group=oreo

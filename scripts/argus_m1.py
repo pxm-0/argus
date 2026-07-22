@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from argus_state import AccessMutationWriter, PrivacyMutationWriter, StateError
-from oreo_common import root
+from argus_common import root
 
 
 def deny_direct_legacy_mutation(operation: str) -> None:

@@ -5,14 +5,14 @@ P2 backup execution is enabled only for `hello-nginx`.
 ## Backup Command
 
 ```bash
-cd /srv/oreo-cloud
-scripts/oreo-backup-run hello-nginx --confirm hello-nginx
+cd /srv/argus
+scripts/argus-backup-run hello-nginx --confirm hello-nginx
 ```
 
 Expected artifact shape:
 
 ```text
-/srv/oreo-cloud/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS/
+/srv/argus/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS/
 ├── manifest.json
 ├── files.tar.gz
 ├── checksums.sha256
@@ -26,8 +26,8 @@ Do not replace the live workload. Extract the latest backup into ignored runtime
 restore-test space:
 
 ```bash
-latest="$(find /srv/oreo-cloud/runtime/backups/hello-nginx -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
-restore_dir="/srv/oreo-cloud/runtime/restore-tests/hello-nginx/$(basename "$latest")"
+latest="$(find /srv/argus/runtime/backups/hello-nginx -mindepth 1 -maxdepth 1 -type d | sort | tail -1)"
+restore_dir="/srv/argus/runtime/restore-tests/hello-nginx/$(basename "$latest")"
 mkdir -p "$restore_dir"
 tar -xzf "$latest/files.tar.gz" -C "$restore_dir"
 test -f "$restore_dir/source/docker-compose.yml"

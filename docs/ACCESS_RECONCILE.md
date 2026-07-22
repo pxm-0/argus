@@ -8,7 +8,7 @@ discovery records.
 Read-only discovery was run on `oreochiserver` before changing access state:
 
 ```bash
-cd /srv/oreo-cloud
+cd /srv/argus
 git status --short --branch
 tailscale funnel status
 systemctl is-active cloudflared
@@ -36,13 +36,13 @@ and lowering `review-ui` effective access to `local`. Desired access remains
 Run:
 
 ```bash
-scripts/oreo-access-reconcile
+scripts/argus-access-reconcile
 ```
 
 For local/offline CI:
 
 ```bash
-scripts/oreo-access-reconcile --offline --json
+scripts/argus-access-reconcile --offline --json
 ```
 
 The command:
@@ -61,7 +61,7 @@ The command:
 Apply mode is intentionally narrow:
 
 ```bash
-scripts/oreo-access-reconcile --apply
+scripts/argus-access-reconcile --apply
 ```
 
 It may only lower `cloudflare-protected` effective access back to `local` when

@@ -11,7 +11,7 @@ Backups remain opt-in. A workload must have both operation permission and backup
 ## Command
 
 ```bash
-scripts/oreo-backup-run hello-nginx --confirm hello-nginx
+scripts/argus-backup-run hello-nginx --confirm hello-nginx
 ```
 
 The confirmation value must exactly match the workload ID.
@@ -21,7 +21,7 @@ The confirmation value must exactly match the workload ID.
 The backup runner writes timestamped artifacts under:
 
 ```text
-/srv/oreo-cloud/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS/
+/srv/argus/runtime/backups/hello-nginx/YYYYMMDD-HHMMSS/
 ```
 
 Each artifact contains:
@@ -36,7 +36,7 @@ backup-summary.json
 
 ## Safety Rules
 
-- Destination must stay under `/srv/oreo-cloud/runtime/backups/<workload-id>`.
+- Destination must stay under `/srv/argus/runtime/backups/<workload-id>`.
 - Source backup is allowed for `hello-nginx`.
 - `.env`, `.env.*`, secret-like, and credential-like files are excluded from source archives.
 - Env, database, named volume, and bind mount backups remain blocked unless a later phase explicitly implements them.

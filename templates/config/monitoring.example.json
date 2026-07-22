@@ -4,9 +4,9 @@
   "mode": "snapshot",
   "refreshSeconds": 3,
   "dashboardToggle": true,
-  "publicMetricsPath": "/srv/oreo-cloud/control-plane/dashboard/public/metrics.json",
+  "publicMetricsPath": "/srv/argus/control-plane/dashboard/public/metrics.json",
   "historyEnabled": true,
-  "historyPath": "/srv/oreo-cloud/runtime/metrics-history/metrics.jsonl",
+  "historyPath": "/srv/argus/runtime/metrics-history/metrics.jsonl",
   "include": {
     "cpu": true,
     "load": true,
