@@ -31,6 +31,7 @@ def render_html() -> str:
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Argus Estate Control</title>
     <link rel="icon" href="data:,">
+    <script>const requestedTheme = new URLSearchParams(location.search).get("theme"); document.documentElement.dataset.theme = ["light", "dark"].includes(requestedTheme) ? requestedTheme : (localStorage.getItem("argus-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
@@ -55,6 +56,7 @@ def render_html() -> str:
         <input id="admin-token" type="password" autocomplete="off" placeholder="control token" hidden>
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
+        <button id="theme-toggle" type="button" aria-pressed="false">Light Mode</button>
         <button id="admin-toggle" type="button">Admin Mode</button>
       </div>
     </header>
@@ -607,6 +609,7 @@ const monitorPanel = document.getElementById("monitor-panel");
 const monitorStatus = document.getElementById("monitor-status");
 const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
+const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
@@ -621,6 +624,13 @@ const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
 let selectedTopologyId = null;
+
+function setTheme(theme) {
+  const light = theme === "light";
+  document.documentElement.dataset.theme = light ? "light" : "dark";
+  themeToggle.textContent = light ? "Dark Mode" : "Light Mode";
+  themeToggle.setAttribute("aria-pressed", String(light));
+}
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -997,6 +1007,11 @@ workloadDiscoverButton.addEventListener("click", async () => {
 });
 
 monitorToggle.addEventListener("click", () => setMonitor(monitorPanel.hidden));
+themeToggle.addEventListener("click", () => {
+  const theme = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+  localStorage.setItem("argus-theme", theme);
+  setTheme(theme);
+});
 adminToggle.addEventListener("click", () => {
   if (!adminEnabled) {
     showCommandResult("Admin mode", "Enter the control token above before applying changes.");
@@ -1143,6 +1158,7 @@ document.addEventListener("keydown", (event) => {
   renderTopology();
 });
 
+setTheme(document.documentElement.dataset.theme);
 loadDashboardState();
 """
 
