@@ -1,5 +1,12 @@
 #!/usr/bin/env python3
-"""Generate the private Oreo Cloud dashboard static files."""
+"""Generate the private Oreo Cloud dashboard static files.
+
+THESIS: Orbital Operations Plot makes containment and drift spatial, not decorative.
+OWN-WORLD: Night operations instrument; void, spectral blue, photon gold, denial red.
+STORY: Orient on estate topology, inspect one object, then act through guarded controls.
+FIRST VIEWPORT: Persistent rail, fluid orbital plot, 360px evidence inspector.
+FORM: Operate mode; seed 89f8c3e6, assigned direction 5.
+"""
 
 from __future__ import annotations
 
@@ -30,27 +37,39 @@ def render_html() -> str:
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
+    <div class="app-shell">
+      <aside class="nav-rail" aria-label="Primary navigation">
+        <a class="brand" href="#overview" aria-label="Argus overview">A</a>
+        <nav>
+          <a href="#overview" aria-current="page"><span>01</span>Topology</a>
+          <a href="#workloads-heading"><span>02</span>Workloads</a>
+          <a href="#evidence"><span>03</span>Evidence</a>
+        </nav>
+        <div class="private-state"><i aria-hidden="true"></i><span>Private<br>control plane</span></div>
+      </aside>
+      <div class="app-main">
     <header class="topbar">
-      <div>
-        <h1>Argus Estate Control</h1>
+      <div class="title-lockup">
+        <p class="eyebrow">OREO CLOUD / ARGUS</p>
+        <h1>Estate control</h1>
         <p id="route-summary">loading dashboard state</p>
       </div>
-      <div class="top-actions">
+      <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="control token" hidden>
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
         <button id="admin-toggle" type="button">Admin Mode</button>
       </div>
     </header>
-    <main>
+    <main id="overview">
       <section class="summary" id="summary" aria-label="System summary"></section>
       <section class="alert" id="exposure-alert">
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
-      <section class="section-head">
-        <h2>Estate topology</h2>
-        <span>Containment, placement, routes, and drift</span>
+      <section class="instrument-head">
+        <div><p class="eyebrow">LIVE ESTATE MODEL</p><h2>Orbital operations plot</h2></div>
+        <p>Containment bands encode trust domains. Select an object to inspect evidence and control eligibility.</p>
       </section>
       <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
       <section class="command-panel" id="command-panel" hidden>
@@ -68,12 +87,12 @@ def render_html() -> str:
         </div>
         <div id="metrics" class="metrics-grid"></div>
       </section>
-      <section class="section-head">
+      <section class="section-head" id="workloads-heading">
         <h2>Workloads</h2>
         <span>Migration, backup, access, and operations</span>
       </section>
       <section class="workloads" id="workloads"></section>
-      <section class="plan-grid">
+      <section class="plan-grid" id="evidence">
         <article id="access-plan">
           <h2>Access Plan</h2>
           <p>loading access state</p>
@@ -100,6 +119,8 @@ def render_html() -> str:
         </article>
       </section>
     </main>
+      </div>
+    </div>
     <script src="./app.js"></script>
   </body>
 </html>
@@ -602,6 +623,7 @@ const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
+let selectedTopologyId = null;
 
 function escapeHtml(value) {
   return String(value ?? "")
@@ -736,27 +758,70 @@ function renderSummary() {
 
 function renderTopology() {
   const topology = state?.topology || {};
-  const nodes = new Map((topology.nodes || []).map((node) => [node.id, node]));
+  const workloadNodes = (topology.nodes || []).filter((node) => node.kind === "workload");
+  const nodes = new Map(workloadNodes.map((node) => [node.id, node]));
   const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
+  const radii = [105, 155, 205, 255, 302];
+  const center = { x: 420, y: 310 };
+  if (!selectedTopologyId || !nodes.has(selectedTopologyId)) {
+    selectedTopologyId = nodes.has("hello-nginx") ? "hello-nginx" : workloadNodes[0]?.id;
+  }
+  const selected = nodes.get(selectedTopologyId) || {};
+  const pointFor = (domain, domainIndex, itemIndex) => {
+    const count = Math.max(domain.workloadIds.length, 1);
+    const angle = ((itemIndex / count) * 300 + 210 + domainIndex * 11) * Math.PI / 180;
+    const radius = radii[domainIndex] || radii[radii.length - 1];
+    return { x: center.x + Math.cos(angle) * radius, y: center.y + Math.sin(angle) * radius };
+  };
+  const rings = domains.map((domain, index) => {
+    const radius = radii[index];
+    return `<circle class="orbit-ring ${domain.kind === "legacy" ? "legacy" : ""}" cx="${center.x}" cy="${center.y}" r="${radius}" />
+      <text class="orbit-label" x="${center.x + 8}" y="${center.y - radius + 14}">${escapeHtml(domain.id)} · ${escapeHtml(domain.state)}</text>`;
+  }).join("");
+  const objects = domains.flatMap((domain, domainIndex) => domain.workloadIds.map((id, itemIndex) => {
+    const node = nodes.get(id) || {};
+    const point = pointFor(domain, domainIndex, itemIndex);
+    const dx = point.x - center.x;
+    const dy = point.y - center.y;
+    const length = Math.max(Math.hypot(dx, dy), 1);
+    const driftEnd = { x: point.x + dx / length * 28, y: point.y + dy / length * 28 };
+    const drift = node.drift ? `<line class="drift-vector" x1="${point.x}" y1="${point.y}" x2="${driftEnd.x}" y2="${driftEnd.y}"/><text class="drift-mark" x="${driftEnd.x + 5}" y="${driftEnd.y}">DRIFT</text>` : "";
+    const active = id === selectedTopologyId ? " selected" : "";
+    const label = `${node.label || id}. ${node.trustDomain}. ${node.declaredAccess} declared, ${node.effectiveAccess} effective. ${node.drift ? "Access drift detected." : "Access aligned."}`;
+    return `${drift}<g class="orbit-node${active}" role="button" tabindex="0" data-focus-workload="${escapeHtml(id)}" aria-label="${escapeHtml(label)}" transform="translate(${point.x} ${point.y})"><circle r="28"/><text y="-2">${escapeHtml((node.label || id).slice(0, 14))}</text><text class="node-status" y="11">${escapeHtml(node.effectiveAccess || "none")}</text></g>`;
+  })).join("");
+  const controlBlocked = selected.controlMode === "domain-agent-required";
+  const verdict = controlBlocked ? "Controls require a domain agent; direct management-plane execution remains disabled." : "Legacy-local controls remain manifest-gated and require Admin Mode acknowledgement.";
   topologyEl.innerHTML = `
-    <div class="host-rail">
-      <h3>oreochiserver</h3>
-      <p><b>Management plane</b><br><span class="muted">Private operator UI and loopback API. Domain agents available: ${escapeHtml(topology.summary?.domainAgentsAvailable ?? 0)}.</span></p>
+    <div class="orbit-stage">
+      <svg viewBox="0 0 840 620" role="img" aria-labelledby="plot-title plot-desc">
+        <title id="plot-title">Argus estate trust-domain topology</title>
+        <desc id="plot-desc">Workloads orbit oreochiserver on trust-domain containment bands. Gold vectors identify access drift.</desc>
+        <defs><marker id="arrowhead" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#F5C85B"/></marker></defs>
+        ${rings}
+        <circle class="host-pulse" cx="${center.x}" cy="${center.y}" r="66"/>
+        <circle class="host-core" cx="${center.x}" cy="${center.y}" r="52"/>
+        <text class="host-title" x="${center.x}" y="${center.y - 2}">oreochiserver</text>
+        <text class="host-sub" x="${center.x}" y="${center.y + 14}">MANAGEMENT</text>
+        ${objects}
+      </svg>
+      <div class="orbit-index" aria-label="Topology object index">${workloadNodes.map((node) => `<button type="button" data-focus-workload="${escapeHtml(node.id)}" aria-pressed="${node.id === selectedTopologyId}">${escapeHtml(node.label || node.id)}${node.drift ? " · drift" : ""}</button>`).join("")}</div>
     </div>
-    <div class="domain-rail">
-      ${domains.map((domain) => `
-        <article class="domain" data-kind="${escapeHtml(domain.kind)}">
-          <h3>${escapeHtml(domain.id)}</h3>
-          <p class="domain-meta">${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p>
-          <ul class="node-list">
-            ${domain.workloadIds.map((id) => {
-              const node = nodes.get(id) || {};
-              return `<li><button class="node" type="button" data-focus-workload="${escapeHtml(id)}" data-drift="${escapeHtml(node.drift)}"><b>${escapeHtml(node.label || id)}</b><br><span>${escapeHtml(node.classificationStatus)} · ${escapeHtml(node.declaredAccess)} → ${escapeHtml(node.effectiveAccess)}</span></button></li>`;
-            }).join("") || '<li class="muted">No workloads assigned</li>'}
-          </ul>
-        </article>`).join("")}
-    </div>
-    <div class="edge-legend"><span><b>Boundary</b> containment</span><span><b>Placement</b> domain to workload</span><span><b>Route</b> workload to approved ingress</span><span><b>Blue rule</b> declared/effective drift</span></div>`;
+    <aside class="topology-inspector" aria-live="polite">
+      <p class="inspector-kicker">SELECTED OBJECT / ${escapeHtml(selected.trustDomain || "unknown")}</p>
+      <h3>${escapeHtml(selected.label || selected.id || "No workload")}</h3>
+      <p class="inspector-state">${escapeHtml(selected.classificationStatus || "unclassified")} · admission ${escapeHtml(selected.admission || "unknown")}</p>
+      <dl class="inspector-facts">
+        <div><dt>Trust domain</dt><dd>${escapeHtml(selected.trustDomain || "-")}</dd></div>
+        <div><dt>Realm / zone</dt><dd>${escapeHtml(selected.realm || "-")} / ${escapeHtml(selected.zone || "-")}</dd></div>
+        <div><dt>Declared access</dt><dd>${escapeHtml(selected.declaredAccess || "-")}</dd></div>
+        <div><dt>Effective access</dt><dd>${escapeHtml(selected.effectiveAccess || "-")}</dd></div>
+        <div><dt>Access drift</dt><dd>${selected.drift ? "Detected" : "Aligned"}</dd></div>
+        <div><dt>Control mode</dt><dd>${escapeHtml(selected.controlMode || "-")}</dd></div>
+      </dl>
+      <div class="control-verdict ${controlBlocked ? "blocked" : ""}"><strong>${controlBlocked ? "Execution boundary enforced" : "Guarded legacy control"}</strong><span>${escapeHtml(verdict)}</span></div>
+      <button class="inspect-action" type="button" data-focus-workload="${escapeHtml(selected.id || "")}" data-open-detail="true">View workload evidence</button>
+    </aside>`;
 }
 
 function workloadActions(urls) {
@@ -971,7 +1036,11 @@ commandClose.addEventListener("click", () => {
 document.addEventListener("click", async (event) => {
   const focus = event.target.closest("[data-focus-workload]");
   if (focus) {
-    document.querySelector(`[data-workload="${CSS.escape(focus.dataset.focusWorkload)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    selectedTopologyId = focus.dataset.focusWorkload;
+    renderTopology();
+    if (focus.dataset.openDetail === "true") {
+      document.querySelector(`[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
     return;
   }
   const register = event.target.closest("[data-register]");
@@ -1085,6 +1154,14 @@ document.addEventListener("click", async (event) => {
   } catch (error) {
     showCommandResult("Apply failed", error.message);
   }
+});
+
+document.addEventListener("keydown", (event) => {
+  const focus = event.target.closest('[role="button"][data-focus-workload]');
+  if (!focus || !["Enter", " "].includes(event.key)) return;
+  event.preventDefault();
+  selectedTopologyId = focus.dataset.focusWorkload;
+  renderTopology();
 });
 
 loadDashboardState();

@@ -1,0 +1,29 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-07-22T00:00:00Z",
+  "title": "Design System: Argus Estate Control",
+  "extensions": {
+    "colorMeta": {
+      "void": {"role": "neutral", "displayName": "Void", "canonical": "#070A12", "tonalRamp": ["#070A12", "#111827", "#27324A", "#4A5873", "#71809B", "#9AA8BF", "#CAD3E1", "#F3F6FC"]},
+      "spectral-blue": {"role": "primary", "displayName": "Spectral Blue", "canonical": "#68A7FF", "tonalRamp": ["#081A36", "#103363", "#194F96", "#2B70C7", "#4890E8", "#68A7FF", "#A7CEFF", "#E8F3FF"]},
+      "photon-gold": {"role": "secondary", "displayName": "Photon Gold", "canonical": "#F5C85B", "tonalRamp": ["#241B04", "#4A3708", "#735711", "#A27A22", "#CEA03B", "#F5C85B", "#FFE29A", "#FFF6D7"]}
+    },
+    "typographyMeta": {
+      "display": {"displayName": "Display", "purpose": "Product identity and estate totals only."},
+      "body": {"displayName": "Body", "purpose": "Operational reading and exact state."},
+      "label": {"displayName": "Label", "purpose": "Compact state and control labels."}
+    },
+    "shadows": [{"name": "inspection-active", "value": "0 18px 44px rgba(0,0,0,0.32)", "purpose": "Active inspection drawer only."}],
+    "motion": [{"name": "orbit-focus", "value": "cubic-bezier(0.16,1,0.3,1)", "purpose": "Selected-object trajectory and drawer focus."}],
+    "breakpoints": [{"name": "compact", "value": "760px"}, {"name": "wide", "value": "1180px"}]
+  },
+  "components": [],
+  "narrative": {
+    "northStar": "Orbital Operations Plot",
+    "overview": "A private tracking table where trust domains are stable orbital bands, workloads are known objects, and drift is a trajectory understood before action.",
+    "keyCharacteristics": ["Topology is the primary instrument.", "Every visual signal encodes real state.", "Lists preserve exact keyboard-accessible values.", "Mutation stays separate from observation."],
+    "rules": [{"name": "Signal Scarcity", "body": "Gold and red never decorate.", "section": "colors"}, {"name": "Measurement", "body": "Use tabular numerals for quantities and timestamps, not a different font family.", "section": "typography"}],
+    "dos": ["Make every orbital mark correspond to canonical topology data.", "Keep blocked, unavailable, and stale states readable without color."],
+    "donts": ["Do not add decorative stars, fake telemetry, or invented operator data.", "Do not make a domain operation appear available without its backend agent."]
+  }
+}
