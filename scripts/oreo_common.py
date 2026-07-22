@@ -16,6 +16,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from argus_m5_topology import build_topology
+
 
 APPROVED_OPERATOR_LINKS = {
     "argus-legacy-inventory": "argus-legacy-inventory",
@@ -214,6 +216,8 @@ def dashboard_state() -> dict[str, Any]:
     exposure = load_json("exposure.json")
     monitoring = load_json("monitoring.json")
     events = recent_events()
+    legacy_classification = load_json("argus/legacy-classification.json")
+    workload_classification = load_json("argus/workload-classification.json")
 
     merged = []
     for workload in workloads():
@@ -241,6 +245,11 @@ def dashboard_state() -> dict[str, Any]:
         "exposure": exposure,
         "monitoring": monitoring,
         "events": events[-20:],
+        "topology": build_topology(
+            workloads=merged,
+            legacy=legacy_classification,
+            classified=workload_classification,
+        ),
     }
 
 

@@ -522,12 +522,13 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
         return
     html = html_path.read_text()
     js = js_path.read_text() if js_path.exists() else ""
-    required = ["Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", 'id="workloads"', 'id="command-panel"']
+    required = ["Estate topology", "Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", "Argus Estate Control", 'id="topology"', 'id="workloads"', 'id="command-panel"']
     forbidden = ["control-token", "Authorization: Bearer", "PRIVATE KEY", "BEGIN ", ".env="]
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
     smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
     smoke.check("/access/preview" in js and "/access/apply" in js and "/privacy" in js, "dashboard admin flow calls control API")
+    smoke.check("domain-agent-required" in js and "data-focus-workload" in js, "dashboard topology fails closed for domain controls")
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:
