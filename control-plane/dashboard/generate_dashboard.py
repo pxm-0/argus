@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate the private Oreo Cloud dashboard static files.
+"""Generate the private Argus dashboard static files.
 
 The M5 estate matrix prioritizes categorical comparison: trust domain, workload,
 declared access, effective access, and drift remain visible in one scanning path.
@@ -29,7 +29,7 @@ def render_html() -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Argus Estate Control</title>
+    <title>Argus</title>
     <link rel="icon" href="data:,">
     <script>const requestedTheme = new URLSearchParams(location.search).get("theme"); document.documentElement.dataset.theme = ["light", "dark"].includes(requestedTheme) ? requestedTheme : (localStorage.getItem("argus-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
     <link rel="stylesheet" href="./style.css">
@@ -48,8 +48,8 @@ def render_html() -> str:
       <div class="app-main">
     <header class="topbar">
       <div class="title-lockup">
-        <p class="eyebrow">OREO CLOUD / ARGUS</p>
-        <h1>Estate control</h1>
+        <p class="eyebrow">PRIVATE CONTROL PLANE</p>
+        <h1>Argus</h1>
         <p id="route-summary">loading dashboard state</p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
