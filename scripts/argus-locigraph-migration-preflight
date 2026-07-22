@@ -29,7 +29,7 @@ def main() -> int:
     observed = run(
         [
             "docker", "ps", "-a", "--filter", "label=com.docker.compose.project=locigraph",
-            "--format", '{{json .Label "com.docker.compose.service"}} {{json .State}}',
+            "--format", '{{.Label "com.docker.compose.service"}}\t{{.State}}',
         ]
     )
     if observed.returncode != 0:
@@ -38,9 +38,10 @@ def main() -> int:
     for line in observed.stdout.splitlines():
         if not line.strip():
             continue
-        service_json, state_json = line.split(" ", 1)
-        service = json.loads(service_json)
-        state = json.loads(state_json)
+        try:
+            service, state = line.split("\t", 1)
+        except ValueError as error:
+            raise PreflightError("Docker returned an unsupported container-state record") from error
         containers.append(
             {
                 "service": str(service),

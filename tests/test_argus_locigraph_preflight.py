@@ -11,6 +11,11 @@ from argus_locigraph_preflight import build_report  # noqa: E402
 
 
 class LociGraphPreflightTests(unittest.TestCase):
+    def test_cli_uses_supported_secret_safe_docker_projection(self) -> None:
+        text = (ROOT / "scripts" / "argus-locigraph-migration-preflight").read_text()
+        self.assertIn('{{.Label "com.docker.compose.service"}}\\t{{.State}}', text)
+        self.assertNotIn("{{json .Label", text)
+
     def test_report_redacts_values_and_blocks_current_legacy_shape(self) -> None:
         compose = {
             "name": "locigraph",
