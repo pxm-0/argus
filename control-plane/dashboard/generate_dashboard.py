@@ -4,6 +4,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from m5_style import M5_CSS
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -21,14 +25,14 @@ def render_html() -> str:
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Oreo Cloud Mission Control</title>
+    <title>Argus Estate Control</title>
     <link rel="icon" href="data:,">
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
     <header class="topbar">
       <div>
-        <h1>Oreo Cloud Mission Control</h1>
+        <h1>Argus Estate Control</h1>
         <p id="route-summary">loading dashboard state</p>
       </div>
       <div class="top-actions">
@@ -44,6 +48,11 @@ def render_html() -> str:
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
+      <section class="section-head">
+        <h2>Estate topology</h2>
+        <span>Containment, placement, routes, and drift</span>
+      </section>
+      <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
       <section class="command-panel" id="command-panel" hidden>
         <div class="section-head">
           <h2>Command Result</h2>
@@ -584,6 +593,7 @@ const adminTokenInput = document.getElementById("admin-token");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
+const topologyEl = document.getElementById("topology");
 const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
 const commandPanel = document.getElementById("command-panel");
@@ -724,6 +734,31 @@ function renderSummary() {
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
 }
 
+function renderTopology() {
+  const topology = state?.topology || {};
+  const nodes = new Map((topology.nodes || []).map((node) => [node.id, node]));
+  const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
+  topologyEl.innerHTML = `
+    <div class="host-rail">
+      <h3>oreochiserver</h3>
+      <p><b>Management plane</b><br><span class="muted">Private operator UI and loopback API. Domain agents available: ${escapeHtml(topology.summary?.domainAgentsAvailable ?? 0)}.</span></p>
+    </div>
+    <div class="domain-rail">
+      ${domains.map((domain) => `
+        <article class="domain" data-kind="${escapeHtml(domain.kind)}">
+          <h3>${escapeHtml(domain.id)}</h3>
+          <p class="domain-meta">${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p>
+          <ul class="node-list">
+            ${domain.workloadIds.map((id) => {
+              const node = nodes.get(id) || {};
+              return `<li><button class="node" type="button" data-focus-workload="${escapeHtml(id)}" data-drift="${escapeHtml(node.drift)}"><b>${escapeHtml(node.label || id)}</b><br><span>${escapeHtml(node.classificationStatus)} · ${escapeHtml(node.declaredAccess)} → ${escapeHtml(node.effectiveAccess)}</span></button></li>`;
+            }).join("") || '<li class="muted">No workloads assigned</li>'}
+          </ul>
+        </article>`).join("")}
+    </div>
+    <div class="edge-legend"><span><b>Boundary</b> containment</span><span><b>Placement</b> domain to workload</span><span><b>Route</b> workload to approved ingress</span><span><b>Blue rule</b> declared/effective drift</span></div>`;
+}
+
 function workloadActions(urls) {
   const actions = [];
   [
@@ -756,6 +791,11 @@ function renderWorkload(workload) {
   const lastEvent = workload.lastAuditEvent || {};
   const error = access.lastError || "";
   const healthLabel = health.enabled ? "configured" : "not configured";
+  const topologyNode = state?.topology?.nodes?.find((node) => node.id === id) || {};
+  const domainAgentRequired = topologyNode.controlMode === "domain-agent-required";
+  const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
+  const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
+  const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
   return `
     <article
       class="workload"
@@ -778,6 +818,7 @@ function renderWorkload(workload) {
         ${pill("effective", access.effective)}
         ${pill("migration", migration.status)}
         ${pill("backup", backup.status || "needs-discovery")}
+        ${pill("domain", topologyNode.trustDomain || "legacy-rootful")}
       </div>
       <dl class="facts">
         <div><dt>Runtime</dt><dd>${escapeHtml(runtime.type || "")}</dd></div>
@@ -794,20 +835,21 @@ function renderWorkload(workload) {
         <div><dt>Last Event</dt><dd>${escapeHtml(lastEvent.action || "-")} ${escapeHtml(lastEvent.result || "")}</dd></div>
       </dl>
       ${error ? `<p class="warning">${escapeHtml(error)}</p>` : ""}
+      ${domainAgentRequired ? '<p class="warning">Domain operations are read-only until an identity-backed domain agent and scoped capability flow are available.</p>' : ""}
       <div class="actions">${workloadActions(urls)}</div>
       <div class="actions operation-row">
-        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}">Logs preview</button>
-        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}">Restart preview</button>
-        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}">Backup preview</button>
+        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && !domainAgentRequired ? "" : "disabled"}>Logs preview</button>
+        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && !domainAgentRequired ? "" : "disabled"}>Restart preview</button>
+        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && !domainAgentRequired ? "" : "disabled"}>Backup preview</button>
       </div>
       <div class="admin-row" hidden>
-        <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}"></select></label>
-        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
+        <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}></select></label>
+        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}></select></label>
         <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
-        <button type="button" data-preview="${escapeHtml(id)}">Preview</button>
-        <button type="button" data-apply="${escapeHtml(id)}">Apply</button>
-        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}">Restart apply</button>
-        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}">Backup apply</button>
+        <button type="button" data-preview="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}>Preview</button>
+        <button type="button" data-apply="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}>Apply</button>
+        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && !domainAgentRequired ? "" : "disabled"}>Restart apply</button>
+        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && !domainAgentRequired ? "" : "disabled"}>Backup apply</button>
       </div>
     </article>
   `;
@@ -836,6 +878,7 @@ function renderEvents() {
 
 function renderDashboard() {
   renderSummary();
+  renderTopology();
   workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
   renderPlans();
   renderEvents();
@@ -926,6 +969,11 @@ commandClose.addEventListener("click", () => {
 });
 
 document.addEventListener("click", async (event) => {
+  const focus = event.target.closest("[data-focus-workload]");
+  if (focus) {
+    document.querySelector(`[data-workload="${CSS.escape(focus.dataset.focusWorkload)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    return;
+  }
   const register = event.target.closest("[data-register]");
   if (register) {
     const workloadId = register.dataset.register;
@@ -1045,7 +1093,7 @@ loadDashboardState();
 
 def main() -> int:
     write(PUBLIC / "index.html", render_html())
-    write(PUBLIC / "style.css", CSS.strip() + "\n")
+    write(PUBLIC / "style.css", M5_CSS.strip() + "\n")
     write(PUBLIC / "app.js", JS.strip() + "\n")
     print(f"Generated {PUBLIC}")
     return 0
