@@ -9,6 +9,7 @@ Group=oreo
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_TOKEN_FILE=/etc/argus/control-token
+Environment=ARGUS_OPERATOR_IDENTITIES_FILE=/etc/argus/operator-identities.json
 ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
 Restart=on-failure
 RestartSec=3

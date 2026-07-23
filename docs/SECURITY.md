@@ -60,8 +60,19 @@ Rules:
 - never print token
 - never include token in generated HTML
 - never write token to logs
-- dashboard stores token in `sessionStorage` only
-- token expires when browser tab closes
+- use it only to exchange verified Tailscale identity for an Argus session
+- clear the credential input immediately after exchange
+- never store it in browser storage
+- store only an opaque session identifier in an `HttpOnly`, `Secure`,
+  `SameSite=Strict` cookie
+- require the in-memory CSRF token for state-changing requests
+- expire server-side sessions after 15 minutes and support logout, revocation,
+  and step-up reauthentication
+
+Operator identity is accepted only from `Tailscale-User-Login` on the
+loopback-only backend behind Tailscale Serve, and only when the normalized
+login appears in the server-local `/etc/argus/operator-identities.json`
+allowlist.
 
 ## Git Hygiene
 

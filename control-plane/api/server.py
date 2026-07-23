@@ -16,6 +16,8 @@ from urllib.parse import urlparse
 
 ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[2])).resolve()
 TOKEN_FILE = Path(os.environ.get("ARGUS_TOKEN_FILE", "/etc/argus/control-token"))
+OPERATOR_IDENTITIES_FILE = Path(os.environ.get("ARGUS_OPERATOR_IDENTITIES_FILE", "/etc/argus/operator-identities.json"))
+RUNTIME = Path(os.environ.get("ARGUS_RUNTIME", ROOT / "runtime" / "argus" / "m5"))
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ARGUS_API_PORT", "8099"))
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -23,6 +25,11 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from argus_actions import actions_catalog, backup_apply, backup_preview, logs_preview, restart_apply, restart_preview  # noqa: E402
 from argus_m1 import access_writer, deny_direct_legacy_mutation, privacy_writer  # noqa: E402
 from argus_common import audit, dashboard_state, load_json, now, policy_decision, recent_events, regenerate_dashboard, save_json  # noqa: E402
+from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
+
+
+SESSION_COOKIE = "argus_session"
+SESSIONS = SessionStore(RUNTIME / "sessions.sqlite3")
 
 
 def token() -> str:
@@ -30,6 +37,15 @@ def token() -> str:
         return TOKEN_FILE.read_text().strip()
     except OSError:
         return ""
+
+
+def tailnet_identity(headers: Any) -> str:
+    identity = str(headers.get("Tailscale-User-Login", "")).strip().lower()
+    try:
+        allowed = json.loads(OPERATOR_IDENTITIES_FILE.read_text()).get("operators", [])
+    except (OSError, json.JSONDecodeError):
+        return ""
+    return identity if identity and identity in {str(item).strip().lower() for item in allowed} else ""
 
 
 def merged_workloads() -> dict[str, Any]:
@@ -56,16 +72,25 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.send_header("Referrer-Policy", "no-referrer")
         self.end_headers()
         self.wfile.write(body)
 
-    def require_auth(self) -> bool:
-        expected = token()
-        supplied = self.headers.get("Authorization", "")
-        if not expected or supplied != f"Bearer {expected}":
-            self.send_json(401, {"error": "unauthorized"})
-            return False
-        return True
+    def current_session(self) -> Session | None:
+        session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
+        return SESSIONS.get(session_id, tailnet_identity(self.headers))
+
+    def require_session(self, *, csrf: bool = False) -> Session | None:
+        session = self.current_session()
+        if session is None:
+            self.send_json(401, {"error": "verified tailnet identity and Argus session required"})
+            return None
+        self.operator_identity = session.identity
+        session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
+        if csrf and not SESSIONS.csrf_valid(session_id, self.headers.get("X-Argus-CSRF", "")):
+            self.send_json(403, {"error": "CSRF validation failed"})
+            return None
+        return session
 
     def do_GET(self) -> None:  # noqa: N802
         try:
@@ -75,7 +100,14 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_get(self) -> None:
         path = urlparse(self.path).path
-        if path == "/api/workloads":
+        if path == "/api/session":
+            session = self.current_session()
+            if session:
+                session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
+                self.send_json(200, {**public_session(session), "csrfToken": SESSIONS.rotate_csrf(session_id)})
+            else:
+                self.send_json(401, {"authenticated": False})
+        elif path == "/api/workloads":
             self.send_json(200, merged_workloads())
         elif path == "/api/dashboard-state":
             self.send_json(200, dashboard_state())
@@ -94,9 +126,47 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
-        if not self.require_auth():
-            return
         path = urlparse(self.path).path
+        try:
+            body = self.read_body()
+        except json.JSONDecodeError:
+            self.send_json(400, {"error": "invalid json"})
+            return
+        if path == "/api/session/exchange":
+            identity = tailnet_identity(self.headers)
+            if not identity or not token() or self.headers.get("Authorization", "") != f"Bearer {token()}":
+                self.send_json(401, {"error": "verified tailnet identity and bootstrap credential required"})
+                return
+            session = SESSIONS.create(identity)
+            audit("session.exchange", "-", "ok", actor=identity)
+            payload = json.dumps({**public_session(session), "csrfToken": session.csrf_token}, indent=2, sort_keys=True).encode()
+            self.send_response(201)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Referrer-Policy", "no-referrer")
+            self.send_header("Set-Cookie", f"{SESSION_COOKIE}={session.session_id}; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Strict")
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+        session = self.require_session(csrf=True)
+        if not session:
+            return
+        if path == "/api/session/logout":
+            session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
+            SESSIONS.revoke(session_id)
+            self.send_response(204)
+            self.send_header("Set-Cookie", f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict")
+            self.end_headers()
+            return
+        if path == "/api/session/step-up":
+            if self.headers.get("Authorization", "") != f"Bearer {token()}":
+                self.send_json(401, {"error": "step-up credential rejected"})
+                return
+            session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
+            SESSIONS.step_up(session_id)
+            self.send_json(200, {"ok": True})
+            return
         if path == "/api/workloads/discover":
             self.handle_workload_discover()
             return
@@ -110,7 +180,6 @@ class Handler(BaseHTTPRequestHandler):
         backup_apply_match = re.fullmatch(r"/api/workloads/([^/]+)/backup/apply", path)
         register_match = re.fullmatch(r"/api/workloads/([^/]+)/register", path)
         try:
-            body = self.read_body()
             if register_match:
                 self.handle_workload_register(register_match.group(1), body)
             elif privacy_match:
@@ -131,8 +200,6 @@ class Handler(BaseHTTPRequestHandler):
                 self.handle_backup_apply(backup_apply_match.group(1), body)
             else:
                 self.send_json(404, {"error": "not found"})
-        except json.JSONDecodeError:
-            self.send_json(400, {"error": "invalid json"})
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
         except Exception as exc:  # noqa: BLE001 - API should return JSON errors.
@@ -159,12 +226,12 @@ class Handler(BaseHTTPRequestHandler):
         desired = str(body.get("desired", ""))
         decision = policy_decision(workload_id, desired)
         if not decision["allowed"]:
-            audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason=decision["reason"])
+            audit("access.apply", workload_id, "blocked", actor=self.operator_identity, desired=desired, reason=decision["reason"])
             self.send_json(403, {"workloadId": workload_id, "desired": desired, **decision})
             return
         phrase = str(decision.get("confirmationPhrase", ""))
         if phrase and str(body.get("confirmation", "")) != phrase:
-            audit("access.apply", workload_id, "blocked", actor="admin-token", desired=desired, reason="confirmation required")
+            audit("access.apply", workload_id, "blocked", actor=self.operator_identity, desired=desired, reason="confirmation required")
             self.send_json(
                 403,
                 {

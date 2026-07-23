@@ -53,7 +53,7 @@ def render_html() -> str:
         <p id="route-summary">loading dashboard state</p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
-        <input id="admin-token" type="password" autocomplete="off" placeholder="control token" hidden>
+        <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
         <button id="theme-toggle" type="button" aria-pressed="false">Light Mode</button>
@@ -623,6 +623,8 @@ const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
 let adminEnabled = false;
+let csrfToken = "";
+let operatorIdentity = "";
 let selectedTopologyId = null;
 
 function setTheme(theme) {
@@ -680,7 +682,7 @@ function renderDiscoveryCandidates(candidates) {
 }
 
 function tokenFor() {
-  return adminTokenInput.value || sessionStorage.getItem("argusControlToken") || "";
+  return adminTokenInput.value;
 }
 
 function selectedValue(row, selector) {
@@ -688,12 +690,13 @@ function selectedValue(row, selector) {
 }
 
 async function apiPost(endpoint, token, body) {
+  const headers = { "Content-Type": "application/json" };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  if (csrfToken && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = csrfToken;
   const response = await fetch(endpoint, {
     method: "POST",
-    headers: {
-      "Authorization": `Bearer ${token}`,
-      "Content-Type": "application/json"
-    },
+    credentials: "same-origin",
+    headers,
     body: JSON.stringify(body || {})
   });
   let payload = {};
@@ -703,6 +706,17 @@ async function apiPost(endpoint, token, body) {
     payload = { error: error.message };
   }
   return { ok: response.ok, status: response.status, payload };
+}
+
+async function authenticateOperator() {
+  const credential = tokenFor();
+  if (!credential) throw new Error("Enter the bootstrap credential.");
+  const result = await apiPost("/api/session/exchange", credential, {});
+  adminTokenInput.value = "";
+  if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
+  csrfToken = result.payload.csrfToken || "";
+  operatorIdentity = result.payload.identity || "";
+  return result.payload;
 }
 
 function renderMetrics(data) {
@@ -971,31 +985,23 @@ function fillAdminControls() {
 
 function setAdmin(open) {
   adminEnabled = open;
-  adminToggle.textContent = open ? "Exit Admin" : "Admin Mode";
+  adminToggle.textContent = open ? (csrfToken ? "Logout" : "Authenticate") : "Admin Mode";
   adminTokenInput.hidden = !open;
-  if (open) {
-    adminTokenInput.value = sessionStorage.getItem("argusControlToken") || "";
-    fillAdminControls();
-  }
+  if (open) fillAdminControls();
   document.querySelectorAll(".admin-row").forEach((row) => {
     row.hidden = !open;
   });
 }
 
-adminTokenInput.addEventListener("input", () => {
-  sessionStorage.setItem("argusControlToken", adminTokenInput.value);
-});
-
 workloadDiscoverButton.addEventListener("click", async () => {
-  const token = tokenFor();
-  if (!token) {
-    showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
+  if (!csrfToken) {
+    showCommandResult("Operator session required", "Authenticate before refreshing workload evidence.");
     return;
   }
   workloadDiscoverButton.disabled = true;
   workloadDiscoverButton.textContent = "Refreshing...";
   try {
-    const result = await apiPost("/api/workloads/discover", token, {});
+    const result = await apiPost("/api/workloads/discover", "", {});
     showCommandResult("Workload discovery", result.payload);
     renderDiscoveryCandidates(result.payload.newComposeProjects);
   } catch (error) {
@@ -1012,14 +1018,28 @@ themeToggle.addEventListener("click", () => {
   localStorage.setItem("argus-theme", theme);
   setTheme(theme);
 });
-adminToggle.addEventListener("click", () => {
+adminToggle.addEventListener("click", async () => {
   if (!adminEnabled) {
-    showCommandResult("Admin mode", "Enter the control token above before applying changes.");
-  } else {
-    sessionStorage.removeItem("argusControlToken");
-    adminTokenInput.value = "";
+    setAdmin(true);
+    showCommandResult("Operator authentication", "Enter the bootstrap credential, then choose Authenticate.");
+    return;
   }
-  setAdmin(!adminEnabled);
+  if (!csrfToken) {
+    try {
+      const session = await authenticateOperator();
+      setAdmin(true);
+      showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
+    } catch (error) {
+      showCommandResult("Authentication failed", error.message);
+    }
+  } else {
+    await apiPost("/api/session/logout", "", {});
+    csrfToken = "";
+    operatorIdentity = "";
+    adminTokenInput.value = "";
+    setAdmin(false);
+    showCommandResult("Operator session", "Logged out.");
+  }
 });
 
 commandClose.addEventListener("click", () => {
@@ -1040,14 +1060,13 @@ document.addEventListener("click", async (event) => {
   const register = event.target.closest("[data-register]");
   if (register) {
     const workloadId = register.dataset.register;
-    const token = tokenFor();
-    if (!token) {
-      showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
+    if (!csrfToken) {
+      showCommandResult("Operator session required", "Authenticate before registering workloads.");
       return;
     }
     register.disabled = true;
     try {
-      const result = await apiPost(`/api/workloads/${encodeURIComponent(workloadId)}/register`, token, { composeProject: workloadId });
+      const result = await apiPost(`/api/workloads/${encodeURIComponent(workloadId)}/register`, "", { composeProject: workloadId });
       showCommandResult(`Register ${workloadId}`, result.payload);
       await loadDashboardState();
     } catch (error) {
@@ -1061,9 +1080,8 @@ document.addEventListener("click", async (event) => {
     const workload = operation.dataset.workload;
     const action = operation.dataset.operation;
     const row = operation.closest(".workload");
-    const token = tokenFor();
-    if (!token) {
-      showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
+    if (!csrfToken) {
+      showCommandResult("Operator session required", "Authenticate before running operations.");
       return;
     }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";
@@ -1075,7 +1093,7 @@ document.addEventListener("click", async (event) => {
     const parts = action.split("-");
     const endpoint = `/api/workloads/${encodeURIComponent(workload)}/${parts[0]}/${parts[1]}`;
     try {
-      const result = await apiPost(endpoint, token, body);
+      const result = await apiPost(endpoint, "", body);
       const lines = Array.isArray(result.payload.lines) ? { ...result.payload, lines: result.payload.lines } : result.payload;
       showCommandResult(`${workload} ${action}`, { status: result.status, ...lines });
       await loadDashboardState();
@@ -1089,9 +1107,8 @@ document.addEventListener("click", async (event) => {
   if (!preview && !apply) return;
   const workload = (preview || apply).dataset.preview || (preview || apply).dataset.apply;
   const row = (preview || apply).closest(".workload");
-  const token = tokenFor();
-  if (!token) {
-    showCommandResult("Admin token required", "Enable Admin Mode and enter the control token first.");
+  if (!csrfToken) {
+    showCommandResult("Operator session required", "Authenticate before applying changes.");
     return;
   }
   const current = state?.workloads?.find((item) => item.id === workload) || {};
@@ -1102,7 +1119,7 @@ document.addEventListener("click", async (event) => {
   const accessChanged = accessTarget && accessTarget !== current.access?.desired;
   if (preview) {
     try {
-      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/preview`, token, { desired: accessTarget });
+      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/preview`, "", { desired: accessTarget });
       showCommandResult(`${workload} preview`, {
         privacy: {
           from: current.privacy?.privacy || "",
@@ -1126,7 +1143,7 @@ document.addEventListener("click", async (event) => {
   const results = [];
   try {
     if (privacyChanged) {
-      const privacyResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/privacy`, token, {
+      const privacyResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/privacy`, "", {
         privacy: privacyTarget,
         reason: "Dashboard admin change"
       });
@@ -1137,7 +1154,7 @@ document.addEventListener("click", async (event) => {
       }
     }
     if (accessChanged) {
-      const accessResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/apply`, token, {
+      const accessResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/apply`, "", {
         desired: accessTarget,
         confirmation
       });
@@ -1159,7 +1176,17 @@ document.addEventListener("keydown", (event) => {
 });
 
 setTheme(document.documentElement.dataset.theme);
-loadDashboardState();
+async function restoreOperatorSession() {
+  const response = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
+  if (response.ok) {
+    const session = await response.json();
+    csrfToken = session.csrfToken || "";
+    operatorIdentity = session.identity || "";
+    setAdmin(true);
+  }
+  await loadDashboardState();
+}
+restoreOperatorSession();
 """
 
 
