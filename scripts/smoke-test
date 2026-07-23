@@ -210,28 +210,28 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 "operator session cookie is hardened",
             )
             unauth_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
-                method="POST", payload={},
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                method="POST", payload={"operationType": "backup.create", "parameters": {}},
             )
             smoke.check(unauth_status == 401, "operation endpoints require both identities")
             csrf_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
-                method="POST", payload={},
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                method="POST", payload={"operationType": "backup.create", "parameters": {}},
                 headers={"Cookie": cookie, "Tailscale-User-Login": "smoke@example.com"},
             )
             smoke.check(csrf_status == 403, "state-changing requests reject missing CSRF")
             status, preview, text = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 token=token,
-                payload={},
+                payload={"operationType": "backup.create", "parameters": {}},
                 headers={
                     "Cookie": cookie,
                     "Tailscale-User-Login": "smoke@example.com",
                     "X-Argus-CSRF": csrf,
                 },
             )
-            smoke.check(status == 200 and preview.get("allowed") is False, "compatibility action uses operator session")
+            smoke.check(status == 200 and "previewDigest" in preview, "typed operation preview is revision-bound")
             smoke.check("docker compose" not in text and "compose -f" not in text, "dashboard action responses omit raw shell commands")
         finally:
             process.terminate()
@@ -536,8 +536,8 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
     smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
-    smoke.check("/access/preview" in js and "/api/workloads/" in js and "/api/session/exchange" in js, "dashboard admin flow calls session-authenticated control API")
-    smoke.check("domain-agent-required" in js and "data-focus-workload" in js, "dashboard topology fails closed for unavailable domain controls")
+    smoke.check("/operations/preview" in js and "/approve" in js and "/api/session/exchange" in js, "dashboard admin flow calls typed control API")
+    smoke.check("agentAvailable" in js or "domain-agent" in js and "data-focus-workload" in js, "dashboard topology reports domain-agent controls")
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:

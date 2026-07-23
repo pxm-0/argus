@@ -690,9 +690,12 @@ function selectedValue(row, selector) {
 }
 
 async function apiPost(endpoint, token, body) {
-  const headers = { "Content-Type": "application/json" };
+  const headers = {
+    "Content-Type": "application/json"
+  };
   if (token) headers.Authorization = `Bearer ${token}`;
   if (csrfToken && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = csrfToken;
+  if (/\/api\/workloads\/[^/]+\/operations$/.test(endpoint)) headers["Idempotency-Key"] = crypto.randomUUID();
   const response = await fetch(endpoint, {
     method: "POST",
     credentials: "same-origin",
@@ -803,8 +806,8 @@ function renderTopology() {
       <div class="domain-workloads">${rows}</div>
     </section>`;
   }).join("");
-  const controlBlocked = selected.controlMode === "domain-agent-required";
-  const verdict = controlBlocked ? "Controls require a domain agent; direct management-plane execution remains disabled." : "Legacy-local controls remain manifest-gated and require Admin Mode acknowledgement.";
+  const controlBlocked = !selected.agentAvailable;
+  const verdict = controlBlocked ? "Controls are blocked until the trust-domain agent is available." : "Controls execute through a typed, scoped trust-domain agent.";
   topologyEl.innerHTML = `
     <div class="matrix-stage">
       <div class="matrix-columns" aria-hidden="true"><span>Trust domain</span><span>Workload</span><span>Declared</span><span></span><span>Effective</span><span>Status</span></div>
@@ -822,7 +825,7 @@ function renderTopology() {
         <div><dt>Access drift</dt><dd>${selected.drift ? "Detected" : "Aligned"}</dd></div>
         <div><dt>Control mode</dt><dd>${escapeHtml(selected.controlMode || "-")}</dd></div>
       </dl>
-      <div class="control-verdict ${controlBlocked ? "blocked" : ""}"><strong>${controlBlocked ? "Execution boundary enforced" : "Guarded legacy control"}</strong><span>${escapeHtml(verdict)}</span></div>
+      <div class="control-verdict ${controlBlocked ? "blocked" : ""}"><strong>${controlBlocked ? "Agent unavailable" : "Domain agent available"}</strong><span>${escapeHtml(verdict)}</span></div>
       <button class="inspect-action" type="button" data-focus-workload="${escapeHtml(selected.id || "")}" data-open-detail="true">View workload evidence</button>
     </aside>`;
 }
@@ -860,7 +863,7 @@ function renderWorkload(workload) {
   const error = access.lastError || "";
   const healthLabel = health.enabled ? "configured" : "not configured";
   const topologyNode = state?.topology?.nodes?.find((node) => node.id === id) || {};
-  const domainAgentRequired = topologyNode.controlMode === "domain-agent-required";
+  const agentAvailable = Boolean(topologyNode.agentAvailable);
   const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
   const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
   const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
@@ -903,21 +906,22 @@ function renderWorkload(workload) {
         <div><dt>Last Event</dt><dd>${escapeHtml(lastEvent.action || "-")} ${escapeHtml(lastEvent.result || "")}</dd></div>
       </dl>
       ${error ? `<p class="warning">${escapeHtml(error)}</p>` : ""}
-      ${domainAgentRequired ? '<p class="warning">Domain operations are read-only until an identity-backed domain agent and scoped capability flow are available.</p>' : ""}
+      ${agentAvailable ? '<p>Typed domain agent available.</p>' : '<p class="warning">Operations are unavailable because the trust-domain agent is offline.</p>'}
       <div class="actions">${workloadActions(urls)}</div>
       <div class="actions operation-row">
-        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && !domainAgentRequired ? "" : "disabled"}>Logs preview</button>
-        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && !domainAgentRequired ? "" : "disabled"}>Restart preview</button>
-        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && !domainAgentRequired ? "" : "disabled"}>Backup preview</button>
+        <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Refresh health</button>
+        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
+        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart preview</button>
+        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup preview</button>
       </div>
+      <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">No operation loaded.</div>
       <div class="admin-row" hidden>
-        <label>Privacy <select data-action="privacy" data-workload="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}></select></label>
-        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}></select></label>
+        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
         <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
-        <button type="button" data-preview="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}>Preview</button>
-        <button type="button" data-apply="${escapeHtml(id)}" ${domainAgentRequired ? "disabled" : ""}>Apply</button>
-        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && !domainAgentRequired ? "" : "disabled"}>Restart apply</button>
-        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && !domainAgentRequired ? "" : "disabled"}>Backup apply</button>
+        <button type="button" data-preview="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Preview</button>
+        <button type="button" data-apply="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Apply</button>
+        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
+        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
       </div>
     </article>
   `;
@@ -960,6 +964,7 @@ async function loadDashboardState() {
     if (!response.ok) throw new Error(`dashboard state ${response.status}`);
     state = await response.json();
     renderDashboard();
+    if (csrfToken) await loadOperationHistory();
   } catch (error) {
     routeSummary.textContent = "dashboard state unavailable";
     summaryEl.innerHTML = `<div><strong>!</strong><span>${escapeHtml(error.message)}</span></div>`;
@@ -968,13 +973,44 @@ async function loadDashboardState() {
   }
 }
 
-function fillAdminControls() {
-  document.querySelectorAll('select[data-action="privacy"]').forEach((select) => {
-    select.innerHTML = (state?.privacyStates || []).map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("");
-    const workload = select.dataset.workload;
-    const current = state?.workloads?.find((item) => item.id === workload)?.privacy?.privacy;
-    if (current) select.value = current;
+async function operationStatus(operationId) {
+  const response = await fetch(`/api/operations/${encodeURIComponent(operationId)}`, {
+    cache: "no-store",
+    credentials: "same-origin"
   });
+  return response.json();
+}
+
+async function pollOperation(operationId, workload) {
+  for (let attempt = 0; attempt < 60; attempt += 1) {
+    const operation = await operationStatus(operationId);
+    showCommandResult(`${workload} operation`, operation);
+    if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) {
+      await loadOperationHistory();
+      return;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+}
+
+async function loadOperationHistory() {
+  await Promise.all((state?.workloads || []).map(async (item) => {
+    const target = document.querySelector(`[data-operation-history="${CSS.escape(item.id)}"]`);
+    if (!target) return;
+    const response = await fetch(`/api/workloads/${encodeURIComponent(item.id)}/operations`, {
+      cache: "no-store",
+      credentials: "same-origin"
+    });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const operation = payload.operations?.[0];
+    target.textContent = operation
+      ? `Latest: ${operation.operation_type} — ${operation.state}. ${operation.redacted_summary || ""}`
+      : "No durable operations recorded.";
+  }));
+}
+
+function fillAdminControls() {
   document.querySelectorAll('select[data-action="access"]').forEach((select) => {
     select.innerHTML = (state?.accessStates || []).map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("");
     const workload = select.dataset.workload;
@@ -1021,7 +1057,7 @@ themeToggle.addEventListener("click", () => {
 adminToggle.addEventListener("click", async () => {
   if (!adminEnabled) {
     setAdmin(true);
-    showCommandResult("Operator authentication", "Enter the bootstrap credential, then choose Authenticate.");
+    showCommandResult("Operator authentication", "Enter the one-time bootstrap credential, then choose Authenticate.");
     return;
   }
   if (!csrfToken) {
@@ -1059,20 +1095,7 @@ document.addEventListener("click", async (event) => {
   }
   const register = event.target.closest("[data-register]");
   if (register) {
-    const workloadId = register.dataset.register;
-    if (!csrfToken) {
-      showCommandResult("Operator session required", "Authenticate before registering workloads.");
-      return;
-    }
-    register.disabled = true;
-    try {
-      const result = await apiPost(`/api/workloads/${encodeURIComponent(workloadId)}/register`, "", { composeProject: workloadId });
-      showCommandResult(`Register ${workloadId}`, result.payload);
-      await loadDashboardState();
-    } catch (error) {
-      showCommandResult("Register failed", error.message);
-      register.disabled = false;
-    }
+    showCommandResult("Registration unavailable", "Workload admission is outside the Phase 1 routine-operation surface.");
     return;
   }
   const operation = event.target.closest("[data-operation]");
@@ -1085,18 +1108,42 @@ document.addEventListener("click", async (event) => {
       return;
     }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";
-    const body = action.endsWith("-apply") ? { confirmation } : {};
-    if (action.endsWith("-apply") && body.confirmation !== workload) {
+    if (action.endsWith("-apply") && confirmation !== workload) {
       showCommandResult("Confirmation required", `Type ${workload} in the confirmation field before applying.`);
       return;
     }
-    const parts = action.split("-");
-    const endpoint = `/api/workloads/${encodeURIComponent(workload)}/${parts[0]}/${parts[1]}`;
+    const operationType = action.startsWith("health") ? "health.refresh" : action.startsWith("logs") ? "logs.preview" : action.startsWith("restart") ? "workload.restart" : "backup.create";
     try {
-      const result = await apiPost(endpoint, "", body);
-      const lines = Array.isArray(result.payload.lines) ? { ...result.payload, lines: result.payload.lines } : result.payload;
-      showCommandResult(`${workload} ${action}`, { status: result.status, ...lines });
-      await loadDashboardState();
+      const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+        operationType,
+        parameters: {}
+      });
+      if (!action.endsWith("-apply") && operationType !== "health.refresh") {
+        showCommandResult(`${workload} ${action}`, previewResult.payload);
+        return;
+      }
+      if (!previewResult.ok || !previewResult.payload.allowed) {
+        showCommandResult(`${workload} blocked`, previewResult.payload);
+        return;
+      }
+      const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, "", {
+        operationType,
+        parameters: {},
+        previewDigest: previewResult.payload.previewDigest,
+        expectedRevision: previewResult.payload.expectedRevision
+      });
+      if (!created.ok) {
+        showCommandResult(`${workload} operation`, created.payload);
+        return;
+      }
+      if (operationType === "health.refresh") {
+        showCommandResult(`${workload} health queued`, created.payload);
+        pollOperation(created.payload.operation_id, workload);
+        return;
+      }
+      const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, "", { confirmation });
+      showCommandResult(`${workload} operation queued`, approved.payload);
+      if (approved.ok) pollOperation(created.payload.operation_id, workload);
     } catch (error) {
       showCommandResult("Action failed", error.message);
     }
@@ -1108,60 +1155,55 @@ document.addEventListener("click", async (event) => {
   const workload = (preview || apply).dataset.preview || (preview || apply).dataset.apply;
   const row = (preview || apply).closest(".workload");
   if (!csrfToken) {
-    showCommandResult("Operator session required", "Authenticate before applying changes.");
+    showCommandResult("Operator session required", "Authenticate before changing access.");
     return;
   }
   const current = state?.workloads?.find((item) => item.id === workload) || {};
-  const privacyTarget = selectedValue(row, 'select[data-action="privacy"]');
   const accessTarget = selectedValue(row, 'select[data-action="access"]');
   const confirmation = selectedValue(row, "[data-confirm]");
-  const privacyChanged = privacyTarget && privacyTarget !== current.privacy?.privacy;
   const accessChanged = accessTarget && accessTarget !== current.access?.desired;
   if (preview) {
     try {
-      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/preview`, "", { desired: accessTarget });
-      showCommandResult(`${workload} preview`, {
-        privacy: {
-          from: current.privacy?.privacy || "",
-          to: privacyTarget,
-          wouldUpdate: privacyChanged
-        },
-        access: {
-          status: accessPreview.status,
-          ...accessPreview.payload
-        }
+      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+        operationType: "access.apply",
+        parameters: { desired: accessTarget }
       });
+      showCommandResult(`${workload} access preview`, accessPreview.payload);
     } catch (error) {
       showCommandResult("Preview failed", error.message);
     }
     return;
   }
-  if (!privacyChanged && !accessChanged) {
-    showCommandResult(`${workload} apply`, "No privacy or access change selected.");
+  if (!accessChanged) {
+    showCommandResult(`${workload} apply`, "No access change selected.");
     return;
   }
-  const results = [];
   try {
-    if (privacyChanged) {
-      const privacyResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/privacy`, "", {
-        privacy: privacyTarget,
-        reason: "Dashboard admin change"
-      });
-      results.push({ privacy: { status: privacyResult.status, ...privacyResult.payload } });
-      if (!privacyResult.ok) {
-        showCommandResult(`${workload} apply`, results);
-        return;
-      }
+    if (confirmation !== workload) {
+      showCommandResult("Confirmation required", `Type ${workload} before applying access.`);
+      return;
     }
-    if (accessChanged) {
-      const accessResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/access/apply`, "", {
-        desired: accessTarget,
-        confirmation
-      });
-      results.push({ access: { status: accessResult.status, ...accessResult.payload } });
+    const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+      operationType: "access.apply",
+      parameters: { desired: accessTarget }
+    });
+    if (!accessPreview.ok || !accessPreview.payload.allowed) {
+      showCommandResult(`${workload} access blocked`, accessPreview.payload);
+      return;
     }
-    showCommandResult(`${workload} apply`, results);
-    await loadDashboardState();
+    const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, "", {
+      operationType: "access.apply",
+      parameters: { desired: accessTarget },
+      previewDigest: accessPreview.payload.previewDigest,
+      expectedRevision: accessPreview.payload.expectedRevision
+    });
+    if (!created.ok) {
+      showCommandResult(`${workload} access`, created.payload);
+      return;
+    }
+    const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, "", { confirmation });
+    showCommandResult(`${workload} access queued`, approved.payload);
+    if (approved.ok) pollOperation(created.payload.operation_id, workload);
   } catch (error) {
     showCommandResult("Apply failed", error.message);
   }
