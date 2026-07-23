@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Back up, contain, and start LociGraph without changing its Compose identity.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly SOURCE="/home/oreo/LociGraph/docker-compose.yml"
+readonly OVERRIDE_DIR="/etc/argus"
+readonly OVERRIDE="$OVERRIDE_DIR/locigraph.production.override.yml"
+readonly BACKUP_ROOT="/var/lib/argus/locigraph-backups"
+readonly PROJECT="locigraph"
+readonly ACK_APPLY="--acknowledge-locigraph-production-cutover"
+readonly ACK_ROLLBACK="--acknowledge-locigraph-stop-rollback"
+readonly VOLUMES=(locigraph_postgres_data locigraph_redis_data locigraph_raw_data)
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo ./scripts/argus-locigraph-production-cutover --preflight
+  sudo ./scripts/argus-locigraph-production-cutover --apply --acknowledge-locigraph-production-cutover
+  sudo ./scripts/argus-locigraph-production-cutover --rollback --acknowledge-locigraph-stop-rollback
+
+Apply snapshots and restore-tests every named volume before installing a private
+Compose override and starting LociGraph. Rollback stops the project but preserves
+the volumes, snapshots, and private override.
+EOF
+}
+
+compose() { docker compose -p "$PROJECT" -f "$SOURCE" -f "$OVERRIDE" "$@"; }
+source_stopped() { [[ -z "$(docker ps -q --filter label=com.docker.compose.project="$PROJECT")" ]]; }
+
+write_override() {
+  install -d -o root -g root -m 0755 "$OVERRIDE_DIR"
+  python3 - <<'PY' | install -o root -g root -m 0644 /dev/stdin "$OVERRIDE"
+import sys
+sys.path.insert(0, "/srv/argus/scripts")
+from argus_locigraph_cutover import override_text
+sys.stdout.write(override_text())
+PY
+}
+
+validate_effective() {
+  compose config --format json 2>/dev/null | python3 "$ROOT/scripts/argus-locigraph-effective-verify"
+}
+
+preflight() {
+  local available required total=0 volume mountpoint bytes
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  for command in docker python3 install cp tar sha256sum du df curl; do command -v "$command" >/dev/null || fail "missing required command: $command"; done
+  [[ -f "$SOURCE" ]] || fail "legacy Compose file is missing"
+  [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
+  source_stopped || fail "LociGraph must remain stopped before cutover"
+  for volume in "${VOLUMES[@]}"; do
+    mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$volume")"
+    [[ -d "$mountpoint" ]] || fail "volume mountpoint missing: $volume"
+    bytes="$(du -sb "$mountpoint" | awk '{print $1}')"
+    total=$((total + bytes))
+  done
+  available="$(df -B1 --output=avail "$([[ -d "$BACKUP_ROOT" ]] && printf '%s' "$BACKUP_ROOT" || printf '%s' /var/lib/argus)" | tail -1 | tr -d ' ')"
+  required=$((total * 3 + 1073741824))
+  ((available >= required)) || fail "insufficient backup capacity"
+  printf '{"schemaVersion":1,"sourceStopped":true,"composeProject":"locigraph","volumeBytes":%s,"requiredFreeBytes":%s,"availableBytes":%s,"capacitySufficient":true,"publicExposureChanged":false}\n' "$total" "$required" "$available"
+}
+
+backup_and_restore_test() {
+  local backup_dir="$1" volume mountpoint archive test_volume test_mountpoint stamp
+  install -d -o root -g root -m 0700 "$backup_dir/config" "$backup_dir/volumes"
+  cp --preserve=mode,ownership,timestamps "$SOURCE" "$backup_dir/config/docker-compose.yml"
+  [[ ! -f /home/oreo/LociGraph/Caddyfile ]] || cp --preserve=mode,ownership,timestamps /home/oreo/LociGraph/Caddyfile "$backup_dir/config/Caddyfile"
+  [[ ! -f "$OVERRIDE" ]] || cp --preserve=mode,ownership,timestamps "$OVERRIDE" "$backup_dir/config/locigraph.production.override.yml"
+  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+  for volume in "${VOLUMES[@]}"; do
+    mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$volume")"
+    archive="$backup_dir/volumes/$volume.tar"
+    tar --acls --xattrs --numeric-owner -cpf "$archive" -C "$mountpoint" .
+    sha256sum "$archive" >"$archive.sha256"
+    tar -tf "$archive" >/dev/null
+    test_volume="argus_restore_test_${volume}_${stamp}"
+    docker volume create "$test_volume" >/dev/null
+    test_mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' "$test_volume")"
+    tar --acls --xattrs --numeric-owner -xpf "$archive" -C "$test_mountpoint"
+    if [[ "$volume" == locigraph_postgres_data ]]; then
+      docker run --rm --pull never --network none -v "$test_volume:/var/lib/postgresql/data" \
+        pgvector/pgvector:pg16 /usr/lib/postgresql/16/bin/pg_controldata /var/lib/postgresql/data >/dev/null
+    fi
+    docker volume rm "$test_volume" >/dev/null
+  done
+  printf '%s\n' "$backup_dir"
+}
+
+stop_on_failure() {
+  compose stop >/dev/null 2>&1 || true
+  printf 'CUTOVER_FAILED workloadStopped=true overridePreserved=true\n' >&2
+}
+
+apply_cutover() {
+  local backup_dir
+  preflight >/dev/null
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  backup_and_restore_test "$backup_dir" >/dev/null
+  write_override
+  validate_effective >/dev/null
+  trap stop_on_failure ERR
+  compose up -d
+  for _ in {1..60}; do
+    if curl --fail --silent --show-error --max-time 3 http://127.0.0.1:8090 >/dev/null 2>&1; then
+      trap - ERR
+      printf '{"schemaVersion":1,"workloadId":"locigraph","composeProject":"locigraph","backup":"%s","restoreRehearsed":true,"targetHealthy":true,"loopbackOnly":true,"databaseHostPublished":false,"cacheHostPublished":false,"backendHostPublished":false,"bootPersistent":true,"verified":true}\n' "$backup_dir"
+      return 0
+    fi
+    sleep 2
+  done
+  fail "LociGraph health did not recover"
+}
+
+rollback() {
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  [[ -f "$OVERRIDE" ]] || fail "private override is not installed"
+  compose stop
+  source_stopped || fail "LociGraph containers remain running"
+  printf '{"schemaVersion":1,"workloadId":"locigraph","stopped":true,"volumesPreserved":true,"overridePreserved":true,"publicExposureChanged":false}\n'
+}
+
+case "${1:-}" in
+  --preflight) [[ $# -eq 1 ]] || { usage; exit 2; }; preflight ;;
+  --apply) [[ "${2:-}" == "$ACK_APPLY" && $# -eq 2 ]] || { usage; exit 2; }; apply_cutover ;;
+  --rollback) [[ "${2:-}" == "$ACK_ROLLBACK" && $# -eq 2 ]] || { usage; exit 2; }; rollback ;;
+  *) usage; exit 2 ;;
+esac
