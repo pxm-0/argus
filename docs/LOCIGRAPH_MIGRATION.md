@@ -30,3 +30,32 @@ No migration apply is allowed until all of these are true:
 
 Preserve the Compose project name `locigraph`. Do not change public routes,
 open router ports, enable Funnel, or expose PostgreSQL, Redis, or Docker.
+
+## Production cutover
+
+After reviewing the preflight, run the production cutover preflight. Apply is a
+separate, explicitly acknowledged operation:
+
+```bash
+sudo ./scripts/argus-locigraph-production-cutover --preflight
+sudo ./scripts/argus-locigraph-production-cutover \
+  --apply \
+  --acknowledge-locigraph-production-cutover
+```
+
+Apply requires the source project to be stopped. It snapshots all three named
+volumes, verifies checksums, extracts each snapshot into a private restore-test
+directory, installs a root-owned Compose override, validates the effective
+configuration without printing it, and only then starts the project. The only
+host publication is Caddy on `127.0.0.1:8090`; backend, PostgreSQL, and Redis
+remain un-published. Every service uses `unless-stopped`.
+
+If validation or health fails after startup begins, the script stops the project
+and preserves both snapshots and the private override. Operators can also invoke
+the same stopped-state rollback explicitly:
+
+```bash
+sudo ./scripts/argus-locigraph-production-cutover \
+  --rollback \
+  --acknowledge-locigraph-stop-rollback
+```

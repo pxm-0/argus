@@ -1,0 +1,16 @@
+#!/usr/bin/env python3
+"""Validate an effective LociGraph Compose JSON model without echoing it."""
+from __future__ import annotations
+
+import json
+import sys
+
+from argus_locigraph_cutover import CutoverError, validate_effective
+
+
+try:
+    payload = validate_effective(json.load(sys.stdin))
+except (CutoverError, json.JSONDecodeError, KeyError, TypeError, ValueError) as error:
+    print(f"refusing LociGraph effective configuration: {error}", file=sys.stderr)
+    raise SystemExit(2)
+print(json.dumps(payload, sort_keys=True))
