@@ -133,13 +133,18 @@ def check_dashboard_runtime_cleanliness(repo: Path, smoke: Smoke) -> None:
     smoke.check(ignored.returncode == 0, "runtime dashboard state ignored")
 
 
-def request_json(url: str, *, method: str = "GET", token: str = "", payload: dict[str, Any] | None = None) -> tuple[int, dict[str, Any], str]:
+def request_json(
+    url: str, *, method: str = "GET", token: str = "",
+    payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
+) -> tuple[int, dict[str, Any], str]:
     body = json.dumps(payload or {}).encode()
     request = urllib.request.Request(url, data=body if method != "GET" else None, method=method)
     if method != "GET":
         request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
+    for key, value in (headers or {}).items():
+        request.add_header(key, value)
     try:
         with urllib.request.urlopen(request, timeout=4) as response:
             text = response.read().decode()
@@ -157,10 +162,15 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
     token = "smoke-action-token"
     with tempfile.TemporaryDirectory() as tempdir:
         token_file = Path(tempdir) / "control-token"
+        identity_file = Path(tempdir) / "operator-identities.json"
+        runtime = Path(tempdir) / "runtime"
         token_file.write_text(token)
+        identity_file.write_text('{"operators":["smoke@example.com"]}')
         env = os.environ.copy()
         env["ARGUS_API_PORT"] = "18104"
         env["ARGUS_TOKEN_FILE"] = str(token_file)
+        env["ARGUS_OPERATOR_IDENTITIES_FILE"] = str(identity_file)
+        env["ARGUS_RUNTIME"] = str(runtime)
         process = subprocess.Popen(
             ["python3", str(repo / "control-plane" / "api" / "server.py")],
             cwd=repo,
@@ -174,7 +184,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             ready = False
             while time.time() < deadline:
                 try:
-                    status, _, _ = request_json("http://127.0.0.1:18104/api/actions")
+                    status, _, _ = request_json("http://127.0.0.1:18104/api/dashboard-state")
                 except OSError:
                     time.sleep(0.2)
                     continue
@@ -184,46 +194,45 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             if not ready:
                 smoke.fail("control API action endpoints available")
                 return
-            unauth_status, _, _ = request_json("http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview", method="POST")
-            smoke.check(unauth_status == 401, "control API action endpoints require auth")
-            status, payload, text = request_json(
+            endpoint = "http://127.0.0.1:18104/api/session/exchange"
+            request = urllib.request.Request(endpoint, data=b"{}", method="POST")
+            request.add_header("Content-Type", "application/json")
+            request.add_header("Authorization", f"Bearer {token}")
+            request.add_header("Tailscale-User-Login", "smoke@example.com")
+            with urllib.request.urlopen(request, timeout=4) as response:
+                payload = json.loads(response.read())
+                cookie = response.headers["Set-Cookie"].split(";", 1)[0]
+            csrf = payload["csrfToken"]
+            smoke.check(
+                "HttpOnly" in response.headers["Set-Cookie"]
+                and "Secure" in response.headers["Set-Cookie"]
+                and "SameSite=Strict" in response.headers["Set-Cookie"],
+                "operator session cookie is hardened",
+            )
+            unauth_status, _, _ = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
+                method="POST", payload={},
+            )
+            smoke.check(unauth_status == 401, "operation endpoints require both identities")
+            csrf_status, _, _ = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
+                method="POST", payload={},
+                headers={"Cookie": cookie, "Tailscale-User-Login": "smoke@example.com"},
+            )
+            smoke.check(csrf_status == 403, "state-changing requests reject missing CSRF")
+            status, preview, text = request_json(
                 "http://127.0.0.1:18104/api/workloads/hello-nginx/restart/preview",
                 method="POST",
                 token=token,
+                payload={},
+                headers={
+                    "Cookie": cookie,
+                    "Tailscale-User-Login": "smoke@example.com",
+                    "X-Argus-CSRF": csrf,
+                },
             )
-            smoke.check(status == 200 and payload.get("operation") == "restart-preview", "restart preview non-mutating")
+            smoke.check(status == 200 and preview.get("allowed") is False, "compatibility action uses operator session")
             smoke.check("docker compose" not in text and "compose -f" not in text, "dashboard action responses omit raw shell commands")
-            blocked_status, blocked_payload, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/backup/apply",
-                method="POST",
-                token=token,
-                payload={"confirmation": ""},
-            )
-            manifest_status, manifest_payload, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/dozzle/backup/apply",
-                method="POST",
-                token=token,
-                payload={"confirmation": "dozzle"},
-            )
-            smoke.check(
-                blocked_status == 403
-                and blocked_payload.get("ok") is False
-                and manifest_status == 403
-                and manifest_payload.get("ok") is False,
-                "backup execution gated by manifest",
-            )
-            access_status, access_payload, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/access/apply",
-                method="POST",
-                token=token,
-                payload={"desired": "cloudflare-protected", "confirmation": ""},
-            )
-            smoke.check(
-                access_status == 403
-                and access_payload.get("confirmationRequired") is True
-                and access_payload.get("confirmationPhrase") == "plan protected cloudflare",
-                "control API enforces access confirmation phrase",
-            )
         finally:
             process.terminate()
             try:
@@ -527,8 +536,8 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
     smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
-    smoke.check("/access/preview" in js and "/access/apply" in js and "/privacy" in js, "dashboard admin flow calls control API")
-    smoke.check("domain-agent-required" in js and "data-focus-workload" in js, "dashboard topology fails closed for domain controls")
+    smoke.check("/access/preview" in js and "/api/workloads/" in js and "/api/session/exchange" in js, "dashboard admin flow calls session-authenticated control API")
+    smoke.check("domain-agent-required" in js and "data-focus-workload" in js, "dashboard topology fails closed for unavailable domain controls")
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:

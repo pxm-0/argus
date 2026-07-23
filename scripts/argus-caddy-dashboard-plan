@@ -12,25 +12,22 @@ from argus_common import fail, load_json, root
 def render(routes: dict[str, Any]) -> str:
     dashboard = routes["dashboard"]
     api = routes["api"]
-    tailscale_ip = routes.get("observed", {}).get("tailscaleIp", "")
     port = int(dashboard["port"])
     if dashboard.get("bind") != "tailscale":
         fail("dashboard route must bind to tailscale in P0")
-    if not tailscale_ip:
-        fail("missing observed Tailscale IP in config/routes.json")
-    if tailscale_ip == "0.0.0.0":
-        fail("refusing to generate a public dashboard bind")
     if api.get("bind") != "127.0.0.1" or bool(api.get("public")):
         fail("control API must remain private at 127.0.0.1")
-    return f"""# Generated private Argus dashboard route.
-# Review, back up /etc/caddy/Caddyfile, validate, then reload manually.
-http://oreochiserver:{port}, http://{tailscale_ip}:{port} {{
-    bind {tailscale_ip}
-    root * /srv/argus/control-plane/dashboard/public
-    handle /api/* {{
-        reverse_proxy {api["bind"]}:{api["port"]}
-    }}
-    file_server
+    return f"""# Private Argus backend for Tailscale Serve.
+# Tailscale Serve supplies Tailscale-User-Login and proxies to this loopback route.
+http://127.0.0.1:{port} {{
+\tbind 127.0.0.1
+\troot * /srv/argus/control-plane/dashboard/public
+\thandle /api/* {{
+\t\treverse_proxy {api["bind"]}:{api["port"]} {{
+\t\t\theader_up Tailscale-User-Login {{http.request.header.Tailscale-User-Login}}
+\t\t}}
+\t}}
+\tfile_server
 }}
 """
 
@@ -47,7 +44,7 @@ def main() -> int:
     payload = {
         "ok": True,
         "generated": str(output),
-        "bind": routes["observed"]["tailscaleIp"],
+        "bind": "127.0.0.1",
         "port": routes["dashboard"]["port"],
         "apiProxy": f'{routes["api"]["bind"]}:{routes["api"]["port"]}',
         "manualInstallRequired": True,
