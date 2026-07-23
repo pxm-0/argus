@@ -436,7 +436,7 @@
         "namedVolumeRisks": [],
         "notes": [
           "M4 moved the stateless service into personal-sandbox with no published port, host mount, or public route.",
-          "Runtime operations remain disabled until the domain-local typed agent is available."
+          "M5 routine operations execute through the personal-sandbox typed agent."
         ]
       }
     }

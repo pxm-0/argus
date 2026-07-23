@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import threading
@@ -28,8 +29,9 @@ SESSION_COOKIE = "argus_session"
 TAILSCALE_IDENTITY_HEADER = "Tailscale-User-Login"
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_actions import backup_apply, backup_preview, logs_preview, restart_apply, restart_preview, wait_for_health  # noqa: E402
-from argus_common import audit, by_id, dashboard_state, load_json, now, policy_decision, regenerate_dashboard  # noqa: E402
+from argus_actions import backup_preview, logs_preview, restart_preview  # noqa: E402
+from argus_access_runtime import route_contract  # noqa: E402
+from argus_common import audit, by_id, dashboard_state, load_json, policy_decision  # noqa: E402
 from argus_operations import (  # noqa: E402
     MUTATIONS,
     OperationConflict,
@@ -37,7 +39,6 @@ from argus_operations import (  # noqa: E402
     digest,
 )
 from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
-from argus_m1 import access_writer  # noqa: E402
 
 
 SESSIONS = SessionStore(RUNTIME / "sessions.sqlite3")
@@ -164,8 +165,8 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
     if item is None:
         return False, "unknown workload"
     domain = trust_domain(workload_id)
-    if domain != "legacy-rootful":
-        return False, f"{domain} requires the domain-agent follow-up"
+    if not agent_available(domain):
+        return False, f"{domain} domain agent unavailable"
     if operation_type == "health.refresh":
         manifest_path = ROOT / "workloads" / workload_id / "manifest.json"
         manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
@@ -187,65 +188,37 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
         desired = str(parameters.get("desired", ""))
         if desired not in {"none", "local", "tailnet"}:
             return False, "Phase 1 access state must be none, local, or tailnet"
+        if desired == "tailnet":
+            _, route_reason = route_contract(ROOT, item, workload_id)
+            if route_reason:
+                return False, route_reason
         decision = policy_decision(workload_id, desired)
         return bool(decision.get("allowed")), str(decision.get("reason", "access policy denied"))
     return False, "unsupported typed operation"
 
 
 def dispatch_operation(operation_id: str, domain: str) -> None:
-    def run() -> None:
+    def send() -> None:
+        socket_path = RUNTIME / "agents" / f"{domain}.sock"
         try:
-            operation = LEDGER.transition(operation_id, {"queued"}, "running", started_at=int(time.time()))
-            operation_type = str(operation["operation_type"])
-            workload_id = str(operation["workload_id"])
-            parameters = dict(operation["parameters"])
-            if domain != "legacy-rootful":
-                raise PermissionError("domain-local agent required")
-            if operation_type == "health.refresh":
-                item = workload(workload_id)
-                if not item:
-                    raise ValueError("unknown workload")
-                result = {"summary": "Health evidence refreshed.", "health": wait_for_health(item, float(parameters.get("timeoutSeconds", 5)))}
-            elif operation_type == "logs.preview":
-                result = logs_preview(workload_id, max_lines=int(parameters.get("maxLines", 100)))
-            elif operation_type == "workload.restart":
-                result = restart_apply(workload_id, confirmation=workload_id)
-            elif operation_type == "backup.create":
-                result = backup_apply(workload_id, confirmation=workload_id)
-            elif operation_type == "access.apply":
-                desired = str(parameters["desired"])
-                decision = policy_decision(workload_id, desired)
-                applied = access_writer().apply(
-                    workload_id=workload_id, desired=desired, decision=decision,
-                    actor=str(operation["requested_by"]), timestamp=now(),
-                )
-                regenerate_dashboard()
-                result = {"summary": f"Access changed to {applied['effective']}."}
-            else:
-                raise ValueError("unsupported typed operation")
-            LEDGER.transition(
-                operation_id, {"running"}, "succeeded", finished_at=int(time.time()),
-                redacted_summary=str(result.get("summary", "Operation succeeded."))[:1000],
-            )
-        except PermissionError as exc:
-            try:
-                LEDGER.transition(
-                    operation_id, {"running"}, "denied", finished_at=int(time.time()),
-                    error_class="policy-denied", redacted_summary=str(exc)[:1000],
-                )
-            except OperationConflict:
-                pass
+            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+                client.settimeout(5)
+                client.connect(str(socket_path))
+                client.sendall((json.dumps({"operationId": operation_id}) + "\n").encode())
+                response = json.loads(client.makefile("rb").readline(65537))
+                if not response.get("ok"):
+                    raise RuntimeError("domain agent rejected operation")
         except Exception as exc:  # noqa: BLE001
             try:
                 LEDGER.transition(
-                    operation_id, {"queued", "running"}, "failed", finished_at=int(time.time()),
-                    error_class=exc.__class__.__name__, redacted_summary="Compatibility worker failed the typed operation.",
+                    operation_id, {"queued"}, "failed", finished_at=int(time.time()),
+                    error_class="agent-unavailable", redacted_summary="Domain agent was unavailable or rejected dispatch.",
                 )
             except OperationConflict:
                 pass
             audit("operation.dispatch", "-", "failed", operationId=operation_id, errorClass=exc.__class__.__name__)
 
-    threading.Thread(target=run, daemon=True).start()
+    threading.Thread(target=send, daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):

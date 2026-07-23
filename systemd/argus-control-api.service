@@ -5,7 +5,8 @@ After=network.target
 [Service]
 Type=simple
 User=oreo
-Group=oreo
+Group=argus-control
+SupplementaryGroups=argus
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_TOKEN_FILE=/etc/argus/control-token
@@ -13,6 +14,12 @@ Environment=ARGUS_OPERATOR_IDENTITIES_FILE=/etc/argus/operator-identities.json
 ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
 Restart=on-failure
 RestartSec=3
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/argus/runtime
 
 [Install]
 WantedBy=multi-user.target

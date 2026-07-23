@@ -11,7 +11,7 @@ from argus_m5_topology import build_topology  # noqa: E402
 
 
 class M5TopologyTest(unittest.TestCase):
-    def test_topology_keeps_legacy_visible_and_target_controls_closed(self) -> None:
+    def test_topology_exposes_domain_agent_availability(self) -> None:
         workloads = [
             {"id": "legacy-app", "name": "Legacy", "access": {"desired": "tailnet", "effective": "local"}, "routes": {}},
             {"id": "pilot", "name": "Pilot", "access": {"desired": "none", "effective": "none"}, "routes": {}},
@@ -23,7 +23,10 @@ class M5TopologyTest(unittest.TestCase):
         nodes = {item["id"]: item for item in result["nodes"]}
         self.assertEqual("legacy-rootful", nodes["legacy-app"]["trustDomain"])
         self.assertTrue(nodes["legacy-app"]["drift"])
-        self.assertEqual("domain-agent-required", nodes["pilot"]["controlMode"])
+        self.assertEqual("domain-agent", nodes["pilot"]["controlMode"])
+        self.assertEqual("compatibility-agent", nodes["legacy-app"]["controlMode"])
+        self.assertFalse(nodes["pilot"]["agentAvailable"])
+        self.assertEqual(0, result["summary"]["domainAgentsAvailable"])
         self.assertTrue(result["readOnly"])
         self.assertEqual(1, result["summary"]["unresolvedClassifications"])
 

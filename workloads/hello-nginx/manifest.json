@@ -44,18 +44,18 @@
   },
   "operations": {
     "logs": {
-      "allowed": false
+      "allowed": true
     },
     "restart": {
-      "allowed": false
+      "allowed": true
     },
     "backup": {
       "allowed": true
     },
-    "logsAllowed": false,
-    "restartAllowed": false,
+    "logsAllowed": true,
+    "restartAllowed": true,
     "backupAllowed": true,
-    "dashboardActionsAllowed": false,
+    "dashboardActionsAllowed": true,
     "approvedForCloudflareProtectedDemo": true,
     "requiresConfirmation": true
   },
