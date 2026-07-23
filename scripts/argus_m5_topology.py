@@ -73,7 +73,8 @@ def build_topology(
                 "declaredAccess": desired,
                 "effectiveAccess": effective,
                 "drift": drift,
-                "controlMode": "domain-agent-required" if domain_id != "legacy-rootful" else "legacy-local",
+                "controlMode": "domain-agent" if domain_id != "legacy-rootful" else "compatibility-agent",
+                "agentAvailable": False,
             }
         )
         edges.append({"source": domain_id, "target": workload_id, "meaning": "runtime-placement"})
