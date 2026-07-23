@@ -278,7 +278,7 @@
     {
       "id": "locigraph",
       "name": "LociGraph",
-      "description": "AI-assisted claim extraction and knowledge graph app discovered from Docker Compose.",
+      "description": "AI-assisted claim extraction and knowledge graph app running through a production-safe legacy Compose containment override.",
       "lifecycle": "discovered",
       "kind": "web-app",
       "paths": {
@@ -300,10 +300,7 @@
         "localUrl": "http://127.0.0.1:8090",
         "internalPort": 80,
         "observedBindings": [
-          "0.0.0.0:8000->8000/tcp",
-          "0.0.0.0:8090->80/tcp",
-          "0.0.0.0:16379->6379/tcp",
-          "0.0.0.0:15432->5432/tcp"
+          "127.0.0.1:8090->80/tcp"
         ]
       },
       "health": {
@@ -322,7 +319,7 @@
         "privacyToggle": true
       },
       "migration": {
-        "status": "needs-discovery",
+        "status": "planned",
         "originalPath": "/home/oreo/LociGraph",
         "compatibilitySymlink": false,
         "bindMountRisks": [

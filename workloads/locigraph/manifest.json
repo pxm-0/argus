@@ -25,14 +25,14 @@
     ]
   },
   "migration": {
-    "status": "skipped",
+    "status": "external",
     "originalPath": "/home/oreo/LociGraph",
     "compatibilitySymlink": false,
-    "rollback": "Stop the locigraph Compose project on oreochiserver; no canonical migration has been performed yet.",
+    "rollback": "Run the acknowledged stopped-state rollback; preserve the named volumes, verified snapshots, and private override.",
     "notes": [
-      "Still running from /home/oreo/LociGraph, not the canonical /srv/argus/workloads layout.",
-      "backend and caddy are bound to 0.0.0.0 (ports 8000 and 8090); needs firewall/bind remediation before any access grant.",
-      "Ports remapped to avoid host conflicts: postgres 15432, redis 16379, caddy 8090."
+      "The legacy source remains at /home/oreo/LociGraph pending canonical source migration.",
+      "A root-owned production override publishes only Caddy at 127.0.0.1:8090.",
+      "Backend, PostgreSQL, and Redis have no host-published ports; all six services use unless-stopped."
     ]
   },
   "health": {
@@ -60,7 +60,7 @@
   "backup": {
     "backupAllowed": false,
     "restoreAllowed": false,
-    "status": "needs-discovery",
+    "status": "ok",
     "source": false,
     "env": false,
     "namedVolumes": [
@@ -77,15 +77,17 @@
       "restoreCommand": ""
     },
     "destination": "/srv/argus/runtime/backups/locigraph",
+    "cutoverSnapshotDestination": "/var/lib/argus/locigraph-backups",
     "retention": {
       "keepLast": 0
     },
-    "restoreTested": false,
-    "lastBackupAt": "",
-    "lastRestoreTestAt": "",
+    "restoreTested": true,
+    "lastBackupAt": "2026-07-23T13:25:34Z",
+    "lastRestoreTestAt": "2026-07-23T13:25:34Z",
     "exclusions": [],
     "requirements": [
-      "No backup execution allowed until sensitive-data classification and env/secret handling are reviewed."
+      "The production cutover created root-only offline named-volume snapshots and verified restore into temporary Docker volumes.",
+      "Generic dashboard backup execution remains disabled until scheduled retention and application-consistent PostgreSQL dumps are implemented."
     ]
   },
   "security": {
@@ -96,8 +98,8 @@
     "forbiddenTargets": [],
     "notes": [
       "Handles JWT auth, an OpenAI API key, and an app login password as environment variables.",
-      "backend (8000) and caddy (8090) are bound to 0.0.0.0; verify firewall posture before any access grant.",
-      "Postgres and Redis are also host-exposed (15432, 16379); confirm no unintended external reachability."
+      "The production override binds only Caddy to 127.0.0.1:8090.",
+      "Backend, PostgreSQL, and Redis are internal-only with no host-published ports."
     ]
   }
 }
