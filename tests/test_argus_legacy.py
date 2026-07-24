@@ -29,6 +29,7 @@ from argus_legacy import (  # noqa: E402
     ownership_reconciliation,
     parse_ss_listeners,
     route_evidence,
+    tracked_legacy_workloads,
     write_inventory,
 )
 from argus_m0 import approve_host_ingress_exceptions, docker_forwarded_wildcard_findings, host_listener_review, isolation_report, owner_review_cards, record_docker_lockdown_containment, record_evidence, remediation_plan  # noqa: E402
@@ -207,7 +208,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
         self.assertTrue(payload["readOnly"])
         self.assertEqual(LEGACY_CLASSIFICATION, payload["classification"])
         self.assertIn("firewall-inventory-unavailable", payload["evidenceGaps"])
-        self.assertEqual(8, len(payload["trackedWorkloads"]))
+        self.assertEqual(tracked_legacy_workloads(), payload["trackedWorkloads"])
 
     def test_safe_summary_excludes_private_resource_values(self) -> None:
         payload = {
