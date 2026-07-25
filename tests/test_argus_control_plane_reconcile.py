@@ -1,5 +1,7 @@
 import importlib.util
 import os
+import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -43,6 +45,31 @@ class ControlPlaneReconcileTests(unittest.TestCase):
         with patch.object(server, "dashboard_state", side_effect=PermissionError("sensitive path")):
             handler.do_GET()
         self.assertEqual(responses, [(500, {"error": "PermissionError"})])
+
+    def test_only_requesting_operator_can_cancel_pending_operation(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ARGUS_RUNTIME": directory}):
+            server = load_server()
+            operation, _ = server.LEDGER.create(
+                workload_id="hello-nginx",
+                trust_domain="personal-sandbox",
+                operation_type="workload.restart",
+                requested_by="operator@example.com",
+                parameters={},
+                preview_digest="preview",
+                expected_revision="revision",
+                policy_version="1",
+                idempotency_key="cancel-owner-test",
+            )
+            handler = object.__new__(server.Handler)
+            responses = []
+            handler.send_json = lambda status, payload: responses.append((status, payload))
+            other = server.Session("other", "other@example.com", "csrf", 0, int(time.time()) + 60, 0)
+            handler.handle_operation_cancel(operation["operation_id"], other)
+            self.assertEqual(responses[-1], (403, {"error": "operation belongs to another operator"}))
+            owner = server.Session("owner", "operator@example.com", "csrf", 0, int(time.time()) + 60, 0)
+            handler.handle_operation_cancel(operation["operation_id"], owner)
+            self.assertEqual(responses[-1][0], 200)
+            self.assertEqual(responses[-1][1]["state"], "denied")
 
 
 if __name__ == "__main__":

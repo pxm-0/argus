@@ -722,6 +722,29 @@ async function authenticateOperator() {
   return result.payload;
 }
 
+async function ensureStepUp() {
+  const response = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
+  if (!response.ok) {
+    showCommandResult("Operator session required", "Authenticate again before creating a mutation.");
+    return false;
+  }
+  const session = await response.json();
+  csrfToken = session.csrfToken || csrfToken;
+  if (session.stepUpValid) return true;
+  const credential = tokenFor();
+  if (!credential) {
+    showCommandResult("Step-up required", "Enter the bootstrap credential in the operator field, then retry the mutation.");
+    return false;
+  }
+  const result = await apiPost("/api/session/step-up", credential, {});
+  adminTokenInput.value = "";
+  if (!result.ok) {
+    showCommandResult("Step-up failed", result.payload);
+    return false;
+  }
+  return true;
+}
+
 function renderMetrics(data) {
   if (!data || data.error) {
     metricsEl.innerHTML = metricCard("Metrics", data?.error || "No metrics.json yet", null);
@@ -1007,6 +1030,14 @@ async function loadOperationHistory() {
     target.textContent = operation
       ? `Latest: ${operation.operation_type} — ${operation.state}. ${operation.redacted_summary || ""}`
       : "No durable operations recorded.";
+    if (operation && ["planned", "awaiting-approval", "queued"].includes(operation.state)) {
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.dataset.cancelOperation = operation.operation_id;
+      cancel.dataset.workload = item.id;
+      cancel.textContent = "Cancel pending operation";
+      target.append(" ", cancel);
+    }
   }));
 }
 
@@ -1093,6 +1124,18 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  const cancelPending = event.target.closest("[data-cancel-operation]");
+  if (cancelPending) {
+    if (!csrfToken) {
+      showCommandResult("Operator session required", "Authenticate before cancelling a pending operation.");
+      return;
+    }
+    const operationId = cancelPending.dataset.cancelOperation;
+    const result = await apiPost(`/api/operations/${encodeURIComponent(operationId)}/cancel`, "", {});
+    showCommandResult(`${cancelPending.dataset.workload} cancellation`, result.payload);
+    await loadOperationHistory();
+    return;
+  }
   const register = event.target.closest("[data-register]");
   if (register) {
     showCommandResult("Registration unavailable", "Workload admission is outside the Phase 1 routine-operation surface.");
@@ -1112,6 +1155,7 @@ document.addEventListener("click", async (event) => {
       showCommandResult("Confirmation required", `Type ${workload} in the confirmation field before applying.`);
       return;
     }
+    if (action.endsWith("-apply") && !(await ensureStepUp())) return;
     const operationType = action.startsWith("health") ? "health.refresh" : action.startsWith("logs") ? "logs.preview" : action.startsWith("restart") ? "workload.restart" : "backup.create";
     try {
       const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
@@ -1183,6 +1227,7 @@ document.addEventListener("click", async (event) => {
       showCommandResult("Confirmation required", `Type ${workload} before applying access.`);
       return;
     }
+    if (!(await ensureStepUp())) return;
     const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
       operationType: "access.apply",
       parameters: { desired: accessTarget }

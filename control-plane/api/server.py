@@ -364,12 +364,7 @@ class Handler(BaseHTTPRequestHandler):
         elif approve_match:
             self.handle_operation_approve(approve_match.group(1), session, body)
         elif cancel_match:
-            operation = LEDGER.transition(
-                cancel_match.group(1), {"planned", "awaiting-approval", "queued"}, "denied",
-                finished_at=int(time.time()), error_class="operator-cancelled",
-                redacted_summary="Cancelled by operator before execution.",
-            )
-            self.send_json(200, operation)
+            self.handle_operation_cancel(cancel_match.group(1), session)
         elif legacy_action_match:
             workload_id, action, phase = legacy_action_match.groups()
             operation_type = {"logs": "logs.preview", "restart": "workload.restart", "backup": "backup.create"}[action]
@@ -485,6 +480,22 @@ class Handler(BaseHTTPRequestHandler):
         operation = LEDGER.transition(operation_id, {"awaiting-approval"}, "queued", approved_at=int(time.time()))
         dispatch_operation(operation_id, operation["trust_domain"])
         self.send_json(202, operation)
+
+    def handle_operation_cancel(self, operation_id: str, session: Session) -> None:
+        operation = LEDGER.get(operation_id)
+        if not operation:
+            self.send_json(404, {"error": "not found"})
+            return
+        if operation["requested_by"] != session.identity:
+            self.send_json(403, {"error": "operation belongs to another operator"})
+            return
+        operation = LEDGER.transition(
+            operation_id, {"planned", "awaiting-approval", "queued"}, "denied",
+            finished_at=int(time.time()), error_class="operator-cancelled",
+            redacted_summary="Cancelled by operator before execution.",
+        )
+        audit("operation.cancel", operation["workload_id"], "ok", actor=session.identity, operationId=operation_id)
+        self.send_json(200, operation)
 
 
 def main() -> int:

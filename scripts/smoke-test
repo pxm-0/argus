@@ -537,6 +537,7 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
     smoke.check("window.prompt" not in js and "window.alert" not in js, "dashboard admin flow avoids browser modal prompts")
     smoke.check("/operations/preview" in js and "/approve" in js and "/api/session/exchange" in js, "dashboard admin flow calls typed control API")
+    smoke.check("/api/session/step-up" in js and "Cancel pending operation" in js, "dashboard recovers expired step-up before mutation")
     smoke.check("agentAvailable" in js or "domain-agent" in js and "data-focus-workload" in js, "dashboard topology reports domain-agent controls")
 
 
