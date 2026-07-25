@@ -71,13 +71,24 @@ def render_html() -> str:
         <p>Compare containment, placement, and access state across every trust domain. Select a workload to inspect its evidence.</p>
       </section>
       <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
-      <section class="command-panel" id="command-panel" hidden>
-        <div class="section-head">
-          <h2>Command Result</h2>
-          <button id="command-close" type="button">Close</button>
-        </div>
-        <pre id="command-output"></pre>
-        <div id="command-actions" class="actions"></div>
+      <section class="command-panel" id="command-panel" aria-live="polite" hidden>
+        <header class="command-header">
+          <div class="command-heading">
+            <span class="result-badge info" id="command-status">Result</span>
+            <div>
+              <p class="eyebrow">Command result</p>
+              <h2 id="command-title">Command completed</h2>
+            </div>
+          </div>
+          <button id="command-close" type="button" aria-label="Close command result">Close</button>
+        </header>
+        <p class="command-summary" id="command-summary"></p>
+        <dl class="command-highlights" id="command-highlights"></dl>
+        <details class="command-details" id="command-details">
+          <summary>Technical details <span>Raw response</span></summary>
+          <pre id="command-output"></pre>
+        </details>
+        <div id="command-actions" class="command-actions"></div>
       </section>
       <section class="monitor" id="monitor-panel" hidden>
         <div class="section-head">
@@ -619,6 +630,11 @@ const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
 const commandPanel = document.getElementById("command-panel");
 const commandOutput = document.getElementById("command-output");
+const commandTitle = document.getElementById("command-title");
+const commandStatus = document.getElementById("command-status");
+const commandSummary = document.getElementById("command-summary");
+const commandHighlights = document.getElementById("command-highlights");
+const commandDetails = document.getElementById("command-details");
 const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
 let monitorTimer = null;
@@ -667,9 +683,56 @@ function metricCard(label, value, percent) {
   return `<div class="metric"><strong>${label}</strong><p>${value}</p>${percent == null ? "" : `<div class="bar"><span style="width:${width}%"></span></div>`}</div>`;
 }
 
+function commandResultTone(title, payload) {
+  const stateValue = typeof payload === "object" && payload ? payload.state || payload.status || "" : "";
+  const value = `${title} ${stateValue}`.toLowerCase();
+  if (/(fail|error|blocked|unavailable|rejected)/.test(value)) return ["Failed", "bad"];
+  if (/(awaiting|pending|queued|running|required|preview)/.test(value)) return ["Attention", "warn"];
+  if (/(success|succeeded|complete|completed|approved|authenticated|cancelled|healthy)/.test(value)) return ["Success", "good"];
+  return ["Result", "info"];
+}
+
+function commandResultSummary(title, payload) {
+  if (typeof payload === "string") return payload;
+  if (!payload || typeof payload !== "object") return `${title} completed.`;
+  if (payload.redacted_summary) return payload.redacted_summary;
+  if (payload.error) return payload.error;
+  if (payload.detail) return payload.detail;
+  if (payload.message) return payload.message;
+  if (Array.isArray(payload.newComposeProjects)) {
+    const count = payload.newComposeProjects.length;
+    return count ? `${count} unregistered Compose ${count === 1 ? "project" : "projects"} found.` : "No unregistered Compose projects found.";
+  }
+  if (payload.state) return `Operation is ${String(payload.state).replaceAll("-", " ")}.`;
+  return `${title} completed.`;
+}
+
+function commandResultHighlights(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const fields = [
+    ["State", payload.state || payload.status],
+    ["Operation", payload.operation_type],
+    ["Workload", payload.workload_id],
+    ["Error class", payload.error_class],
+    ["Operation ID", payload.operation_id],
+    ["Identity", payload.identity],
+    ["Expires", payload.expiresAt]
+  ].filter(([, value]) => value !== undefined && value !== null && value !== "");
+  return fields.slice(0, 6).map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+}
+
 function showCommandResult(title, payload) {
-  const body = typeof payload === "string" ? payload : JSON.stringify(payload, null, 2);
-  commandOutput.textContent = `${title}\n\n${body}`;
+  const [status, tone] = commandResultTone(title, payload);
+  const structured = typeof payload === "object" && payload !== null;
+  commandTitle.textContent = title;
+  commandStatus.textContent = status;
+  commandStatus.className = `result-badge ${tone}`;
+  commandSummary.textContent = commandResultSummary(title, payload);
+  commandHighlights.innerHTML = commandResultHighlights(payload);
+  commandHighlights.hidden = !commandHighlights.innerHTML;
+  commandOutput.textContent = structured ? JSON.stringify(payload, null, 2) : String(payload ?? "");
+  commandDetails.hidden = !structured;
+  commandDetails.open = tone === "bad";
   commandActions.innerHTML = "";
   commandPanel.hidden = false;
   commandPanel.scrollIntoView({ block: "nearest" });
@@ -905,40 +968,68 @@ function renderWorkload(workload) {
         </div>
         <code>${escapeHtml(id)}</code>
       </div>
-      <div class="pills">
+      <div class="workload-status">
+        <div class="pills" aria-label="Primary workload state">
         ${pill("life", workload.lifecycle)}
         ${pill("privacy", privacy.privacy)}
-        ${pill("desired", access.desired)}
         ${pill("effective", access.effective)}
         ${pill("migration", migration.status)}
-        ${pill("backup", backup.status || "needs-discovery")}
-        ${pill("domain", topologyNode.trustDomain || "legacy-rootful")}
+        </div>
+        <p class="workload-context">
+          <span>Desired <strong>${escapeHtml(access.desired || "-")}</strong></span>
+          <span>Backup <strong>${escapeHtml(backup.status || "needs-discovery")}</strong></span>
+          <span>Domain <strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
+        </p>
       </div>
-      <dl class="facts">
-        <div><dt>Runtime</dt><dd>${escapeHtml(runtime.type || "")}</dd></div>
-        <div><dt>Compose</dt><dd>${escapeHtml(runtime.composeProject || runtime.compose?.project || "-")}</dd></div>
-        <div><dt>Health</dt><dd>${escapeHtml(healthLabel)} ${escapeHtml(health.expectedStatus || "")}</dd></div>
-        <div><dt>Last Health</dt><dd>${escapeHtml(migration.lastHealthCheck || "-")}</dd></div>
-        <div><dt>Local URL</dt><dd>${escapeHtml(urls.local || "-")}</dd></div>
-        <div><dt>Tailnet URL</dt><dd>${escapeHtml(urls.tailnet || "-")}</dd></div>
-        <div><dt>Cloudflare</dt><dd>${escapeHtml(cloudflare.mode || "disabled")}</dd></div>
-        <div><dt>Internal Port</dt><dd>${escapeHtml(network.internalPort || "-")}</dd></div>
-        <div><dt>Legacy Path</dt><dd>${escapeHtml(workload.paths?.legacy || "-")}</dd></div>
-        <div><dt>Ops</dt><dd>logs ${escapeHtml(Boolean(operations.logsAllowed || operations.logs?.allowed))}, restart ${escapeHtml(Boolean(operations.restartAllowed || operations.restart?.allowed))}</dd></div>
-        <div><dt>Backup</dt><dd>${escapeHtml(backup.destination || "-")}</dd></div>
-        <div><dt>Last Event</dt><dd>${escapeHtml(lastEvent.action || "-")} ${escapeHtml(lastEvent.result || "")}</dd></div>
-      </dl>
-      ${error ? `<p class="warning">${escapeHtml(error)}</p>` : ""}
-      ${agentAvailable ? '<p>Typed domain agent available.</p>' : '<p class="warning">Operations are unavailable because the trust-domain agent is offline.</p>'}
-      <div class="actions">${workloadActions(urls)}</div>
-      <div class="actions operation-row">
-        <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Refresh health</button>
-        <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
-        <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart preview</button>
-        <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup preview</button>
-      </div>
-      <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">No operation loaded.</div>
+      ${error ? `<details class="workload-notice"><summary>Access requires reconciliation</summary><p>${escapeHtml(error)}</p></details>` : ""}
+      <details class="workload-evidence">
+        <summary><span>Technical evidence</span><small>12 fields</small></summary>
+        <div class="fact-groups">
+          <section>
+            <h3>Runtime</h3>
+            <dl class="facts">
+              <div><dt>Type</dt><dd>${escapeHtml(runtime.type || "-")}</dd></div>
+              <div><dt>Compose project</dt><dd>${escapeHtml(runtime.composeProject || runtime.compose?.project || "-")}</dd></div>
+              <div><dt>Internal port</dt><dd>${escapeHtml(network.internalPort || "-")}</dd></div>
+              <div><dt>Legacy path</dt><dd>${escapeHtml(workload.paths?.legacy || "-")}</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Reachability</h3>
+            <dl class="facts">
+              <div><dt>Health</dt><dd>${escapeHtml(healthLabel)} ${escapeHtml(health.expectedStatus || "")}</dd></div>
+              <div><dt>Last health</dt><dd>${escapeHtml(migration.lastHealthCheck || "-")}</dd></div>
+              <div><dt>Local URL</dt><dd>${escapeHtml(urls.local || "-")}</dd></div>
+              <div><dt>Tailnet URL</dt><dd>${escapeHtml(urls.tailnet || "-")}</dd></div>
+            </dl>
+          </section>
+          <section>
+            <h3>Controls</h3>
+            <dl class="facts">
+              <div><dt>Cloudflare</dt><dd>${escapeHtml(cloudflare.mode || "disabled")}</dd></div>
+              <div><dt>Operations</dt><dd>logs ${escapeHtml(logsAllowed)}, restart ${escapeHtml(restartAllowed)}</dd></div>
+              <div><dt>Backup target</dt><dd>${escapeHtml(backup.destination || "-")}</dd></div>
+              <div><dt>Last event</dt><dd>${escapeHtml(lastEvent.action || "-")} ${escapeHtml(lastEvent.result || "")}</dd></div>
+            </dl>
+          </section>
+        </div>
+      </details>
+      <section class="workload-controls" aria-label="${escapeHtml(id)} controls">
+        <div class="control-head">
+          <div><p class="control-label">Operations</p><p class="agent-state ${agentAvailable ? "available" : "offline"}">${agentAvailable ? "Domain agent available" : "Domain agent offline"}</p></div>
+          <div class="workload-links">${workloadActions(urls)}</div>
+        </div>
+        <div class="operation-row">
+          <span class="control-label">Inspect</span>
+          <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Refresh health</button>
+          <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
+          <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
+          <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
+        </div>
+        <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">No recent operation.</div>
+      </section>
       <div class="admin-row" hidden>
+        <div class="admin-heading"><strong>Mutation controls</strong><span>Step-up and typed confirmation required</span></div>
         <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
         <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
         <button type="button" data-preview="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Preview</button>
