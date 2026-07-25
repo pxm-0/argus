@@ -790,7 +790,13 @@ def check_caddy(repo: Path, smoke: Smoke, offline: bool) -> None:
     planned = repo / "caddy" / "dashboard.Caddyfile"
     if planned.exists():
         content = planned.read_text()
-        smoke.check("bind 0.0.0.0" not in content and "reverse_proxy 127.0.0.1:8099" in content, "Caddy route is private")
+        smoke.check(
+            "http://:8088" in content
+            and "bind 127.0.0.1" in content
+            and "bind 0.0.0.0" not in content
+            and "reverse_proxy 127.0.0.1:8099" in content,
+            "Caddy route accepts the forwarded Host only on loopback",
+        )
     if not shutil.which("caddy"):
         smoke.warn("caddy unavailable; validation skipped")
         return
