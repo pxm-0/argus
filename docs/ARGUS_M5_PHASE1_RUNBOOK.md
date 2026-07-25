@@ -30,7 +30,14 @@ sudo install -d -m 0770 -o oreo -g argus-control /srv/argus/runtime/argus/m5/age
 sudo install -d -m 0750 -o root -g argus-control /etc/argus/domain-keys
 sudo install -m 0640 -o root -g argus-control \
   /path/to/operator-identities.json /etc/argus/operator-identities.json
+sudo /srv/argus/scripts/argus-m5-runtime-permissions
 ```
+
+The runtime permission reconciliation is required before starting the API or
+agents. It safely upgrades pre-Phase 1 SQLite files to `oreo:argus-control`
+mode `0660`, including existing WAL and shared-memory sidecars, so domain
+agents can persist durable state transitions without making the ledger
+world-readable.
 
 Create one independent random 32-byte-or-longer capability key for every active
 domain. Do not copy, print, or commit key material. Ownership must let only the

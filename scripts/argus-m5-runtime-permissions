@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Reconcile only the private Phase 1 SQLite runtime ownership and modes.
+set -euo pipefail
+
+readonly ROOT="${ARGUS_ROOT:-/srv/argus}"
+readonly RUNTIME="$ROOT/runtime/argus/m5"
+readonly API_USER="oreo"
+readonly CONTROL_GROUP="argus-control"
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+[[ $EUID -eq 0 ]] || fail "run with sudo"
+getent passwd "$API_USER" >/dev/null || fail "missing API user: $API_USER"
+getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group: $CONTROL_GROUP"
+
+install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" \
+  "$ROOT/runtime/argus" "$RUNTIME" "$RUNTIME/agents"
+
+reconciled=0
+for database in operations.sqlite3 sessions.sqlite3; do
+  for suffix in "" -wal -shm; do
+    path="$RUNTIME/$database$suffix"
+    [[ -e "$path" ]] || continue
+    chown "$API_USER:$CONTROL_GROUP" "$path"
+    chmod 0660 "$path"
+    reconciled=$((reconciled + 1))
+  done
+done
+
+printf 'M5_RUNTIME_PERMISSIONS_OK files=%d owner=%s group=%s mode=0660\n' \
+  "$reconciled" "$API_USER" "$CONTROL_GROUP"
