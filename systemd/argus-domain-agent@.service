@@ -11,6 +11,7 @@ Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_RUNTIME=/srv/argus/runtime/argus/m5
 Environment=ARGUS_TRUST_DOMAIN=%i
 Environment=ARGUS_CAPABILITY_KEY_FILE=/etc/argus/domain-keys/%i.key
+Environment=HOME=/var/lib/argus/%i
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_domain_agent.py
 Restart=on-failure
 RestartSec=3

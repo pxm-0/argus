@@ -14,6 +14,14 @@ class PhaseOneSystemdTests(unittest.TestCase):
         self.assertIn("Group=argus-control", unit)
         self.assertNotIn("SupplementaryGroups=argus", unit)
 
+    def test_nonlegacy_agent_has_accessible_domain_local_cli_home(self) -> None:
+        unit = (ROOT / "systemd" / "argus-domain-agent@.service").read_text()
+        self.assertIn("Environment=HOME=/var/lib/argus/%i", unit)
+        self.assertIn("ProtectHome=true", unit)
+        self.assertIn("ProtectSystem=strict", unit)
+        self.assertIn("InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock", unit)
+        self.assertNotIn("ReadWritePaths=/var/lib/argus", unit)
+
 
 if __name__ == "__main__":
     unittest.main()
