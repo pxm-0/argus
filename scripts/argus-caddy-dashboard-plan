@@ -19,7 +19,8 @@ def render(routes: dict[str, Any]) -> str:
         fail("control API must remain private at 127.0.0.1")
     return f"""# Private Argus backend for Tailscale Serve.
 # Tailscale Serve supplies Tailscale-User-Login and proxies to this loopback route.
-http://127.0.0.1:{port} {{
+# Match the original tailnet Host header while listening only on loopback.
+http://:{port} {{
 \tbind 127.0.0.1
 \troot * /srv/argus/control-plane/dashboard/public
 \thandle /api/* {{
