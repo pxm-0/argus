@@ -5,6 +5,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -14,6 +15,23 @@ from argus_domain_agent import AgentService  # noqa: E402
 
 
 class DomainAgentServiceTests(unittest.TestCase):
+    def run_health_result(self, result: dict[str, object]) -> dict[str, object]:
+        with tempfile.TemporaryDirectory() as directory:
+            service = AgentService(ROOT, Path(directory), "personal-sandbox", b"x" * 32)
+            operation, _ = service.ledger.create(
+                workload_id="hello-nginx",
+                trust_domain="personal-sandbox",
+                operation_type="health.refresh",
+                requested_by="operator@example.com",
+                parameters={},
+                preview_digest="preview",
+                expected_revision="revision",
+                policy_version="1",
+                idempotency_key="health-result",
+            )
+            with patch.object(service.agent, "execute", return_value=result):
+                return service.run_operation(str(operation["operation_id"]))
+
     def test_personal_sandbox_uses_rootless_socket_and_manifest_policy(self) -> None:
         previous = os.environ.get("DOCKER_HOST")
         try:
@@ -40,6 +58,26 @@ class DomainAgentServiceTests(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, "requires docker-compose"):
                 # Standalone Docker workloads cannot smuggle an arbitrary runtime request.
                 service.compose_command("dozzle", "restart")
+
+    def test_unavailable_health_evidence_fails_operation_and_is_preserved(self) -> None:
+        result = {
+            "summary": "Domain-local runtime health evidence refreshed.",
+            "health": {"ok": False, "status": "unavailable", "detail": "typed runtime health command failed"},
+        }
+        operation = self.run_health_result(result)
+        self.assertEqual(operation["state"], "failed")
+        self.assertEqual(operation["error_class"], "health-evidence-unavailable")
+        self.assertEqual(operation["redactedResult"], result)
+
+    def test_observed_unhealthy_workload_remains_completed_evidence(self) -> None:
+        result = {
+            "summary": "Domain-local runtime health evidence refreshed.",
+            "health": {"ok": False, "status": "unhealthy", "detail": "1 approved service(s) observed"},
+        }
+        operation = self.run_health_result(result)
+        self.assertEqual(operation["state"], "succeeded")
+        self.assertIsNone(operation["error_class"])
+        self.assertEqual(operation["redactedResult"], result)
 
 
 if __name__ == "__main__":

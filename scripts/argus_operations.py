@@ -29,6 +29,19 @@ def digest(value: Any) -> str:
     return hashlib.sha256(canonical_json(value).encode()).hexdigest()
 
 
+def operation_result_failure(operation_type: str, result: dict[str, Any]) -> tuple[str, str] | None:
+    """Classify failures that are returned as redacted typed-operation evidence."""
+    if operation_type != "health.refresh":
+        return None
+    health = result.get("health")
+    if not isinstance(health, dict):
+        return "health-evidence-invalid", "Runtime health evidence was invalid."
+    status = str(health.get("status", "")).lower()
+    if status in {"unavailable", "invalid"}:
+        return f"health-evidence-{status}", f"Runtime health evidence was {status}."
+    return None
+
+
 class OperationConflict(Exception):
     pass
 
@@ -299,6 +312,15 @@ class OperationRunner:
             }
             request["capability"] = capability
             result = self.agent_for(str(operation["trust_domain"])).execute(request)
+            failure = operation_result_failure(str(operation["operation_type"]), result)
+            if failure:
+                error_class, summary = failure
+                self.ledger.transition(
+                    operation_id, {"running"}, "failed", finished_at=int(time.time()),
+                    error_class=error_class, redacted_summary=summary,
+                    redacted_result_json=canonical_json(result),
+                )
+                return
             self.ledger.transition(
                 operation_id, {"running"}, "succeeded", finished_at=int(time.time()),
                 redacted_summary=str(result.get("summary", "Operation succeeded."))[:1000],

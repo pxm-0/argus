@@ -13,7 +13,14 @@ from argus_actions import backup_apply, logs_preview, restart_apply, wait_for_he
 from argus_access_runtime import apply_tailscale_access, route_contract
 from argus_common import by_id, load_manifest, now, policy_decision, regenerate_dashboard
 from argus_m1 import access_writer
-from argus_operations import CapabilityCodec, DomainAgent, OperationLedger, canonical_json, capability_claims
+from argus_operations import (
+    CapabilityCodec,
+    DomainAgent,
+    OperationLedger,
+    canonical_json,
+    capability_claims,
+    operation_result_failure,
+)
 
 
 def canonical_revision(root: Path, workload_id: str) -> str:
@@ -182,6 +189,14 @@ class AgentService:
             }
             request["capability"] = capability
             result = self.agent.execute(request)
+            failure = operation_result_failure(str(operation["operation_type"]), result)
+            if failure:
+                error_class, summary = failure
+                return self.ledger.transition(
+                    operation_id, {"running"}, "failed", finished_at=int(time.time()),
+                    error_class=error_class, redacted_summary=summary,
+                    redacted_result_json=canonical_json(result),
+                )
             return self.ledger.transition(
                 operation_id, {"running"}, "succeeded", finished_at=int(time.time()),
                 redacted_summary=str(result.get("summary", "Operation succeeded."))[:1000],
