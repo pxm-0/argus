@@ -1027,15 +1027,16 @@ async function loadOperationHistory() {
     if (!response.ok) return;
     const payload = await response.json();
     const operation = payload.operations?.[0];
+    const pending = payload.operations?.find((item) => ["planned", "awaiting-approval", "queued"].includes(item.state));
     target.textContent = operation
       ? `Latest: ${operation.operation_type} — ${operation.state}. ${operation.redacted_summary || ""}`
       : "No durable operations recorded.";
-    if (operation && ["planned", "awaiting-approval", "queued"].includes(operation.state)) {
+    if (pending) {
       const cancel = document.createElement("button");
       cancel.type = "button";
-      cancel.dataset.cancelOperation = operation.operation_id;
+      cancel.dataset.cancelOperation = pending.operation_id;
       cancel.dataset.workload = item.id;
-      cancel.textContent = "Cancel pending operation";
+      cancel.textContent = `Cancel pending ${pending.operation_type}`;
       target.append(" ", cancel);
     }
   }));
