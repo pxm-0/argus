@@ -6,7 +6,6 @@ After=network.target
 Type=simple
 User=oreo
 Group=argus-control
-SupplementaryGroups=argus
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_TOKEN_FILE=/etc/argus/control-token
