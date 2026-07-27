@@ -9,35 +9,48 @@ operations through durable typed-operation agents.
 - Tailscale Serve is the only remote entry point. Funnel stays disabled.
 - Caddy listens only on `127.0.0.1:8088`.
 - The API listens only on `127.0.0.1:8099`.
-- `/etc/argus/operator-identities.json` and domain capability keys are
-  server-local, mode `0640` or stricter, and never committed.
+- `/etc/argus/operators.json`, `/etc/argus/operator-proxy-token`, and
+  capability keys are server-local and never committed.
 - The control API has no Docker socket mount and no capability-signing key.
 - Each agent accepts only an operation ID over its Unix socket. It loads the
   exact durable record, independently rechecks domain, policy, revision,
   digest, expiry, nonce, and typed parameters, then executes.
 
-Tailscale Serve strips spoofed identity headers and supplies
-`Tailscale-User-Login` for user-originated tailnet traffic. The loopback-only
-backend is required for that header to be trustworthy.
+Tailscale Serve supplies `Tailscale-User-Login` to the loopback-only Caddy
+backend. Caddy removes client-supplied `Tailscale-*` and `X-Argus-*` headers,
+copies the verified login to `X-Argus-Tailnet-Login`, and supplies a root-owned
+proxy marker as `X-Argus-Proxy-Token`. The API accepts those headers only from
+a loopback peer with a constant-time marker match.
 
 ## Server-local prerequisites
 
-Create the operator allowlist without printing its contents:
+Create the structured operator allowlist without printing its contents. The
+real file has exactly one enabled owner for Phase 1 and uses the schema in
+`config/operators.json`:
 
 ```text
 getent group argus-control >/dev/null || sudo groupadd --system argus-control
 sudo install -d -m 0770 -o oreo -g argus-control /srv/argus/runtime/argus/m5/agents
 sudo install -d -m 0750 -o root -g argus-control /etc/argus/domain-keys
-sudo install -m 0640 -o root -g argus-control \
-  /path/to/operator-identities.json /etc/argus/operator-identities.json
+sudo install -m 0600 -o root -g root \
+  /path/to/operators.json /etc/argus/operators.json
+sudo sh -c 'umask 0027; printf "ARGUS_OPERATOR_PROXY_TOKEN=%s\n" \
+  "$(openssl rand -base64 48 | tr "+/" "-_" | tr -d "=\\n")" \
+  > /etc/argus/operator-proxy-token'
+sudo chown root:root /etc/argus/operator-proxy-token
+sudo chmod 0600 /etc/argus/operator-proxy-token
 sudo /srv/argus/scripts/argus-m5-runtime-permissions
 ```
 
+Never paste either credential into a command argument, issue, PR, or shell
+transcript. The API stores only SHA-256 hashes of session and CSRF values in
+`/var/lib/argus/control/session.sqlite3`, mode `0600`.
+
 The runtime permission reconciliation is required before starting the API or
-agents. It safely upgrades pre-Phase 1 SQLite files to `oreo:argus-control`
-mode `0660`, including existing WAL and shared-memory sidecars, so domain
-agents can persist durable state transitions without making the ledger
-world-readable.
+agents. It safely upgrades the durable operation ledger and its sidecars to
+`oreo:argus-control` mode `0660`, so domain agents can persist state
+transitions without making the ledger world-readable. The separate API-owned
+session database and its sidecars remain mode `0600`.
 
 Create one independent random 32-byte-or-longer capability key for every active
 domain. Do not copy, print, or commit key material. Ownership must let only the
@@ -72,15 +85,27 @@ All commands run on `oreochiserver` after the PR merges.
    python3 /srv/argus/control-plane/dashboard/generate_dashboard.py
    ```
 
-4. Install the API and agent units, then run `systemd-analyze verify` on them.
-5. Validate Caddy before reload:
+4. Generate `caddy/dashboard.Caddyfile` and merge the reviewed loopback route
+   into `/etc/caddy/Caddyfile`. Do not replace unrelated routes.
+5. Run the session-boundary preflight. It refuses stale headers, unsafe
+   server-local file modes, an enabled Funnel, or invalid Caddy:
 
    ```text
-   caddy validate --config /etc/caddy/Caddyfile
+   sudo /srv/argus/scripts/argus-m5-session-boundary --preflight
    ```
 
-6. Confirm the installed Caddy route binds only `127.0.0.1:8088`, then reload
-   Caddy and restart the Argus API and agents.
+6. Apply the reviewed API unit and Caddy environment drop-in:
+
+   ```text
+   sudo /srv/argus/scripts/argus-m5-session-boundary \
+     --apply --acknowledge-m5-session-boundary
+   ```
+
+   The script backs up the Caddyfile, affected units, and prior session
+   database; validates Caddy before reload; restarts only the API; reloads
+   Caddy; and verifies direct loopback requests fail closed. It does not change
+   a route, listener, workload, Funnel, DNS record, or firewall policy.
+
 7. Inspect `tailscale serve status --json` and `tailscale funnel status`.
    Refuse activation if any Argus Funnel route exists.
 8. After checking the server's installed Tailscale CLI help, configure the
@@ -99,7 +124,7 @@ Record only secret-safe results:
 
 ```text
 python3 -m unittest discover -s tests -v
-python3 -m json.tool config/operator-identities.example.json
+python3 -m json.tool config/operators.json
 systemctl is-active argus-control-api.service
 systemctl is-active argus-domain-agent-legacy-rootful.service
 systemctl is-active argus-domain-agent@personal-sandbox.service
@@ -109,7 +134,9 @@ tailscale funnel status
 ```
 
 From a user-owned tailnet device, verify session exchange, expiry, logout,
-CSRF rejection, and a step-up-gated approval. Exercise health, sanitized logs,
+CSRF double-submit rejection, Origin rejection, direct identity-header
+rejection, immediate operator disablement, and a step-up-gated approval.
+Exercise health, sanitized logs,
 restart, backup, and `none`/`local`/`tailnet` access only where the manifest and
 policy report them eligible. Confirm:
 

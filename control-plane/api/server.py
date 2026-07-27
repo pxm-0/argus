@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import socket
 import subprocess
 import sys
@@ -22,11 +23,17 @@ from urllib.parse import urlparse
 ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[2])).resolve()
 RUNTIME = Path(os.environ.get("ARGUS_RUNTIME", ROOT / "runtime" / "argus" / "m5"))
 TOKEN_FILE = Path(os.environ.get("ARGUS_TOKEN_FILE", "/etc/argus/control-token"))
-OPERATOR_IDENTITIES_FILE = Path(os.environ.get("ARGUS_OPERATOR_IDENTITIES_FILE", "/etc/argus/operator-identities.json"))
+OPERATORS_FILE = Path(os.environ.get("ARGUS_OPERATORS_FILE", "/etc/argus/operators.json"))
+PROXY_TOKEN_FILE = Path(os.environ.get("ARGUS_PROXY_TOKEN_FILE", "/etc/argus/operator-proxy-token"))
+SESSION_DB = Path(os.environ.get("ARGUS_SESSION_DB", RUNTIME / "sessions.sqlite3"))
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ARGUS_API_PORT", "8099"))
 SESSION_COOKIE = "argus_session"
-TAILSCALE_IDENTITY_HEADER = "Tailscale-User-Login"
+CSRF_COOKIE = "argus_csrf"
+TAILSCALE_IDENTITY_HEADER = "X-Argus-Tailnet-Login"
+PROXY_TOKEN_HEADER = "X-Argus-Proxy-Token"
+CSRF_BOOTSTRAP_HEADER = "X-Argus-CSRF-Bootstrap"
+SAFE_REQUEST_NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_actions import backup_preview, logs_preview, restart_preview  # noqa: E402
@@ -41,7 +48,7 @@ from argus_operations import (  # noqa: E402
 from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
 
 
-SESSIONS = SessionStore(RUNTIME / "sessions.sqlite3")
+SESSIONS = SessionStore(SESSION_DB)
 LEDGER = OperationLedger(RUNTIME / "operations.sqlite3")
 
 
@@ -52,16 +59,62 @@ def bootstrap_token() -> str:
         return ""
 
 
-def tailnet_identity(headers: Any) -> str:
-    # The process is loopback-only. Caddy is the sole trusted proxy and replaces
-    # this header after Tailscale identity verification.
-    identity = str(headers.get(TAILSCALE_IDENTITY_HEADER, "")).strip().lower()
+def proxy_token() -> str:
     try:
-        allowed = json.loads(OPERATOR_IDENTITIES_FILE.read_text()).get("operators", [])
-    except (OSError, json.JSONDecodeError):
+        value = PROXY_TOKEN_FILE.read_text().strip()
+    except OSError:
         return ""
-    normalized = {str(item).strip().lower() for item in allowed}
-    return identity if identity and identity in normalized else ""
+    prefix = "ARGUS_OPERATOR_PROXY_TOKEN="
+    return value.removeprefix(prefix).strip() if value.startswith(prefix) else value
+
+
+def operator_origin() -> str:
+    configured = os.environ.get("ARGUS_OPERATOR_ORIGIN", "").strip()
+    if configured:
+        return configured
+    try:
+        return str(load_json("routes.json").get("dashboard", {}).get("url", "")).rstrip("/")
+    except (OSError, ValueError):
+        return ""
+
+
+def enabled_operator(identity: str) -> dict[str, str] | None:
+    try:
+        payload = json.loads(OPERATORS_FILE.read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    operators = payload.get("operators", [])
+    if payload.get("schemaVersion") != 1 or not isinstance(operators, list):
+        return None
+    normalized = identity.strip().lower()
+    for item in operators:
+        if not isinstance(item, dict):
+            continue
+        login = str(item.get("tailnetLogin", "")).strip().lower()
+        role = str(item.get("role", ""))
+        if login == normalized and role == "owner" and item.get("enabled") is True:
+            return {"identity": login, "role": role}
+    return None
+
+
+def trusted_login(headers: Any, peer_host: str) -> str:
+    if peer_host not in {"127.0.0.1", "::1"}:
+        return ""
+    expected_marker = proxy_token()
+    supplied_marker = str(headers.get(PROXY_TOKEN_HEADER, ""))
+    if not expected_marker or not secrets.compare_digest(supplied_marker, expected_marker):
+        return ""
+    return str(headers.get(TAILSCALE_IDENTITY_HEADER, "")).strip().lower()
+
+
+def trusted_operator(headers: Any, peer_host: str) -> dict[str, str] | None:
+    identity = trusted_login(headers, peer_host)
+    return enabled_operator(identity) if identity else None
+
+
+def bootstrap_valid(supplied: str) -> bool:
+    expected = bootstrap_token()
+    return bool(expected) and secrets.compare_digest(supplied, expected)
 
 
 def workload(workload_id: str) -> dict[str, Any] | None:
@@ -235,32 +288,65 @@ class Handler(BaseHTTPRequestHandler):
             raise ValueError("request body too large")
         return json.loads(self.rfile.read(length))
 
-    def send_json(self, status: int, payload: dict[str, Any], *, headers: dict[str, str] | None = None) -> None:
+    def send_json(
+        self,
+        status: int,
+        payload: dict[str, Any],
+        *,
+        headers: dict[str, str] | list[tuple[str, str]] | None = None,
+    ) -> None:
         body = json.dumps(payload, indent=2, sort_keys=True).encode()
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("Referrer-Policy", "no-referrer")
-        for key, value in (headers or {}).items():
+        header_items = headers.items() if isinstance(headers, dict) else (headers or [])
+        for key, value in header_items:
             self.send_header(key, value)
         self.end_headers()
         self.wfile.write(body)
 
+    def peer_host(self) -> str:
+        address = getattr(self, "client_address", ("", 0))
+        return str(address[0]) if address else ""
+
+    def operator(self) -> dict[str, str] | None:
+        return trusted_operator(self.headers, self.peer_host())
+
+    def origin_valid(self) -> bool:
+        expected = operator_origin()
+        supplied = str(self.headers.get("Origin", "")).rstrip("/")
+        return bool(expected) and secrets.compare_digest(supplied, expected)
+
     def current_session(self) -> Session | None:
-        identity = tailnet_identity(self.headers)
+        operator = self.operator()
+        if operator is None:
+            identity = trusted_login(self.headers, self.peer_host())
+            if identity:
+                SESSIONS.revoke_identity(identity)
+            return None
         session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
-        return SESSIONS.get(session_id, identity)
+        return SESSIONS.get(session_id, operator["identity"], role=operator["role"])
 
     def require_session(self, *, csrf: bool = False, step_up: bool = False) -> Session | None:
         session = self.current_session()
         if session is None:
             self.send_json(401, {"error": "verified tailnet identity and Argus session required"})
             return None
-        session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
-        if csrf and not SESSIONS.csrf_valid(session_id, self.headers.get("X-Argus-CSRF", "")):
-            self.send_json(403, {"error": "CSRF validation failed"})
-            return None
+        cookies = parse_cookie(self.headers.get("Cookie", ""))
+        session_id = cookies.get(SESSION_COOKIE, "")
+        if csrf:
+            cookie_token = cookies.get(CSRF_COOKIE, "")
+            header_token = str(self.headers.get("X-Argus-CSRF", ""))
+            if (
+                not cookie_token
+                or not header_token
+                or not secrets.compare_digest(cookie_token, header_token)
+                or not SESSIONS.csrf_valid(session_id, header_token)
+            ):
+                self.send_json(403, {"error": "CSRF validation failed"})
+                return None
         if step_up and not session.step_up_valid:
             self.send_json(403, {"error": "step-up reauthentication required"})
             return None
@@ -279,8 +365,7 @@ class Handler(BaseHTTPRequestHandler):
         if path == "/api/session":
             session = self.current_session()
             if session:
-                session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
-                self.send_json(200, {**public_session(session), "csrfToken": SESSIONS.rotate_csrf(session_id)})
+                self.send_json(200, public_session(session))
             else:
                 self.send_json(401, {"authenticated": False})
         elif operation_match:
@@ -317,6 +402,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def handle_post(self) -> None:
         path = urlparse(self.path).path
+        if not self.origin_valid():
+            self.send_json(403, {"error": "trusted operator origin required"})
+            return
         body = self.read_body()
         if path == "/api/session/exchange":
             self.handle_session_exchange(body)
@@ -327,17 +415,26 @@ class Handler(BaseHTTPRequestHandler):
                 return
             session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
             SESSIONS.revoke(session_id)
-            self.send_json(204, {}, headers={"Set-Cookie": f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"})
+            self.send_json(
+                204,
+                {},
+                headers=[
+                    ("Set-Cookie", f"{SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; Secure; SameSite=Strict"),
+                    ("Set-Cookie", f"{CSRF_COOKIE}=; Path=/; Max-Age=0; Secure; SameSite=Strict"),
+                ],
+            )
             return
         if path == "/api/session/step-up":
             session = self.require_session(csrf=True)
             if not session:
                 return
-            if self.headers.get("Authorization", "") != f"Bearer {bootstrap_token()}":
+            if not bootstrap_valid(str(body.get("bootstrapToken", ""))):
                 self.send_json(401, {"error": "step-up credential rejected"})
                 return
             session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
-            SESSIONS.step_up(session_id)
+            if not SESSIONS.step_up(session_id):
+                self.send_json(409, {"error": "session changed during step-up"})
+                return
             self.send_json(200, {"ok": True})
             return
         preview_match = re.fullmatch(r"/api/workloads/([^/]+)/operations/preview", path)
@@ -427,17 +524,30 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(202, operation)
 
     def handle_session_exchange(self, body: dict[str, Any]) -> None:
-        identity = tailnet_identity(self.headers)
-        supplied = self.headers.get("Authorization", "")
-        if not identity or not bootstrap_token() or supplied != f"Bearer {bootstrap_token()}":
+        operator = self.operator()
+        nonce = str(self.headers.get(CSRF_BOOTSTRAP_HEADER, ""))
+        if (
+            operator is None
+            or not SAFE_REQUEST_NONCE.fullmatch(nonce)
+            or not bootstrap_valid(str(body.get("bootstrapToken", "")))
+        ):
             self.send_json(401, {"error": "verified tailnet identity and bootstrap credential required"})
             return
-        session = SESSIONS.create(identity)
-        audit("session.exchange", "-", "ok", actor=identity)
+        session = SESSIONS.create(operator["identity"], role=operator["role"])
+        audit("session.exchange", "-", "ok", actor=operator["identity"])
         self.send_json(
             201,
-            {**public_session(session), "csrfToken": session.csrf_token},
-            headers={"Set-Cookie": f"{SESSION_COOKIE}={session.session_id}; Path=/; Max-Age=900; HttpOnly; Secure; SameSite=Strict"},
+            public_session(session),
+            headers=[
+                (
+                    "Set-Cookie",
+                    f"{SESSION_COOKIE}={session.session_id}; Path=/; Max-Age=28800; HttpOnly; Secure; SameSite=Strict",
+                ),
+                (
+                    "Set-Cookie",
+                    f"{CSRF_COOKIE}={session.csrf_token}; Path=/; Max-Age=28800; Secure; SameSite=Strict",
+                ),
+            ],
         )
 
     def handle_operation_create(self, workload_id: str, session: Session, body: dict[str, Any]) -> None:

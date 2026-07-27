@@ -50,9 +50,11 @@ Control token path:
 Permissions:
 
 ```text
-root:argus
-0640
+root:root
+0600
 ```
+
+systemd supplies a read-only private credential copy to the API process.
 
 Rules:
 
@@ -65,14 +67,16 @@ Rules:
 - never store it in browser storage
 - store only an opaque session identifier in an `HttpOnly`, `Secure`,
   `SameSite=Strict` cookie
-- require the in-memory CSRF token for state-changing requests
-- expire server-side sessions after 15 minutes and support logout, revocation,
-  and step-up reauthentication
+- require the readable `argus_csrf` cookie to exactly match the
+  `X-Argus-CSRF` header for state-changing requests
+- expire server-side sessions after 30 minutes of inactivity and eight hours
+  absolute, with logout, revocation, and five-minute step-up reauthentication
 
-Operator identity is accepted only from `Tailscale-User-Login` on the
-loopback-only backend behind Tailscale Serve, and only when the normalized
-login appears in the server-local `/etc/argus/operator-identities.json`
-allowlist.
+Operator identity is accepted only from `X-Argus-Tailnet-Login` on the
+loopback-only API when `X-Argus-Proxy-Token` matches the root-owned Caddy marker.
+Caddy removes incoming `Tailscale-*` and `X-Argus-*` headers before setting
+those values. The normalized login must be an enabled owner in the structured
+server-local `/etc/argus/operators.json` allowlist.
 
 ## Git Hygiene
 

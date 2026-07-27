@@ -143,13 +143,14 @@ sudo systemctl enable --now argus-control-api.service
 Create token:
 
 ```bash
-sudo install -d -o root -g argus -m 0750 /etc/argus
+sudo install -d -o root -g root -m 0750 /etc/argus
 openssl rand -base64 32 | sudo tee /etc/argus/control-token >/dev/null
-sudo chown root:argus /etc/argus/control-token
-sudo chmod 0640 /etc/argus/control-token
+sudo chown root:root /etc/argus/control-token
+sudo chmod 0600 /etc/argus/control-token
 ```
 
-Do not paste the token into logs or commits.
+The service receives a private systemd credential copy. Do not paste the token
+into logs or commits.
 
 If the private dashboard API returns an empty response after config reconciliation,
 or Caddy remains failed after a reboot because its Tailscale address was not ready,

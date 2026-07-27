@@ -8,17 +8,25 @@ User=oreo
 Group=argus-control
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
-Environment=ARGUS_TOKEN_FILE=/etc/argus/control-token
-Environment=ARGUS_OPERATOR_IDENTITIES_FILE=/etc/argus/operator-identities.json
+LoadCredential=control-token:/etc/argus/control-token
+LoadCredential=operators.json:/etc/argus/operators.json
+LoadCredential=operator-proxy-token:/etc/argus/operator-proxy-token
+Environment=ARGUS_TOKEN_FILE=%d/control-token
+Environment=ARGUS_OPERATORS_FILE=%d/operators.json
+Environment=ARGUS_PROXY_TOKEN_FILE=%d/operator-proxy-token
+Environment=ARGUS_SESSION_DB=/var/lib/argus/control/session.sqlite3
 ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
 Restart=on-failure
 RestartSec=3
 UMask=0007
+StateDirectory=argus/control
+StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/srv/argus/runtime
+ReadWritePaths=/srv/argus/runtime /var/lib/argus/control
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
 
 [Install]
 WantedBy=multi-user.target

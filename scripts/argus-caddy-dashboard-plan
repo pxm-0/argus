@@ -18,14 +18,17 @@ def render(routes: dict[str, Any]) -> str:
     if api.get("bind") != "127.0.0.1" or bool(api.get("public")):
         fail("control API must remain private at 127.0.0.1")
     return f"""# Private Argus backend for Tailscale Serve.
-# Tailscale Serve supplies Tailscale-User-Login and proxies to this loopback route.
+# Caddy replaces untrusted identity headers and authenticates itself to the API.
 # Match the original tailnet Host header while listening only on loopback.
 http://:{port} {{
 \tbind 127.0.0.1
 \troot * /srv/argus/control-plane/dashboard/public
 \thandle /api/* {{
 \t\treverse_proxy {api["bind"]}:{api["port"]} {{
-\t\t\theader_up Tailscale-User-Login {{http.request.header.Tailscale-User-Login}}
+\t\t\theader_up -X-Argus-*
+\t\t\theader_up X-Argus-Tailnet-Login {{http.request.header.Tailscale-User-Login}}
+\t\t\theader_up X-Argus-Proxy-Token {{$ARGUS_OPERATOR_PROXY_TOKEN}}
+\t\t\theader_up -Tailscale-*
 \t\t}}
 \t}}
 \tfile_server

@@ -748,16 +748,28 @@ function tokenFor() {
   return adminTokenInput.value;
 }
 
+function cookieValue(name) {
+  const prefix = `${name}=`;
+  const item = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith(prefix));
+  return item ? decodeURIComponent(item.slice(prefix.length)) : "";
+}
+
+function bootstrapNonce() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return btoa(String.fromCharCode(...bytes)).replaceAll("+", "-").replaceAll("/", "_").replaceAll("=", "");
+}
+
 function selectedValue(row, selector) {
   return row?.querySelector(selector)?.value || "";
 }
 
-async function apiPost(endpoint, token, body) {
+async function apiPost(endpoint, body, extraHeaders = {}) {
   const headers = {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    ...extraHeaders
   };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (csrfToken && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = csrfToken;
+  const cookieCsrf = cookieValue("argus_csrf");
+  if (cookieCsrf && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = cookieCsrf;
   if (/\/api\/workloads\/[^/]+\/operations$/.test(endpoint)) headers["Idempotency-Key"] = crypto.randomUUID();
   const response = await fetch(endpoint, {
     method: "POST",
@@ -777,10 +789,14 @@ async function apiPost(endpoint, token, body) {
 async function authenticateOperator() {
   const credential = tokenFor();
   if (!credential) throw new Error("Enter the bootstrap credential.");
-  const result = await apiPost("/api/session/exchange", credential, {});
+  const result = await apiPost(
+    "/api/session/exchange",
+    { bootstrapToken: credential },
+    { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
+  );
   adminTokenInput.value = "";
   if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
-  csrfToken = result.payload.csrfToken || "";
+  csrfToken = cookieValue("argus_csrf");
   operatorIdentity = result.payload.identity || "";
   return result.payload;
 }
@@ -792,14 +808,14 @@ async function ensureStepUp() {
     return false;
   }
   const session = await response.json();
-  csrfToken = session.csrfToken || csrfToken;
+  csrfToken = cookieValue("argus_csrf");
   if (session.stepUpValid) return true;
   const credential = tokenFor();
   if (!credential) {
     showCommandResult("Step-up required", "Enter the bootstrap credential in the operator field, then retry the mutation.");
     return false;
   }
-  const result = await apiPost("/api/session/step-up", credential, {});
+  const result = await apiPost("/api/session/step-up", { bootstrapToken: credential });
   adminTokenInput.value = "";
   if (!result.ok) {
     showCommandResult("Step-up failed", result.payload);
@@ -1160,7 +1176,7 @@ workloadDiscoverButton.addEventListener("click", async () => {
   workloadDiscoverButton.disabled = true;
   workloadDiscoverButton.textContent = "Refreshing...";
   try {
-    const result = await apiPost("/api/workloads/discover", "", {});
+    const result = await apiPost("/api/workloads/discover", {});
     showCommandResult("Workload discovery", result.payload);
     renderDiscoveryCandidates(result.payload.newComposeProjects);
   } catch (error) {
@@ -1192,7 +1208,7 @@ adminToggle.addEventListener("click", async () => {
       showCommandResult("Authentication failed", error.message);
     }
   } else {
-    await apiPost("/api/session/logout", "", {});
+    await apiPost("/api/session/logout", {});
     csrfToken = "";
     operatorIdentity = "";
     adminTokenInput.value = "";
@@ -1223,7 +1239,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     const operationId = cancelPending.dataset.cancelOperation;
-    const result = await apiPost(`/api/operations/${encodeURIComponent(operationId)}/cancel`, "", {});
+    const result = await apiPost(`/api/operations/${encodeURIComponent(operationId)}/cancel`, {});
     showCommandResult(`${cancelPending.dataset.workload} cancellation`, result.payload);
     await loadOperationHistory();
     return;
@@ -1250,7 +1266,7 @@ document.addEventListener("click", async (event) => {
     if (action.endsWith("-apply") && !(await ensureStepUp())) return;
     const operationType = action.startsWith("health") ? "health.refresh" : action.startsWith("logs") ? "logs.preview" : action.startsWith("restart") ? "workload.restart" : "backup.create";
     try {
-      const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+      const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
         operationType,
         parameters: {}
       });
@@ -1262,7 +1278,7 @@ document.addEventListener("click", async (event) => {
         showCommandResult(`${workload} blocked`, previewResult.payload);
         return;
       }
-      const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, "", {
+      const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, {
         operationType,
         parameters: {},
         previewDigest: previewResult.payload.previewDigest,
@@ -1277,7 +1293,7 @@ document.addEventListener("click", async (event) => {
         pollOperation(created.payload.operation_id, workload);
         return;
       }
-      const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, "", { confirmation });
+      const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, { confirmation });
       showCommandResult(`${workload} operation queued`, approved.payload);
       if (approved.ok) pollOperation(created.payload.operation_id, workload);
     } catch (error) {
@@ -1300,7 +1316,7 @@ document.addEventListener("click", async (event) => {
   const accessChanged = accessTarget && accessTarget !== current.access?.desired;
   if (preview) {
     try {
-      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
         operationType: "access.apply",
         parameters: { desired: accessTarget }
       });
@@ -1320,7 +1336,7 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (!(await ensureStepUp())) return;
-    const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, "", {
+    const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
       operationType: "access.apply",
       parameters: { desired: accessTarget }
     });
@@ -1328,7 +1344,7 @@ document.addEventListener("click", async (event) => {
       showCommandResult(`${workload} access blocked`, accessPreview.payload);
       return;
     }
-    const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, "", {
+    const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, {
       operationType: "access.apply",
       parameters: { desired: accessTarget },
       previewDigest: accessPreview.payload.previewDigest,
@@ -1338,7 +1354,7 @@ document.addEventListener("click", async (event) => {
       showCommandResult(`${workload} access`, created.payload);
       return;
     }
-    const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, "", { confirmation });
+    const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, { confirmation });
     showCommandResult(`${workload} access queued`, approved.payload);
     if (approved.ok) pollOperation(created.payload.operation_id, workload);
   } catch (error) {
@@ -1359,7 +1375,7 @@ async function restoreOperatorSession() {
   const response = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
   if (response.ok) {
     const session = await response.json();
-    csrfToken = session.csrfToken || "";
+    csrfToken = cookieValue("argus_csrf");
     operatorIdentity = session.identity || "";
     setAdmin(true);
   }

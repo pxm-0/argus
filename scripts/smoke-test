@@ -160,16 +160,24 @@ def request_json(
 
 def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
     token = "smoke-action-token"
+    proxy_token = "smoke-proxy-marker"
+    operator_origin = "https://argus-smoke.example.invalid"
     with tempfile.TemporaryDirectory() as tempdir:
         token_file = Path(tempdir) / "control-token"
-        identity_file = Path(tempdir) / "operator-identities.json"
+        identity_file = Path(tempdir) / "operators.json"
+        proxy_token_file = Path(tempdir) / "operator-proxy-token"
         runtime = Path(tempdir) / "runtime"
         token_file.write_text(token)
-        identity_file.write_text('{"operators":["smoke@example.com"]}')
+        identity_file.write_text(
+            '{"schemaVersion":1,"operators":[{"tailnetLogin":"smoke@example.invalid","role":"owner","enabled":true}]}'
+        )
+        proxy_token_file.write_text(proxy_token)
         env = os.environ.copy()
         env["ARGUS_API_PORT"] = "18104"
         env["ARGUS_TOKEN_FILE"] = str(token_file)
-        env["ARGUS_OPERATOR_IDENTITIES_FILE"] = str(identity_file)
+        env["ARGUS_OPERATORS_FILE"] = str(identity_file)
+        env["ARGUS_PROXY_TOKEN_FILE"] = str(proxy_token_file)
+        env["ARGUS_OPERATOR_ORIGIN"] = operator_origin
         env["ARGUS_RUNTIME"] = str(runtime)
         process = subprocess.Popen(
             ["python3", str(repo / "control-plane" / "api" / "server.py")],
@@ -195,39 +203,91 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 smoke.fail("control API action endpoints available")
                 return
             endpoint = "http://127.0.0.1:18104/api/session/exchange"
-            request = urllib.request.Request(endpoint, data=b"{}", method="POST")
+            request = urllib.request.Request(
+                endpoint,
+                data=json.dumps({"bootstrapToken": token}).encode(),
+                method="POST",
+            )
             request.add_header("Content-Type", "application/json")
-            request.add_header("Authorization", f"Bearer {token}")
-            request.add_header("Tailscale-User-Login", "smoke@example.com")
+            request.add_header("Origin", operator_origin)
+            request.add_header("X-Argus-CSRF-Bootstrap", "a" * 43)
+            request.add_header("X-Argus-Tailnet-Login", "smoke@example.invalid")
+            request.add_header("X-Argus-Proxy-Token", proxy_token)
             with urllib.request.urlopen(request, timeout=4) as response:
                 payload = json.loads(response.read())
-                cookie = response.headers["Set-Cookie"].split(";", 1)[0]
-            csrf = payload["csrfToken"]
+                set_cookies = response.headers.get_all("Set-Cookie")
+                cookie_values = [value.split(";", 1)[0] for value in set_cookies]
+                cookie = "; ".join(cookie_values)
+            csrf = next(value.split("=", 1)[1] for value in cookie_values if value.startswith("argus_csrf="))
             smoke.check(
-                "HttpOnly" in response.headers["Set-Cookie"]
-                and "Secure" in response.headers["Set-Cookie"]
-                and "SameSite=Strict" in response.headers["Set-Cookie"],
+                any("argus_session=" in value and "HttpOnly" in value for value in set_cookies)
+                and all("Secure" in value and "SameSite=Strict" in value for value in set_cookies),
                 "operator session cookie is hardened",
             )
+            spoofed_status, _, _ = request_json(
+                endpoint,
+                method="POST",
+                payload={"bootstrapToken": token},
+                headers={
+                    "Origin": operator_origin,
+                    "X-Argus-CSRF-Bootstrap": "b" * 43,
+                    "X-Argus-Tailnet-Login": "smoke@example.invalid",
+                },
+            )
+            smoke.check(spoofed_status == 401, "direct identity headers require trusted proxy marker")
             unauth_status, _, _ = request_json(
                 "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
-                method="POST", payload={"operationType": "backup.create", "parameters": {}},
+                method="POST",
+                payload={"operationType": "backup.create", "parameters": {}},
+                headers={"Origin": operator_origin},
             )
             smoke.check(unauth_status == 401, "operation endpoints require both identities")
             csrf_status, _, _ = request_json(
                 "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
                 method="POST", payload={"operationType": "backup.create", "parameters": {}},
-                headers={"Cookie": cookie, "Tailscale-User-Login": "smoke@example.com"},
+                headers={
+                    "Cookie": cookie,
+                    "Origin": operator_origin,
+                    "X-Argus-Tailnet-Login": "smoke@example.invalid",
+                    "X-Argus-Proxy-Token": proxy_token,
+                },
             )
             smoke.check(csrf_status == 403, "state-changing requests reject missing CSRF")
-            status, preview, text = request_json(
+            mismatch_status, _, _ = request_json(
                 "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
                 method="POST",
-                token=token,
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
                     "Cookie": cookie,
-                    "Tailscale-User-Login": "smoke@example.com",
+                    "Origin": operator_origin,
+                    "X-Argus-Tailnet-Login": "smoke@example.invalid",
+                    "X-Argus-Proxy-Token": proxy_token,
+                    "X-Argus-CSRF": "wrong",
+                },
+            )
+            smoke.check(mismatch_status == 403, "CSRF cookie and header must match")
+            origin_status, _, _ = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                method="POST",
+                payload={"operationType": "backup.create", "parameters": {}},
+                headers={
+                    "Cookie": cookie,
+                    "Origin": "https://cross-origin.example.invalid",
+                    "X-Argus-Tailnet-Login": "smoke@example.invalid",
+                    "X-Argus-Proxy-Token": proxy_token,
+                    "X-Argus-CSRF": csrf,
+                },
+            )
+            smoke.check(origin_status == 403, "cross-origin mutations are denied")
+            status, preview, text = request_json(
+                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                method="POST",
+                payload={"operationType": "backup.create", "parameters": {}},
+                headers={
+                    "Cookie": cookie,
+                    "Origin": operator_origin,
+                    "X-Argus-Tailnet-Login": "smoke@example.invalid",
+                    "X-Argus-Proxy-Token": proxy_token,
                     "X-Argus-CSRF": csrf,
                 },
             )

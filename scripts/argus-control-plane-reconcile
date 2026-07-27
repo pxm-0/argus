@@ -4,7 +4,7 @@ set -euo pipefail
 
 readonly ROOT="/srv/argus"
 readonly API_USER="oreo"
-readonly API_GROUP="oreo"
+readonly API_GROUP="argus-control"
 readonly BACKUP_ROOT="/var/lib/argus/control-plane-backups"
 readonly CADDY_DROPIN_DIR="/etc/systemd/system/caddy.service.d"
 readonly CADDY_DROPIN="$CADDY_DROPIN_DIR/argus-tailnet-readiness.conf"

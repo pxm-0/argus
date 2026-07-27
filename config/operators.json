@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "operators": [
+    {
+      "tailnetLogin": "operator@example.invalid",
+      "role": "owner",
+      "enabled": false
+    }
+  ]
+}

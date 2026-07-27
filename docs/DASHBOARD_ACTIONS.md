@@ -16,10 +16,15 @@ POST /api/workloads/<id>/backup/apply
 All `POST` endpoints require:
 
 ```text
-Authorization: Bearer <control-token>
+verified Tailscale identity through the trusted Caddy proxy
+opaque Argus session cookie
+argus_csrf cookie == X-Argus-CSRF header
+Origin == configured private operator origin
 ```
 
-The token is read from `/etc/argus/control-token` by default. It is never embedded in dashboard HTML and the browser stores it only in `sessionStorage`.
+The bootstrap credential is submitted in the JSON body only for session
+exchange and step-up reauthentication. It is cleared from the input
+immediately and is never stored in browser storage.
 
 ## Response Rules
 
