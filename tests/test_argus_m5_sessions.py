@@ -31,10 +31,36 @@ class SessionStoreTests(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT session_hash, csrf_hash, tailnet_login, role FROM sessions"
                 ).fetchone()
-                self.assertEqual(1, connection.execute("PRAGMA user_version").fetchone()[0])
+                self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
             self.assertNotIn(session.session_id, stored)
             self.assertNotIn(session.csrf_token, stored)
             self.assertEqual(("operator@example.com", "owner"), stored[2:])
+
+    def test_operation_binding_is_hashed_and_requires_the_originating_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.sqlite3"
+            store = SessionStore(database)
+            first = store.create("operator@example.com")
+            self.assertTrue(store.bind_operation("operation-1", first.session_id))
+            self.assertTrue(
+                store.operation_bound_to("operation-1", first.session_id)
+            )
+            replacement = store.create("operator@example.com")
+            self.assertFalse(
+                store.operation_bound_to("operation-1", replacement.session_id)
+            )
+            self.assertFalse(
+                store.bind_operation("operation-1", replacement.session_id)
+            )
+            with sqlite3.connect(database) as connection:
+                stored_hash = connection.execute(
+                    """
+                    SELECT session_hash FROM operation_session_bindings
+                    WHERE operation_id = 'operation-1'
+                    """
+                ).fetchone()[0]
+            self.assertNotEqual(first.session_id, stored_hash)
+            self.assertNotIn(first.session_id, database.read_bytes().decode(errors="ignore"))
 
     def test_expiry_logout_revocation_and_step_up(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -101,8 +127,22 @@ class SessionStoreTests(unittest.TestCase):
                 )
 
             with sqlite3.connect(database) as connection:
-                connection.execute("PRAGMA user_version=2")
+                connection.execute("PRAGMA user_version=3")
             with self.assertRaisesRegex(RuntimeError, "newer than supported"):
+                SessionStore(database)
+
+    def test_declared_current_session_schema_must_be_complete(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.sqlite3"
+            with sqlite3.connect(database) as connection:
+                connection.execute(
+                    "CREATE TABLE sessions (session_hash TEXT PRIMARY KEY)"
+                )
+                connection.execute("PRAGMA user_version=2")
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "missing sessions columns",
+            ):
                 SessionStore(database)
 
     def test_cookie_parser_extracts_only_named_values(self) -> None:

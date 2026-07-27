@@ -563,10 +563,28 @@ class Handler(BaseHTTPRequestHandler):
             idempotency_key=str(self.headers.get("Idempotency-Key") or f"compat-{uuid.uuid4()}"),
             preview=preview,
         )
+        operation_id = str(operation["operation_id"])
+        session_bound = (
+            SESSIONS.bind_operation(operation_id, session.session_id)
+            if created
+            else SESSIONS.operation_bound_to(operation_id, session.session_id)
+        )
+        if not session_bound:
+            if created:
+                LEDGER.transition(
+                    operation_id,
+                    {str(operation["state"])},
+                    "denied",
+                    finished_at=int(time.time()),
+                    error_class="session-binding-failed",
+                    redacted_summary="Operation session binding failed before approval.",
+                )
+            self.send_json(409, {"error": "operation is bound to another session"})
+            return
         if created:
-            audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation["operation_id"], operationType=operation_type)
+            audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation_id, operationType=operation_type)
             operation = LEDGER.transition(
-                operation["operation_id"],
+                operation_id,
                 {"awaiting-approval"},
                 "queued",
                 approved_at=int(time.time()),
@@ -614,7 +632,7 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_json(409, {"error": "preview or canonical revision is stale"})
             return
-        operation, _created = LEDGER.create(
+        operation, created = LEDGER.create(
             workload_id=workload_id,
             trust_domain=preview["trustDomain"],
             operation_type=operation_type,
@@ -626,6 +644,24 @@ class Handler(BaseHTTPRequestHandler):
             idempotency_key=str(self.headers.get("Idempotency-Key", "")),
             preview=preview,
         )
+        operation_id = str(operation["operation_id"])
+        session_bound = (
+            SESSIONS.bind_operation(operation_id, session.session_id)
+            if created
+            else SESSIONS.operation_bound_to(operation_id, session.session_id)
+        )
+        if not session_bound:
+            if created:
+                LEDGER.transition(
+                    operation_id,
+                    {str(operation["state"])},
+                    "denied",
+                    finished_at=int(time.time()),
+                    error_class="session-binding-failed",
+                    redacted_summary="Operation session binding failed before approval.",
+                )
+            self.send_json(409, {"error": "operation is bound to another session"})
+            return
         audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation["operation_id"], operationType=operation_type)
         self.send_json(202, operation)
 
@@ -636,6 +672,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if operation["requested_by"] != session.identity:
             self.send_json(403, {"error": "operation belongs to another operator"})
+            return
+        if not SESSIONS.operation_bound_to(operation_id, session.session_id):
+            self.send_json(403, {"error": "operation approval requires the originating session"})
             return
         if str(body.get("confirmation", "")) != operation["workload_id"]:
             self.send_json(403, {"error": "typed workload confirmation required"})
@@ -695,6 +734,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if operation["requested_by"] != session.identity:
             self.send_json(403, {"error": "operation belongs to another operator"})
+            return
+        if not SESSIONS.operation_bound_to(operation_id, session.session_id):
+            self.send_json(403, {"error": "operation cancellation requires the originating session"})
             return
         operation = LEDGER.transition(
             operation_id, {"awaiting-approval", "queued"}, "denied",

@@ -43,7 +43,10 @@ sudo /srv/argus/scripts/argus-m5-runtime-permissions
 
 Never paste either credential into a command argument, issue, PR, or shell
 transcript. The API stores only SHA-256 hashes of session and CSRF values in
-`/var/lib/argus/control/session.sqlite3`, mode `0600`.
+`/var/lib/argus/control/session.sqlite3`, mode `0600`. Schema version 2 also
+binds each operation ID to the hash of its originating session. Approval and
+cancellation reject a replacement session even when it belongs to the same
+operator identity.
 
 The runtime permission reconciliation is required before starting the API or
 agents. It safely upgrades the durable operation ledger and its sidecars to
@@ -181,6 +184,24 @@ in domain-local mode-`0600` SQLite before executing.
 The API and worker never read the signing key. Messages are canonical JSON in a
 four-byte length-prefixed frame capped at 64 KiB; arbitrary shell, Compose
 arguments, and Docker API requests remain impossible.
+
+## Private workload inspector activation
+
+After the workload-inspector PR merges, regenerate the static surface and rerun
+the idempotent session-boundary activation:
+
+```text
+python3 /srv/argus/control-plane/dashboard/generate_dashboard.py
+sudo /srv/argus/scripts/argus-m5-session-boundary --preflight
+sudo /srv/argus/scripts/argus-m5-session-boundary \
+  --apply --acknowledge-m5-session-boundary
+```
+
+The API restart performs the backed-up session-database schema upgrade. Verify
+that preview results show policy reason, revision, digest, expected impact,
+health checks, and rollback behavior; disabled controls show their exact
+blockers; and an in-flight operation returns after a browser refresh. The raw
+response stays behind the technical-details disclosure.
 
 ## Acceptance evidence
 

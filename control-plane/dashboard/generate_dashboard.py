@@ -71,7 +71,7 @@ def render_html() -> str:
         <p>Compare containment, placement, and access state across every trust domain. Select a workload to inspect its evidence.</p>
       </section>
       <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
-      <section class="command-panel" id="command-panel" aria-live="polite" hidden>
+      <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
           <div class="command-heading">
             <span class="result-badge info" id="command-status">Result</span>
@@ -84,11 +84,13 @@ def render_html() -> str:
         </header>
         <p class="command-summary" id="command-summary"></p>
         <dl class="command-highlights" id="command-highlights"></dl>
+        <div class="command-assurance" id="command-assurance"></div>
         <details class="command-details" id="command-details">
           <summary>Technical details <span>Raw response</span></summary>
           <pre id="command-output"></pre>
         </details>
         <div id="command-actions" class="command-actions"></div>
+        <p class="sr-only" id="command-announcer" aria-live="polite" aria-atomic="true"></p>
       </section>
       <section class="monitor" id="monitor-panel" hidden>
         <div class="section-head">
@@ -634,14 +636,19 @@ const commandTitle = document.getElementById("command-title");
 const commandStatus = document.getElementById("command-status");
 const commandSummary = document.getElementById("command-summary");
 const commandHighlights = document.getElementById("command-highlights");
+const commandAssurance = document.getElementById("command-assurance");
 const commandDetails = document.getElementById("command-details");
 const commandActions = document.getElementById("command-actions");
 const commandClose = document.getElementById("command-close");
+const commandAnnouncer = document.getElementById("command-announcer");
 let monitorTimer = null;
 let adminEnabled = false;
 let csrfToken = "";
 let operatorIdentity = "";
 let selectedTopologyId = null;
+let lastCommandTrigger = null;
+const activeOperationPolls = new Set();
+const operationCache = new Map();
 
 function setTheme(theme) {
   const light = theme === "light";
@@ -699,6 +706,8 @@ function commandResultSummary(title, payload) {
   if (payload.error) return payload.error;
   if (payload.detail) return payload.detail;
   if (payload.message) return payload.message;
+  if (payload.allowed === true) return payload.reason ? `Allowed by policy: ${payload.reason}.` : "Allowed by current policy.";
+  if (payload.allowed === false) return payload.reason ? `Blocked by policy: ${payload.reason}.` : "Blocked by current policy.";
   if (Array.isArray(payload.newComposeProjects)) {
     const count = payload.newComposeProjects.length;
     return count ? `${count} unregistered Compose ${count === 1 ? "project" : "projects"} found.` : "No unregistered Compose projects found.";
@@ -711,31 +720,61 @@ function commandResultHighlights(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
   const fields = [
     ["State", payload.state || payload.status],
-    ["Operation", payload.operation_type],
-    ["Workload", payload.workload_id],
-    ["Error class", payload.error_class],
-    ["Operation ID", payload.operation_id],
+    ["Decision", payload.allowed === true ? "Allowed" : payload.allowed === false ? "Blocked" : ""],
+    ["Operation", payload.operation_type || payload.operationType],
+    ["Workload", payload.workload_id || payload.workloadId],
+    ["Trust domain", payload.trust_domain || payload.trustDomain],
+    ["Error class", payload.error_class || payload.errorClass],
+    ["Operation ID", payload.operation_id || payload.operationId],
     ["Identity", payload.identity],
+    ["Policy", payload.policy_version || payload.policyVersion],
+    ["Created", payload.created_at || payload.createdAt],
     ["Expires", payload.expiresAt]
   ].filter(([, value]) => value !== undefined && value !== null && value !== "");
-  return fields.slice(0, 6).map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  return fields.slice(0, 8).map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+}
+
+function commandResultAssurance(payload) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
+  const rows = [];
+  const digestValue = payload.previewDigest || payload.preview_digest;
+  const revision = payload.expectedRevision || payload.expected_revision;
+  if (payload.reason) rows.push(["Policy decision", payload.reason]);
+  if (payload.expectedBlastRadius) rows.push(["Expected impact", payload.expectedBlastRadius]);
+  if (payload.rollbackBehavior) rows.push(["Rollback", payload.rollbackBehavior]);
+  if (digestValue) rows.push(["Preview digest", digestValue]);
+  if (revision) rows.push(["Canonical revision", revision]);
+  if (Array.isArray(payload.healthChecks) && payload.healthChecks.length) {
+    rows.push(["Health checks", payload.healthChecks]);
+  }
+  return rows.map(([label, value]) => {
+    const content = Array.isArray(value)
+      ? `<ul>${value.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>`
+      : `<span>${escapeHtml(value)}</span>`;
+    return `<div class="assurance-row"><strong>${escapeHtml(label)}</strong>${content}</div>`;
+  }).join("");
 }
 
 function showCommandResult(title, payload) {
+  const wasHidden = commandPanel.hidden;
   const [status, tone] = commandResultTone(title, payload);
   const structured = typeof payload === "object" && payload !== null;
+  if (wasHidden) lastCommandTrigger = document.activeElement;
   commandTitle.textContent = title;
   commandStatus.textContent = status;
   commandStatus.className = `result-badge ${tone}`;
   commandSummary.textContent = commandResultSummary(title, payload);
   commandHighlights.innerHTML = commandResultHighlights(payload);
   commandHighlights.hidden = !commandHighlights.innerHTML;
+  commandAssurance.innerHTML = commandResultAssurance(payload);
+  commandAssurance.hidden = !commandAssurance.innerHTML;
   commandOutput.textContent = structured ? JSON.stringify(payload, null, 2) : String(payload ?? "");
   commandDetails.hidden = !structured;
-  commandDetails.open = tone === "bad";
+  commandDetails.open = false;
   commandActions.innerHTML = "";
   commandPanel.hidden = false;
-  commandPanel.scrollIntoView({ block: "nearest" });
+  commandAnnouncer.textContent = `${status}: ${title}. ${commandSummary.textContent}`;
+  if (wasHidden) commandPanel.focus({ preventScroll: true });
 }
 
 function renderDiscoveryCandidates(candidates) {
@@ -949,6 +988,42 @@ function workloadActions(urls) {
   return actions.length ? actions.join("") : '<span class="muted">No open URL configured</span>';
 }
 
+function observedAccessEvidence(workload) {
+  const bindings = Array.isArray(workload.network?.observedBindings)
+    ? workload.network.observedBindings.map(String)
+    : [];
+  const observations = [];
+  if (workload.routes?.tailnet?.enabled) observations.push("tailnet route");
+  if (bindings.some((item) => item.includes("0.0.0.0:") || item.includes("[::]:"))) {
+    observations.push("host-wide binding");
+  } else if (bindings.some((item) => item.includes("127.0.0.1:"))) {
+    observations.push("loopback binding");
+  } else if (bindings.length) {
+    observations.push(`${bindings.length} runtime ${bindings.length === 1 ? "binding" : "bindings"}`);
+  }
+  return observations.join(" + ") || "none recorded";
+}
+
+function evidenceFreshness(value) {
+  if (!value) return "never recorded";
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant)) return String(value);
+  const seconds = Math.max(0, Math.floor((Date.now() - instant) / 1000));
+  if (seconds < 60) return "less than 1m old";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m old`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h old`;
+  return `${Math.floor(seconds / 86400)}d old`;
+}
+
+function operationBlockers({ agentAvailable, logsAllowed, restartAllowed, backupAllowed }) {
+  const blockers = [];
+  if (!agentAvailable) blockers.push("All commands: the trust-domain agent is unavailable.");
+  if (!logsAllowed) blockers.push("Logs preview: disabled by the workload manifest.");
+  if (!restartAllowed) blockers.push("Restart: disabled by the workload manifest.");
+  if (!backupAllowed) blockers.push("Backup: no approved backup plan in the workload manifest.");
+  return blockers;
+}
+
 function renderWorkload(workload) {
   const id = workload.id;
   const runtime = workload.runtime || {};
@@ -969,6 +1044,16 @@ function renderWorkload(workload) {
   const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
   const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
   const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
+  const desiredAccess = access.desired || "-";
+  const effectiveAccess = access.effective || "-";
+  const accessDrift = desiredAccess !== effectiveAccess;
+  const healthEvidenceAt = migration.lastHealthCheck || "";
+  const blockers = operationBlockers({
+    agentAvailable,
+    logsAllowed,
+    restartAllowed,
+    backupAllowed
+  });
   return `
     <article
       class="workload"
@@ -991,11 +1076,14 @@ function renderWorkload(workload) {
         ${pill("effective", access.effective)}
         ${pill("migration", migration.status)}
         </div>
-        <p class="workload-context">
-          <span>Desired <strong>${escapeHtml(access.desired || "-")}</strong></span>
-          <span>Backup <strong>${escapeHtml(backup.status || "needs-discovery")}</strong></span>
-          <span>Domain <strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        </p>
+        <div class="workload-context" aria-label="Access and control evidence">
+          <span>Declared access<strong>${escapeHtml(desiredAccess)}</strong></span>
+          <span>Observed access<strong>${escapeHtml(observedAccessEvidence(workload))}</strong></span>
+          <span>Effective access<strong>${escapeHtml(effectiveAccess)}</strong></span>
+          <span class="${accessDrift ? "drift" : ""}">Alignment<strong>${accessDrift ? "Drift detected" : "Aligned"}</strong></span>
+          <span>Health evidence<strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+          <span>Trust domain<strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
+        </div>
       </div>
       ${error ? `<details class="workload-notice"><summary>Access requires reconciliation</summary><p>${escapeHtml(error)}</p></details>` : ""}
       <details class="workload-evidence">
@@ -1042,7 +1130,10 @@ function renderWorkload(workload) {
           <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
           <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
         </div>
-        <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">No recent operation.</div>
+        ${blockers.length ? `<details class="operation-blockers"><summary>${blockers.length} blocking ${blockers.length === 1 ? "condition" : "conditions"}</summary><ul aria-label="Disabled operation reasons">${blockers.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}
+        <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">
+          <div class="history-head"><strong>Durable history</strong><span>Loading</span></div>
+        </div>
       </section>
       <div class="admin-row" hidden>
         <div class="admin-heading"><strong>Mutation controls</strong><span>Step-up and typed confirmation required</span></div>
@@ -1108,23 +1199,96 @@ async function operationStatus(operationId) {
     cache: "no-store",
     credentials: "same-origin"
   });
-  return response.json();
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `operation status ${response.status}`);
+  return payload;
 }
 
-async function pollOperation(operationId, workload) {
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    const operation = await operationStatus(operationId);
-    showCommandResult(`${workload} operation`, operation);
-    if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) {
-      await loadOperationHistory();
-      return;
-    }
-    await new Promise((resolve) => setTimeout(resolve, 1000));
+function operationStateTone(value) {
+  if (["succeeded", "rolled-back"].includes(value)) return "good";
+  if (["failed", "denied", "expired", "indeterminate"].includes(value)) return "bad";
+  if (["planned", "awaiting-approval", "queued", "running", "rollback-running"].includes(value)) return "warn";
+  return "";
+}
+
+function operationTime(value) {
+  if (!value) return "time unavailable";
+  const instant = Date.parse(value);
+  if (!Number.isFinite(instant)) return String(value);
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short"
+  }).format(new Date(instant));
+}
+
+function renderOperationHistory(workloadId, operations) {
+  const target = document.querySelector(`[data-operation-history="${CSS.escape(workloadId)}"]`);
+  if (!target) return;
+  const visible = operations.slice(0, 4);
+  const signature = JSON.stringify(visible.map((item) => [
+    item.operation_id,
+    item.state,
+    item.redacted_summary,
+    item.finished_at
+  ]));
+  if (target.dataset.historySignature === signature) return;
+  target.dataset.historySignature = signature;
+  operations.forEach((item) => operationCache.set(item.operation_id, item));
+  const awaitingApproval = operations.find((item) => item.state === "awaiting-approval");
+  const cancellable = operations.find((item) => ["awaiting-approval", "queued"].includes(item.state));
+  if (!visible.length) {
+    target.innerHTML = '<div class="history-head"><strong>Durable history</strong><span>0 operations</span></div><p class="history-empty">No durable operations recorded.</p>';
+    return;
+  }
+  target.innerHTML = `
+    <div class="history-head"><strong>Durable history</strong><span>${operations.length} recorded</span></div>
+    <ol class="history-list">
+      ${visible.map((item) => `
+        <li class="history-item">
+          <span class="history-state ${operationStateTone(item.state)}">${escapeHtml(String(item.state || "unknown").replaceAll("-", " "))}</span>
+          <span class="history-copy">
+            <strong>${escapeHtml(String(item.operation_type || "operation").replaceAll(".", " "))}</strong>
+            <small>${escapeHtml(item.redacted_summary || operationTime(item.created_at))}</small>
+          </span>
+          <button type="button" data-view-operation="${escapeHtml(item.operation_id)}" data-workload="${escapeHtml(workloadId)}">Details</button>
+        </li>
+      `).join("")}
+    </ol>
+    ${awaitingApproval || cancellable ? `<div class="command-actions">
+      ${awaitingApproval ? `<button type="button" data-resume-operation="${escapeHtml(awaitingApproval.operation_id)}" data-workload="${escapeHtml(workloadId)}">Resume approval</button>` : ""}
+      ${cancellable ? `<button type="button" data-cancel-operation="${escapeHtml(cancellable.operation_id)}" data-workload="${escapeHtml(workloadId)}">Cancel pending ${escapeHtml(cancellable.operation_type)}</button>` : ""}
+    </div>` : ""}
+  `;
+  const latestHealth = operations.find((item) => item.operation_type === "health.refresh");
+  const freshness = document.querySelector(`[data-health-freshness="${CSS.escape(workloadId)}"]`);
+  if (latestHealth && freshness) {
+    freshness.textContent = `${evidenceFreshness(latestHealth.finished_at || latestHealth.created_at)} · ${latestHealth.state}`;
   }
 }
 
-async function loadOperationHistory() {
-  await Promise.all((state?.workloads || []).map(async (item) => {
+async function pollOperation(operationId, workload, { present = true } = {}) {
+  if (activeOperationPolls.has(operationId)) return;
+  activeOperationPolls.add(operationId);
+  try {
+    while (activeOperationPolls.has(operationId)) {
+      const operation = await operationStatus(operationId);
+      operationCache.set(operationId, operation);
+      if (present) showCommandResult(`${workload} operation`, operation);
+      await loadOperationHistory(workload);
+      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) return;
+      const delay = document.visibilityState === "hidden" ? 10000 : 2000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  } catch (error) {
+    if (present) showCommandResult(`${workload} progress unavailable`, error.message);
+  } finally {
+    activeOperationPolls.delete(operationId);
+  }
+}
+
+async function loadOperationHistory(workloadId = "") {
+  const workloads = (state?.workloads || []).filter((item) => !workloadId || item.id === workloadId);
+  await Promise.all(workloads.map(async (item) => {
     const target = document.querySelector(`[data-operation-history="${CSS.escape(item.id)}"]`);
     if (!target) return;
     const response = await fetch(`/api/workloads/${encodeURIComponent(item.id)}/operations`, {
@@ -1133,28 +1297,22 @@ async function loadOperationHistory() {
     });
     if (!response.ok) return;
     const payload = await response.json();
-    const operation = payload.operations?.[0];
-    const pending = payload.operations?.find((item) => ["planned", "awaiting-approval", "queued"].includes(item.state));
-    target.textContent = operation
-      ? `Latest: ${operation.operation_type} — ${operation.state}. ${operation.redacted_summary || ""}`
-      : "No durable operations recorded.";
-    if (pending) {
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.dataset.cancelOperation = pending.operation_id;
-      cancel.dataset.workload = item.id;
-      cancel.textContent = `Cancel pending ${pending.operation_type}`;
-      target.append(" ", cancel);
-    }
+    const operations = payload.operations || [];
+    renderOperationHistory(item.id, operations);
+    const inFlight = operations.find((operation) =>
+      ["queued", "running", "rollback-running"].includes(operation.state)
+    );
+    if (inFlight) void pollOperation(inFlight.operation_id, item.id, { present: false });
   }));
 }
 
 function fillAdminControls() {
   document.querySelectorAll('select[data-action="access"]').forEach((select) => {
-    select.innerHTML = (state?.accessStates || []).map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("");
+    const phaseOneStates = (state?.accessStates || []).filter((item) => ["none", "local", "tailnet"].includes(item));
+    select.innerHTML = phaseOneStates.map((item) => `<option value="${escapeHtml(item)}">${escapeHtml(item)}</option>`).join("");
     const workload = select.dataset.workload;
     const current = state?.workloads?.find((item) => item.id === workload)?.access?.desired;
-    if (current) select.value = current;
+    if (phaseOneStates.includes(current)) select.value = current;
   });
 }
 
@@ -1204,6 +1362,7 @@ adminToggle.addEventListener("click", async () => {
       const session = await authenticateOperator();
       setAdmin(true);
       showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
+      await loadOperationHistory();
     } catch (error) {
       showCommandResult("Authentication failed", error.message);
     }
@@ -1212,15 +1371,24 @@ adminToggle.addEventListener("click", async () => {
     csrfToken = "";
     operatorIdentity = "";
     adminTokenInput.value = "";
+    operationCache.clear();
+    activeOperationPolls.clear();
     setAdmin(false);
+    renderDashboard();
     showCommandResult("Operator session", "Logged out.");
   }
 });
 
-commandClose.addEventListener("click", () => {
+function closeCommandPanel() {
   commandPanel.hidden = true;
   commandOutput.textContent = "";
-});
+  commandAnnouncer.textContent = "";
+  if (lastCommandTrigger instanceof HTMLElement && document.contains(lastCommandTrigger)) {
+    lastCommandTrigger.focus({ preventScroll: true });
+  }
+}
+
+commandClose.addEventListener("click", closeCommandPanel);
 
 document.addEventListener("click", async (event) => {
   const focus = event.target.closest("[data-focus-workload]");
@@ -1229,6 +1397,39 @@ document.addEventListener("click", async (event) => {
     renderTopology();
     if (focus.dataset.openDetail === "true") {
       document.querySelector(`[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
+    return;
+  }
+  const resumeApproval = event.target.closest("[data-resume-operation]");
+  if (resumeApproval) {
+    if (!csrfToken) {
+      showCommandResult("Operator session required", "Authenticate before resuming approval.");
+      return;
+    }
+    const operationId = resumeApproval.dataset.resumeOperation;
+    const workloadId = resumeApproval.dataset.workload;
+    const row = document.querySelector(`.workload[data-workload="${CSS.escape(workloadId)}"]`);
+    const confirmation = row?.querySelector("[data-confirm]")?.value || "";
+    if (confirmation !== workloadId) {
+      showCommandResult("Confirmation required", `Type ${workloadId} in its confirmation field before resuming approval.`);
+      return;
+    }
+    if (!(await ensureStepUp())) return;
+    const approved = await apiPost(`/api/operations/${encodeURIComponent(operationId)}/approve`, { confirmation });
+    showCommandResult(`${workloadId} operation queued`, approved.payload);
+    if (approved.ok) void pollOperation(operationId, workloadId);
+    return;
+  }
+  const viewOperation = event.target.closest("[data-view-operation]");
+  if (viewOperation) {
+    const operationId = viewOperation.dataset.viewOperation;
+    const workloadId = viewOperation.dataset.workload;
+    try {
+      const operation = operationCache.get(operationId) || await operationStatus(operationId);
+      operationCache.set(operationId, operation);
+      showCommandResult(`${workloadId} operation`, operation);
+    } catch (error) {
+      showCommandResult(`${workloadId} operation unavailable`, error.message);
     }
     return;
   }
@@ -1365,6 +1566,11 @@ document.addEventListener("click", async (event) => {
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && !commandPanel.hidden) {
+    event.preventDefault();
+    closeCommandPanel();
+    return;
+  }
   const focus = event.target.closest('[role="button"][data-focus-workload]');
   if (!focus || !["Enter", " "].includes(event.key)) return;
   event.preventDefault();

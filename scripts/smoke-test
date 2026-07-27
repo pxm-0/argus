@@ -647,6 +647,28 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
     smoke.check("/operations/preview" in js and "/approve" in js and "/api/session/exchange" in js, "dashboard admin flow calls typed control API")
     smoke.check("/api/session/step-up" in js and "cancelOperation" in js, "dashboard recovers expired step-up before mutation")
     smoke.check("agentAvailable" in js or "domain-agent" in js and "data-focus-workload" in js, "dashboard topology reports domain-agent controls")
+    smoke.check(
+        all(
+            marker in js
+            for marker in (
+                "Declared access",
+                "Observed access",
+                "Effective access",
+                "Disabled operation reasons",
+                "Durable history",
+                "activeOperationPolls",
+                "document.visibilityState",
+            )
+        ),
+        "dashboard inspector exposes decision evidence and resumable durable progress",
+    )
+    smoke.check(
+        'id="command-assurance"' in html
+        and "expectedBlastRadius" in js
+        and "rollbackBehavior" in js
+        and "healthChecks" in js,
+        "dashboard result drawer explains preview impact and recovery",
+    )
 
 
 def check_logs_sanitization(smoke: Smoke) -> None:

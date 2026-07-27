@@ -41,14 +41,7 @@ class OperationApiTests(unittest.TestCase):
         self.handler.send_json = (
             lambda status, payload: self.responses.append((status, payload))
         )
-        self.session = self.server.Session(
-            session_id="session",
-            identity="operator@example.com",
-            csrf_token="csrf",
-            created_at=int(time.time()),
-            expires_at=int(time.time()) + 60,
-            step_up_at=int(time.time()),
-        )
+        self.session = self.server.SESSIONS.create("operator@example.com")
         self.preview = {
             "allowed": True,
             "reason": "allowed",
@@ -77,6 +70,12 @@ class OperationApiTests(unittest.TestCase):
             policy_version="1",
             idempotency_key=f"api-{time.time_ns()}",
             preview=self.preview,
+        )
+        self.assertTrue(
+            self.server.SESSIONS.bind_operation(
+                str(operation["operation_id"]),
+                self.session.session_id,
+            )
         )
         return operation
 
@@ -200,6 +199,63 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual(202, self.responses[-1][0])
         self.assertEqual("queued", self.responses[-1][1]["state"])
         self.assertNotIn("dispatch_operation", self.server.__dict__)
+
+    def test_approval_requires_the_originating_session_not_only_identity(self) -> None:
+        operation = self.create_operation()
+        replacement = self.server.SESSIONS.create(self.session.identity)
+        with patch.object(
+            self.server,
+            "operation_preview",
+            return_value=self.preview,
+        ):
+            self.handler.handle_operation_approve(
+                str(operation["operation_id"]),
+                replacement,
+                {"confirmation": "hello-nginx"},
+            )
+        self.assertEqual(403, self.responses[-1][0])
+        self.assertEqual(
+            "operation approval requires the originating session",
+            self.responses[-1][1]["error"],
+        )
+        self.assertEqual(
+            "awaiting-approval",
+            self.server.LEDGER.get(str(operation["operation_id"]))["state"],
+        )
+
+    def test_idempotent_create_cannot_be_claimed_by_replacement_session(self) -> None:
+        body = {
+            "operationType": "workload.restart",
+            "parameters": {},
+            "previewDigest": "preview",
+            "expectedRevision": "revision",
+            "policyVersion": "1",
+        }
+        self.handler.headers = {"Idempotency-Key": "session-bound-intent"}
+        with (
+            patch.object(
+                self.server,
+                "operation_preview",
+                return_value=self.preview,
+            ),
+            patch.object(self.server, "audit"),
+        ):
+            self.handler.handle_operation_create(
+                "hello-nginx",
+                self.session,
+                body,
+            )
+            replacement = self.server.SESSIONS.create(self.session.identity)
+            self.handler.handle_operation_create(
+                "hello-nginx",
+                replacement,
+                body,
+            )
+        self.assertEqual(409, self.responses[-1][0])
+        self.assertEqual(
+            "operation is bound to another session",
+            self.responses[-1][1]["error"],
+        )
 
     def test_cancel_status_and_workload_history_use_the_durable_ledger(self) -> None:
         operation = self.create_operation()
