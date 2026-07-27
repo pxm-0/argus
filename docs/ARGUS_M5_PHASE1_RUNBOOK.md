@@ -81,7 +81,9 @@ rootful Docker sockets inaccessible.
 
 ## Reviewed activation
 
-All commands run on `oreochiserver` after the PR merges.
+All commands run on `oreochiserver` after the reviewed branch is staged and
+before merge. The secret-safe acceptance evidence is attached to the PR before
+it leaves draft.
 
 1. Back up `/etc/caddy/Caddyfile` and affected systemd units.
 2. Install the reviewed files under `/srv/argus`.
