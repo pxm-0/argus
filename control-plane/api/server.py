@@ -551,6 +551,12 @@ class Handler(BaseHTTPRequestHandler):
         if not preview["allowed"]:
             self.send_json(403, preview)
             return
+        idempotency_key = str(
+            self.headers.get("Idempotency-Key") or f"compat-{uuid.uuid4()}"
+        )
+        if not SESSIONS.reserve_operation(idempotency_key, session.session_id):
+            self.send_json(409, {"error": "idempotency key is bound to another session"})
+            return
         operation, created = LEDGER.create(
             workload_id=workload_id,
             trust_domain=preview["trustDomain"],
@@ -560,14 +566,17 @@ class Handler(BaseHTTPRequestHandler):
             preview_digest=preview["previewDigest"],
             expected_revision=preview["expectedRevision"],
             policy_version=preview["policyVersion"],
-            idempotency_key=str(self.headers.get("Idempotency-Key") or f"compat-{uuid.uuid4()}"),
+            idempotency_key=idempotency_key,
             preview=preview,
         )
         operation_id = str(operation["operation_id"])
-        session_bound = (
-            SESSIONS.bind_operation(operation_id, session.session_id)
-            if created
-            else SESSIONS.operation_bound_to(operation_id, session.session_id)
+        session_bound = SESSIONS.bind_operation(
+            operation_id,
+            session.session_id,
+        ) or SESSIONS.operation_bound_to(
+            operation_id,
+            session.session_id,
+            idempotency_key=idempotency_key,
         )
         if not session_bound:
             if created:
@@ -632,6 +641,13 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_json(409, {"error": "preview or canonical revision is stale"})
             return
+        idempotency_key = str(self.headers.get("Idempotency-Key", ""))
+        if not idempotency_key:
+            self.send_json(400, {"error": "idempotency key required"})
+            return
+        if not SESSIONS.reserve_operation(idempotency_key, session.session_id):
+            self.send_json(409, {"error": "idempotency key is bound to another session"})
+            return
         operation, created = LEDGER.create(
             workload_id=workload_id,
             trust_domain=preview["trustDomain"],
@@ -641,14 +657,17 @@ class Handler(BaseHTTPRequestHandler):
             preview_digest=preview["previewDigest"],
             expected_revision=preview["expectedRevision"],
             policy_version=preview["policyVersion"],
-            idempotency_key=str(self.headers.get("Idempotency-Key", "")),
+            idempotency_key=idempotency_key,
             preview=preview,
         )
         operation_id = str(operation["operation_id"])
-        session_bound = (
-            SESSIONS.bind_operation(operation_id, session.session_id)
-            if created
-            else SESSIONS.operation_bound_to(operation_id, session.session_id)
+        session_bound = SESSIONS.bind_operation(
+            operation_id,
+            session.session_id,
+        ) or SESSIONS.operation_bound_to(
+            operation_id,
+            session.session_id,
+            idempotency_key=idempotency_key,
         )
         if not session_bound:
             if created:
@@ -673,7 +692,11 @@ class Handler(BaseHTTPRequestHandler):
         if operation["requested_by"] != session.identity:
             self.send_json(403, {"error": "operation belongs to another operator"})
             return
-        if not SESSIONS.operation_bound_to(operation_id, session.session_id):
+        if not SESSIONS.operation_bound_to(
+            operation_id,
+            session.session_id,
+            idempotency_key=str(operation["idempotency_key"]),
+        ):
             self.send_json(403, {"error": "operation approval requires the originating session"})
             return
         if str(body.get("confirmation", "")) != operation["workload_id"]:
@@ -735,7 +758,11 @@ class Handler(BaseHTTPRequestHandler):
         if operation["requested_by"] != session.identity:
             self.send_json(403, {"error": "operation belongs to another operator"})
             return
-        if not SESSIONS.operation_bound_to(operation_id, session.session_id):
+        if not SESSIONS.operation_bound_to(
+            operation_id,
+            session.session_id,
+            idempotency_key=str(operation["idempotency_key"]),
+        ):
             self.send_json(403, {"error": "operation cancellation requires the originating session"})
             return
         operation = LEDGER.transition(

@@ -133,15 +133,19 @@ import sys
 
 connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 try:
-    if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
-        raise SystemExit("session database schema version is not 2")
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 3:
+        raise SystemExit("session database schema version is not 3")
     tables = {
         row[0]
         for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )
     }
-    if not {"sessions", "operation_session_bindings"}.issubset(tables):
+    if not {
+        "sessions",
+        "operation_session_bindings",
+        "operation_session_reservations",
+    }.issubset(tables):
         raise SystemExit("session database is missing required tables")
     binding_columns = {
         row[1]
@@ -151,9 +155,21 @@ try:
     }
     if binding_columns != {"operation_id", "session_hash", "created_at"}:
         raise SystemExit("operation session-binding schema is invalid")
+    reservation_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(operation_session_reservations)"
+        )
+    }
+    if reservation_columns != {
+        "idempotency_key",
+        "session_hash",
+        "created_at",
+    }:
+        raise SystemExit("operation session-reservation schema is invalid")
 finally:
     connection.close()
-print("SESSION_SCHEMA_OK version=2 operationBinding=hashed")
+print("SESSION_SCHEMA_OK version=3 operationBinding=hashed reservation=atomic")
 PY
 }
 

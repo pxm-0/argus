@@ -46,6 +46,11 @@ class WorkloadInspectorTests(unittest.TestCase):
             self.assertIn(marker, html + javascript)
         self.assertIn("document.visibilityState", javascript)
         self.assertIn("activeOperationPolls", javascript)
+        self.assertIn("History temporarily unavailable.", javascript)
+        self.assertIn(
+            "Operator session expired; authenticate to restore history.",
+            javascript,
+        )
         self.assertIn("data-view-operation", javascript)
         self.assertIn("data-resume-operation", javascript)
         self.assertIn("operation approval requires", (ROOT / "control-plane" / "api" / "server.py").read_text())

@@ -1291,18 +1291,28 @@ async function loadOperationHistory(workloadId = "") {
   await Promise.all(workloads.map(async (item) => {
     const target = document.querySelector(`[data-operation-history="${CSS.escape(item.id)}"]`);
     if (!target) return;
-    const response = await fetch(`/api/workloads/${encodeURIComponent(item.id)}/operations`, {
-      cache: "no-store",
-      credentials: "same-origin"
-    });
-    if (!response.ok) return;
-    const payload = await response.json();
-    const operations = payload.operations || [];
-    renderOperationHistory(item.id, operations);
-    const inFlight = operations.find((operation) =>
-      ["queued", "running", "rollback-running"].includes(operation.state)
-    );
-    if (inFlight) void pollOperation(inFlight.operation_id, item.id, { present: false });
+    try {
+      const response = await fetch(`/api/workloads/${encodeURIComponent(item.id)}/operations`, {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!response.ok) {
+        const message = response.status === 401
+          ? "Operator session expired; authenticate to restore history."
+          : "History temporarily unavailable.";
+        target.innerHTML = `<div class="history-head"><strong>Durable history</strong><span>Unavailable</span></div><p class="history-empty">${message}</p>`;
+        return;
+      }
+      const payload = await response.json();
+      const operations = payload.operations || [];
+      renderOperationHistory(item.id, operations);
+      const inFlight = operations.find((operation) =>
+        ["queued", "running", "rollback-running"].includes(operation.state)
+      );
+      if (inFlight) void pollOperation(inFlight.operation_id, item.id, { present: false });
+    } catch {
+      target.innerHTML = '<div class="history-head"><strong>Durable history</strong><span>Unavailable</span></div><p class="history-empty">History temporarily unavailable.</p>';
+    }
   }));
 }
 

@@ -43,10 +43,12 @@ sudo /srv/argus/scripts/argus-m5-runtime-permissions
 
 Never paste either credential into a command argument, issue, PR, or shell
 transcript. The API stores only SHA-256 hashes of session and CSRF values in
-`/var/lib/argus/control/session.sqlite3`, mode `0600`. Schema version 2 also
-binds each operation ID to the hash of its originating session. Approval and
+`/var/lib/argus/control/session.sqlite3`, mode `0600`. Schema version 3
+reserves the idempotency key for the originating session before persisting
+operation intent, then binds the resulting operation ID. Approval and
 cancellation reject a replacement session even when it belongs to the same
-operator identity.
+operator identity, including across an API crash between intent creation and
+operation-ID binding.
 
 The runtime permission reconciliation is required before starting the API or
 agents. It safely upgrades the durable operation ledger and its sidecars to
@@ -187,8 +189,9 @@ arguments, and Docker API requests remain impossible.
 
 ## Private workload inspector activation
 
-After the workload-inspector PR merges, regenerate the static surface and rerun
-the idempotent session-boundary activation:
+After the reviewed workload-inspector branch is staged on `oreochiserver`, and
+before merge, regenerate the static surface and rerun the idempotent
+session-boundary activation:
 
 ```text
 python3 /srv/argus/control-plane/dashboard/generate_dashboard.py

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.util
 import os
+import sqlite3
 import tempfile
 import time
 import unittest
@@ -59,6 +60,13 @@ class OperationApiTests(unittest.TestCase):
         self.directory.cleanup()
 
     def create_operation(self) -> dict[str, object]:
+        idempotency_key = f"api-{time.time_ns()}"
+        self.assertTrue(
+            self.server.SESSIONS.reserve_operation(
+                idempotency_key,
+                self.session.session_id,
+            )
+        )
         operation, _ = self.server.LEDGER.create(
             workload_id="hello-nginx",
             trust_domain="personal-sandbox",
@@ -68,7 +76,7 @@ class OperationApiTests(unittest.TestCase):
             preview_digest="preview",
             expected_revision="revision",
             policy_version="1",
-            idempotency_key=f"api-{time.time_ns()}",
+            idempotency_key=idempotency_key,
             preview=self.preview,
         )
         self.assertTrue(
@@ -200,6 +208,26 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual("queued", self.responses[-1][1]["state"])
         self.assertNotIn("dispatch_operation", self.server.__dict__)
 
+    def test_reservation_allows_approval_after_pre_binding_api_crash(self) -> None:
+        operation = self.create_operation()
+        with sqlite3.connect(self.server.SESSION_DB) as connection:
+            connection.execute(
+                "DELETE FROM operation_session_bindings WHERE operation_id = ?",
+                (operation["operation_id"],),
+            )
+        with patch.object(
+            self.server,
+            "operation_preview",
+            return_value=self.preview,
+        ):
+            self.handler.handle_operation_approve(
+                str(operation["operation_id"]),
+                self.session,
+                {"confirmation": "hello-nginx"},
+            )
+        self.assertEqual(202, self.responses[-1][0])
+        self.assertEqual("queued", self.responses[-1][1]["state"])
+
     def test_approval_requires_the_originating_session_not_only_identity(self) -> None:
         operation = self.create_operation()
         replacement = self.server.SESSIONS.create(self.session.identity)
@@ -253,7 +281,7 @@ class OperationApiTests(unittest.TestCase):
             )
         self.assertEqual(409, self.responses[-1][0])
         self.assertEqual(
-            "operation is bound to another session",
+            "idempotency key is bound to another session",
             self.responses[-1][1]["error"],
         )
 

@@ -31,7 +31,7 @@ class SessionStoreTests(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT session_hash, csrf_hash, tailnet_login, role FROM sessions"
                 ).fetchone()
-                self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
+                self.assertEqual(3, connection.execute("PRAGMA user_version").fetchone()[0])
             self.assertNotIn(session.session_id, stored)
             self.assertNotIn(session.csrf_token, stored)
             self.assertEqual(("operator@example.com", "owner"), stored[2:])
@@ -41,11 +41,21 @@ class SessionStoreTests(unittest.TestCase):
             database = Path(directory) / "sessions.sqlite3"
             store = SessionStore(database)
             first = store.create("operator@example.com")
+            self.assertTrue(
+                store.reserve_operation("idempotency-1", first.session_id)
+            )
             self.assertTrue(store.bind_operation("operation-1", first.session_id))
             self.assertTrue(
-                store.operation_bound_to("operation-1", first.session_id)
+                store.operation_bound_to(
+                    "operation-1",
+                    first.session_id,
+                    idempotency_key="idempotency-1",
+                )
             )
             replacement = store.create("operator@example.com")
+            self.assertFalse(
+                store.reserve_operation("idempotency-1", replacement.session_id)
+            )
             self.assertFalse(
                 store.operation_bound_to("operation-1", replacement.session_id)
             )
@@ -61,6 +71,29 @@ class SessionStoreTests(unittest.TestCase):
                 ).fetchone()[0]
             self.assertNotEqual(first.session_id, stored_hash)
             self.assertNotIn(first.session_id, database.read_bytes().decode(errors="ignore"))
+
+    def test_operation_reservation_closes_the_pre_binding_crash_window(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store = SessionStore(Path(directory) / "sessions.sqlite3")
+            session = store.create("operator@example.com")
+            self.assertTrue(
+                store.reserve_operation("crash-window", session.session_id)
+            )
+            self.assertTrue(
+                store.operation_bound_to(
+                    "operation-created-before-api-crash",
+                    session.session_id,
+                    idempotency_key="crash-window",
+                )
+            )
+            replacement = store.create(session.identity)
+            self.assertFalse(
+                store.operation_bound_to(
+                    "operation-created-before-api-crash",
+                    replacement.session_id,
+                    idempotency_key="crash-window",
+                )
+            )
 
     def test_expiry_logout_revocation_and_step_up(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -127,7 +160,7 @@ class SessionStoreTests(unittest.TestCase):
                 )
 
             with sqlite3.connect(database) as connection:
-                connection.execute("PRAGMA user_version=3")
+                connection.execute("PRAGMA user_version=4")
             with self.assertRaisesRegex(RuntimeError, "newer than supported"):
                 SessionStore(database)
 
@@ -138,7 +171,7 @@ class SessionStoreTests(unittest.TestCase):
                 connection.execute(
                     "CREATE TABLE sessions (session_hash TEXT PRIMARY KEY)"
                 )
-                connection.execute("PRAGMA user_version=2")
+                connection.execute("PRAGMA user_version=3")
             with self.assertRaisesRegex(
                 RuntimeError,
                 "missing sessions columns",
