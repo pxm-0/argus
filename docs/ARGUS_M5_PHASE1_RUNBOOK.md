@@ -9,8 +9,8 @@ operations through durable typed-operation agents.
 - Tailscale Serve is the only remote entry point. Funnel stays disabled.
 - Caddy listens only on `127.0.0.1:8088`.
 - The API listens only on `127.0.0.1:8099`.
-- `/etc/argus/operators.json`, `/etc/argus/operator-proxy-token`, and
-  capability keys are server-local and never committed.
+- `/etc/argus/operators.json`, `/etc/argus/operator-proxy-token`, and the
+  issuer key are server-local and never committed.
 - The control API has no Docker socket mount and no capability-signing key.
 - Each agent accepts only an operation ID over its Unix socket. It loads the
   exact durable record, independently rechecks domain, policy, revision,
@@ -31,7 +31,6 @@ real file has exactly one enabled owner for Phase 1 and uses the schema in
 ```text
 getent group argus-control >/dev/null || sudo groupadd --system argus-control
 sudo install -d -m 0770 -o oreo -g argus-control /srv/argus/runtime/argus/m5/agents
-sudo install -d -m 0750 -o root -g argus-control /etc/argus/domain-keys
 sudo install -m 0600 -o root -g root \
   /path/to/operators.json /etc/argus/operators.json
 sudo sh -c 'umask 0027; printf "ARGUS_OPERATOR_PROXY_TOKEN=%s\n" \
@@ -53,19 +52,20 @@ agents. It safely upgrades the durable operation ledger and its sidecars to
 persist state transitions without making the ledger world-readable. The
 separate API-owned session database and its sidecars remain mode `0600`.
 
-Create one independent random 32-byte-or-longer capability key for every active
-domain. Do not copy, print, or commit key material. Ownership must let only the
-matching agent identity read its key. Current active domains require:
+The separate capability issuer owns one Ed25519 private key at
+`/etc/argus/capability-issuer/ed25519.key`, mode `0600`. Neither the API, worker,
+nor any domain agent can read it. Current and previous public keys may be
+distributed to each active domain for a ten-minute rotation overlap. Current
+active domains are:
 
 ```text
 legacy-rootful
 personal-sandbox
 ```
 
-Install each key mode `0400`, owned by its agent Unix identity (`oreo` for
-`legacy-rootful`, `argus-personal-sandbox` for `personal-sandbox`). The
-management API identity and `argus-control` group must not be able to read
-either key.
+The reviewed activation creates the private key without printing it and
+installs only `issuer.pub` below `/etc/argus/domains/<domain>/`. Issuance stops
+if any distributed public key does not match the active private key.
 
 The non-legacy service template maps `personal-sandbox` to the existing
 `argus-personal-sandbox` Unix identity. The legacy compatibility unit runs as
@@ -159,6 +159,29 @@ The apply path:
 It does not change Caddy, Tailscale Serve, Funnel, a route, listener, workload,
 DNS record, or firewall rule.
 
+## Capability issuer and agent activation
+
+After the ledger worker is active, run:
+
+```text
+sudo /srv/argus/scripts/argus-m5-capability-issuer --preflight
+sudo /srv/argus/scripts/argus-m5-capability-issuer \
+  --apply --acknowledge-m5-capability-issuer
+```
+
+The apply path backs up affected units and key paths, stops the API before the
+worker and agents, refuses unresolved operations, creates a locked
+`argus-issuer` identity, generates or preserves the Ed25519 private key,
+distributes only its public key, and restarts the worker, issuer, agents, and
+API in dependency order. Agent sockets move to the deterministic
+`/run/argus/domains/<domain>/agent.sock` contract with exact owner, group, mode,
+and typed `agent.status` verification. Agents persist capability IDs and nonces
+in domain-local mode-`0600` SQLite before executing.
+
+The API and worker never read the signing key. Messages are canonical JSON in a
+four-byte length-prefixed frame capped at 64 KiB; arbitrary shell, Compose
+arguments, and Docker API requests remain impossible.
+
 ## Acceptance evidence
 
 Record only secret-safe results:
@@ -168,6 +191,7 @@ python3 -m unittest discover -s tests -v
 python3 -m json.tool config/operators.json
 systemctl is-active argus-control-api.service
 systemctl is-active argus-operation-worker.service
+systemctl is-active argus-capability-issuer.service
 systemctl is-active argus-domain-agent-legacy-rootful.service
 systemctl is-active argus-domain-agent@personal-sandbox.service
 ss -ltn

@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-import json
+import os
 import socket
 import socketserver
+import subprocess
 import sys
 import tempfile
 import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 
@@ -18,6 +20,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from argus_operation_worker import OperationWorker  # noqa: E402
 from argus_operations import OperationLedger  # noqa: E402
 from argus_domain_agent import AgentRequestHandler, AgentService  # noqa: E402
+from argus_ipc import receive_frame, send_frame  # noqa: E402
 
 
 class OperationWorkerTests(unittest.TestCase):
@@ -29,8 +32,20 @@ class OperationWorkerTests(unittest.TestCase):
         self.ledger = OperationLedger(self.root / "operations.sqlite3")
         self.socket_dir = self.root / "agents"
         self.socket_dir.mkdir()
+        self.pwd_patch = patch(
+            "argus_operation_worker.pwd.getpwnam",
+            return_value=SimpleNamespace(pw_uid=os.getuid()),
+        )
+        self.grp_patch = patch(
+            "argus_operation_worker.grp.getgrnam",
+            return_value=SimpleNamespace(gr_gid=os.getgid()),
+        )
+        self.pwd_patch.start()
+        self.grp_patch.start()
 
     def tearDown(self) -> None:
+        self.grp_patch.stop()
+        self.pwd_patch.stop()
         self.directory.cleanup()
 
     def create_health(self, key: str = "health") -> dict[str, object]:
@@ -51,29 +66,33 @@ class OperationWorkerTests(unittest.TestCase):
         self,
         response: dict[str, object],
     ) -> tuple[threading.Thread, list[dict[str, object]]]:
-        socket_path = self.socket_dir / "personal-sandbox.sock"
+        socket_path = self.socket_dir / "personal-sandbox" / "agent.sock"
+        socket_path.parent.mkdir()
         received: list[dict[str, object]] = []
         ready = threading.Event()
 
         def serve() -> None:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
                 server.bind(str(socket_path))
+                os.chmod(socket_path, 0o660)
                 server.listen(1)
                 ready.set()
-                connection, _ = server.accept()
-                with connection:
-                    encoded = connection.makefile("rb").readline(65_537)
-                    received.append(json.loads(encoded))
-                    connection.sendall(
-                        (
-                            json.dumps(
-                                response,
-                                sort_keys=True,
-                                separators=(",", ":"),
+                for _ in range(2):
+                    connection, _ = server.accept()
+                    with connection:
+                        request = receive_frame(connection)
+                        if request == {"method": "agent.status"}:
+                            send_frame(
+                                connection,
+                                {
+                                    "ok": True,
+                                    "status": "available",
+                                    "trustDomain": "personal-sandbox",
+                                },
                             )
-                            + "\n"
-                        ).encode()
-                    )
+                        else:
+                            received.append(request)
+                            send_frame(connection, response)
 
         thread = threading.Thread(target=serve)
         thread.start()
@@ -88,7 +107,12 @@ class OperationWorkerTests(unittest.TestCase):
         thread.join(timeout=2)
         self.assertFalse(thread.is_alive())
         self.assertEqual(
-            [{"operationId": operation["operation_id"]}],
+            [
+                {
+                    "method": "operation.execute",
+                    "operationId": operation["operation_id"],
+                }
+            ],
             received,
         )
         persisted = self.ledger.get(str(operation["operation_id"]))
@@ -113,6 +137,20 @@ class OperationWorkerTests(unittest.TestCase):
             self.ledger.get(str(operation["operation_id"]))["state"],
         )
 
+    def test_unexpected_socket_mode_leaves_operation_queued(self) -> None:
+        operation = self.create_health("wrong-mode")
+        socket_path = self.socket_dir / "personal-sandbox" / "agent.sock"
+        socket_path.parent.mkdir()
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as server:
+            server.bind(str(socket_path))
+            os.chmod(socket_path, 0o600)
+            worker = OperationWorker(self.ledger, self.socket_dir)
+            self.assertEqual((0, 0, 0), worker.run_once())
+        self.assertEqual(
+            "queued",
+            self.ledger.get(str(operation["operation_id"]))["state"],
+        )
+
     def test_unconfirmed_dispatch_becomes_indeterminate_without_retry(self) -> None:
         operation = self.create_health()
         thread, received = self.fake_agent({"accepted": False, "ok": False})
@@ -120,7 +158,12 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertEqual((0, 1, 0), worker.run_once())
         thread.join(timeout=2)
         self.assertEqual(
-            [{"operationId": operation["operation_id"]}],
+            [
+                {
+                    "method": "operation.execute",
+                    "operationId": operation["operation_id"],
+                }
+            ],
             received,
         )
         persisted = self.ledger.get(str(operation["operation_id"]))
@@ -130,7 +173,37 @@ class OperationWorkerTests(unittest.TestCase):
 
     def test_agent_acknowledges_then_persists_outcome_asynchronously(self) -> None:
         operation = self.create_health("agent-integration")
-        socket_path = self.socket_dir / "personal-sandbox.sock"
+        socket_path = self.socket_dir / "personal-sandbox" / "agent.sock"
+        socket_path.parent.mkdir()
+        private_key = self.root / "issuer.key"
+        public_key = self.root / "issuer.pub"
+        subprocess.run(
+            [
+                "openssl",
+                "genpkey",
+                "-algorithm",
+                "ED25519",
+                "-out",
+                str(private_key),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        subprocess.run(
+            [
+                "openssl",
+                "pkey",
+                "-in",
+                str(private_key),
+                "-pubout",
+                "-out",
+                str(public_key),
+            ],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
         with patch.dict(
             "os.environ",
             {"ARGUS_OPERATIONS_DB": str(self.ledger.path)},
@@ -139,21 +212,27 @@ class OperationWorkerTests(unittest.TestCase):
                 ROOT,
                 self.root / "runtime",
                 "personal-sandbox",
-                b"x" * 32,
+                [public_key],
+                issuer_socket=self.root / "issuer.sock",
+                replay_db=self.root / "capabilities.sqlite3",
             )
         with patch.object(
-            service.agent,
-            "execute",
-            return_value={
-                "summary": "Domain-local evidence refreshed.",
-                "health": {"ok": True, "status": "healthy", "detail": "typed"},
-            },
+            service,
+            "run_operation",
+            side_effect=lambda operation_id: self.ledger.transition(
+                operation_id,
+                {"running"},
+                "succeeded",
+                finished_at=int(time.time()),
+                redacted_summary="Domain-local evidence refreshed.",
+            ),
         ):
             server = socketserver.ThreadingUnixStreamServer(
                 str(socket_path),
                 AgentRequestHandler,
             )
             server.service = service  # type: ignore[attr-defined]
+            os.chmod(socket_path, 0o660)
             thread = threading.Thread(target=server.serve_forever)
             thread.start()
             try:

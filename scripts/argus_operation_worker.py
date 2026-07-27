@@ -1,22 +1,20 @@
 from __future__ import annotations
 
 import argparse
-import json
+import grp
 import os
+import pwd
 import re
-import socket
 import stat
 import time
 from pathlib import Path
 from typing import Any
 
+from argus_ipc import request as ipc_request
 from argus_operations import OperationConflict, OperationLedger
 
 
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
-MAX_RESPONSE_BYTES = 65_536
-
-
 class OperationWorker:
     def __init__(
         self,
@@ -32,33 +30,28 @@ class OperationWorker:
     def socket_path(self, trust_domain: str) -> Path:
         if not DOMAIN_ID.fullmatch(trust_domain):
             raise ValueError("invalid trust domain")
-        return self.agent_socket_dir / f"{trust_domain}.sock"
+        return self.agent_socket_dir / trust_domain / "agent.sock"
+
+    @staticmethod
+    def expected_owner(trust_domain: str) -> str:
+        return "oreo" if trust_domain == "legacy-rootful" else f"argus-{trust_domain}"
 
     def dispatch(self, operation: dict[str, Any]) -> bool:
         operation_id = str(operation["operation_id"])
         socket_path = self.socket_path(str(operation["trust_domain"]))
         try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(self.dispatch_timeout_seconds)
-                client.connect(str(socket_path))
-                client.sendall(
-                    (
-                        json.dumps(
-                            {"operationId": operation_id},
-                            sort_keys=True,
-                            separators=(",", ":"),
-                        )
-                        + "\n"
-                    ).encode()
-                )
-                response_bytes = client.makefile("rb").readline(MAX_RESPONSE_BYTES + 1)
-            if len(response_bytes) > MAX_RESPONSE_BYTES or not response_bytes.endswith(b"\n"):
-                raise RuntimeError("invalid agent acknowledgement")
-            response = json.loads(response_bytes)
+            response = ipc_request(
+                str(socket_path),
+                {
+                    "method": "operation.execute",
+                    "operationId": operation_id,
+                },
+                timeout_seconds=self.dispatch_timeout_seconds,
+            )
             if response != {"accepted": True, "ok": True}:
                 raise RuntimeError("agent rejected dispatch")
             return True
-        except (OSError, ValueError, RuntimeError, json.JSONDecodeError):
+        except (OSError, ValueError, RuntimeError):
             try:
                 self.ledger.mark_dispatch_indeterminate(operation_id)
             except OperationConflict:
@@ -69,10 +62,29 @@ class OperationWorker:
 
     def agent_available(self, trust_domain: str) -> bool:
         try:
-            metadata = self.socket_path(trust_domain).stat()
-        except (OSError, ValueError):
+            socket_path = self.socket_path(trust_domain)
+            metadata = socket_path.stat()
+            expected_uid = pwd.getpwnam(self.expected_owner(trust_domain)).pw_uid
+            expected_gid = grp.getgrnam("argus-control").gr_gid
+            if (
+                not stat.S_ISSOCK(metadata.st_mode)
+                or stat.S_IMODE(metadata.st_mode) != 0o660
+                or metadata.st_uid != expected_uid
+                or metadata.st_gid != expected_gid
+            ):
+                return False
+            response = ipc_request(
+                str(socket_path),
+                {"method": "agent.status"},
+                timeout_seconds=self.dispatch_timeout_seconds,
+            )
+        except (KeyError, OSError, ValueError, RuntimeError):
             return False
-        return stat.S_ISSOCK(metadata.st_mode)
+        return response == {
+            "ok": True,
+            "status": "available",
+            "trustDomain": trust_domain,
+        }
 
     def run_once(self) -> tuple[int, int, int]:
         recovered = self.ledger.recover_running()
@@ -118,7 +130,7 @@ def main() -> int:
     socket_dir = Path(
         os.environ.get(
             "ARGUS_AGENT_SOCKET_DIR",
-            root / "runtime" / "argus" / "m5" / "agents",
+            "/run/argus/domains",
         )
     )
     ledger = OperationLedger(ledger_path)

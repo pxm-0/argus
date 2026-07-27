@@ -97,6 +97,19 @@ Only the domain agents receive their domain runtime access. The worker service
 uses `RestrictAddressFamilies=AF_UNIX` and has no Docker environment or
 runtime-socket path.
 
+`argus-capability-issuer.service` is the sole Ed25519 signer. It owns the
+mode-`0600` private key, reads the operation ledger without write access, and
+signs only exact worker-claimed records with persisted mutation approval.
+The API, worker, and agents receive no private signing material. Agents accept
+the current or previous public key during a bounded rotation overlap and
+consume each capability ID and 256-bit nonce in domain-local SQLite before
+execution.
+
+Agent and issuer transports accept only canonical, four-byte length-prefixed
+JSON frames capped at 64 KiB. Deterministic agent discovery verifies the
+domain-derived path, Unix owner, `argus-control` group, mode `0660`, and typed
+`agent.status` response before the worker claims queued work.
+
 ## Git Hygiene
 
 Git should track platform config and docs only.

@@ -14,12 +14,11 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_operations import (  # noqa: E402
-    CapabilityCodec,
-    DomainAgent,
     OperationConflict,
     OperationLedger,
-    capability_claims,
+    OperationValidationError,
     digest,
+    validate_typed_parameters,
 )
 from argus_sessions import SessionStore  # noqa: E402
 
@@ -90,6 +89,32 @@ class OperationLedgerTests(unittest.TestCase):
                 operation_type="workload.restart",
                 idempotency_key="idem-1",
             )
+
+    def test_typed_parameter_schema_rejects_unknown_or_malformed_values(self) -> None:
+        invalid = [
+            ("health.refresh", {"unexpected": True}),
+            ("logs.preview", {"maxLines": 101}),
+            ("logs.preview", {"maxLines": True}),
+            ("workload.restart", {"healthTimeoutSeconds": 0}),
+            ("backup.create", {"planRevision": "not-a-digest"}),
+            ("access.apply", {}),
+            ("access.apply", {"desired": "public"}),
+        ]
+        for operation_type, parameters in invalid:
+            with self.subTest(
+                operation_type=operation_type,
+                parameters=parameters,
+            ):
+                with self.assertRaises(OperationValidationError):
+                    validate_typed_parameters(operation_type, parameters)
+        for operation_type, parameters in [
+            ("health.refresh", {}),
+            ("logs.preview", {"maxLines": 100}),
+            ("workload.restart", {"healthTimeoutSeconds": 30}),
+            ("backup.create", {"planRevision": "a" * 64}),
+            ("access.apply", {"desired": "tailnet"}),
+        ]:
+            validate_typed_parameters(operation_type, parameters)
 
     def test_terminal_operation_releases_lock(self) -> None:
         operation, _ = self.create()
@@ -310,87 +335,6 @@ class OperationLedgerTests(unittest.TestCase):
             "indeterminate",
             self.ledger.get(str(unknown["operation_id"]))["state"],
         )
-
-
-class DomainCapabilityTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.directory = tempfile.TemporaryDirectory()
-        self.ledger = OperationLedger(Path(self.directory.name) / "operations.sqlite3")
-        self.codec = CapabilityCodec(b"x" * 32)
-        self.executed: list[tuple[str, str, dict[str, object]]] = []
-        preview = {
-            "workloadId": "demo",
-            "trustDomain": "personal-sandbox",
-            "operationType": "workload.restart",
-            "parameters": {},
-            "expectedRevision": "revision",
-            "policyVersion": "1",
-        }
-        self.operation, _ = self.ledger.create(
-            workload_id="demo",
-            trust_domain="personal-sandbox",
-            operation_type="workload.restart",
-            requested_by="operator@example.com",
-            parameters={},
-            preview_digest=digest(preview),
-            expected_revision="revision",
-            policy_version="1",
-            idempotency_key="idem",
-        )
-
-    def tearDown(self) -> None:
-        self.directory.cleanup()
-
-    def agent(self, domain: str = "personal-sandbox") -> DomainAgent:
-        def execute(operation_type: str, workload_id: str, parameters: dict[str, object]) -> dict[str, object]:
-            self.executed.append((operation_type, workload_id, parameters))
-            return {"summary": "ok"}
-
-        return DomainAgent(
-            domain, self.ledger, self.codec, execute,
-            lambda _workload, _operation, _parameters: (True, ""),
-            lambda _workload: "revision",
-        )
-
-    def request(self, **claim_overrides: object) -> dict[str, object]:
-        claims = capability_claims(self.operation)
-        claims.update(claim_overrides)
-        request = {
-            key: self.operation[key]
-            for key in ("workload_id", "trust_domain", "operation_type", "parameters", "expected_revision", "preview_digest", "policy_version", "idempotency_key")
-        }
-        request["capability"] = self.codec.issue(claims)
-        return request
-
-    def test_valid_capability_executes_once(self) -> None:
-        request = self.request()
-        self.agent().execute(request)
-        self.assertEqual(len(self.executed), 1)
-        with self.assertRaisesRegex(ValueError, "replayed"):
-            self.agent().execute(request)
-
-    def test_wrong_domain_expired_stale_and_mismatch_fail_closed(self) -> None:
-        cases = [
-            ({"trust_domain": "other"}, "wrong capability domain"),
-            ({"expires_at": int(time.time()) - 1}, "expired"),
-            ({"expected_revision": "old"}, "mismatch"),
-            ({"parameters": {"unexpected": True}}, "mismatch"),
-        ]
-        for index, (overrides, message) in enumerate(cases):
-            with self.subTest(index=index):
-                with self.assertRaisesRegex(ValueError, message):
-                    self.agent().execute(self.request(nonce=f"nonce-{index}", **overrides))
-        self.assertEqual(self.executed, [])
-
-    def test_agent_domain_and_policy_are_independently_enforced(self) -> None:
-        with self.assertRaisesRegex(ValueError, "wrong capability domain"):
-            self.agent("other").execute(self.request())
-        denying = DomainAgent(
-            "personal-sandbox", self.ledger, self.codec, lambda *_args: {},
-            lambda *_args: (False, "blocked by exact policy"), lambda _workload: "revision",
-        )
-        with self.assertRaisesRegex(PermissionError, "blocked by exact policy"):
-            denying.execute(self.request(nonce="policy-nonce"))
 
 
 if __name__ == "__main__":

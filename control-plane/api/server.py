@@ -3,11 +3,13 @@
 
 from __future__ import annotations
 
-import hashlib
+import grp
 import json
 import os
+import pwd
 import re
 import secrets
+import stat
 import subprocess
 import sys
 import time
@@ -40,13 +42,20 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_actions import backup_preview, logs_preview, restart_preview  # noqa: E402
 from argus_access_runtime import route_contract  # noqa: E402
+from argus_canonical import (  # noqa: E402
+    canonical_policy_version,
+    canonical_revision,
+)
 from argus_common import audit, by_id, dashboard_state, load_json, policy_decision  # noqa: E402
+from argus_ipc import request as ipc_request  # noqa: E402
 from argus_operations import (  # noqa: E402
     MUTATIONS,
     OperationConflict,
     OperationLedger,
+    OperationValidationError,
     digest,
     parse_timestamp,
+    validate_typed_parameters,
 )
 from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
 
@@ -128,6 +137,17 @@ def workload(workload_id: str) -> dict[str, Any] | None:
     return by_id().get(workload_id)
 
 
+def validate_body_keys(
+    body: dict[str, Any],
+    allowed: set[str],
+) -> None:
+    unknown = set(body) - allowed
+    if unknown:
+        raise OperationValidationError(
+            f"unknown request field(s): {','.join(sorted(unknown))}"
+        )
+
+
 def trust_domain(workload_id: str) -> str:
     classification_path = ROOT / "config" / "argus" / "workload-classification.json"
     if classification_path.exists():
@@ -139,17 +159,48 @@ def trust_domain(workload_id: str) -> str:
 
 
 def agent_available(domain: str) -> bool:
-    return (RUNTIME / "agents" / f"{domain}.sock").is_socket()
+    socket_root = Path(
+        os.environ.get(
+            "ARGUS_DOMAIN_SOCKET_ROOT",
+            "/run/argus/domains",
+        )
+    )
+    socket_path = socket_root / domain / "agent.sock"
+    owner = "oreo" if domain == "legacy-rootful" else f"argus-{domain}"
+    try:
+        metadata = socket_path.stat()
+        if (
+            not stat.S_ISSOCK(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o660
+            or metadata.st_uid != pwd.getpwnam(owner).pw_uid
+            or metadata.st_gid != grp.getgrnam("argus-control").gr_gid
+        ):
+            return False
+        response = ipc_request(
+            str(socket_path),
+            {"method": "agent.status"},
+            timeout_seconds=10,
+        )
+    except (KeyError, OSError, RuntimeError, ValueError):
+        return False
+    return response == {
+        "ok": True,
+        "status": "available",
+        "trustDomain": domain,
+    }
 
 
 def private_dashboard_state() -> dict[str, Any]:
     state = dashboard_state()
     active_domains: set[str] = set()
+    domain_availability: dict[str, bool] = {}
     for node in state.get("topology", {}).get("nodes", []):
         if node.get("kind") != "workload":
             continue
         domain = str(node.get("trustDomain", "legacy-rootful"))
-        available = agent_available(domain)
+        if domain not in domain_availability:
+            domain_availability[domain] = agent_available(domain)
+        available = domain_availability[domain]
         node["agentAvailable"] = available
         if available:
             active_domains.add(domain)
@@ -157,28 +208,11 @@ def private_dashboard_state() -> dict[str, Any]:
     return state
 
 
-def canonical_revision(workload_id: str) -> str:
-    inputs: list[bytes] = []
-    for path in (
-        ROOT / "config" / "workloads.json",
-        ROOT / "config" / "policy.json",
-        ROOT / "config" / "access.json",
-        ROOT / "workloads" / workload_id / "manifest.json",
-    ):
-        if path.exists():
-            inputs.append(path.read_bytes())
-    return hashlib.sha256(b"\0".join(inputs)).hexdigest()
-
-
-def policy_version() -> str:
-    policy = load_json("policy.json")
-    return str(policy.get("version", "1"))
-
-
 def operation_preview(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> dict[str, Any]:
+    validate_typed_parameters(operation_type, parameters)
     item = workload(workload_id)
     domain = trust_domain(workload_id)
-    revision = canonical_revision(workload_id)
+    revision = canonical_revision(ROOT, workload_id)
     allowed, reason = operation_policy(workload_id, operation_type, parameters)
     rollback = {
         "health.refresh": "No mutation; no rollback required.",
@@ -198,7 +232,7 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "operationType": operation_type,
         "parameters": parameters,
         "expectedRevision": revision,
-        "policyVersion": policy_version(),
+        "policyVersion": canonical_policy_version(ROOT, workload_id),
     }
     result = {
         **preview,
@@ -376,6 +410,8 @@ class Handler(BaseHTTPRequestHandler):
             self.handle_post()
         except json.JSONDecodeError:
             self.send_json(400, {"error": "invalid json"})
+        except OperationValidationError as exc:
+            self.send_json(422, {"error": str(exc)})
         except ValueError as exc:
             self.send_json(400, {"error": str(exc)})
         except OperationConflict as exc:
@@ -390,9 +426,11 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = self.read_body()
         if path == "/api/session/exchange":
+            validate_body_keys(body, {"bootstrapToken"})
             self.handle_session_exchange(body)
             return
         if path == "/api/session/logout":
+            validate_body_keys(body, set())
             session = self.require_session(csrf=True)
             if not session:
                 return
@@ -408,6 +446,7 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/session/step-up":
+            validate_body_keys(body, {"bootstrapToken"})
             session = self.require_session(csrf=True)
             if not session:
                 return
@@ -434,26 +473,48 @@ class Handler(BaseHTTPRequestHandler):
         if not session:
             return
         if path == "/api/workloads/discover":
+            validate_body_keys(body, set())
             self.handle_workload_discover()
         elif preview_match:
+            validate_body_keys(body, {"operationType", "parameters"})
             operation_type = str(body.get("operationType", ""))
+            if not isinstance(body.get("parameters", {}), dict):
+                raise OperationValidationError("parameters must be an object")
             parameters = dict(body.get("parameters") or {})
             self.send_json(200, operation_preview(preview_match.group(1), operation_type, parameters))
         elif create_match:
+            validate_body_keys(
+                body,
+                {
+                    "operationType",
+                    "parameters",
+                    "previewDigest",
+                    "expectedRevision",
+                    "policyVersion",
+                },
+            )
             self.handle_operation_create(create_match.group(1), session, body)
         elif approve_match:
+            validate_body_keys(body, {"confirmation"})
             self.handle_operation_approve(approve_match.group(1), session, body)
         elif cancel_match:
+            validate_body_keys(body, set())
             self.handle_operation_cancel(cancel_match.group(1), session)
         elif legacy_action_match:
             workload_id, action, phase = legacy_action_match.groups()
             operation_type = {"logs": "logs.preview", "restart": "workload.restart", "backup": "backup.create"}[action]
             if phase == "preview":
+                validate_body_keys(body, set())
                 self.send_json(200, operation_preview(workload_id, operation_type, {}))
             else:
+                validate_body_keys(body, {"confirmation"})
                 self.handle_compatibility_apply(workload_id, operation_type, session, body)
         elif legacy_access_match:
             workload_id, phase = legacy_access_match.groups()
+            validate_body_keys(
+                body,
+                {"desired"} if phase == "preview" else {"desired", "confirmation"},
+            )
             parameters = {"desired": str(body.get("desired", ""))}
             if phase == "preview":
                 self.send_json(200, operation_preview(workload_id, "access.apply", parameters))

@@ -1,7 +1,7 @@
 [Unit]
 Description=Argus typed compatibility agent for legacy-rootful
-Requires=argus-operation-worker.service
-After=network.target argus-operation-worker.service
+Requires=argus-operation-worker.service argus-capability-issuer.service
+After=network.target argus-operation-worker.service argus-capability-issuer.service
 
 [Service]
 Type=simple
@@ -13,11 +13,19 @@ Environment=ARGUS_RUNTIME=/srv/argus/runtime/argus/m5
 Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
 Environment=ARGUS_LEDGER_REQUIRE_EXISTING=1
 Environment=ARGUS_TRUST_DOMAIN=legacy-rootful
-Environment=ARGUS_CAPABILITY_KEY_FILE=/etc/argus/domain-keys/legacy-rootful.key
+Environment=ARGUS_ISSUER_SOCKET=/run/argus/capability-issuer.sock
+Environment=ARGUS_ISSUER_PUBLIC_KEY=/etc/argus/domains/legacy-rootful/issuer.pub
+Environment=ARGUS_ISSUER_PREVIOUS_PUBLIC_KEY=/etc/argus/domains/legacy-rootful/issuer.previous.pub
+Environment=ARGUS_AGENT_SOCKET=/run/argus/domains/legacy-rootful/agent.sock
+Environment=ARGUS_CAPABILITY_REPLAY_DB=/var/lib/argus/legacy-rootful/capabilities.sqlite3
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_domain_agent.py
 Restart=on-failure
 RestartSec=3
 UMask=0007
+RuntimeDirectory=argus/domains/legacy-rootful
+RuntimeDirectoryMode=0770
+StateDirectory=argus/legacy-rootful
+StateDirectoryMode=0700
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
