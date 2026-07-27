@@ -6,17 +6,19 @@ readonly ROOT="${ARGUS_ROOT:-/srv/argus}"
 readonly RUNTIME="$ROOT/runtime/argus/m5"
 readonly CONTROL_STATE="/var/lib/argus/control"
 readonly API_USER="oreo"
+readonly WORKER_USER="argus-worker"
 readonly CONTROL_GROUP="argus-control"
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
 [[ $EUID -eq 0 ]] || fail "run with sudo"
 getent passwd "$API_USER" >/dev/null || fail "missing API user: $API_USER"
+getent passwd "$WORKER_USER" >/dev/null || fail "missing worker user: $WORKER_USER"
 getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group: $CONTROL_GROUP"
 
 install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" \
   "$ROOT/runtime/argus" "$RUNTIME" "$RUNTIME/agents"
-install -d -m 0700 -o "$API_USER" -g "$CONTROL_GROUP" "$CONTROL_STATE"
+install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" "$CONTROL_STATE"
 
 reconciled=0
 for database in operations.sqlite3; do
@@ -30,6 +32,14 @@ for database in operations.sqlite3; do
 done
 
 for suffix in "" -wal -shm; do
+  path="$CONTROL_STATE/operations.sqlite3$suffix"
+  [[ -e "$path" ]] || continue
+  chown "$WORKER_USER:$CONTROL_GROUP" "$path"
+  chmod 0660 "$path"
+  reconciled=$((reconciled + 1))
+done
+
+for suffix in "" -wal -shm; do
   path="$CONTROL_STATE/session.sqlite3$suffix"
   [[ -e "$path" ]] || continue
   chown "$API_USER:$CONTROL_GROUP" "$path"
@@ -37,5 +47,5 @@ for suffix in "" -wal -shm; do
   reconciled=$((reconciled + 1))
 done
 
-printf 'M5_RUNTIME_PERMISSIONS_OK files=%d owner=%s group=%s operationMode=0660 sessionMode=0600\n' \
-  "$reconciled" "$API_USER" "$CONTROL_GROUP"
+printf 'M5_RUNTIME_PERMISSIONS_OK files=%d apiOwner=%s workerOwner=%s group=%s operationMode=0660 sessionMode=0600\n' \
+  "$reconciled" "$API_USER" "$WORKER_USER" "$CONTROL_GROUP"

@@ -29,6 +29,8 @@ class DomainAgentServiceTests(unittest.TestCase):
                 policy_version="1",
                 idempotency_key="health-result",
             )
+            claimed = service.ledger.claim(str(operation["operation_id"]))
+            self.assertIsNotNone(claimed)
             with patch.object(service.agent, "execute", return_value=result):
                 return service.run_operation(str(operation["operation_id"]))
 

@@ -1,0 +1,425 @@
+#!/usr/bin/env bash
+# Install the reviewed M5 durable operation ledger and separate worker.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly ACK="--acknowledge-m5-ledger-worker"
+readonly BACKUP_ROOT="/var/backups/argus-m5-phase1/ledger-worker"
+readonly CONTROL_STATE="/var/lib/argus/control"
+readonly LEGACY_LEDGER="$ROOT/runtime/argus/m5/operations.sqlite3"
+readonly CONTROL_LEDGER="$CONTROL_STATE/operations.sqlite3"
+readonly API_UNIT="/etc/systemd/system/argus-control-api.service"
+readonly WORKER_UNIT="/etc/systemd/system/argus-operation-worker.service"
+readonly LEGACY_AGENT_UNIT="/etc/systemd/system/argus-domain-agent-legacy-rootful.service"
+readonly DOMAIN_AGENT_UNIT="/etc/systemd/system/argus-domain-agent@.service"
+readonly API_SERVICE="argus-control-api.service"
+readonly WORKER_SERVICE="argus-operation-worker.service"
+readonly LEGACY_AGENT_SERVICE="argus-domain-agent-legacy-rootful.service"
+readonly SANDBOX_AGENT_SERVICE="argus-domain-agent@personal-sandbox.service"
+readonly API_USER="oreo"
+readonly WORKER_USER="argus-worker"
+readonly CONTROL_GROUP="argus-control"
+
+ROLLBACK_REQUIRED=false
+ROLLBACK_BACKUP_DIR=""
+WORKER_USER_CREATED=false
+LEGACY_LEDGER_RETIRED=false
+PRIOR_WORKER_ENABLED=false
+PRIOR_API_ACTIVE=false
+PRIOR_WORKER_ACTIVE=false
+PRIOR_LEGACY_AGENT_ACTIVE=false
+PRIOR_SANDBOX_AGENT_ACTIVE=false
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  sudo ./scripts/argus-m5-ledger-worker --preflight" \
+    "  sudo ./scripts/argus-m5-ledger-worker --apply $ACK"
+}
+
+service_active() {
+  systemctl is-active --quiet "$1"
+}
+
+backup_if_present() {
+  local source="$1" destination="$2"
+  if [[ -e "$source" ]]; then
+    cp --preserve=mode,ownership,timestamps "$source" "$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+backup_sqlite_if_present() {
+  local source="$1" destination="$2"
+  if [[ ! -e "$source" ]]; then
+    : >"$destination.absent"
+    return
+  fi
+  python3 - "$source" "$destination" <<'PY'
+import os
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+os.chmod(sys.argv[2], 0o600)
+PY
+}
+
+restore_file() {
+  local destination="$1" backup="$2"
+  if [[ -f "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    cp --preserve=mode,ownership,timestamps "$backup" "$destination"
+  fi
+}
+
+restore_sqlite() {
+  local destination="$1" backup="$2" owner="$3" group="$4" mode="$5"
+  rm -f -- "$destination-wal" "$destination-shm"
+  if [[ -f "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    install -o "$owner" -g "$group" -m "$mode" "$backup" "$destination"
+  fi
+}
+
+restore_service_state() {
+  local service="$1" was_active="$2"
+  if [[ "$was_active" == true ]]; then
+    systemctl restart "$service"
+  else
+    systemctl stop "$service"
+  fi
+}
+
+rollback_worker() {
+  local failed=false
+  set +e
+  printf 'LEDGER_WORKER_ROLLBACK_STARTED backup=%s\n' "$ROLLBACK_BACKUP_DIR" >&2
+  systemctl stop \
+    "$API_SERVICE" \
+    "$LEGACY_AGENT_SERVICE" \
+    "$SANDBOX_AGENT_SERVICE" || failed=true
+  systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
+
+  restore_file "$API_UNIT" "$ROLLBACK_BACKUP_DIR/argus-control-api.service" || failed=true
+  restore_file "$WORKER_UNIT" "$ROLLBACK_BACKUP_DIR/argus-operation-worker.service" || failed=true
+  restore_file "$LEGACY_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent-legacy-rootful.service" || failed=true
+  restore_file "$DOMAIN_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent@.service" || failed=true
+  restore_sqlite "$LEGACY_LEDGER" "$ROLLBACK_BACKUP_DIR/legacy-operations.sqlite3" \
+    "$API_USER" "$CONTROL_GROUP" 0660 || failed=true
+  restore_sqlite "$CONTROL_LEDGER" "$ROLLBACK_BACKUP_DIR/control-operations.sqlite3" \
+    "$WORKER_USER" "$CONTROL_GROUP" 0660 || failed=true
+
+  systemctl daemon-reload || failed=true
+  if [[ "$PRIOR_WORKER_ENABLED" == true ]]; then
+    systemctl enable "$WORKER_SERVICE" || failed=true
+  else
+    systemctl disable "$WORKER_SERVICE" 2>/dev/null || true
+  fi
+  if [[ "$PRIOR_WORKER_ACTIVE" == true ]]; then
+    systemctl restart "$WORKER_SERVICE" || failed=true
+  else
+    systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
+  fi
+  restore_service_state "$LEGACY_AGENT_SERVICE" "$PRIOR_LEGACY_AGENT_ACTIVE" || failed=true
+  restore_service_state "$SANDBOX_AGENT_SERVICE" "$PRIOR_SANDBOX_AGENT_ACTIVE" || failed=true
+  restore_service_state "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
+
+  if [[ "$failed" == true ]]; then
+    printf 'ERROR ledger-worker rollback was incomplete; inspect backup=%s\n' \
+      "$ROLLBACK_BACKUP_DIR" >&2
+    return 1
+  fi
+  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s\n' \
+    "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" >&2
+}
+
+rollback_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$ROLLBACK_REQUIRED" == true ]] && ! rollback_worker; then
+    status=1
+  fi
+  exit "$status"
+}
+
+inspect_ledger() {
+  local path="$1"
+  [[ ! -e "$path" ]] || python3 - "$path" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+connection.row_factory = sqlite3.Row
+try:
+    table = connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operations'"
+    ).fetchone()
+    if table is None:
+        raise SystemExit("operation ledger is missing the operations table")
+    states = {
+        str(row["state"]): int(row["count"])
+        for row in connection.execute(
+            "SELECT state, COUNT(*) AS count FROM operations GROUP BY state"
+        )
+    }
+    active = sum(
+        states.get(state, 0)
+        for state in (
+            "planned",
+            "awaiting-approval",
+            "queued",
+            "running",
+            "rollback-running",
+            "indeterminate",
+        )
+    )
+    if active:
+        raise SystemExit(
+            f"operation ledger contains {active} unresolved operation(s); reconcile before migration"
+        )
+    print(
+        "LEDGER_SOURCE_OK "
+        f"rows={sum(states.values())} unresolved=0 "
+        f"schemaVersion={connection.execute('PRAGMA user_version').fetchone()[0]}"
+    )
+finally:
+    connection.close()
+PY
+}
+
+preflight() {
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  for command in chmod chown cp curl getent git grep install mv python3 rm stat systemctl systemd-analyze useradd; do
+    command -v "$command" >/dev/null || fail "missing required command: $command"
+  done
+  [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
+  getent passwd "$API_USER" >/dev/null || fail "missing API user"
+  getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group"
+  if [[ -e "$CONTROL_LEDGER" ]] && ! getent passwd "$WORKER_USER" >/dev/null; then
+    fail "control ledger exists without the worker identity"
+  fi
+  for source in \
+    "$ROOT/scripts/argus_operation_worker.py" \
+    "$ROOT/systemd/argus-operation-worker.service" \
+    "$ROOT/systemd/argus-control-api.service" \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
+    "$ROOT/systemd/argus-domain-agent@.service"; do
+    [[ -f "$source" ]] || fail "reviewed source is missing"
+  done
+  [[ ! -e "$LEGACY_LEDGER" || ! -e "$CONTROL_LEDGER" ]] ||
+    fail "both legacy and control ledgers exist; reconcile the authoritative source first"
+  inspect_ledger "$LEGACY_LEDGER"
+  inspect_ledger "$CONTROL_LEDGER"
+  systemd-analyze verify \
+    "$ROOT/systemd/argus-operation-worker.service" \
+    "$ROOT/systemd/argus-control-api.service" \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
+    "$ROOT/systemd/argus-domain-agent@.service"
+  grep -Fq 'InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock' \
+    "$ROOT/systemd/argus-operation-worker.service" ||
+    fail "worker unit must deny rootful Docker sockets"
+  grep -Fq 'InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock' \
+    "$ROOT/systemd/argus-control-api.service" ||
+    fail "API unit must deny rootful Docker sockets"
+  ! grep -Eq 'DOCKER_HOST|docker\.sock.*ReadWritePaths' \
+    "$ROOT/systemd/argus-operation-worker.service" ||
+    fail "worker unit unexpectedly references a workload runtime socket"
+  printf 'LEDGER_WORKER_PREFLIGHT commit=%s unresolved=0 publicExposureChanged=false\n' \
+    "$(git -C "$ROOT" rev-parse --short HEAD)"
+}
+
+ensure_worker_user() {
+  if getent passwd "$WORKER_USER" >/dev/null; then
+    return
+  fi
+  useradd \
+    --system \
+    --gid "$CONTROL_GROUP" \
+    --home-dir /nonexistent \
+    --shell /usr/sbin/nologin \
+    "$WORKER_USER"
+  WORKER_USER_CREATED=true
+}
+
+copy_legacy_ledger() {
+  [[ -e "$LEGACY_LEDGER" ]] || return
+  python3 - "$LEGACY_LEDGER" "$CONTROL_LEDGER" <<'PY'
+import os
+import sqlite3
+import sys
+import tempfile
+
+destination_path = sys.argv[2]
+descriptor, temporary = tempfile.mkstemp(
+    prefix=".operations.sqlite3.",
+    dir=os.path.dirname(destination_path),
+)
+os.close(descriptor)
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(temporary)
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+os.chmod(temporary, 0o660)
+os.replace(temporary, destination_path)
+PY
+  chown "$WORKER_USER:$CONTROL_GROUP" "$CONTROL_LEDGER"
+  chmod 0660 "$CONTROL_LEDGER"
+}
+
+validate_installed_ledger() {
+  python3 - "$CONTROL_LEDGER" <<'PY'
+import sqlite3
+import sys
+
+required = {
+    "parameters_digest",
+    "preview_json",
+    "heartbeat_at",
+    "rollback_operation_id",
+}
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+connection.row_factory = sqlite3.Row
+try:
+    columns = {
+        str(row["name"])
+        for row in connection.execute("PRAGMA table_info(operations)")
+    }
+    if not required.issubset(columns):
+        raise SystemExit("operation ledger schema is incomplete")
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
+        raise SystemExit("operation ledger schema version is not 1")
+    if connection.execute(
+        "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_events'"
+    ).fetchone() is None:
+        raise SystemExit("operation event table is missing")
+    unresolved = connection.execute(
+        """
+        SELECT COUNT(*) FROM operations
+        WHERE state IN (
+            'planned', 'awaiting-approval', 'queued', 'running',
+            'rollback-running', 'indeterminate'
+        )
+        """
+    ).fetchone()[0]
+    if unresolved:
+        raise SystemExit("operation ledger gained unresolved work during activation")
+    print("LEDGER_SCHEMA_OK version=1 unresolved=0 events=true")
+finally:
+    connection.close()
+PY
+}
+
+apply_worker() {
+  local backup_dir
+  preflight
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -o root -g root -m 0700 "$backup_dir"
+  backup_if_present "$API_UNIT" "$backup_dir/argus-control-api.service"
+  backup_if_present "$WORKER_UNIT" "$backup_dir/argus-operation-worker.service"
+  backup_if_present "$LEGACY_AGENT_UNIT" "$backup_dir/argus-domain-agent-legacy-rootful.service"
+  backup_if_present "$DOMAIN_AGENT_UNIT" "$backup_dir/argus-domain-agent@.service"
+  backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
+  backup_sqlite_if_present "$CONTROL_LEDGER" "$backup_dir/control-operations.sqlite3"
+
+  service_active "$API_SERVICE" && PRIOR_API_ACTIVE=true
+  service_active "$WORKER_SERVICE" && PRIOR_WORKER_ACTIVE=true
+  service_active "$LEGACY_AGENT_SERVICE" && PRIOR_LEGACY_AGENT_ACTIVE=true
+  service_active "$SANDBOX_AGENT_SERVICE" && PRIOR_SANDBOX_AGENT_ACTIVE=true
+  systemctl is-enabled --quiet "$WORKER_SERVICE" && PRIOR_WORKER_ENABLED=true
+  ROLLBACK_BACKUP_DIR="$backup_dir"
+  ROLLBACK_REQUIRED=true
+  trap rollback_on_exit EXIT
+
+  systemctl stop "$API_SERVICE"
+  systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
+  systemctl stop "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE"
+  inspect_ledger "$LEGACY_LEDGER"
+  inspect_ledger "$CONTROL_LEDGER"
+  backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
+  backup_sqlite_if_present "$CONTROL_LEDGER" "$backup_dir/control-operations.sqlite3"
+  ensure_worker_user
+  install -d -o "$API_USER" -g "$CONTROL_GROUP" -m 0770 "$CONTROL_STATE"
+  copy_legacy_ledger
+
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-operation-worker.service" "$WORKER_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-control-api.service" "$API_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" "$LEGACY_AGENT_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-domain-agent@.service" "$DOMAIN_AGENT_UNIT"
+
+  "$ROOT/scripts/argus-m5-runtime-permissions"
+  systemctl daemon-reload
+  systemctl enable "$WORKER_SERVICE"
+  systemctl start "$WORKER_SERVICE"
+  systemctl restart "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE"
+  systemctl restart "$API_SERVICE"
+
+  for service in \
+    "$WORKER_SERVICE" \
+    "$LEGACY_AGENT_SERVICE" \
+    "$SANDBOX_AGENT_SERVICE" \
+    "$API_SERVICE"; do
+    systemctl is-active --quiet "$service" || fail "$service is not active"
+  done
+  [[ "$(systemctl show "$WORKER_SERVICE" -p User --value)" == "$WORKER_USER" ]] ||
+    fail "worker service identity is incorrect"
+  [[ "$(systemctl show "$WORKER_SERVICE" -p Group --value)" == "$CONTROL_GROUP" ]] ||
+    fail "worker service group is incorrect"
+  for service in "$WORKER_SERVICE" "$API_SERVICE"; do
+    systemctl show "$service" -p InaccessiblePaths --value |
+      grep -Fq '/var/run/docker.sock' ||
+      fail "$service does not deny the rootful Docker socket"
+  done
+  [[ "$(stat -c '%U:%G:%a' "$CONTROL_LEDGER")" == "$WORKER_USER:$CONTROL_GROUP:660" ]] ||
+    fail "operation ledger ownership or mode is incorrect"
+  validate_installed_ledger
+  [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
+    http://127.0.0.1:8099/api/session)" == "401" ]] ||
+    fail "direct loopback API request did not fail closed"
+
+  if [[ -e "$LEGACY_LEDGER" ]]; then
+    mv "$LEGACY_LEDGER" "$backup_dir/legacy-runtime-ledger.retired"
+    rm -f -- "$LEGACY_LEDGER-wal" "$LEGACY_LEDGER-shm"
+    LEGACY_LEDGER_RETIRED=true
+  fi
+
+  ROLLBACK_REQUIRED=false
+  trap - EXIT
+  printf 'LEDGER_WORKER_APPLIED backup=%s workerActive=true schemaVersion=1 unresolved=0\n' \
+    "$backup_dir"
+  printf 'legacyLedgerRetired=%s publicExposureChanged=false routesChanged=false secretsPrinted=false\n' \
+    "$LEGACY_LEDGER_RETIRED"
+}
+
+case "${1:-}" in
+  --preflight)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    preflight
+    ;;
+  --apply)
+    [[ $# -eq 2 && "${2:-}" == "$ACK" ]] || { usage; exit 2; }
+    apply_worker
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

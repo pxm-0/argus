@@ -1,6 +1,7 @@
 [Unit]
 Description=Argus typed compatibility agent for legacy-rootful
-After=network.target
+Requires=argus-operation-worker.service
+After=network.target argus-operation-worker.service
 
 [Service]
 Type=simple
@@ -9,6 +10,8 @@ Group=argus-control
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_RUNTIME=/srv/argus/runtime/argus/m5
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_LEDGER_REQUIRE_EXISTING=1
 Environment=ARGUS_TRUST_DOMAIN=legacy-rootful
 Environment=ARGUS_CAPABILITY_KEY_FILE=/etc/argus/domain-keys/legacy-rootful.key
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_domain_agent.py
@@ -19,7 +22,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
-ReadWritePaths=/srv/argus/runtime/argus -/srv/argus/runtime/audit.log /srv/argus/config /srv/argus/control-plane/dashboard/public /srv/argus/runtime/backups
+ReadWritePaths=/srv/argus/runtime/argus -/srv/argus/runtime/audit.log /var/lib/argus/control /srv/argus/config /srv/argus/control-plane/dashboard/public /srv/argus/runtime/backups
 
 [Install]
 WantedBy=multi-user.target

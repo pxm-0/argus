@@ -1282,7 +1282,8 @@ document.addEventListener("click", async (event) => {
         operationType,
         parameters: {},
         previewDigest: previewResult.payload.previewDigest,
-        expectedRevision: previewResult.payload.expectedRevision
+        expectedRevision: previewResult.payload.expectedRevision,
+        policyVersion: previewResult.payload.policyVersion
       });
       if (!created.ok) {
         showCommandResult(`${workload} operation`, created.payload);
@@ -1348,7 +1349,8 @@ document.addEventListener("click", async (event) => {
       operationType: "access.apply",
       parameters: { desired: accessTarget },
       previewDigest: accessPreview.payload.previewDigest,
-      expectedRevision: accessPreview.payload.expectedRevision
+      expectedRevision: accessPreview.payload.expectedRevision,
+      policyVersion: accessPreview.payload.policyVersion
     });
     if (!created.ok) {
       showCommandResult(`${workload} access`, created.payload);
