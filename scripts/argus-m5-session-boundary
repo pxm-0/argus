@@ -114,7 +114,8 @@ preflight() {
   systemd-analyze verify "$ROOT/systemd/argus-control-api.service"
   validate_caddy
   funnel_status="$(tailscale funnel status 2>&1 || true)"
-  grep -Eiq 'no funnel|funnel is not|not configured|not running' <<<"$funnel_status" ||
+  printf '%s\n' "$funnel_status" |
+    python3 "$ROOT/scripts/argus_tailscale.py" --validate-funnel-disabled ||
     fail "Tailscale Funnel state is not safely disabled"
   printf 'SESSION_BOUNDARY_PREFLIGHT commit=%s caddyValid=true funnelDisabled=true\n' \
     "$(git -C "$ROOT" rev-parse --short HEAD)"
