@@ -206,6 +206,16 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertIn("wait_for_api_fail_closed", script)
         self.assertIn("LEDGER_API_READY", script)
         self.assertIn("control API did not become ready within 10 seconds", script)
+        self.assertIn("wait_for_ledger_schema", script)
+        self.assertIn("LEDGER_SCHEMA_OK", script)
+        self.assertIn(
+            "operation ledger did not reach schema version 1 within 10 seconds",
+            script,
+        )
+        self.assertIn(
+            "wait_for_ledger_schema\n  wait_for_api_fail_closed",
+            script,
+        )
         self.assertIn("systemd-analyze verify", script)
         self.assertIn("publicExposureChanged=false", script)
         self.assertIn("secretsPrinted=false", script)

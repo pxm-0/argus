@@ -346,6 +346,21 @@ finally:
 PY
 }
 
+wait_for_ledger_schema() {
+  local attempt result
+  for attempt in {1..40}; do
+    if result="$(validate_installed_ledger 2>/dev/null)"; then
+      printf '%s attempts=%s\n' "$result" "$attempt"
+      return
+    fi
+    systemctl is-active --quiet "$WORKER_SERVICE" ||
+      fail "operation worker stopped while waiting for schema migration"
+    sleep 0.25
+  done
+  validate_installed_ledger ||
+    fail "operation ledger did not reach schema version 1 within 10 seconds"
+}
+
 apply_worker() {
   local backup_dir
   preflight
@@ -412,7 +427,7 @@ apply_worker() {
   done
   [[ "$(stat -c '%U:%G:%a' "$CONTROL_LEDGER")" == "$WORKER_USER:$CONTROL_GROUP:660" ]] ||
     fail "operation ledger ownership or mode is incorrect"
-  validate_installed_ledger
+  wait_for_ledger_schema
   wait_for_api_fail_closed
 
   if [[ -e "$LEGACY_LEDGER" ]]; then
