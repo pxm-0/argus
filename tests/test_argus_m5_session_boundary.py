@@ -126,26 +126,31 @@ class SessionBoundaryTests(unittest.TestCase):
         ).read_text()
         dashboard = (ROOT / "control-plane" / "dashboard" / "generate_dashboard.py").read_text()
 
-        self.assertIn("header_up -X-Argus-*", caddy)
-        self.assertIn("header_up -Tailscale-*", caddy)
+        self.assertIn("request_header -X-Argus-*", caddy)
+        self.assertIn("request_header -Tailscale-*", caddy)
         self.assertIn(
-            "vars argus_tailnet_login {http.request.header.Tailscale-User-Login}",
-            caddy,
-        )
-        self.assertIn(
-            "header_up X-Argus-Tailnet-Login {vars.argus_tailnet_login}",
-            caddy,
-        )
-        self.assertLess(
-            caddy.index("vars argus_tailnet_login"),
-            caddy.index("header_up -Tailscale-*"),
-        )
-        self.assertNotIn(
-            "header_up X-Argus-Tailnet-Login "
+            "request_header X-Argus-Tailnet-Login "
             "{http.request.header.Tailscale-User-Login}",
             caddy,
         )
-        self.assertIn("header_up X-Argus-Proxy-Token {$ARGUS_OPERATOR_PROXY_TOKEN}", caddy)
+        self.assertIn(
+            "request_header X-Argus-Proxy-Token "
+            "{$ARGUS_OPERATOR_PROXY_TOKEN}",
+            caddy,
+        )
+        self.assertLess(
+            caddy.index("request_header -X-Argus-*"),
+            caddy.index("request_header X-Argus-Tailnet-Login"),
+        )
+        self.assertLess(
+            caddy.index("request_header X-Argus-Tailnet-Login"),
+            caddy.index("request_header -Tailscale-*"),
+        )
+        self.assertLess(
+            caddy.index("request_header -Tailscale-*"),
+            caddy.index("reverse_proxy 127.0.0.1:8099"),
+        )
+        self.assertNotIn("header_up", caddy)
         self.assertIn("EnvironmentFile=/etc/argus/operator-proxy-token", caddy_dropin)
 
         self.assertIn("LoadCredential=operators.json:/etc/argus/operators.json", api_unit)
