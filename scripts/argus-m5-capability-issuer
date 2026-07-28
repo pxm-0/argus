@@ -7,6 +7,7 @@ readonly ACK="--acknowledge-m5-capability-issuer"
 readonly BACKUP_ROOT="/var/backups/argus-m5-phase1/capability-issuer"
 readonly CONTROL_LEDGER="/var/lib/argus/control/operations.sqlite3"
 readonly ISSUER_USER="argus-issuer"
+readonly API_USER="oreo"
 readonly CONTROL_GROUP="argus-control"
 readonly ISSUER_SERVICE="argus-capability-issuer.service"
 readonly WORKER_SERVICE="argus-operation-worker.service"
@@ -20,6 +21,11 @@ readonly DOMAIN_UNIT="/etc/systemd/system/argus-domain-agent@.service"
 readonly PRIVATE_DIR="/etc/argus/capability-issuer"
 readonly PRIVATE_KEY="$PRIVATE_DIR/ed25519.key"
 readonly DOMAIN_KEYS="/etc/argus/domains"
+readonly ACCESS_CONFIG="$ROOT/config/access.json"
+readonly M1_RUNTIME="$ROOT/runtime/argus/m1"
+readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
+readonly DASHBOARD_PUBLIC="$ROOT/control-plane/dashboard/public"
+readonly SANDBOX_USER="argus-personal-sandbox"
 
 ROLLBACK_REQUIRED=false
 ROLLBACK_DIR=""
@@ -57,6 +63,26 @@ restore_file() {
     chown --reference="$backup" "$destination"
     chmod --reference="$backup" "$destination"
   fi
+}
+
+backup_metadata() {
+  local source="$1" destination="$2"
+  if [[ -e "$source" ]]; then
+    stat -c '%u %g %a' "$source" >"$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+restore_metadata() {
+  local destination="$1" backup="$2" owner group mode
+  [[ ! -e "$backup.absent" ]] || return 0
+  [[ -e "$destination" ]] || return 1
+  read -r owner group mode <"$backup"
+  [[ "$owner" =~ ^[0-9]+$ && "$group" =~ ^[0-9]+$ &&
+    "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  chown "$owner:$group" "$destination"
+  chmod "$mode" "$destination"
 }
 
 service_active() {
@@ -110,6 +136,22 @@ rollback() {
     restore_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$ROLLBACK_DIR/$domain-issuer.pub" || failed=true
+  done
+  restore_file "$ACCESS_CONFIG" "$ROLLBACK_DIR/access.json" || failed=true
+  for entry in \
+    "$M1_RUNTIME/state.sqlite3:m1-state.meta" \
+    "$M1_RUNTIME/access-journal.jsonl:access-journal.meta" \
+    "$AUDIT_DATABASE:audit.meta" \
+    "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
+    "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
+    "$DASHBOARD_PUBLIC/metrics.json:dashboard-metrics.meta" \
+    "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
+    "$ROOT/config:config-dir.meta" \
+    "$ROOT/runtime/argus:argus-runtime-dir.meta" \
+    "$M1_RUNTIME:m1-runtime-dir.meta" \
+    "$DASHBOARD_PUBLIC:dashboard-public-dir.meta"; do
+    restore_metadata "${entry%%:*}" "$ROLLBACK_DIR/${entry#*:}" ||
+      failed=true
   done
   systemctl daemon-reload || failed=true
   if [[ "$PRIOR_ISSUER_ENABLED" == true ]]; then
@@ -171,6 +213,9 @@ preflight() {
   done
   [[ -f "$CONTROL_LEDGER" ]] || fail "durable operation ledger is missing"
   getent group "$CONTROL_GROUP" >/dev/null || fail "control group is missing"
+  getent passwd "$API_USER" >/dev/null || fail "control API user is missing"
+  getent passwd "$SANDBOX_USER" >/dev/null ||
+    fail "personal-sandbox runtime user is missing"
   systemctl is-active --quiet "$WORKER_SERVICE" ||
     fail "durable operation worker must be active first"
   systemctl is-active --quiet "$API_SERVICE" ||
@@ -184,12 +229,26 @@ preflight() {
     "$ROOT/scripts/argus_capability_issuer.py" \
     "$ROOT/scripts/argus_domain_agent.py" \
     "$ROOT/scripts/argus_ipc.py" \
+    "$ROOT/scripts/argus-m5-runtime-permissions" \
     "$ROOT/systemd/argus-capability-issuer.service" \
     "$ROOT/systemd/argus-operation-worker.service" \
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
     "$ROOT/systemd/argus-domain-agent@.service"; do
     [[ -f "$source" ]] || fail "reviewed source is missing: $source"
   done
+  for source in \
+    "$ACCESS_CONFIG" \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE" \
+    "$DASHBOARD_PUBLIC/app.js" \
+    "$DASHBOARD_PUBLIC/index.html" \
+    "$DASHBOARD_PUBLIC/metrics.json" \
+    "$DASHBOARD_PUBLIC/style.css"; do
+    [[ -f "$source" ]] || fail "shared writer input is missing: $source"
+  done
+  python3 -m json.tool "$ACCESS_CONFIG" >/dev/null ||
+    fail "access compatibility store is invalid"
   verify_no_unresolved_operations
   systemd-analyze verify \
     "$ROOT/systemd/argus-capability-issuer.service" \
@@ -295,6 +354,48 @@ wait_for_capability_runtime() {
     fail "capability runtime did not become ready within 10 seconds"
 }
 
+validate_shared_writer_runtime() {
+  local path
+  [[ "$(stat -c '%U:%G:%a' "$ROOT/config")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$ACCESS_CONFIG")" == \
+    "$API_USER:$CONTROL_GROUP:660" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$ROOT/runtime/argus")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$M1_RUNTIME")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  for path in \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE"; do
+    [[ "$(stat -c '%U:%G:%a' "$path")" == \
+      "$API_USER:$CONTROL_GROUP:660" ]] || return 1
+  done
+  [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC")" == \
+    "$API_USER:$CONTROL_GROUP:2775" ]] || return 1
+  for path in app.js index.html metrics.json style.css; do
+    [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC/$path")" == \
+      "$API_USER:$CONTROL_GROUP:664" ]] || return 1
+  done
+  runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
+    test -w "$ROOT/config" || return 1
+  for path in \
+    "$ACCESS_CONFIG" \
+    "$M1_RUNTIME" \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE" \
+    "$DASHBOARD_PUBLIC/app.js" \
+    "$DASHBOARD_PUBLIC/index.html" \
+    "$DASHBOARD_PUBLIC/metrics.json" \
+    "$DASHBOARD_PUBLIC/style.css"; do
+    runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
+      test -w "$path" || return 1
+  done
+  printf 'M5_SHARED_WRITER_OK agent=%s configMode=0660 runtimeMode=0660 dashboardMode=0664\n' \
+    "$SANDBOX_USER"
+}
+
 apply_issuer() {
   local backup_dir
   preflight
@@ -309,6 +410,21 @@ apply_issuer() {
     backup_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$backup_dir/$domain-issuer.pub"
+  done
+  backup_file "$ACCESS_CONFIG" "$backup_dir/access.json"
+  for entry in \
+    "$M1_RUNTIME/state.sqlite3:m1-state.meta" \
+    "$M1_RUNTIME/access-journal.jsonl:access-journal.meta" \
+    "$AUDIT_DATABASE:audit.meta" \
+    "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
+    "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
+    "$DASHBOARD_PUBLIC/metrics.json:dashboard-metrics.meta" \
+    "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
+    "$ROOT/config:config-dir.meta" \
+    "$ROOT/runtime/argus:argus-runtime-dir.meta" \
+    "$M1_RUNTIME:m1-runtime-dir.meta" \
+    "$DASHBOARD_PUBLIC:dashboard-public-dir.meta"; do
+    backup_metadata "${entry%%:*}" "$backup_dir/${entry#*:}"
   done
   service_active "$ISSUER_SERVICE" && PRIOR_ISSUER_ACTIVE=true
   service_active "$WORKER_SERVICE" && PRIOR_WORKER_ACTIVE=true
@@ -326,6 +442,7 @@ apply_issuer() {
   systemctl stop "$LEGACY_SERVICE" "$SANDBOX_SERVICE"
   systemctl stop "$ISSUER_SERVICE" 2>/dev/null || true
   verify_no_unresolved_operations
+  "$ROOT/scripts/argus-m5-runtime-permissions"
   ensure_issuer_user
   install_key_material
   install -o root -g root -m 0644 \
@@ -353,6 +470,8 @@ apply_issuer() {
     fail "API identity can read the issuer private key"
   runuser -u argus-worker -- test ! -r "$PRIVATE_KEY" ||
     fail "worker identity can read the issuer private key"
+  validate_shared_writer_runtime ||
+    fail "shared access-writer permissions are incomplete"
   wait_for_capability_runtime
   wait_for_api_fail_closed
 
