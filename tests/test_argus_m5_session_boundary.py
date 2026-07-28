@@ -129,8 +129,31 @@ class SessionBoundaryTests(unittest.TestCase):
         self.assertIn("request_header -X-Argus-*", caddy)
         self.assertIn("request_header -Tailscale-*", caddy)
         self.assertIn(
-            "request_header X-Argus-Tailnet-Login "
+            "argus_csrf {http.request.header.X-Argus-CSRF}",
+            caddy,
+        )
+        self.assertIn(
+            "argus_csrf_bootstrap "
+            "{http.request.header.X-Argus-CSRF-Bootstrap}",
+            caddy,
+        )
+        self.assertIn(
+            "argus_tailnet_login "
             "{http.request.header.Tailscale-User-Login}",
+            caddy,
+        )
+        self.assertIn(
+            "request_header X-Argus-CSRF {vars.argus_csrf}",
+            caddy,
+        )
+        self.assertIn(
+            "request_header X-Argus-CSRF-Bootstrap "
+            "{vars.argus_csrf_bootstrap}",
+            caddy,
+        )
+        self.assertIn(
+            "request_header X-Argus-Tailnet-Login "
+            "{vars.argus_tailnet_login}",
             caddy,
         )
         self.assertIn(
@@ -139,7 +162,15 @@ class SessionBoundaryTests(unittest.TestCase):
             caddy,
         )
         self.assertLess(
+            caddy.index("vars {"),
             caddy.index("request_header -X-Argus-*"),
+        )
+        self.assertLess(
+            caddy.index("request_header -X-Argus-*"),
+            caddy.index("request_header X-Argus-CSRF "),
+        )
+        self.assertLess(
+            caddy.index("request_header X-Argus-CSRF-Bootstrap"),
             caddy.index("request_header X-Argus-Tailnet-Login"),
         )
         self.assertLess(

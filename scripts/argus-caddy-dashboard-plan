@@ -25,10 +25,16 @@ http://:{port} {{
 \troot * /srv/argus/control-plane/dashboard/public
 \thandle /api/* {{
 \t\troute {{
-\t\t\t# Keep each mutation in a distinct handler so Caddy cannot coalesce
-\t\t\t# deletion and replacement into one reverse_proxy header operation.
+\t\t\t# Preserve only the two client-supplied Argus CSRF headers.
+\t\t\tvars {{
+\t\t\t\targus_csrf {{http.request.header.X-Argus-CSRF}}
+\t\t\t\targus_csrf_bootstrap {{http.request.header.X-Argus-CSRF-Bootstrap}}
+\t\t\t\targus_tailnet_login {{http.request.header.Tailscale-User-Login}}
+\t\t\t}}
 \t\t\trequest_header -X-Argus-*
-\t\t\trequest_header X-Argus-Tailnet-Login {{http.request.header.Tailscale-User-Login}}
+\t\t\trequest_header X-Argus-CSRF {{vars.argus_csrf}}
+\t\t\trequest_header X-Argus-CSRF-Bootstrap {{vars.argus_csrf_bootstrap}}
+\t\t\trequest_header X-Argus-Tailnet-Login {{vars.argus_tailnet_login}}
 \t\t\trequest_header X-Argus-Proxy-Token {{$ARGUS_OPERATOR_PROXY_TOKEN}}
 \t\t\trequest_header -Tailscale-*
 \t\t\treverse_proxy {api["bind"]}:{api["port"]}
