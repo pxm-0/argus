@@ -24,11 +24,15 @@ http://:{port} {{
 \tbind 127.0.0.1
 \troot * /srv/argus/control-plane/dashboard/public
 \thandle /api/* {{
-\t\treverse_proxy {api["bind"]}:{api["port"]} {{
-\t\t\theader_up -X-Argus-*
-\t\t\theader_up X-Argus-Tailnet-Login {{http.request.header.Tailscale-User-Login}}
-\t\t\theader_up X-Argus-Proxy-Token {{$ARGUS_OPERATOR_PROXY_TOKEN}}
-\t\t\theader_up -Tailscale-*
+\t\troute {{
+\t\t\t# Snapshot the Serve-attested identity before upstream header deletion.
+\t\t\tvars argus_tailnet_login {{http.request.header.Tailscale-User-Login}}
+\t\t\treverse_proxy {api["bind"]}:{api["port"]} {{
+\t\t\t\theader_up -X-Argus-*
+\t\t\t\theader_up X-Argus-Tailnet-Login {{vars.argus_tailnet_login}}
+\t\t\t\theader_up X-Argus-Proxy-Token {{$ARGUS_OPERATOR_PROXY_TOKEN}}
+\t\t\t\theader_up -Tailscale-*
+\t\t\t}}
 \t\t}}
 \t}}
 \tfile_server

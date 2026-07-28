@@ -128,7 +128,23 @@ class SessionBoundaryTests(unittest.TestCase):
 
         self.assertIn("header_up -X-Argus-*", caddy)
         self.assertIn("header_up -Tailscale-*", caddy)
-        self.assertIn("header_up X-Argus-Tailnet-Login", caddy)
+        self.assertIn(
+            "vars argus_tailnet_login {http.request.header.Tailscale-User-Login}",
+            caddy,
+        )
+        self.assertIn(
+            "header_up X-Argus-Tailnet-Login {vars.argus_tailnet_login}",
+            caddy,
+        )
+        self.assertLess(
+            caddy.index("vars argus_tailnet_login"),
+            caddy.index("header_up -Tailscale-*"),
+        )
+        self.assertNotIn(
+            "header_up X-Argus-Tailnet-Login "
+            "{http.request.header.Tailscale-User-Login}",
+            caddy,
+        )
         self.assertIn("header_up X-Argus-Proxy-Token {$ARGUS_OPERATOR_PROXY_TOKEN}", caddy)
         self.assertIn("EnvironmentFile=/etc/argus/operator-proxy-token", caddy_dropin)
 

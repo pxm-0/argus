@@ -7,7 +7,8 @@ M5 Phase 1 intent:
 - serve the dashboard backend on `127.0.0.1:8088`
 - place only Tailscale Serve in front of the loopback backend
 - remove client-supplied `Tailscale-*` and `X-Argus-*` headers
-- forward the verified login as `X-Argus-Tailnet-Login`
+- snapshot the Serve-attested login before upstream header deletion and forward
+  only that value as `X-Argus-Tailnet-Login`
 - authenticate Caddy to the API with the root-owned proxy marker loaded from
   `/etc/argus/operator-proxy-token`
 - proxy `/api/*` to `127.0.0.1:8099`
