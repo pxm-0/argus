@@ -43,6 +43,28 @@ service_active() {
   systemctl is-active --quiet "$1"
 }
 
+wait_for_api_fail_closed() {
+  local attempt status
+  for attempt in {1..40}; do
+    status="$(
+      curl --silent --connect-timeout 1 --max-time 2 \
+        --output /dev/null --write-out '%{http_code}' \
+        http://127.0.0.1:8099/api/session ||
+        true
+    )"
+    if [[ "$status" == "401" ]]; then
+      printf 'LEDGER_API_READY attempts=%s directStatus=401\n' "$attempt"
+      return
+    fi
+    [[ "$status" == "000" ]] ||
+      fail "direct loopback API returned unexpected status $status"
+    service_active "$API_SERVICE" ||
+      fail "control API stopped while waiting for readiness"
+    sleep 0.25
+  done
+  fail "control API did not become ready within 10 seconds"
+}
+
 backup_if_present() {
   local source="$1" destination="$2"
   if [[ -e "$source" ]]; then
@@ -201,7 +223,7 @@ PY
 
 preflight() {
   [[ $EUID -eq 0 ]] || fail "run with sudo"
-  for command in chmod chown cp curl getent git grep install mv python3 rm stat systemctl systemd-analyze useradd; do
+  for command in chmod chown cp curl getent git grep install mv python3 rm sleep stat systemctl systemd-analyze useradd; do
     command -v "$command" >/dev/null || fail "missing required command: $command"
   done
   [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
@@ -391,9 +413,7 @@ apply_worker() {
   [[ "$(stat -c '%U:%G:%a' "$CONTROL_LEDGER")" == "$WORKER_USER:$CONTROL_GROUP:660" ]] ||
     fail "operation ledger ownership or mode is incorrect"
   validate_installed_ledger
-  [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' \
-    http://127.0.0.1:8099/api/session)" == "401" ]] ||
-    fail "direct loopback API request did not fail closed"
+  wait_for_api_fail_closed
 
   if [[ -e "$LEGACY_LEDGER" ]]; then
     mv "$LEGACY_LEDGER" "$backup_dir/legacy-runtime-ledger.retired"
