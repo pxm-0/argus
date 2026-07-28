@@ -236,6 +236,18 @@ class CapabilityTests(unittest.TestCase):
         self.assertIn("trap rollback_on_exit EXIT", script)
         self.assertIn("openssl genpkey -algorithm ED25519", script)
         self.assertIn("runuser -u oreo -- test ! -r", script)
+        self.assertIn("wait_for_capability_runtime", script)
+        self.assertIn("CAPABILITY_AGENT_STATUS_OK", script)
+        self.assertIn(
+            "capability runtime did not become ready within 10 seconds",
+            script,
+        )
+        self.assertIn("wait_for_api_fail_closed", script)
+        self.assertIn("CAPABILITY_API_READY", script)
+        self.assertIn(
+            "wait_for_capability_runtime\n  wait_for_api_fail_closed",
+            script,
+        )
         self.assertIn("publicExposureChanged=false", script)
         self.assertIn("secretsPrinted=false", script)
         self.assertNotIn("cloudflared", script.lower())
