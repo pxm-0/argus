@@ -152,6 +152,13 @@ class SessionBoundaryTests(unittest.TestCase):
         self.assertIn("/var/backups/argus-m5-phase1/session-boundary", script)
         self.assertIn('validate_caddy', script)
         self.assertLess(script.index("validate_caddy\n  systemctl daemon-reload"), script.index("systemctl reload caddy.service"))
+        self.assertIn("wait_for_api_fail_closed", script)
+        self.assertIn("SESSION_API_READY", script)
+        self.assertIn("control API did not become ready within 10 seconds", script)
+        self.assertIn(
+            "wait_for_api_fail_closed\n  systemctl reload caddy.service",
+            script,
+        )
         self.assertIn("trap rollback_on_exit EXIT", script)
         self.assertIn("restore_session_db", script)
         self.assertIn("SESSION_BOUNDARY_ROLLED_BACK", script)

@@ -98,10 +98,32 @@ validate_caddy() {
   ARGUS_OPERATOR_PROXY_TOKEN="$marker" caddy validate --config "$CADDYFILE"
 }
 
+wait_for_api_fail_closed() {
+  local attempt status
+  for attempt in {1..40}; do
+    status="$(
+      curl --silent --connect-timeout 1 --max-time 2 \
+        --output /dev/null --write-out '%{http_code}' \
+        http://127.0.0.1:8099/api/session ||
+        true
+    )"
+    if [[ "$status" == "401" ]]; then
+      printf 'SESSION_API_READY attempts=%s directStatus=401\n' "$attempt"
+      return
+    fi
+    [[ "$status" == "000" ]] ||
+      fail "direct loopback request returned unexpected status $status"
+    systemctl is-active --quiet argus-control-api.service ||
+      fail "control API stopped while waiting for readiness"
+    sleep 0.25
+  done
+  fail "control API did not become ready within 10 seconds"
+}
+
 preflight() {
   local funnel_status
   [[ $EUID -eq 0 ]] || fail "run with sudo"
-  for command in caddy chmod cp curl getent git grep install python3 rm sed stat systemctl systemd-analyze tailscale; do
+  for command in caddy chmod cp curl getent git grep install python3 rm sed sleep stat systemctl systemd-analyze tailscale; do
     command -v "$command" >/dev/null || fail "missing required command: $command"
   done
   [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
@@ -230,10 +252,8 @@ apply_boundary() {
   validate_caddy
   systemctl daemon-reload
   systemctl restart argus-control-api.service
-  systemctl reload caddy.service
 
   systemctl is-active --quiet argus-control-api.service || fail "control API is not active"
-  systemctl is-active --quiet caddy.service || fail "Caddy is not active"
   [[ "$(systemctl show argus-control-api.service -p User --value)" == "oreo" ]] ||
     fail "control API user changed unexpectedly"
   [[ "$(systemctl show argus-control-api.service -p Group --value)" == "argus-control" ]] ||
@@ -241,8 +261,9 @@ apply_boundary() {
   systemctl show argus-control-api.service -p InaccessiblePaths --value |
     grep -Fq '/var/run/docker.sock' ||
     fail "control API unit does not deny the rootful Docker socket"
-  [[ "$(curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8099/api/session)" == "401" ]] ||
-    fail "direct loopback request did not fail closed"
+  wait_for_api_fail_closed
+  systemctl reload caddy.service
+  systemctl is-active --quiet caddy.service || fail "Caddy is not active"
 
   ROLLBACK_REQUIRED=false
   trap - EXIT
