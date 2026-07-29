@@ -656,6 +656,9 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
                 "Effective access",
                 "Disabled operation reasons",
                 "Durable history",
+                "Run migration preflight",
+                "migration.preflight",
+                "Migration readiness",
                 "activeOperationPolls",
                 "document.visibilityState",
             )
