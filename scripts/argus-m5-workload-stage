@@ -1,0 +1,1627 @@
+#!/usr/bin/env python3
+"""Back up and restore-drill one workload without serving the target."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import secrets
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+import urllib.request
+
+
+ACK = "--acknowledge-m5-workload-stage"
+ROLLBACK_ACK = "--acknowledge-m5-workload-stage-rollback"
+ROOT = Path("/srv/argus")
+BACKUP_ROOT = Path("/var/backups/argus-m5-workload-staging")
+STAGE_ROOT = Path("/var/lib/argus/migration-staging")
+LOCK_PATH = Path("/run/argus-m5-workload-stage/lock")
+HELPER_IMAGE = "postgres:17-trixie@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b"
+HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+SPECS = {
+    "hastur": {
+        "domain": "personal-sandbox",
+        "project": "hastur",
+        "source": "/home/oreo/hastur",
+        "compose": "compose.yml",
+        "database": None,
+        "database_image": None,
+        "redis": None,
+        "state": (("data", "bind", "/home/oreo/hastur/data"),),
+        "state_quiesce": {"data": ("hastur",)},
+        "exclude": (".git", "node_modules", "auth", "data", ".env"),
+        "blocked_mounts": ("/home/oreo/hastur/auth", "/home/oreo/.ssh"),
+    },
+    "kadath": {
+        "domain": "personal-sandbox",
+        "project": "kadath-live",
+        "source": "/home/oreo/kadath",
+        "compose": "deploy/compose.yml",
+        "database": "kadath-live-postgres-1",
+        "database_image": "postgres:17-trixie@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b",
+        "redis": None,
+        "state": (),
+        "state_quiesce": {},
+        "exclude": (".git", "node_modules"),
+        "blocked_mounts": (),
+    },
+    "nodens": {
+        "domain": "personal-sandbox",
+        "project": "nodens",
+        "source": "/home/oreo/nodens",
+        "compose": "docker-compose.yml",
+        "database": None,
+        "database_image": None,
+        "redis": None,
+        "state": (),
+        "state_quiesce": {},
+        "exclude": (".git", "node_modules", ".env"),
+        "blocked_mounts": (),
+    },
+    "locigraph": {
+        "domain": "personal-sandbox",
+        "project": "locigraph",
+        "source": "/home/oreo/LociGraph",
+        "compose": "docker-compose.yml",
+        "database": "locigraph-postgres-1",
+        "database_image": "pgvector/pgvector:pg16",
+        "redis": "locigraph-redis-1",
+        "state": (("raw-data", "volume", "locigraph_raw_data"),),
+        "state_quiesce": {"raw-data": ("backend", "worker")},
+        "exclude": (".git", "node_modules", ".env"),
+        "blocked_mounts": (),
+    },
+    "intake-os": {
+        "domain": "work-sandbox",
+        "project": "intake-os",
+        "source": "/home/oreo/intake-os",
+        "compose": "docker-compose.server.yml",
+        "database": "intake-os-postgres-1",
+        "database_image": "postgres:16-alpine",
+        "redis": None,
+        "state": (
+            ("caddy-data", "volume", "intake-os_caddy_data"),
+            ("caddy-config", "volume", "intake-os_caddy_config"),
+        ),
+        "state_quiesce": {},
+        "exclude": (".git", "node_modules", "backups", ".env.server"),
+        "blocked_mounts": ("/home/oreo/intake-os/backups",),
+    },
+}
+DATABASE_FINGERPRINT_SQL = r"""
+\pset tuples_only on
+\pset format unaligned
+SELECT 'extension:' || extname || ':' || extversion
+FROM pg_extension ORDER BY extname;
+SELECT format(
+  'SELECT %L || '':'' || count(*) || '':'' || '
+  'coalesce(sum(hashtextextended(row_to_json(t)::text, 0)::numeric), 0) || '':'' || '
+  'coalesce(sum(hashtextextended(row_to_json(t)::text, 1)::numeric), 0) '
+  'FROM %I.%I t;',
+  'table:' || schemaname || '.' || tablename,
+  schemaname,
+  tablename
+)
+FROM pg_tables
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, tablename
+\gexec
+SELECT format(
+  'SELECT %L || '':'' || last_value FROM %I.%I;',
+  'sequence:' || schemaname || '.' || sequencename,
+  schemaname,
+  sequencename
+)
+FROM pg_sequences
+WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
+ORDER BY schemaname, sequencename
+\gexec
+"""
+
+
+class StageError(RuntimeError):
+    pass
+
+
+def run(
+    command: list[str],
+    *,
+    stdin=None,
+    stdout=None,
+    check: bool = True,
+    timeout: float | None = None,
+    child_signal_mask: set[signal.Signals] | None = None,
+) -> subprocess.CompletedProcess:
+    preexec_fn = None
+    if child_signal_mask is not None:
+        preexec_fn = lambda: signal.pthread_sigmask(
+            signal.SIG_SETMASK, child_signal_mask
+        )
+        process = subprocess.Popen(
+            command,
+            stdin=stdin,
+            stdout=stdout,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+            preexec_fn=preexec_fn,
+        )
+        caught_signal: int | None = None
+        forwarded_at: float | None = None
+        while True:
+            try:
+                captured_stdout, captured_stderr = process.communicate(timeout=0.25)
+                break
+            except subprocess.TimeoutExpired:
+                pending = signal.sigtimedwait(HANDLED_SIGNALS, 0)
+                if pending is not None and caught_signal is None:
+                    caught_signal = pending.si_signo
+                    forwarded_at = time.monotonic()
+                    process.send_signal(caught_signal)
+                elif (
+                    caught_signal is not None
+                    and forwarded_at is not None
+                    and time.monotonic() - forwarded_at > 10
+                ):
+                    process.kill()
+        completed = subprocess.CompletedProcess(
+            command,
+            process.returncode,
+            captured_stdout,
+            captured_stderr,
+        )
+        if caught_signal is not None:
+            raise InterruptedError(f"received signal {caught_signal}")
+        if check and process.returncode:
+            raise subprocess.CalledProcessError(
+                process.returncode,
+                command,
+                output=captured_stdout,
+                stderr=captured_stderr,
+            )
+        return completed
+    return subprocess.run(
+        command,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        check=check,
+        timeout=timeout,
+        preexec_fn=preexec_fn,
+    )
+
+
+def output(command: list[str]) -> bytes:
+    return run(command, stdout=subprocess.PIPE).stdout
+
+
+def text(command: list[str]) -> str:
+    return output(command).decode().strip()
+
+
+def target_command(user: str, socket: Path, *arguments: str) -> list[str]:
+    return [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        f"HOME=/home/{user}",
+        "docker",
+        "--host",
+        f"unix://{socket}",
+        *arguments,
+    ]
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def is_excluded(member_name: str, exclusions: tuple[str, ...]) -> bool:
+    parts = Path(member_name).parts
+    return any(
+        part in exclusions
+        or (".env" in exclusions and (part == ".env" or part.startswith(".env.")))
+        for part in parts
+    )
+
+
+def source_filter(exclusions: tuple[str, ...]):
+    def filter_member(member: tarfile.TarInfo) -> tarfile.TarInfo | None:
+        if is_excluded(member.name, exclusions):
+            return None
+        return member
+
+    return filter_member
+
+
+def archive_source(source: Path, destination: Path, exclusions: tuple[str, ...]) -> None:
+    with tarfile.open(destination, "w:gz") as archive:
+        archive.add(
+            source,
+            arcname="source",
+            recursive=True,
+            filter=source_filter(exclusions),
+        )
+    with tarfile.open(destination, "r:gz") as archive:
+        for member in archive.getmembers():
+            if is_excluded(member.name, exclusions):
+                raise StageError("source archive contains an excluded path")
+
+
+def safe_extract(archive_path: Path, destination: Path) -> None:
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            path = Path(member.name)
+            if path.is_absolute() or ".." in path.parts:
+                raise StageError("archive contains an unsafe path")
+        archive.extractall(destination, filter="data")
+
+
+def tar_manifest(path: Path) -> list[dict]:
+    records = []
+    with tarfile.open(path, "r:gz") as archive:
+        for member in sorted(archive.getmembers(), key=lambda item: item.name):
+            record = {
+                "name": member.name,
+                "type": member.type.decode("ascii", errors="replace"),
+                "mode": member.mode,
+                "uid": member.uid,
+                "gid": member.gid,
+                "size": member.size,
+                "linkname": member.linkname,
+                "mtime": member.mtime,
+                "extendedMetadata": sorted(
+                    (key, value)
+                    for key, value in member.pax_headers.items()
+                    if key.startswith(("SCHILY.xattr.", "SCHILY.acl."))
+                ),
+            }
+            if member.isfile():
+                handle = archive.extractfile(member)
+                if handle is None:
+                    raise StageError("archive regular file is unreadable")
+                digest = hashlib.sha256()
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+                record["sha256"] = digest.hexdigest()
+            records.append(record)
+    return records
+
+
+def mount_argument(source_kind: str, source: str, target: str, readonly: bool) -> str:
+    if source_kind == "bind":
+        base = f"type=bind,source={source},target={target}"
+    else:
+        base = f"type=volume,source={source},target={target},volume-nocopy"
+    return f"{base},readonly" if readonly else base
+
+
+def archive_state(
+    docker_prefix: list[str],
+    source: str,
+    source_kind: str,
+    destination: Path,
+    helper_image: str = HELPER_IMAGE,
+    child_signal_mask: set[signal.Signals] | None = None,
+) -> None:
+    with destination.open("wb") as handle:
+        run(
+            [
+                *docker_prefix,
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--mount",
+                mount_argument(source_kind, source, "/snapshot", True),
+                helper_image,
+                "tar",
+                "--acls",
+                "--xattrs",
+                "--numeric-owner",
+                "-C",
+                "/snapshot",
+                "-czf",
+                "-",
+                ".",
+            ],
+            stdout=handle,
+            child_signal_mask=child_signal_mask,
+        )
+
+
+def restore_state(
+    docker_prefix: list[str],
+    volume: str,
+    archive_path: Path,
+    helper_image: str,
+) -> None:
+    with archive_path.open("rb") as handle:
+        run(
+            [
+                *docker_prefix,
+                "run",
+                "--rm",
+                "-i",
+                "--network",
+                "none",
+                "--mount",
+                mount_argument("volume", volume, "/restore", False),
+                helper_image,
+                "tar",
+                "--acls",
+                "--xattrs",
+                "--numeric-owner",
+                "-C",
+                "/restore",
+                "-xzf",
+                "-",
+            ],
+            stdin=handle,
+        )
+
+
+def snapshot_target_state(
+    docker_prefix: list[str],
+    volume: str,
+    destination: Path,
+    helper_image: str,
+) -> None:
+    archive_state(docker_prefix, volume, "volume", destination, helper_image)
+
+
+def compare_restored_state(
+    docker_prefix: list[str],
+    volume: str,
+    archive_path: Path,
+    helper_image: str,
+) -> None:
+    with archive_path.open("rb") as handle:
+        run(
+            [
+                *docker_prefix,
+                "run",
+                "--rm",
+                "-i",
+                "--network",
+                "none",
+                "--mount",
+                mount_argument("volume", volume, "/restore", True),
+                helper_image,
+                "tar",
+                "--compare",
+                "--gzip",
+                "--acls",
+                "--xattrs",
+                "--numeric-owner",
+                "--file=-",
+                "--directory=/restore",
+            ],
+            stdin=handle,
+            stdout=subprocess.DEVNULL,
+        )
+
+
+def quiesced_archive_state(
+    inventory: list[dict],
+    services: tuple[str, ...],
+    source: str,
+    source_kind: str,
+    destination: Path,
+) -> list[str]:
+    containers = [
+        record["name"]
+        for record in inventory
+        if record["composeService"] in set(services)
+    ]
+    if len(containers) != len(services):
+        raise StageError("state quiesce services do not match source inventory")
+    archive_error: BaseException | None = None
+    previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
+    try:
+        for container in containers:
+            run(
+                ["docker", "pause", container],
+                stdout=subprocess.DEVNULL,
+                timeout=10,
+            )
+        not_paused: list[str] = []
+        for container in containers:
+            try:
+                if (
+                    run(
+                        [
+                            "docker",
+                            "inspect",
+                            "--format",
+                            "{{.State.Paused}}",
+                            container,
+                        ],
+                        stdout=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    .stdout.decode()
+                    .strip()
+                    != "true"
+                ):
+                    not_paused.append(container)
+            except BaseException:
+                not_paused.append(container)
+        if not_paused:
+            raise StageError(
+                "source containers not verified paused: " + ",".join(not_paused)
+            )
+        archive_state(
+            ["docker"],
+            source,
+            source_kind,
+            destination,
+            child_signal_mask=previous_mask,
+        )
+    except BaseException as error:
+        archive_error = error
+    unpause_failed: list[str] = []
+    for container in reversed(containers):
+        verified_unpaused = False
+        for _ in range(5):
+            try:
+                paused = (
+                    run(
+                        [
+                            "docker",
+                            "inspect",
+                            "--format",
+                            "{{.State.Paused}}",
+                            container,
+                        ],
+                        stdout=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    .stdout.decode()
+                    .strip()
+                )
+                if paused == "false":
+                    verified_unpaused = True
+                    break
+            except BaseException:
+                pass
+            try:
+                run(
+                    ["docker", "unpause", container],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    timeout=10,
+                )
+            except BaseException:
+                pass
+            time.sleep(0.2)
+        if not verified_unpaused:
+            try:
+                verified_unpaused = (
+                    run(
+                        [
+                            "docker",
+                            "inspect",
+                            "--format",
+                            "{{.State.Paused}}",
+                            container,
+                        ],
+                        stdout=subprocess.PIPE,
+                        timeout=10,
+                    )
+                    .stdout.decode()
+                    .strip()
+                    == "false"
+                )
+            except BaseException:
+                verified_unpaused = False
+        if not verified_unpaused:
+            unpause_failed.append(container)
+    deferred_signal: BaseException | None = None
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, previous_mask)
+    except BaseException as error:
+        deferred_signal = error
+    if unpause_failed:
+        recovery = "; ".join(f"docker unpause {name}" for name in unpause_failed)
+        raise StageError(
+            "source container unpause failed for "
+            + ",".join(unpause_failed)
+            + f"; recovery: {recovery}"
+        )
+    if archive_error is not None:
+        raise archive_error
+    if deferred_signal is not None:
+        raise deferred_signal
+    return containers
+
+
+def write_checksums(directory: Path) -> None:
+    lines = []
+    for path in sorted(directory.iterdir()):
+        if path.is_file() and path.name != "checksums.sha256":
+            lines.append(f"{sha256(path)}  {path.name}")
+    checksum_path = directory / "checksums.sha256"
+    checksum_path.write_text("\n".join(lines) + "\n")
+    os.chmod(checksum_path, 0o600)
+
+
+def verify_checksums(directory: Path) -> None:
+    subprocess.run(
+        ["sha256sum", "--check", "checksums.sha256"],
+        cwd=directory,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+
+
+def disk_bytes(path: Path) -> int:
+    if not path.exists():
+        return 0
+    return int(text(["du", "-sb", "--", str(path)]).split()[0])
+
+
+def ensure_root_owned_directory(path: Path, mode: int = 0o700) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=mode)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode):
+            raise StageError(f"unsafe symlink in privileged path: {current}")
+    os.chown(path, 0, 0)
+    os.chmod(path, mode)
+
+
+def source_inventory(spec: dict) -> list[dict]:
+    project = str(spec["project"])
+    all_ids = text(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ]
+    ).splitlines()
+    running_ids = text(
+        [
+            "docker",
+            "ps",
+            "-q",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        ]
+    ).splitlines()
+    if not all_ids or sorted(all_ids) != sorted(running_ids):
+        raise StageError("every source Compose container must be running")
+    records = []
+    for identifier in sorted(all_ids):
+        payload = json.loads(
+            text(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    (
+                        '{"id":{{json .Id}},"name":{{json .Name}},'
+                        '"imageId":{{json .Image}},"imageRef":{{json .Config.Image}},'
+                        '"labels":{{json .Config.Labels}},"mounts":{{json .Mounts}},'
+                        '"networks":{{json .NetworkSettings.Networks}},'
+                        '"state":{{json .State}}}'
+                    ),
+                    identifier,
+                ]
+            )
+        )
+        labels = payload.pop("labels") or {}
+        state = payload.pop("state")
+        health = (state.get("Health") or {}).get("Status", "not-configured")
+        if state.get("Status") != "running" or health not in {"healthy", "not-configured"}:
+            raise StageError("source container is not ready")
+        if labels.get("com.docker.compose.project") != project:
+            raise StageError("source Compose identity does not match")
+        networks = sorted((payload.pop("networks") or {}).keys())
+        mounts = [
+            {
+                "type": mount.get("Type"),
+                "name": mount.get("Name", ""),
+                "source": mount.get("Source"),
+                "destination": mount.get("Destination"),
+                "readOnly": not mount.get("RW", True),
+            }
+            for mount in payload.pop("mounts")
+        ]
+        records.append(
+            {
+                **payload,
+                "name": str(payload["name"]).removeprefix("/"),
+                "composeProject": project,
+                "composeService": labels.get("com.docker.compose.service", ""),
+                "health": health,
+                "networks": networks,
+                "mounts": mounts,
+            }
+        )
+    return records
+
+
+def validate_state_sources(spec: dict) -> None:
+    for _label, source_kind, source in spec["state"]:
+        if source_kind == "bind":
+            path = Path(source)
+            if not path.is_dir() or path.is_symlink():
+                raise StageError(f"state bind source is missing or unsafe: {source}")
+        else:
+            run(["docker", "volume", "inspect", source], stdout=subprocess.DEVNULL)
+
+
+def validate_manifest(workload: str, spec: dict) -> dict:
+    manifest_path = ROOT / "workloads" / workload / "manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    migration = manifest["migration"]
+    runtime = manifest["runtime"]
+    if (
+        manifest.get("id") != workload
+        or migration.get("targetTrustDomain") != spec["domain"]
+        or migration.get("originalPath") != spec["source"]
+        or runtime.get("composeProject") != spec["project"]
+    ):
+        raise StageError("canonical manifest does not match staging contract")
+    return manifest
+
+
+def validate_health(manifest: dict) -> None:
+    health = manifest.get("health", {})
+    url = health.get("url")
+    if not url:
+        return
+    try:
+        with urllib.request.urlopen(url, timeout=int(health.get("timeoutSeconds", 3))) as response:
+            status = response.status
+    except OSError as error:
+        raise StageError("source workload health check failed") from error
+    if status != int(health.get("expectedStatus", 200)):
+        raise StageError("source workload returned an unexpected health status")
+
+
+def target_resources(user: str, socket: Path, project: str) -> None:
+    existing = text(
+        target_command(
+            user,
+            socket,
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={project}",
+        )
+    )
+    if existing:
+        raise StageError("target Compose project already has containers")
+
+
+def capacity_report(spec: dict, inventory: list[dict]) -> dict:
+    image_ids = {record["imageId"] for record in inventory}
+    image_bytes = sum(
+        int(text(["docker", "image", "inspect", "--format", "{{.Size}}", identifier]))
+        for identifier in image_ids
+    )
+    mount_paths = {
+        Path(mount["source"])
+        for record in inventory
+        for mount in record["mounts"]
+        if mount["type"] in {"bind", "volume"} and mount["source"]
+    }
+    estimated = disk_bytes(Path(str(spec["source"]))) + image_bytes
+    estimated += sum(disk_bytes(path) for path in mount_paths)
+    backup_required = estimated * 2 + 1024**3
+    target_required = estimated * 2 + 1024**3
+    backup_probe = BACKUP_ROOT if BACKUP_ROOT.exists() else Path("/var/backups")
+    backup_available = shutil.disk_usage(backup_probe).free
+    target_available = shutil.disk_usage(STAGE_ROOT.parent).free
+    if backup_available < backup_required:
+        raise StageError("insufficient backup-filesystem capacity")
+    if target_available < target_required:
+        raise StageError("insufficient target-filesystem capacity")
+    return {
+        "estimatedSourceBytes": estimated,
+        "requiredBackupFreeBytes": backup_required,
+        "availableBackupBytes": backup_available,
+        "requiredTargetFreeBytes": target_required,
+        "availableTargetBytes": target_available,
+        "capacitySufficient": True,
+    }
+
+
+def preflight(workload: str) -> tuple[dict, list[dict], dict]:
+    if os.geteuid() != 0:
+        raise StageError("run with sudo")
+    spec = SPECS[workload]
+    manifest = validate_manifest(workload, spec)
+    domain = str(spec["domain"])
+    user = f"argus-{domain}"
+    socket = Path(f"/var/lib/argus/{domain}/docker.sock")
+    source = Path(str(spec["source"]))
+    if not source.is_dir() or source.is_symlink():
+        raise StageError("source directory is missing or unsafe")
+    pwd.getpwnam(user)
+    if not socket.is_socket():
+        raise StageError("target rootless Docker socket is missing")
+    if text(["systemctl", "is-active", f"argus-domain-agent@{domain}.service"]) != "active":
+        raise StageError("target domain agent is inactive")
+    validate_state_sources(spec)
+    inventory = source_inventory(spec)
+    target_resources(user, socket, str(spec["project"]))
+    validate_health(manifest)
+    capacity = capacity_report(spec, inventory)
+    report = {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "composeProject": spec["project"],
+        "targetTrustDomain": domain,
+        "sourceContainers": len(inventory),
+        "targetContainers": 0,
+        **capacity,
+        "publishedPortsCreated": False,
+        "publicRouteChanged": False,
+        "sourceStopped": False,
+        "safeForStage": True,
+    }
+    return report, inventory, manifest
+
+
+def source_database_dump(container: str, destination: Path) -> None:
+    with destination.open("wb") as handle:
+        run(
+            [
+                "docker",
+                "exec",
+                container,
+                "sh",
+                "-ceu",
+                'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" '
+                "--format=custom --no-owner --no-privileges",
+            ],
+            stdout=handle,
+        )
+
+
+def source_database_fingerprint(container: str) -> bytes:
+    return subprocess.run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            container,
+            "sh",
+            "-ceu",
+            'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
+        ],
+        input=DATABASE_FINGERPRINT_SQL.encode(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    ).stdout
+
+
+def source_redis_snapshot(container: str, destination: Path) -> int:
+    before = int(text(["docker", "exec", container, "redis-cli", "dbsize"]))
+    with destination.open("wb") as handle:
+        run(
+            ["docker", "exec", container, "redis-cli", "--rdb", "-"],
+            stdout=handle,
+        )
+    after = int(text(["docker", "exec", container, "redis-cli", "dbsize"]))
+    if before != after:
+        raise StageError("Redis source changed during logical backup")
+    return before
+
+
+def redis_archive(rdb: Path, destination: Path) -> None:
+    payload = rdb.read_bytes()
+    info = tarfile.TarInfo("./dump.rdb")
+    info.size = len(payload)
+    info.mode = 0o600
+    info.uid = 999
+    info.gid = 999
+    with tarfile.open(destination, "w:gz") as archive:
+        archive.addfile(info, io.BytesIO(payload))
+
+
+def target_database_fingerprint(target: list[str], container: str) -> bytes:
+    return subprocess.run(
+        [
+            *target,
+            "exec",
+            "-i",
+            container,
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            "postgres",
+            "-d",
+            "postgres",
+        ],
+        input=DATABASE_FINGERPRINT_SQL.encode(),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=True,
+    ).stdout
+
+
+def sanitize_compose(
+    rendered: dict,
+    inventory: list[dict],
+    stage: Path,
+    spec: dict,
+    state_volume_map: dict[str, str] | None = None,
+) -> tuple[dict, list[str]]:
+    by_service = {record["composeService"]: record for record in inventory}
+    blocked = set(spec["blocked_mounts"])
+    state_volume_map = state_volume_map or {}
+    credential_blockers: list[str] = []
+    consumed_stage_volumes: dict[str, int] = {}
+    services = rendered.get("services", {})
+    rendered["volumes"] = {}
+    for name, service in services.items():
+        record = by_service.get(name)
+        if record is None:
+            raise StageError(f"Compose service lacks a running source container: {name}")
+        if service.get("environment") or service.get("env_file"):
+            credential_blockers.append(f"service:{name}:runtime-environment")
+        service["image"] = record["imageId"]
+        service.pop("build", None)
+        service.pop("ports", None)
+        service.pop("environment", None)
+        service.pop("env_file", None)
+        for unsafe in ("privileged", "devices", "cap_add", "pid", "ipc"):
+            service.pop(unsafe, None)
+        if service.get("network_mode") not in {None, "none"}:
+            raise StageError("cross-container or host network modes are forbidden")
+        if service.get("volumes_from"):
+            raise StageError("volumes_from is forbidden")
+        service.pop("volumes_from", None)
+        rewritten = []
+        for mount in service.get("volumes", []):
+            if not isinstance(mount, dict):
+                raise StageError("unsupported Compose volume form")
+            source = str(mount.get("source", ""))
+            target_path = str(mount.get("target", ""))
+            if source in blocked:
+                credential_blockers.append(source)
+                continue
+            observed_mount = next(
+                (
+                    observed
+                    for observed in record["mounts"]
+                    if observed["destination"] == target_path
+                ),
+                None,
+            )
+            actual_source = source
+            if observed_mount:
+                actual_source = (
+                    observed_mount["name"]
+                    if observed_mount["type"] == "volume"
+                    else observed_mount["source"]
+                )
+            staged_volume = state_volume_map.get(source) or state_volume_map.get(
+                str(actual_source)
+            )
+            if staged_volume:
+                consumed_stage_volumes[staged_volume] = (
+                    consumed_stage_volumes.get(staged_volume, 0) + 1
+                )
+                key = (
+                    "argus_stage_"
+                    + re.sub(r"[^a-zA-Z0-9_]", "_", f"{name}_{target_path}").strip("_")
+                )
+                rendered.setdefault("volumes", {})[key] = {
+                    "name": staged_volume,
+                    "external": True,
+                }
+                replacement = dict(mount)
+                replacement["type"] = "volume"
+                replacement["source"] = key
+                rewritten.append(replacement)
+                continue
+            if mount.get("type") == "volume":
+                raise StageError(
+                    f"named volume lacks a verified staged restore: {name}:{target_path}"
+                )
+            if mount.get("type") == "bind":
+                try:
+                    relative = Path(source).relative_to(Path(str(spec["source"])))
+                except ValueError as error:
+                    raise StageError(f"cross-domain bind mount is forbidden: {source}") from error
+                replacement = dict(mount)
+                replacement["source"] = str(stage / "source" / relative)
+                rewritten.append(replacement)
+            else:
+                rewritten.append(mount)
+        service["volumes"] = rewritten
+    rendered["name"] = spec["project"]
+    networks = rendered.setdefault("networks", {})
+    if not networks:
+        networks["default"] = {}
+    for network in networks.values():
+        if network.get("external"):
+            raise StageError("external target networks are forbidden")
+        network["internal"] = True
+    rendered.pop("secrets", None)
+    rendered.pop("configs", None)
+    expected_stage_volumes = set(state_volume_map.values())
+    expected_consumption = {
+        volume: sum(
+            1
+            for record in inventory
+            for mount in record["mounts"]
+            if state_volume_map.get(str(mount["name"]))
+            == volume
+            or state_volume_map.get(str(mount["source"])) == volume
+        )
+        for volume in expected_stage_volumes
+    }
+    if (
+        set(consumed_stage_volumes) != expected_stage_volumes
+        or consumed_stage_volumes != expected_consumption
+        or any(count < 1 for count in consumed_stage_volumes.values())
+    ):
+        raise StageError("staged volume consumption does not match restore inventory")
+    return rendered, sorted(set(credential_blockers))
+
+
+def validate_sanitized_compose(compose: dict, stage: Path, project: str) -> None:
+    if compose.get("name") != project:
+        raise StageError("target Compose project name changed")
+    for service in compose.get("services", {}).values():
+        if service.get("ports") or service.get("network_mode") not in {None, "none"}:
+            raise StageError("target Compose plan exposes a host listener")
+        if service.get("volumes_from"):
+            raise StageError("target Compose plan contains volumes_from")
+        for mount in service.get("volumes", []):
+            if mount.get("type") == "volume":
+                volume = compose.get("volumes", {}).get(mount.get("source"), {})
+                name = str(volume.get("name", ""))
+                if (
+                    not volume.get("external")
+                    or not name.startswith("argus_m5_stage_")
+                ):
+                    raise StageError("target Compose plan contains an unowned volume")
+                continue
+            source = Path(str(mount.get("source", "")))
+            try:
+                source.relative_to(stage)
+            except ValueError as error:
+                raise StageError("target Compose plan contains an external bind") from error
+            if "docker.sock" in str(source):
+                raise StageError("Docker socket mounts are forbidden")
+
+
+def resource_label(stage_id: str) -> str:
+    return f"com.argus.m5-stage-id={stage_id}"
+
+
+def create_stage_volume(target: list[str], name: str, stage_id: str) -> None:
+    if (
+        run(
+            [*target, "volume", "inspect", name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    ):
+        raise StageError("random stage volume unexpectedly exists")
+    run(
+        [*target, "volume", "create", "--label", resource_label(stage_id), name],
+        stdout=subprocess.DEVNULL,
+    )
+    verify_owned_volume(target, name, stage_id)
+
+
+def verify_owned_volume(target: list[str], name: str, stage_id: str) -> None:
+    label = text(
+        [
+            *target,
+            "volume",
+            "inspect",
+            "--format",
+            '{{index .Labels "com.argus.m5-stage-id"}}',
+            name,
+        ]
+    )
+    if label != stage_id:
+        raise StageError("stage volume ownership label does not match")
+
+
+def remove_owned_volume(target: list[str], name: str, stage_id: str) -> None:
+    verify_owned_volume(target, name, stage_id)
+    users = text([*target, "ps", "-aq", "--filter", f"volume={name}"])
+    if users:
+        raise StageError("stage volume is still attached")
+    run([*target, "volume", "rm", name], stdout=subprocess.DEVNULL)
+
+
+def apply(workload: str) -> dict:
+    report, inventory, _manifest = preflight(workload)
+    spec = SPECS[workload]
+    domain = str(spec["domain"])
+    user = f"argus-{domain}"
+    socket = Path(f"/var/lib/argus/{domain}/docker.sock")
+    target = target_command(user, socket)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    stage_id = f"{workload}-{stamp.lower()}-{secrets.token_hex(4)}"
+    backup = BACKUP_ROOT / workload / stage_id
+    stage_parent = STAGE_ROOT / domain / workload
+    stage = stage_parent / stage_id
+    created_volumes: list[str] = []
+    created_containers: list[str] = []
+    new_images: list[str] = []
+    try:
+        ensure_root_owned_directory(BACKUP_ROOT)
+        ensure_root_owned_directory(BACKUP_ROOT / workload)
+        backup.mkdir(mode=0o700)
+        ensure_root_owned_directory(STAGE_ROOT, 0o711)
+        ensure_root_owned_directory(STAGE_ROOT / domain, 0o711)
+        ensure_root_owned_directory(stage_parent, 0o711)
+        stage.mkdir(mode=0o700)
+        identity = pwd.getpwnam(user)
+        archive_source(
+            Path(str(spec["source"])),
+            backup / "source.tar.gz",
+            tuple(spec["exclude"]),
+        )
+        safe_extract(backup / "source.tar.gz", stage)
+
+        (backup / "source-inventory.json").write_text(
+            json.dumps(inventory, sort_keys=True) + "\n"
+        )
+        image_ids = sorted({record["imageId"] for record in inventory})
+        helper_id = text(["docker", "image", "inspect", "--format", "{{.Id}}", HELPER_IMAGE])
+        transfer_ids = sorted(set([*image_ids, helper_id]))
+        existing_target_images = {
+            identifier
+            for identifier in transfer_ids
+            if run(
+                [*target, "image", "inspect", identifier],
+                check=False,
+                stdout=subprocess.DEVNULL,
+            ).returncode
+            == 0
+        }
+        new_images.extend(
+            identifier
+            for identifier in transfer_ids
+            if identifier not in existing_target_images
+        )
+        run(
+            ["docker", "image", "save", "--output", str(backup / "images.tar"), *transfer_ids]
+        )
+        with (backup / "images.tar").open("rb") as image_stream:
+            run([*target, "image", "load"], stdin=image_stream, stdout=subprocess.DEVNULL)
+        for identifier in transfer_ids:
+            loaded = text([*target, "image", "inspect", "--format", "{{.Id}}", identifier])
+            if loaded != identifier:
+                raise StageError("target image ID does not match source")
+
+        database_container = spec["database"]
+        database_restored = False
+        state_volume_map: dict[str, str] = {}
+        if database_container:
+            source_fingerprint_before = source_database_fingerprint(
+                str(database_container)
+            )
+            source_database_dump(str(database_container), backup / "database.dump")
+            source_fingerprint = source_database_fingerprint(str(database_container))
+            if source_fingerprint_before != source_fingerprint:
+                raise StageError("PostgreSQL source changed during logical backup")
+            (backup / "database.source.fingerprint").write_bytes(source_fingerprint)
+            volume = f"argus_m5_stage_{workload.replace('-', '_')}_postgres_{secrets.token_hex(6)}"
+            create_stage_volume(target, volume, stage_id)
+            created_volumes.append(volume)
+            container = f"argus-m5-stage-{workload}-postgres-{secrets.token_hex(4)}"
+            if (
+                run(
+                    [*target, "container", "inspect", container],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                ).returncode
+                == 0
+            ):
+                raise StageError("random stage container unexpectedly exists")
+            database_record = next(
+                record for record in inventory if record["name"] == database_container
+            )
+            for mount in database_record["mounts"]:
+                if mount["destination"] == "/var/lib/postgresql/data":
+                    state_volume_map[str(mount["source"])] = volume
+                    if mount["name"]:
+                        state_volume_map[str(mount["name"])] = volume
+            run(
+                [
+                    *target,
+                    "run",
+                    "-d",
+                    "--name",
+                    container,
+                    "--label",
+                    resource_label(stage_id),
+                    "--network",
+                    "none",
+                    "-e",
+                    "POSTGRES_HOST_AUTH_METHOD=trust",
+                    "--mount",
+                    mount_argument("volume", volume, "/var/lib/postgresql/data", False),
+                    str(database_record["imageId"]),
+                ],
+                stdout=subprocess.DEVNULL,
+            )
+            created_containers.append(container)
+            for _ in range(90):
+                ready = run(
+                    [*target, "exec", container, "pg_isready", "-U", "postgres"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                )
+                if ready.returncode == 0:
+                    break
+                time.sleep(1)
+            else:
+                raise StageError("isolated PostgreSQL restore target did not become ready")
+            with (backup / "database.dump").open("rb") as dump:
+                run(
+                    [
+                        *target,
+                        "exec",
+                        "-i",
+                        container,
+                        "pg_restore",
+                        "-U",
+                        "postgres",
+                        "-d",
+                        "postgres",
+                        "--no-owner",
+                        "--no-privileges",
+                    ],
+                    stdin=dump,
+                )
+            target_fingerprint = target_database_fingerprint(target, container)
+            (backup / "database.target.fingerprint").write_bytes(target_fingerprint)
+            if source_fingerprint != target_fingerprint:
+                raise StageError("PostgreSQL logical fingerprint mismatch")
+            run([*target, "rm", "-f", container], stdout=subprocess.DEVNULL)
+            created_containers.remove(container)
+            database_restored = True
+
+        state_results = []
+        quiesced_services: list[str] = []
+        redis_container = spec["redis"]
+        if redis_container:
+            redis_count = source_redis_snapshot(
+                str(redis_container), backup / "redis.rdb"
+            )
+            redis_archive(backup / "redis.rdb", backup / "redis-data.tar.gz")
+            volume = (
+                f"argus_m5_stage_{workload.replace('-', '_')}_"
+                f"redis_data_{secrets.token_hex(6)}"
+            )
+            create_stage_volume(target, volume, stage_id)
+            created_volumes.append(volume)
+            redis_record = next(
+                record for record in inventory if record["name"] == redis_container
+            )
+            for mount in redis_record["mounts"]:
+                if mount["destination"] == "/data":
+                    state_volume_map[str(mount["source"])] = volume
+                    if mount["name"]:
+                        state_volume_map[str(mount["name"])] = volume
+            restore_state(target, volume, backup / "redis-data.tar.gz", helper_id)
+            container = f"argus-m5-stage-{workload}-redis-{secrets.token_hex(4)}"
+            if (
+                run(
+                    [*target, "container", "inspect", container],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                ).returncode
+                == 0
+            ):
+                raise StageError("random stage container unexpectedly exists")
+            run(
+                [
+                    *target,
+                    "run",
+                    "-d",
+                    "--name",
+                    container,
+                    "--label",
+                    resource_label(stage_id),
+                    "--network",
+                    "none",
+                    "--mount",
+                    mount_argument("volume", volume, "/data", False),
+                    str(redis_record["imageId"]),
+                ],
+                stdout=subprocess.DEVNULL,
+            )
+            created_containers.append(container)
+            for _ in range(60):
+                ready = run(
+                    [*target, "exec", container, "redis-cli", "ping"],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                )
+                if ready.returncode == 0:
+                    break
+                time.sleep(1)
+            else:
+                raise StageError("isolated Redis restore target did not become ready")
+            run(
+                [*target, "exec", container, "redis-check-rdb", "/data/dump.rdb"],
+                stdout=subprocess.DEVNULL,
+            )
+            if int(text([*target, "exec", container, "redis-cli", "dbsize"])) != redis_count:
+                raise StageError("Redis logical key-count mismatch")
+            run([*target, "rm", "-f", container], stdout=subprocess.DEVNULL)
+            created_containers.remove(container)
+            state_results.append("redis-data")
+
+        for label, source_kind, source in spec["state"]:
+            archive_path = backup / f"{label}.tar.gz"
+            services = tuple(spec["state_quiesce"].get(label, ()))
+            if services:
+                quiesced_services.extend(
+                    quiesced_archive_state(
+                        inventory,
+                        services,
+                        source,
+                        source_kind,
+                        archive_path,
+                    )
+                )
+            else:
+                archive_state(["docker"], source, source_kind, archive_path)
+            volume = (
+                f"argus_m5_stage_{workload.replace('-', '_')}_"
+                f"{label.replace('-', '_')}_{secrets.token_hex(6)}"
+            )
+            create_stage_volume(target, volume, stage_id)
+            created_volumes.append(volume)
+            state_volume_map[source] = volume
+            restore_state(target, volume, archive_path, helper_id)
+            compare_restored_state(target, volume, archive_path, helper_id)
+            comparison = backup / f"{label}.restore-compare.json"
+            comparison.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "archiveSha256": f"sha256:{sha256(archive_path)}",
+                        "gnuTarContentMetadataCompare": True,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            state_results.append(label)
+
+        live_compose = Path(str(spec["source"])) / str(spec["compose"])
+        rendered = json.loads(
+            text(
+                [
+                    "docker",
+                    "compose",
+                    "--project-directory",
+                    str(spec["source"]),
+                    "-f",
+                    str(live_compose),
+                    "config",
+                    "--no-interpolate",
+                    "--format",
+                    "json",
+                ]
+            )
+        )
+        target_compose, credential_blockers = sanitize_compose(
+            rendered, inventory, stage, spec, state_volume_map
+        )
+        validate_sanitized_compose(target_compose, stage, str(spec["project"]))
+        target_compose_path = stage / "target-compose.json"
+        target_compose_path.write_text(json.dumps(target_compose, sort_keys=True) + "\n")
+        os.chown(target_compose_path, identity.pw_uid, identity.pw_gid)
+        os.chmod(target_compose_path, 0o600)
+        validated = json.loads(
+            text(
+                [
+                    "docker",
+                    "compose",
+                    "-p",
+                    str(spec["project"]),
+                    "-f",
+                    str(target_compose_path),
+                    "config",
+                    "--no-interpolate",
+                    "--format",
+                    "json",
+                ]
+            )
+        )
+        validate_sanitized_compose(validated, stage, str(spec["project"]))
+        evidence_compose = backup / "target-compose.json"
+        shutil.copy2(target_compose_path, evidence_compose)
+        os.chmod(evidence_compose, 0o600)
+        target_compose_digest = sha256(evidence_compose)
+
+        for root, directories, files in os.walk(stage):
+            os.chown(root, identity.pw_uid, identity.pw_gid)
+            for name in directories:
+                os.chown(Path(root) / name, identity.pw_uid, identity.pw_gid)
+            for name in files:
+                os.chown(Path(root) / name, identity.pw_uid, identity.pw_gid)
+
+        state = {
+            **report,
+            "stageId": stage_id,
+            "createdAt": stamp,
+            "backupPath": str(backup),
+            "stagePath": str(stage),
+            "sourceImageIds": image_ids,
+            "imagesLoaded": len(transfer_ids),
+            "newTargetImageIds": new_images,
+            "databaseRestored": database_restored,
+            "stateRestored": state_results,
+            "sourcePausedDuringStage": bool(quiesced_services),
+            "quiescedServices": sorted(set(quiesced_services)),
+            "stageVolumes": created_volumes,
+            "credentialBlockers": credential_blockers,
+            "targetComposeValidated": True,
+            "targetComposeDigest": f"sha256:{target_compose_digest}",
+            "cutoverRevalidationRequired": True,
+            "sourceSecretsPrinted": False,
+            "sourceWorkloadChanged": False,
+            "verified": True,
+        }
+        summary = backup / "stage-summary.json"
+        summary.write_text(json.dumps(state, sort_keys=True) + "\n")
+        for artifact in backup.iterdir():
+            if artifact.is_file():
+                os.chmod(artifact, 0o600)
+        write_checksums(backup)
+        verify_checksums(backup)
+        return state
+    except BaseException as error:
+        cleanup_leftovers: list[str] = []
+        for container in reversed(created_containers):
+            try:
+                label = text(
+                    [
+                        *target,
+                        "container",
+                        "inspect",
+                        "--format",
+                        '{{index .Config.Labels "com.argus.m5-stage-id"}}',
+                        container,
+                    ]
+                )
+                if label == stage_id:
+                    removed = run(
+                        [*target, "rm", "-f", container],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                    )
+                    if removed.returncode != 0:
+                        cleanup_leftovers.append(f"container:{container}")
+            except Exception:
+                cleanup_leftovers.append(f"container:{container}")
+        for volume in reversed(created_volumes):
+            try:
+                remove_owned_volume(target, volume, stage_id)
+            except Exception:
+                cleanup_leftovers.append(f"volume:{volume}")
+        for image in reversed(new_images):
+            try:
+                if (
+                    run(
+                        [*target, "image", "inspect", image],
+                        check=False,
+                        stdout=subprocess.DEVNULL,
+                    ).returncode
+                    != 0
+                ):
+                    continue
+                removed = run(
+                    [*target, "image", "rm", image],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                )
+                if removed.returncode != 0:
+                    cleanup_leftovers.append(f"image:{image}")
+            except Exception:
+                cleanup_leftovers.append(f"image:{image}")
+        try:
+            shutil.rmtree(stage)
+        except FileNotFoundError:
+            pass
+        except Exception:
+            cleanup_leftovers.append(f"stage:{stage}")
+        try:
+            failed_marker = backup / "FAILED"
+            failed_marker.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "stageId": stage_id,
+                        "errorType": type(error).__name__,
+                        "error": str(error),
+                        "cleanupComplete": not cleanup_leftovers,
+                        "leftovers": cleanup_leftovers,
+                    },
+                    sort_keys=True,
+                )
+                + "\n"
+            )
+            os.chmod(failed_marker, 0o600)
+        except OSError:
+            pass
+        raise
+
+
+def rollback(workload: str, summary_path: Path) -> dict:
+    spec = SPECS[workload]
+    domain = str(spec["domain"])
+    user = f"argus-{domain}"
+    socket = Path(f"/var/lib/argus/{domain}/docker.sock")
+    target = target_command(user, socket)
+    summary = summary_path.resolve(strict=True)
+    expected_parent = (BACKUP_ROOT / workload).resolve()
+    if summary.parent.parent != expected_parent or summary.name != "stage-summary.json":
+        raise StageError("rollback summary is outside the workload backup root")
+    if (summary.parent / "FAILED").exists():
+        raise StageError("failed stage evidence cannot authorize rollback")
+    metadata = summary.stat()
+    if metadata.st_uid != 0 or stat.S_IMODE(metadata.st_mode) != 0o600:
+        raise StageError("rollback summary ownership or mode is unsafe")
+    verify_checksums(summary.parent)
+    state = json.loads(summary.read_text())
+    stage_id = state.get("stageId")
+    expected_stage = STAGE_ROOT / domain / workload / str(stage_id)
+    if (
+        state.get("schemaVersion") != 1
+        or state.get("workloadId") != workload
+        or state.get("targetTrustDomain") != domain
+        or state.get("stagePath") != str(expected_stage)
+        or not state.get("verified")
+        or re.fullmatch(
+            rf"{re.escape(workload)}-[0-9]{{8}}t[0-9]{{6}}z-[0-9a-f]{{8}}",
+            str(stage_id),
+        )
+        is None
+    ):
+        raise StageError("rollback summary does not match the requested workload")
+    stage = Path(str(state["stagePath"]))
+    if stage.is_symlink() or stage.resolve() != expected_stage.resolve():
+        raise StageError("rollback stage path is unsafe")
+    target_resources(user, socket, str(spec["project"]))
+    volumes = state.get("stageVolumes")
+    if not isinstance(volumes, list):
+        raise StageError("rollback volume inventory is invalid")
+    for volume in volumes:
+        if not isinstance(volume, str) or not volume.startswith(
+            f"argus_m5_stage_{workload.replace('-', '_')}_"
+        ):
+            raise StageError("rollback stage volume name is unsafe")
+        verify_owned_volume(target, volume, str(stage_id))
+        if text([*target, "ps", "-aq", "--filter", f"volume={volume}"]):
+            raise StageError("rollback stage volume is still attached")
+    for volume in reversed(volumes):
+        remove_owned_volume(target, volume, str(stage_id))
+    shutil.rmtree(stage)
+    rollback_state = {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "stageId": stage_id,
+        "rolledBackAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        "stageRemoved": True,
+        "stageVolumesRemoved": len(volumes),
+        "imagesRetained": True,
+        "sourceWorkloadChanged": False,
+        "publicRouteChanged": False,
+        "rolledBack": True,
+    }
+    rollback_summary = summary.parent / "rollback-summary.json"
+    rollback_summary.write_text(json.dumps(rollback_state, sort_keys=True) + "\n")
+    os.chmod(rollback_summary, 0o600)
+    rollback_checksum = summary.parent / "rollback-summary.json.sha256"
+    rollback_checksum.write_text(
+        f"{sha256(rollback_summary)}  {rollback_summary.name}\n"
+    )
+    os.chmod(rollback_checksum, 0o600)
+    subprocess.run(
+        ["sha256sum", "--check", rollback_checksum.name],
+        cwd=summary.parent,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        check=True,
+    )
+    return rollback_state
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workload", required=True, choices=sorted(SPECS))
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--preflight", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--rollback", type=Path)
+    parser.add_argument(ACK, action="store_true")
+    parser.add_argument(ROLLBACK_ACK, action="store_true")
+    arguments = parser.parse_args()
+    if arguments.apply and not getattr(arguments, ACK[2:].replace("-", "_")):
+        raise StageError(f"refusing apply: add {ACK}")
+    if arguments.rollback and not getattr(
+        arguments, ROLLBACK_ACK[2:].replace("-", "_")
+    ):
+        raise StageError(f"refusing rollback: add {ROLLBACK_ACK}")
+    def interrupt(signum, _frame):
+        raise InterruptedError(f"received signal {signum}")
+
+    for signum in HANDLED_SIGNALS:
+        signal.signal(signum, interrupt)
+    ensure_root_owned_directory(LOCK_PATH.parent)
+    descriptor = os.open(
+        LOCK_PATH,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    lock_metadata = os.fstat(descriptor)
+    if (
+        lock_metadata.st_uid != 0
+        or not stat.S_ISREG(lock_metadata.st_mode)
+        or stat.S_IMODE(lock_metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise StageError("serialization lock ownership or mode is unsafe")
+    with os.fdopen(descriptor, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if arguments.apply:
+            result = apply(arguments.workload)
+        elif arguments.rollback:
+            result = rollback(arguments.workload, arguments.rollback)
+        else:
+            result, _inventory, _manifest = preflight(arguments.workload)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        BlockingIOError,
+        json.JSONDecodeError,
+        KeyError,
+        OSError,
+        subprocess.CalledProcessError,
+        StageError,
+        ValueError,
+    ) as error:
+        print(f"refusing workload stage: {error}", file=sys.stderr)
+        raise SystemExit(2)

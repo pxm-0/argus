@@ -243,3 +243,12 @@ policy report them eligible. Confirm:
 
 If any server check cannot be completed safely, leave the pull request open and
 record the blocker rather than claiming Phase 1 complete.
+
+## Retained workload staging
+
+After both sealed sandbox runtimes and all three domain agents are active, use
+the reviewed procedure in `docs/ARGUS_M5_WORKLOAD_STAGING.md`. Stage one
+workload at a time. A successful stage proves immutable image transfer,
+checksummed source backup, isolated state/database restore parity, and a
+rendered no-port target Compose plan. It does not authorize a workload
+cutover, credential transfer, listener, or route change.
