@@ -9,14 +9,6 @@
     "admission": "denied"
   },
   "workloads": {
-    "dozzle": {
-      "realm": "unclassified",
-      "zone": "legacy",
-      "stage": "none",
-      "trustDomain": "legacy-rootful",
-      "status": "legacy-unclassified",
-      "admission": "denied"
-    },
     "hastur": {
       "realm": "unclassified",
       "zone": "legacy",
@@ -57,15 +49,7 @@
       "status": "legacy-unclassified",
       "admission": "denied"
     },
-    "review-ui": {
-      "realm": "unclassified",
-      "zone": "legacy",
-      "stage": "none",
-      "trustDomain": "legacy-rootful",
-      "status": "legacy-unclassified",
-      "admission": "denied"
-    },
-    "uptime-kuma": {
+    "nodens": {
       "realm": "unclassified",
       "zone": "legacy",
       "stage": "none",

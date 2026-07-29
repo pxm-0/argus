@@ -26,6 +26,7 @@
   },
   "migration": {
     "status": "planned",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/kadath",
     "compatibilitySymlink": false,
     "rollback": "Keep /home/oreo/kadath intact. Use /home/oreo/kadath/deploy/scripts/release.sh with the previous merged SHA; the release command restores the prior Compose build and verifies readiness.",

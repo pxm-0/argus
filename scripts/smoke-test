@@ -831,7 +831,7 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
     missing = [name for name in required_docs if not (repo / "docs" / name).is_file()]
     smoke.check(not missing, "P4 evidence docs exist")
 
-    blocked_backup = ["review-ui", "dozzle", "uptime-kuma", "hastur", "intake-os"]
+    blocked_backup = ["hastur", "intake-os"]
     bad_backup_state = []
     for workload_id in blocked_backup:
         manifest = load_manifest(repo, workload_id)
@@ -845,11 +845,9 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
             bad_backup_state.append(workload_id)
     smoke.check(not bad_backup_state, "P4 stateful backup execution remains disabled")
 
-    review_manifest = load_manifest(repo, "review-ui")
-    smoke.check(
-        review_manifest.get("migration", {}).get("status") == "skipped",
-        "P4 review-ui migration explicitly deferred",
-    )
+    retired = {"review-ui", "dozzle", "uptime-kuma"}
+    tracked = set(workload_map(repo))
+    smoke.check(not (retired & tracked), "P4-deferred workloads retired from active inventory")
 
 
 def check_p5_evidence(repo: Path, smoke: Smoke) -> None:

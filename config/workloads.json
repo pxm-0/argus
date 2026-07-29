@@ -118,164 +118,6 @@
       }
     },
     {
-      "id": "uptime-kuma",
-      "name": "Uptime Kuma",
-      "description": "Monitoring workload discovered from Docker Compose.",
-      "lifecycle": "active",
-      "kind": "web-app",
-      "paths": {
-        "root": "/srv/argus/workloads/uptime-kuma",
-        "source": "/srv/argus/workloads/uptime-kuma/source",
-        "manifest": "/srv/argus/workloads/uptime-kuma/manifest.json",
-        "legacy": "/srv/apps/uptime-kuma"
-      },
-      "runtime": {
-        "type": "docker-compose",
-        "composePath": "/srv/argus/workloads/uptime-kuma/source/docker-compose.yml",
-        "legacyComposePaths": [
-          "/srv/apps/uptime-kuma/docker-compose.yml"
-        ],
-        "composeProject": "uptime-kuma",
-        "service": "uptime-kuma"
-      },
-      "network": {
-        "localUrl": "http://127.0.0.1:54321",
-        "internalPort": 3001,
-        "observedBindings": [
-          "0.0.0.0:54321->3001/tcp"
-        ]
-      },
-      "health": {
-        "enabled": true,
-        "url": "http://127.0.0.1:54321",
-        "expectedStatus": 302,
-        "timeoutSeconds": 3
-      },
-      "actions": {
-        "open": true,
-        "health": true,
-        "logs": false,
-        "restart": false,
-        "deploy": false,
-        "accessToggle": true,
-        "privacyToggle": true
-      },
-      "migration": {
-        "status": "planned",
-        "originalPath": "/srv/apps/uptime-kuma",
-        "compatibilitySymlink": false,
-        "bindMountRisks": [],
-        "namedVolumeRisks": [
-          "uptime-kuma_uptime-kuma-data"
-        ]
-      }
-    },
-    {
-      "id": "review-ui",
-      "name": "Review UI",
-      "description": "Review UI container discovered without Compose labels.",
-      "lifecycle": "active",
-      "kind": "web-app",
-      "paths": {
-        "root": "/srv/argus/workloads/review-ui",
-        "source": "/srv/argus/workloads/review-ui/source",
-        "manifest": "/srv/argus/workloads/review-ui/manifest.json",
-        "legacy": ""
-      },
-      "runtime": {
-        "type": "docker",
-        "composePath": "",
-        "legacyComposePaths": [],
-        "composeProject": "",
-        "service": "review-ui"
-      },
-      "network": {
-        "localUrl": "http://127.0.0.1:8765",
-        "internalPort": 8765,
-        "observedBindings": [
-          "127.0.0.1:8765->8765/tcp",
-          "tailscale-funnel / -> http://127.0.0.1:8765"
-        ]
-      },
-      "health": {
-        "enabled": true,
-        "url": "http://127.0.0.1:8765",
-        "expectedStatus": 200,
-        "timeoutSeconds": 3
-      },
-      "actions": {
-        "open": true,
-        "health": true,
-        "logs": false,
-        "restart": false,
-        "deploy": false,
-        "accessToggle": true,
-        "privacyToggle": true
-      },
-      "migration": {
-        "status": "needs-discovery",
-        "originalPath": "",
-        "compatibilitySymlink": false,
-        "bindMountRisks": [
-          "/data/runs -> /data/runs",
-          "/data/review_ui_jobs -> /data/review_ui_jobs"
-        ],
-        "namedVolumeRisks": []
-      }
-    },
-    {
-      "id": "dozzle",
-      "name": "Dozzle",
-      "description": "Restricted container log viewer retained as a disabled workload record.",
-      "lifecycle": "discovered",
-      "kind": "admin-tool",
-      "paths": {
-        "root": "/srv/argus/workloads/dozzle",
-        "source": "/srv/argus/workloads/dozzle/source",
-        "manifest": "/srv/argus/workloads/dozzle/manifest.json",
-        "legacy": ""
-      },
-      "runtime": {
-        "type": "docker",
-        "composePath": "",
-        "legacyComposePaths": [],
-        "composeProject": "",
-        "service": "dozzle"
-      },
-      "network": {
-        "localUrl": "",
-        "internalPort": 8080,
-        "observedBindings": []
-      },
-      "health": {
-        "enabled": false,
-        "url": "",
-        "expectedStatus": 200,
-        "timeoutSeconds": 3
-      },
-      "actions": {
-        "open": false,
-        "health": false,
-        "logs": false,
-        "restart": false,
-        "deploy": false,
-        "accessToggle": true,
-        "privacyToggle": true
-      },
-      "migration": {
-        "status": "needs-discovery",
-        "originalPath": "",
-        "compatibilitySymlink": false,
-        "bindMountRisks": [
-          "/var/run/docker.sock -> /var/run/docker.sock"
-        ],
-        "namedVolumeRisks": [],
-        "risks": [
-          "docker-socket bind mount"
-        ]
-      }
-    },
-    {
       "id": "locigraph",
       "name": "LociGraph",
       "description": "AI-assisted claim extraction and knowledge graph app running through a production-safe legacy Compose containment override.",
@@ -289,7 +131,7 @@
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/home/oreo/LociGraph/docker-compose.yml",
+        "composePath": "/srv/argus/workloads/locigraph/source/docker-compose.yml",
         "legacyComposePaths": [
           "/home/oreo/LociGraph/docker-compose.yml"
         ],
@@ -329,6 +171,9 @@
           "locigraph_postgres_data",
           "locigraph_redis_data",
           "locigraph_raw_data"
+        ],
+        "notes": [
+          "Operator-selected destination is personal-sandbox; admission remains denied until migration evidence is reviewed."
         ]
       }
     },
@@ -381,6 +226,60 @@
         "bindMountRisks": [],
         "namedVolumeRisks": [
           "kadath-live_postgres-data"
+        ]
+      }
+    },
+    {
+      "id": "nodens",
+      "name": "Nodens",
+      "description": "Nodens website discovered from Docker Compose and retained for personal-sandbox migration.",
+      "lifecycle": "active",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/argus/workloads/nodens",
+        "source": "/srv/argus/workloads/nodens/source",
+        "manifest": "/srv/argus/workloads/nodens/manifest.json",
+        "legacy": "/home/oreo/nodens"
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/argus/workloads/nodens/source/docker-compose.yml",
+        "legacyComposePaths": [
+          "/home/oreo/nodens/docker-compose.yml"
+        ],
+        "composeProject": "nodens",
+        "service": "nodens"
+      },
+      "network": {
+        "localUrl": "http://127.0.0.1:8081",
+        "internalPort": 80,
+        "observedBindings": [
+          "0.0.0.0:8081->80/tcp"
+        ]
+      },
+      "health": {
+        "enabled": true,
+        "url": "http://127.0.0.1:8081",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": false,
+        "health": false,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": true,
+        "privacyToggle": true
+      },
+      "migration": {
+        "status": "planned",
+        "originalPath": "/home/oreo/nodens",
+        "compatibilitySymlink": false,
+        "bindMountRisks": [],
+        "namedVolumeRisks": [],
+        "notes": [
+          "Operator-selected destination is personal-sandbox; admission remains denied until migration evidence is reviewed."
         ]
       }
     },

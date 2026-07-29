@@ -18,7 +18,8 @@ class LociGraphProductionStateTests(unittest.TestCase):
 
     def test_manifest_records_restore_evidence_but_keeps_generic_actions_disabled(self) -> None:
         manifest = json.loads((ROOT / "workloads" / "locigraph" / "manifest.json").read_text())
-        self.assertEqual("external", manifest["migration"]["status"])
+        self.assertEqual("planned", manifest["migration"]["status"])
+        self.assertEqual("personal-sandbox", manifest["migration"]["targetTrustDomain"])
         self.assertEqual("ok", manifest["backup"]["status"])
         self.assertTrue(manifest["backup"]["restoreTested"])
         self.assertFalse(manifest["backup"]["backupAllowed"])

@@ -45,6 +45,7 @@ security.notes
 schemaVersion: 1
 runtime.type: docker-compose | external | static | unknown
 migration.status: planned | migrated | external | rolled-back | skipped
+migration.targetTrustDomain (optional): personal-sandbox | personal-managed | work-sandbox | work-managed
 privacyCompatibility: unclassified | personal | internal | sensitive | restricted
 accessCompatibility: none | local | tailnet | cloudflare-protected | cloudflare-public
 ```
@@ -60,6 +61,9 @@ backup.destination = /srv/argus/runtime/backups/<id>...
 ```
 
 Docker Compose manifests must keep compose files under `sourcePath` and must name the Compose project explicitly. This preserves project names during migration.
+Planned and rolled-back migration candidates must also name a
+`migration.targetTrustDomain`; recording a destination does not grant
+admission.
 
 ## Safety Rules
 

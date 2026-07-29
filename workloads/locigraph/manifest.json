@@ -8,16 +8,16 @@
   "privacyCompatibility": "sensitive",
   "accessCompatibility": "tailnet",
   "runtime": {
-    "type": "external",
+    "type": "docker-compose",
     "compose": {
-      "path": "/home/oreo/LociGraph/docker-compose.yml",
+      "path": "/srv/argus/workloads/locigraph/source/docker-compose.yml",
       "project": "locigraph",
       "service": "",
       "legacyPaths": [
         "/home/oreo/LociGraph/docker-compose.yml"
       ]
     },
-    "composePath": "/home/oreo/LociGraph/docker-compose.yml",
+    "composePath": "/srv/argus/workloads/locigraph/source/docker-compose.yml",
     "composeProject": "locigraph",
     "service": "",
     "legacyComposePaths": [
@@ -25,7 +25,8 @@
     ]
   },
   "migration": {
-    "status": "external",
+    "status": "planned",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/LociGraph",
     "compatibilitySymlink": false,
     "rollback": "Run the acknowledged stopped-state rollback; preserve the named volumes, verified snapshots, and private override.",
@@ -49,6 +50,9 @@
     },
     "backup": {
       "allowed": false
+    },
+    "migrationPreflight": {
+      "allowed": true
     },
     "logsAllowed": false,
     "restartAllowed": false,

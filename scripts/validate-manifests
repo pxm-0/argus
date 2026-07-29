@@ -10,6 +10,7 @@ from typing import Any
 
 RUNTIME_TYPES = {"docker-compose", "external", "static", "unknown"}
 MIGRATION_STATUSES = {"planned", "migrated", "external", "rolled-back", "skipped"}
+TARGET_TRUST_DOMAINS = {"personal-sandbox", "personal-managed", "work-sandbox", "work-managed"}
 PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restricted"}
 ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
 SENSITIVE_PRIVACY = {"sensitive", "restricted"}
@@ -127,6 +128,24 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
     migration_status = require_type(manifest, workload_id, "migration.status", str, errors)
     if migration_status and migration_status not in MIGRATION_STATUSES:
         add_error(errors, workload_id, "migration.status", "has invalid enum value")
+    target_trust_domain = manifest.get("migration", {}).get("targetTrustDomain")
+    if migration_status in {"planned", "rolled-back"} and target_trust_domain is None:
+        add_error(
+            errors,
+            workload_id,
+            "migration.targetTrustDomain",
+            "is required for migration candidates",
+        )
+    elif target_trust_domain is not None and (
+        not isinstance(target_trust_domain, str)
+        or target_trust_domain not in TARGET_TRUST_DOMAINS
+    ):
+        add_error(
+            errors,
+            workload_id,
+            "migration.targetTrustDomain",
+            "has invalid trust-domain value",
+        )
 
     for operation in ("logs", "restart", "backup"):
         require_type(manifest, workload_id, f"operations.{operation}.allowed", bool, errors)

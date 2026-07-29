@@ -28,6 +28,7 @@
   },
   "migration": {
     "status": "planned",
+    "targetTrustDomain": "work-sandbox",
     "originalPath": "/home/oreo/intake-os",
     "compatibilitySymlink": false,
     "rollback": "Do not migrate without explicit P4 re-scope, database backup proof, and restore approval.",
