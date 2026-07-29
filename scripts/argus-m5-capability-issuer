@@ -359,7 +359,7 @@ validate_shared_writer_runtime() {
   [[ "$(stat -c '%U:%G:%a' "$ROOT/config")" == \
     "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
   [[ "$(stat -c '%U:%G:%a' "$ACCESS_CONFIG")" == \
-    "$API_USER:$CONTROL_GROUP:660" ]] || return 1
+    "$API_USER:$CONTROL_GROUP:664" ]] || return 1
   [[ "$(stat -c '%U:%G:%a' "$ROOT/runtime/argus")" == \
     "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
   [[ "$(stat -c '%U:%G:%a' "$M1_RUNTIME")" == \
@@ -392,7 +392,7 @@ validate_shared_writer_runtime() {
     runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
       test -w "$path" || return 1
   done
-  printf 'M5_SHARED_WRITER_OK agent=%s configMode=0660 runtimeMode=0660 dashboardMode=0664\n' \
+  printf 'M5_SHARED_WRITER_OK agent=%s accessMode=0664 runtimeMode=0660 dashboardMode=0664\n' \
     "$SANDBOX_USER"
 }
 

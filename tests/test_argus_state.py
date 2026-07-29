@@ -235,7 +235,7 @@ class ArgusStateTest(unittest.TestCase):
             self.assertTrue(writer._parity(deployed))
             self.assertEqual({"reconciled": True, "alreadyApplied": True}, writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox"))
 
-    def test_access_writer_atomic_replace_preserves_shared_writer_mode(self) -> None:
+    def test_access_writer_atomic_replace_preserves_operator_readable_mode(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             root = Path(directory)
             path = root / "access.json"
@@ -250,7 +250,7 @@ class ArgusStateTest(unittest.TestCase):
                     },
                 },
             }))
-            path.chmod(0o660)
+            path.chmod(0o664)
             writer = AccessMutationWriter(
                 path,
                 root / "state.sqlite3",
@@ -271,7 +271,7 @@ class ArgusStateTest(unittest.TestCase):
                 timestamp="2026-07-29T00:00:00Z",
             )
 
-            self.assertEqual(0o660, stat.S_IMODE(path.stat().st_mode))
+            self.assertEqual(0o664, stat.S_IMODE(path.stat().st_mode))
 
     def test_access_writer_rejects_unreviewed_deployment_or_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

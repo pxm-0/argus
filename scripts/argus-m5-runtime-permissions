@@ -35,7 +35,7 @@ install -d -m 2775 -o "$API_USER" -g "$CONTROL_GROUP" "$DASHBOARD_PUBLIC"
 
 reconciled=0
 chown "$API_USER:$CONTROL_GROUP" "$ACCESS_CONFIG"
-chmod 0660 "$ACCESS_CONFIG"
+chmod 0664 "$ACCESS_CONFIG"
 reconciled=$((reconciled + 1))
 
 for path in "$M1_RUNTIME/access-journal.jsonl"; do
@@ -88,5 +88,5 @@ for suffix in "" -wal -shm; do
   reconciled=$((reconciled + 1))
 done
 
-printf 'M5_RUNTIME_PERMISSIONS_OK files=%d apiOwner=%s workerOwner=%s group=%s operationMode=0660 sessionMode=0600 sharedWriterMode=0660 dashboardMode=0664\n' \
+printf 'M5_RUNTIME_PERMISSIONS_OK files=%d apiOwner=%s workerOwner=%s group=%s operationMode=0660 sessionMode=0600 accessMode=0664 sharedRuntimeMode=0660 dashboardMode=0664\n' \
   "$reconciled" "$API_USER" "$WORKER_USER" "$CONTROL_GROUP"
