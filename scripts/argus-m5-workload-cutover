@@ -23,6 +23,9 @@ import time
 ROOT = Path("/srv/argus")
 STATE_ROOT = Path("/var/lib/argus/migration-cutovers")
 RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
+# Sealed credential delivery: root-owned, sandbox-group-readable, never a
+# /home/oreo bind. Operators provision one directory per workload here.
+CREDENTIAL_ROOT = Path("/etc/argus/workload-credentials")
 LOCK_PATH = Path("/run/argus-m5-workload-cutover/lock")
 UNIX_SOCKET_PATH_LIMIT = 108
 APPLY_ACK = "--acknowledge-m5-workload-cutover"
@@ -48,6 +51,15 @@ SPECS = {
         "tail_port": 8445,
         "stateful": True,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        # Sealed replacement for the excluded /home/oreo/hastur/auth bind.
+        "credentials": {"hastur": "/app/auth"},
+        # Scraping schedules in-process; the host crontab entry is retired.
+        "extra_environment": {
+            "hastur": {
+                "CRAWL_SCHEDULE_ENABLED": "true",
+                "CRAWL_SCHEDULE_MECHANISM": "internal",
+            }
+        },
     },
     "kadath": {
         "domain": "personal-sandbox",
@@ -701,6 +713,35 @@ def runtime_directory(workload: str, spec: dict, stage_id: str) -> Path:
     return RUNTIME_ROOT / str(spec["domain"]) / workload / runtime_leaf
 
 
+def credential_source(workload: str, spec: dict, gid: int) -> Path:
+    """Validate the sealed credential directory for a workload and return it."""
+    source = CREDENTIAL_ROOT / workload
+    metadata = os.lstat(source)
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or metadata.st_uid != 0
+        or metadata.st_gid != gid
+        or stat.S_IMODE(metadata.st_mode) != 0o750
+    ):
+        raise CutoverError(
+            f"credential directory must be root:argus-{spec['domain']} 0750: {source}"
+        )
+    for entry in sorted(source.iterdir()):
+        entry_metadata = os.lstat(entry)
+        if (
+            not stat.S_ISREG(entry_metadata.st_mode)
+            or entry_metadata.st_uid != 0
+            or entry_metadata.st_gid != gid
+            or stat.S_IMODE(entry_metadata.st_mode) != 0o640
+        ):
+            raise CutoverError(
+                f"credential file must be a root:argus-{spec['domain']} 0640 "
+                f"regular file: {entry}"
+            )
+    return source
+
+
 def build_runtime(
     workload: str,
     spec: dict,
@@ -728,11 +769,36 @@ def build_runtime(
     os.mkdir(ingress_dir, 0o700)
     os.chown(ingress_dir, identity.pw_uid, identity.pw_gid)
 
+    credentials = dict(spec.get("credentials") or {})
+    extra_environment = dict(spec.get("extra_environment") or {})
+    unknown = (set(credentials) | set(extra_environment)).difference(
+        compose["services"]
+    )
+    if unknown:
+        raise CutoverError(
+            f"credential or environment overlay names unknown services: {sorted(unknown)}"
+        )
+    credential_dir = (
+        credential_source(workload, spec, identity.pw_gid) if credentials else None
+    )
+
     for service, definition in compose["services"].items():
         if service not in environments:
             raise CutoverError(f"runtime environment is missing for service {service}")
-        definition["environment"] = environments[service]
+        definition["environment"] = {
+            **environments[service],
+            **extra_environment.get(service, {}),
+        }
         definition["restart"] = "no"
+        if service in credentials:
+            definition.setdefault("volumes", []).append(
+                {
+                    "type": "bind",
+                    "source": str(credential_dir),
+                    "target": str(credentials[service]),
+                    "read_only": True,
+                }
+            )
 
     ingress_config = {
         "apps": {
@@ -1218,6 +1284,10 @@ def preflight(workload: str) -> dict:
         or compose.is_symlink()
     ):
         raise CutoverError("source Compose path is missing or unsafe")
+    if spec.get("credentials"):
+        credential_source(
+            workload, spec, pwd.getpwnam(f"argus-{spec['domain']}").pw_gid
+        )
     resurrection_schedules = scheduled_source_resurrections(spec)
     if resurrection_schedules:
         raise CutoverError(

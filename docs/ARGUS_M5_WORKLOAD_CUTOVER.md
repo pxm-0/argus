@@ -88,6 +88,28 @@ require manual target-authority recovery; stale source data is never started
 automatically. Nodens is stateless and retains the explicit rollback
 operation.
 
+## Sealed credentials
+
+Staging excludes workload credential directories, so any credential a sandboxed
+workload needs is delivered from `/etc/argus/workload-credentials/<workload>/`
+as a read-only bind rendered by cutover. Never a `/home/oreo` bind.
+
+Provision before preflight (hastur example, `personal-sandbox`):
+
+```bash
+sudo install -d -o root -g argus-personal-sandbox -m 0750 \
+  /etc/argus/workload-credentials/hastur
+sudo install -o root -g argus-personal-sandbox -m 0640 \
+  /path/to/threads-storage.json \
+  /etc/argus/workload-credentials/hastur/threads-storage.json
+```
+
+Preflight and apply refuse to continue unless the directory is root-owned
+`0750`, grouped to the sandbox identity, and contains only root-owned `0640`
+regular files. The mount target and any workload-specific runtime environment
+(hastur: `CRAWL_SCHEDULE_ENABLED=true`, `CRAWL_SCHEDULE_MECHANISM=internal`)
+live in that workload's cutover spec.
+
 ## Commands
 
 ```bash

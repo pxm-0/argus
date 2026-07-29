@@ -280,5 +280,50 @@ class WorkloadCutoverTests(unittest.TestCase):
         )
 
 
+class CredentialDeliveryTest(unittest.TestCase):
+    def test_hastur_gets_sealed_credentials_and_internal_schedule(self) -> None:
+        spec = module.SPECS["hastur"]
+        self.assertEqual({"hastur": "/app/auth"}, spec["credentials"])
+        self.assertEqual(
+            {
+                "CRAWL_SCHEDULE_ENABLED": "true",
+                "CRAWL_SCHEDULE_MECHANISM": "internal",
+            },
+            spec["extra_environment"]["hastur"],
+        )
+        self.assertEqual(
+            Path("/etc/argus/workload-credentials"), module.CREDENTIAL_ROOT
+        )
+        self.assertNotIn("/home/oreo", str(module.CREDENTIAL_ROOT))
+
+    def test_credential_directory_must_be_root_owned_and_group_readable(self) -> None:
+        original_root = module.CREDENTIAL_ROOT
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            module.CREDENTIAL_ROOT = root
+            try:
+                with self.assertRaises(FileNotFoundError):
+                    module.credential_source(
+                        "hastur", module.SPECS["hastur"], module.os.getgid()
+                    )
+                source = root / "hastur"
+                source.mkdir(mode=0o750)
+                credential = source / "threads-storage.json"
+                credential.write_text("{}")
+                module.os.chmod(credential, 0o640)
+                # Owned by the invoking user rather than root: rejected.
+                with self.assertRaises(module.CutoverError):
+                    module.credential_source(
+                        "hastur", module.SPECS["hastur"], module.os.getgid()
+                    )
+                # Wrong sandbox group: rejected.
+                with self.assertRaises(module.CutoverError):
+                    module.credential_source(
+                        "hastur", module.SPECS["hastur"], module.os.getgid() + 1
+                    )
+            finally:
+                module.CREDENTIAL_ROOT = original_root
+
+
 if __name__ == "__main__":
     unittest.main()
