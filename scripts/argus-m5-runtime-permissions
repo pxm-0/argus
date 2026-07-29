@@ -21,7 +21,7 @@ getent passwd "$API_USER" >/dev/null || fail "missing API user: $API_USER"
 getent passwd "$WORKER_USER" >/dev/null || fail "missing worker user: $WORKER_USER"
 getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group: $CONTROL_GROUP"
 [[ -f "$ACCESS_CONFIG" ]] || fail "missing access compatibility store"
-for output in app.js index.html metrics.json style.css; do
+for output in app.js index.html style.css; do
   [[ -f "$DASHBOARD_PUBLIC/$output" ]] ||
     fail "missing generated dashboard output: $output"
 done
@@ -55,7 +55,7 @@ for database in "$M1_RUNTIME/state.sqlite3" "$AUDIT_DATABASE"; do
   done
 done
 
-for output in app.js index.html metrics.json style.css; do
+for output in app.js index.html style.css; do
   path="$DASHBOARD_PUBLIC/$output"
   chown "$API_USER:$CONTROL_GROUP" "$path"
   chmod 0664 "$path"

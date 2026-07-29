@@ -144,7 +144,6 @@ rollback() {
     "$AUDIT_DATABASE:audit.meta" \
     "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
     "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
-    "$DASHBOARD_PUBLIC/metrics.json:dashboard-metrics.meta" \
     "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
     "$ROOT/config:config-dir.meta" \
     "$ROOT/runtime/argus:argus-runtime-dir.meta" \
@@ -243,7 +242,6 @@ preflight() {
     "$AUDIT_DATABASE" \
     "$DASHBOARD_PUBLIC/app.js" \
     "$DASHBOARD_PUBLIC/index.html" \
-    "$DASHBOARD_PUBLIC/metrics.json" \
     "$DASHBOARD_PUBLIC/style.css"; do
     [[ -f "$source" ]] || fail "shared writer input is missing: $source"
   done
@@ -373,7 +371,7 @@ validate_shared_writer_runtime() {
   done
   [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC")" == \
     "$API_USER:$CONTROL_GROUP:2775" ]] || return 1
-  for path in app.js index.html metrics.json style.css; do
+  for path in app.js index.html style.css; do
     [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC/$path")" == \
       "$API_USER:$CONTROL_GROUP:664" ]] || return 1
   done
@@ -387,7 +385,6 @@ validate_shared_writer_runtime() {
     "$AUDIT_DATABASE" \
     "$DASHBOARD_PUBLIC/app.js" \
     "$DASHBOARD_PUBLIC/index.html" \
-    "$DASHBOARD_PUBLIC/metrics.json" \
     "$DASHBOARD_PUBLIC/style.css"; do
     runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
       test -w "$path" || return 1
@@ -418,7 +415,6 @@ apply_issuer() {
     "$AUDIT_DATABASE:audit.meta" \
     "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
     "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
-    "$DASHBOARD_PUBLIC/metrics.json:dashboard-metrics.meta" \
     "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
     "$ROOT/config:config-dir.meta" \
     "$ROOT/runtime/argus:argus-runtime-dir.meta" \

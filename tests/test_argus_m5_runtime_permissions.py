@@ -21,6 +21,11 @@ class RuntimePermissionContractTests(unittest.TestCase):
         self.assertIn('$CONTROL_STATE/operations.sqlite3', script)
         self.assertIn("install -d -m 2770", script)
         self.assertIn("install -d -m 2775", script)
+        self.assertIn("for output in app.js index.html style.css", script)
+        self.assertNotIn(
+            "for output in app.js index.html metrics.json style.css",
+            script,
+        )
         self.assertIn('chmod 0664 "$ACCESS_CONFIG"', script)
         self.assertIn("chmod 0660", script)
         self.assertIn("chmod 0664", script)
