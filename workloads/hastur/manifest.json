@@ -26,6 +26,7 @@
   },
   "migration": {
     "status": "planned",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/hastur",
     "compatibilitySymlink": false,
     "rollback": "Do not migrate until SSH/auth/data handling, backup exclusions, and restore isolation are approved.",

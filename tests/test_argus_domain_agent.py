@@ -146,9 +146,6 @@ class DomainAgentServiceTests(unittest.TestCase):
             allowed, reason = service.policy_check("hello-nginx", "access.apply", {"desired": "tailnet"})
             self.assertFalse(allowed)
             self.assertIn("approved Tailscale Serve route", reason)
-            with self.assertRaisesRegex(ValueError, "requires docker-compose"):
-                # Standalone Docker workloads cannot smuggle an arbitrary runtime request.
-                service.compose_command("dozzle", "restart")
 
     def test_unavailable_health_evidence_fails_operation_and_is_preserved(self) -> None:
         result = {

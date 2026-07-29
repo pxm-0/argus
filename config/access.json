@@ -31,49 +31,16 @@
       "lastAppliedAt": "",
       "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8445 -> 127.0.0.1:4173). Pending 0.0.0.0:4173 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
     },
-    "uptime-kuma": {
-      "desired": "tailnet",
-      "effective": "local",
-      "urls": {
-        "local": "http://127.0.0.1:54321",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8446",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "",
-      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8446 -> 127.0.0.1:54321). Pending 0.0.0.0:54321 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
-    },
-    "review-ui": {
-      "desired": "tailnet",
-      "effective": "local",
-      "urls": {
-        "local": "http://127.0.0.1:8765",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8447",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "",
-      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8447 -> 127.0.0.1:8765). Already 127.0.0.1-bound; pending serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
-    },
-    "dozzle": {
-      "desired": "local",
-      "effective": "none",
-      "urls": {
-        "local": "",
-        "tailnet": "",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "",
-      "lastError": "No running Dozzle container is present; local access remains disabled."
-    },
     "hello-nginx": {
-      "desired": "cloudflare-protected",
+      "desired": "none",
       "effective": "none",
       "urls": {
         "local": "",
         "tailnet": "",
         "cloudflare": "https://hello-nginx.argus.invalid"
       },
-      "lastAppliedAt": "2026-07-20T06:51:23Z",
-      "lastError": "M4 moved the workload into the sealed personal sandbox. No local, tailnet, or public ingress is configured."
+      "lastAppliedAt": "2026-07-29T03:55:13Z",
+      "lastError": ""
     },
     "locigraph": {
       "desired": "none",
@@ -84,7 +51,7 @@
         "cloudflare": ""
       },
       "lastAppliedAt": "",
-      "lastError": "Discovery found 0.0.0.0:8000 and 0.0.0.0:8090 bindings; effective state requires remediation before any access grant."
+      "lastError": "Legacy Caddy is loopback-bound on 127.0.0.1:8090; desired access remains none pending personal-sandbox migration."
     },
     "kadath": {
       "desired": "tailnet",
@@ -94,8 +61,19 @@
         "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8443",
         "cloudflare": ""
       },
-      "lastAppliedAt": "2026-07-06T18:55:47Z",
+      "lastAppliedAt": "2026-07-19T07:26:51Z",
       "lastError": ""
+    },
+    "nodens": {
+      "desired": "none",
+      "effective": "local",
+      "urls": {
+        "local": "http://127.0.0.1:8081",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": "Legacy Compose publishes 0.0.0.0:8081; no Argus route is enabled and the wildcard bind must not be reproduced during personal-sandbox migration."
     }
   }
 }

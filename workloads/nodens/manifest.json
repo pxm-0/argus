@@ -1,0 +1,106 @@
+{
+  "id": "nodens",
+  "name": "Nodens",
+  "description": "Nodens website retained for migration from the legacy rootful Compose runtime.",
+  "schemaVersion": 1,
+  "canonicalRoot": "/srv/argus/workloads/nodens",
+  "sourcePath": "/srv/argus/workloads/nodens/source",
+  "privacyCompatibility": "unclassified",
+  "accessCompatibility": "local",
+  "runtime": {
+    "type": "docker-compose",
+    "compose": {
+      "path": "/srv/argus/workloads/nodens/source/docker-compose.yml",
+      "project": "nodens",
+      "service": "nodens",
+      "legacyPaths": [
+        "/home/oreo/nodens/docker-compose.yml"
+      ]
+    },
+    "composePath": "/srv/argus/workloads/nodens/source/docker-compose.yml",
+    "composeProject": "nodens",
+    "service": "nodens",
+    "legacyComposePaths": [
+      "/home/oreo/nodens/docker-compose.yml"
+    ]
+  },
+  "migration": {
+    "status": "planned",
+    "targetTrustDomain": "personal-sandbox",
+    "originalPath": "/home/oreo/nodens",
+    "compatibilitySymlink": false,
+    "rollback": "Fence the personal-sandbox target, then restart Compose project nodens from the preserved legacy source and verify HTTP 200 on port 8081.",
+    "notes": [
+      "Operator-selected destination is personal-sandbox.",
+      "Preserve the Compose project name nodens during migration.",
+      "The current wildcard host publication must not be reproduced in the sandbox."
+    ]
+  },
+  "health": {
+    "url": "http://127.0.0.1:8081",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
+  "operations": {
+    "logs": {
+      "allowed": false
+    },
+    "restart": {
+      "allowed": false
+    },
+    "backup": {
+      "allowed": false
+    },
+    "migrationPreflight": {
+      "allowed": true
+    },
+    "logsAllowed": false,
+    "restartAllowed": false,
+    "backupAllowed": false,
+    "dashboardActionsAllowed": false,
+    "approvedForCloudflareProtectedDemo": false,
+    "requiresConfirmation": true
+  },
+  "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
+    "status": "planned",
+    "source": true,
+    "env": false,
+    "namedVolumes": [],
+    "bindMounts": [],
+    "database": {
+      "type": "none",
+      "dumpCommand": "",
+      "restoreCommand": ""
+    },
+    "destination": "/srv/argus/runtime/backups/nodens",
+    "retention": {
+      "keepLast": 5
+    },
+    "restoreTested": false,
+    "lastBackupAt": "",
+    "lastRestoreTestAt": "",
+    "exclusions": [
+      "/home/oreo/nodens/.env",
+      "env values",
+      "credentials"
+    ],
+    "requirements": [
+      "Create a source-only artifact from the clean reviewed Git revision.",
+      "Verify checksums and restore the Compose source into an isolated directory.",
+      "Do not include environment files or credentials."
+    ]
+  },
+  "security": {
+    "publicAllowed": false,
+    "trackedByArgusGit": false,
+    "classification": "unclassified",
+    "publicExposureAllowed": false,
+    "forbiddenTargets": [],
+    "notes": [
+      "Admission remains denied until personal-sandbox capacity, backup, restore, health, and rollback evidence passes.",
+      "Do not add a published port or public route during migration."
+    ]
+  }
+}

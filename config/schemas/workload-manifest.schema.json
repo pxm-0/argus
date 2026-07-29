@@ -97,8 +97,25 @@
       "properties": {
         "status": {
           "enum": ["planned", "migrated", "external", "rolled-back", "skipped"]
+        },
+        "targetTrustDomain": {
+          "enum": ["personal-sandbox", "personal-managed", "work-sandbox", "work-managed"]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": ["planned", "rolled-back"]
+              }
+            }
+          },
+          "then": {
+            "required": ["targetTrustDomain"]
+          }
+        }
+      ]
     },
     "operations": {
       "type": "object",

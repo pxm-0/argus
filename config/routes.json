@@ -46,45 +46,6 @@
         "requiresAuth": true
       }
     },
-    "uptime-kuma": {
-      "tailnet": {
-        "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8446"
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
-        "requiresAuth": true
-      }
-    },
-    "review-ui": {
-      "tailnet": {
-        "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8447"
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
-        "requiresAuth": true
-      }
-    },
-    "dozzle": {
-      "tailnet": {
-        "enabled": false,
-        "mode": "local-only",
-        "url": ""
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "blocked",
-        "requiresAuth": true
-      }
-    },
     "hello-nginx": {
       "tailnet": {
         "enabled": false,
