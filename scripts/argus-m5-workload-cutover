@@ -11,6 +11,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import signal
 import stat
@@ -126,6 +127,45 @@ def output(command: list[str], timeout: float | None = None) -> bytes:
 
 def text(command: list[str], timeout: float | None = None) -> str:
     return output(command, timeout).decode().strip()
+
+
+def cron_source_resurrection_count(source: str, crontab: str) -> int:
+    source_lower = source.lower()
+    count = 0
+    for raw_line in crontab.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        normalized = f" {' '.join(line.lower().split())} "
+        compose_command = re.search(
+            r"(?:^|[\s;&|])(?:\S*/)?docker(?:-compose|\s+compose)(?:\s|$)",
+            normalized,
+        )
+        starts_runtime = any(
+            f" {action} " in normalized for action in ("up", "start", "restart")
+        )
+        if source_lower in normalized and compose_command and starts_runtime:
+            count += 1
+    return count
+
+
+def scheduled_source_resurrections(spec: dict) -> int:
+    source = Path(str(spec["source"]))
+    owner = pwd.getpwuid(source.stat().st_uid).pw_name
+    result = run(
+        ["env", "LC_ALL=C", "crontab", "-u", owner, "-l"],
+        check=False,
+        stdout=subprocess.PIPE,
+    )
+    if result.returncode == 1:
+        error = result.stderr.decode(errors="replace").lower()
+        if "no crontab for" not in error:
+            raise CutoverError("source owner crontab could not be inspected safely")
+        return 0
+    if result.returncode != 0:
+        raise CutoverError("source owner crontab could not be inspected safely")
+    crontab = result.stdout.decode(errors="replace")
+    return cron_source_resurrection_count(str(source), crontab)
 
 
 def run_interruptible(command: list[str]) -> subprocess.CompletedProcess:
@@ -1156,6 +1196,11 @@ def preflight(workload: str) -> dict:
         or compose.is_symlink()
     ):
         raise CutoverError("source Compose path is missing or unsafe")
+    resurrection_schedules = scheduled_source_resurrections(spec)
+    if resurrection_schedules:
+        raise CutoverError(
+            "legacy source has scheduled Compose resurrection; back up and disable it"
+        )
     states = source_states(spec)
     if any(state != "running" for state in states.values()):
         raise CutoverError("every source container must be running")
@@ -1198,6 +1243,7 @@ def preflight(workload: str) -> dict:
         "targetTrustDomain": spec["domain"],
         "sourceContainers": len(states),
         "sourceWriters": list(spec["writers"]),
+        "sourceResurrectionSchedules": resurrection_schedules,
         "targetContainers": 0,
         "tailnetPort": spec["tail_port"],
         "publishedPorts": False,
@@ -1556,6 +1602,10 @@ def reconcile(workload: str) -> dict:
     if os.geteuid() != 0:
         raise CutoverError("run with sudo")
     spec = SPECS[workload]
+    if scheduled_source_resurrections(spec):
+        raise CutoverError(
+            "legacy source has scheduled Compose resurrection; back up and disable it"
+        )
     wait_target_socket(spec)
     state_dir = STATE_ROOT / workload
     state_path = state_dir / "cutover.json"
