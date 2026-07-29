@@ -12,7 +12,7 @@ WorkingDirectory=/srv/argus
 Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
 Environment=ARGUS_ISSUER_PRIVATE_KEY=/etc/argus/capability-issuer/ed25519.key
 Environment=ARGUS_ISSUER_SOCKET=/run/argus/capability-issuer.sock
-Environment=ARGUS_ISSUER_PUBLIC_KEYS=/etc/argus/domains/legacy-rootful/issuer.pub:/etc/argus/domains/personal-sandbox/issuer.pub
+Environment=ARGUS_ISSUER_PUBLIC_KEYS=/etc/argus/domains/legacy-rootful/issuer.pub:/etc/argus/domains/personal-sandbox/issuer.pub:/etc/argus/domains/work-sandbox/issuer.pub
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_capability_issuer.py
 Restart=on-failure
 RestartSec=3

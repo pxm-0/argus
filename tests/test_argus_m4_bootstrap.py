@@ -7,7 +7,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_m4_bootstrap import BootstrapError, personal_sandbox_contract  # noqa: E402
+from argus_m4_bootstrap import (  # noqa: E402
+    BootstrapError,
+    personal_sandbox_contract,
+    sandbox_contract,
+)
 
 
 class M4BootstrapTest(unittest.TestCase):
@@ -24,16 +28,72 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("--acknowledge-personal-sandbox-cell", script)
         self.assertIn("policy drop", script)
         self.assertNotIn("flush ruleset", script)
-        self.assertIn("destroy table inet argus_personal_sandbox", script)
+        self.assertIn("destroy table inet $NFT_TABLE", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
-        self.assertIn("argus-personal-sandbox-firewall.service", script)
+        self.assertIn('FIREWALL_UNIT="argus-${CELL_DOMAIN}-firewall.service"', script)
         self.assertIn("WantedBy=multi-user.target", script)
         self.assertIn('nsenter -t "\\$rootless_child_pid" -n nft -f', script)
         self.assertIn("--iptables=false", script)
         self.assertIn("Delegate=yes", script)
         self.assertIn("TasksMax=infinity", script)
         self.assertIn("systemctl --user", script)
+        self.assertIn("daemon_was_active", script)
+        self.assertIn('if [[ "$daemon_was_active" != true ]]', script)
+        self.assertIn("trap rollback_on_exit EXIT", script)
+        self.assertIn("--acknowledge-sandbox-rollback", script)
+        self.assertIn(
+            'restore_subid_entry /etc/subuid "$backup_dir/etc/subuid"',
+            script,
+        )
+        self.assertIn(
+            "preserved = [line for line in current_lines if not line.startswith(prefix)]",
+            script,
+        )
+        self.assertIn(
+            "$subid_file must be a readable root-owned regular file",
+            script,
+        )
+        self.assertLess(
+            script.index("for subid_file in /etc/subuid /etc/subgid"),
+            script.index('useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"'),
+        )
+        self.assertIn("HOST_GUARD_TABLE", script)
+        self.assertIn('Before=user@$(id -u "$CELL_USER").service', script)
+        self.assertIn("meta skuid", script)
+        self.assertNotIn('systemctl disable --now "$DAEMON_UNIT"', script)
+        apply_section = script.rsplit("write_rollback_state\n", 1)[1]
+        self.assertLess(
+            apply_section.index('nft list table inet "$HOST_GUARD_TABLE"'),
+            apply_section.index('loginctl enable-linger "$CELL_USER"'),
+        )
+        self.assertIn("validate_user_subid_range", script)
+        self.assertIn("capture_inventory_digest", script)
+        self.assertLess(
+            script.index('inventory_digest_before="$(capture_inventory_digest)"'),
+            script.index('useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"'),
+        )
+        self.assertIn("sandbox workload or volume inventory changed", script)
+        self.assertIn("rollback capability issuer/domain agent first", script)
+        self.assertIn("sandbox identity must own a unique numeric UID", script)
         self.assertIn("--exec-opt native.cgroupdriver=systemd", script)
         self.assertIn("workloadsDeployed", script)
         self.assertNotIn("docker compose", script)
+
+    def test_work_sandbox_uses_an_independent_sealed_contract(self) -> None:
+        contract = sandbox_contract(
+            domain="work-sandbox",
+            user="argus-work-sandbox",
+        )
+        self.assertEqual("work-sandbox", contract["domain"])
+        self.assertIn("no-cross-domain-route", contract["prohibitions"])
+        with self.assertRaises(BootstrapError):
+            sandbox_contract(
+                domain="work-sandbox",
+                user="argus-personal-sandbox",
+            )
+
+        wrapper = (ROOT / "scripts" / "argus-m5-sandbox-bootstrap").read_text()
+        self.assertIn("personal-sandbox", wrapper)
+        self.assertIn("work-sandbox", wrapper)
+        self.assertIn("--acknowledge-sandbox-cell", wrapper)

@@ -296,6 +296,9 @@ class OperationWorkerTests(unittest.TestCase):
             script,
         )
         self.assertIn("systemd-analyze verify", script)
+        self.assertIn("missing work-sandbox runtime user", script)
+        self.assertIn("missing work-sandbox issuer public key", script)
+        self.assertIn("work-sandbox domain agent must be active", script)
         self.assertIn("publicExposureChanged=false", script)
         self.assertIn("secretsPrinted=false", script)
         self.assertNotIn("tailscale funnel", script.lower())

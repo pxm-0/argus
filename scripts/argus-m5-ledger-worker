@@ -16,8 +16,11 @@ readonly API_SERVICE="argus-control-api.service"
 readonly WORKER_SERVICE="argus-operation-worker.service"
 readonly LEGACY_AGENT_SERVICE="argus-domain-agent-legacy-rootful.service"
 readonly SANDBOX_AGENT_SERVICE="argus-domain-agent@personal-sandbox.service"
+readonly WORK_SANDBOX_AGENT_SERVICE="argus-domain-agent@work-sandbox.service"
 readonly API_USER="oreo"
 readonly WORKER_USER="argus-worker"
+readonly WORK_SANDBOX_USER="argus-work-sandbox"
+readonly WORK_SANDBOX_PUBLIC_KEY="/etc/argus/domains/work-sandbox/issuer.pub"
 readonly CONTROL_GROUP="argus-control"
 
 ROLLBACK_REQUIRED=false
@@ -29,6 +32,7 @@ PRIOR_API_ACTIVE=false
 PRIOR_WORKER_ACTIVE=false
 PRIOR_LEGACY_AGENT_ACTIVE=false
 PRIOR_SANDBOX_AGENT_ACTIVE=false
+PRIOR_WORK_SANDBOX_AGENT_ACTIVE=false
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -131,7 +135,8 @@ rollback_worker() {
   systemctl stop \
     "$API_SERVICE" \
     "$LEGACY_AGENT_SERVICE" \
-    "$SANDBOX_AGENT_SERVICE" || failed=true
+    "$SANDBOX_AGENT_SERVICE" \
+    "$WORK_SANDBOX_AGENT_SERVICE" || failed=true
   systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
 
   restore_file "$API_UNIT" "$ROLLBACK_BACKUP_DIR/argus-control-api.service" || failed=true
@@ -156,6 +161,9 @@ rollback_worker() {
   fi
   restore_service_state "$LEGACY_AGENT_SERVICE" "$PRIOR_LEGACY_AGENT_ACTIVE" || failed=true
   restore_service_state "$SANDBOX_AGENT_SERVICE" "$PRIOR_SANDBOX_AGENT_ACTIVE" || failed=true
+  restore_service_state \
+    "$WORK_SANDBOX_AGENT_SERVICE" "$PRIOR_WORK_SANDBOX_AGENT_ACTIVE" ||
+    failed=true
   restore_service_state "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
 
   if [[ "$failed" == true ]]; then
@@ -229,6 +237,12 @@ preflight() {
   [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
   getent passwd "$API_USER" >/dev/null || fail "missing API user"
   getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group"
+  getent passwd "$WORK_SANDBOX_USER" >/dev/null ||
+    fail "missing work-sandbox runtime user"
+  [[ -f "$WORK_SANDBOX_PUBLIC_KEY" ]] ||
+    fail "missing work-sandbox issuer public key"
+  systemctl is-active --quiet "$WORK_SANDBOX_AGENT_SERVICE" ||
+    fail "work-sandbox domain agent must be active"
   if [[ -e "$CONTROL_LEDGER" ]] && ! getent passwd "$WORKER_USER" >/dev/null; then
     fail "control ledger exists without the worker identity"
   fi
@@ -377,6 +391,8 @@ apply_worker() {
   service_active "$WORKER_SERVICE" && PRIOR_WORKER_ACTIVE=true
   service_active "$LEGACY_AGENT_SERVICE" && PRIOR_LEGACY_AGENT_ACTIVE=true
   service_active "$SANDBOX_AGENT_SERVICE" && PRIOR_SANDBOX_AGENT_ACTIVE=true
+  service_active "$WORK_SANDBOX_AGENT_SERVICE" &&
+    PRIOR_WORK_SANDBOX_AGENT_ACTIVE=true
   systemctl is-enabled --quiet "$WORKER_SERVICE" && PRIOR_WORKER_ENABLED=true
   ROLLBACK_BACKUP_DIR="$backup_dir"
   ROLLBACK_REQUIRED=true
@@ -384,7 +400,8 @@ apply_worker() {
 
   systemctl stop "$API_SERVICE"
   systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
-  systemctl stop "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE"
+  systemctl stop "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
+    "$WORK_SANDBOX_AGENT_SERVICE"
   inspect_ledger "$LEGACY_LEDGER"
   inspect_ledger "$CONTROL_LEDGER"
   backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
@@ -406,13 +423,15 @@ apply_worker() {
   systemctl daemon-reload
   systemctl enable "$WORKER_SERVICE"
   systemctl start "$WORKER_SERVICE"
-  systemctl restart "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE"
+  systemctl restart "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
+    "$WORK_SANDBOX_AGENT_SERVICE"
   systemctl restart "$API_SERVICE"
 
   for service in \
     "$WORKER_SERVICE" \
     "$LEGACY_AGENT_SERVICE" \
     "$SANDBOX_AGENT_SERVICE" \
+    "$WORK_SANDBOX_AGENT_SERVICE" \
     "$API_SERVICE"; do
     systemctl is-active --quiet "$service" || fail "$service is not active"
   done

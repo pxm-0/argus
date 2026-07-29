@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Select and provision one reviewed sealed M5 sandbox runtime.
+set -euo pipefail
+
+readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  sudo ./scripts/argus-m5-sandbox-bootstrap --domain personal-sandbox --plan
+  sudo ./scripts/argus-m5-sandbox-bootstrap --domain work-sandbox --apply --acknowledge-sandbox-cell
+  sudo ./scripts/argus-m5-sandbox-bootstrap --domain work-sandbox --rollback BACKUP --acknowledge-sandbox-rollback
+EOF
+}
+
+domain=""
+args=()
+while (($#)); do
+  case "$1" in
+    --domain)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      domain="$2"
+      shift
+      ;;
+    --rollback)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      args+=("$1" "$2")
+      shift
+      ;;
+    --plan|--apply|--acknowledge-sandbox-cell|--acknowledge-sandbox-rollback)
+      args+=("$1")
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+[[ "$domain" == personal-sandbox || "$domain" == work-sandbox ]] || {
+  echo "refusing sandbox bootstrap: unsupported or missing domain" >&2
+  exit 2
+}
+
+exec env ARGUS_SANDBOX_DOMAIN="$domain" \
+  "$SCRIPT_DIR/argus-m4-personal-sandbox-bootstrap" "${args[@]}"

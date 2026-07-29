@@ -23,6 +23,40 @@ def _ranges(contents: str) -> list[tuple[int, int]]:
     return parsed
 
 
+def _named_ranges(contents: str) -> list[tuple[str, int, int]]:
+    parsed: list[tuple[str, int, int]] = []
+    for line in contents.splitlines():
+        parts = line.split(":")
+        if len(parts) != 3 or not parts[0]:
+            continue
+        try:
+            start, length = int(parts[1]), int(parts[2])
+        except ValueError:
+            continue
+        if start >= 0 and length > 0:
+            parsed.append((parts[0], start, start + length - 1))
+    return parsed
+
+
+def validate_user_subid_range(*, user: str, subuid: str, subgid: str) -> tuple[int, int]:
+    """Require one matching, globally disjoint UID/GID range for ``user``."""
+    uid_entries = [entry for entry in _named_ranges(subuid) if entry[0] == user]
+    gid_entries = [entry for entry in _named_ranges(subgid) if entry[0] == user]
+    if len(uid_entries) != 1 or len(gid_entries) != 1:
+        raise BootstrapError("sandbox identity must have exactly one UID and GID range")
+    uid_range = uid_entries[0][1:]
+    gid_range = gid_entries[0][1:]
+    if uid_range != gid_range:
+        raise BootstrapError("sandbox subordinate UID/GID ranges differ")
+    start, end = uid_range
+    for owner, other_start, other_end in _named_ranges(subuid) + _named_ranges(subgid):
+        if owner == user:
+            continue
+        if start <= other_end and other_start <= end:
+            raise BootstrapError("sandbox subordinate-ID range overlaps another identity")
+    return start, end
+
+
 def first_free_subid_range(*, subuid: str, subgid: str, size: int = 65536, floor: int = 100000) -> tuple[int, int]:
     """Return the first shared, non-overlapping subordinate-ID range.
 
