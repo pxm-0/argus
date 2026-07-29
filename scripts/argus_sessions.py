@@ -16,7 +16,7 @@ SESSION_IDLE_TTL_SECONDS = 30 * 60
 SESSION_ABSOLUTE_TTL_SECONDS = 8 * 60 * 60
 STEP_UP_TTL_SECONDS = 5 * 60
 SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 3
 
 
 def _format_timestamp(value: int) -> str:
@@ -67,6 +67,7 @@ class SessionStore:
         connection = sqlite3.connect(self.path, timeout=5)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
+        connection.execute("PRAGMA foreign_keys=ON")
         return connection
 
     def _backup_before_migration(self, source: sqlite3.Connection, version: int) -> None:
@@ -92,6 +93,44 @@ class SessionStore:
             finally:
                 if os.path.exists(temporary):
                     os.unlink(temporary)
+
+    @staticmethod
+    def _validate_schema(connection: sqlite3.Connection) -> None:
+        required = {
+            "sessions": {
+                "session_hash",
+                "csrf_hash",
+                "tailnet_login",
+                "role",
+                "created_at",
+                "last_seen_at",
+                "expires_at",
+                "absolute_expires_at",
+                "step_up_at",
+                "revoked_at",
+            },
+            "operation_session_bindings": {
+                "operation_id",
+                "session_hash",
+                "created_at",
+            },
+            "operation_session_reservations": {
+                "idempotency_key",
+                "session_hash",
+                "created_at",
+            },
+        }
+        for table, expected in required.items():
+            columns = {
+                str(row["name"])
+                for row in connection.execute(f"PRAGMA table_info({table})")
+            }
+            missing = expected - columns
+            if missing:
+                raise RuntimeError(
+                    f"session database schema {SCHEMA_VERSION} is missing "
+                    f"{table} columns: {','.join(sorted(missing))}"
+                )
 
     def _initialize(self) -> None:
         with self._connect() as connection:
@@ -124,12 +163,45 @@ class SessionStore:
                           ON sessions(tailnet_login, revoked_at, expires_at)
                         """
                     )
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS operation_session_bindings (
+                            operation_id TEXT PRIMARY KEY,
+                            session_hash TEXT NOT NULL
+                              REFERENCES sessions(session_hash) ON DELETE CASCADE,
+                            created_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS operation_session_bindings_session
+                          ON operation_session_bindings(session_hash)
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS operation_session_reservations (
+                            idempotency_key TEXT PRIMARY KEY,
+                            session_hash TEXT NOT NULL
+                              REFERENCES sessions(session_hash) ON DELETE CASCADE,
+                            created_at TEXT NOT NULL
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE INDEX IF NOT EXISTS operation_session_reservations_session
+                          ON operation_session_reservations(session_hash)
+                        """
+                    )
                     connection.execute("DROP TABLE IF EXISTS operator_sessions")
                     connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
                     connection.commit()
                 except Exception:
                     connection.rollback()
                     raise
+            self._validate_schema(connection)
         os.chmod(self.path, 0o600)
 
     @staticmethod
@@ -316,6 +388,115 @@ class SessionStore:
                 ),
             )
         return cursor.rowcount == 1
+
+    def bind_operation(self, operation_id: str, session_id: str) -> bool:
+        if not operation_id or not session_id:
+            return False
+        session_hash = self._hash(session_id)
+        current = _format_timestamp(self._now())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """
+                SELECT 1 FROM sessions
+                WHERE session_hash = ? AND revoked_at IS NULL
+                  AND expires_at > ? AND absolute_expires_at > ?
+                """,
+                (session_hash, current, current),
+            ).fetchone()
+            if active is None:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO operation_session_bindings (
+                    operation_id, session_hash, created_at
+                ) VALUES (?, ?, ?)
+                """,
+                (operation_id, session_hash, _format_timestamp(self._now())),
+            )
+            bound = connection.execute(
+                """
+                SELECT 1 FROM operation_session_bindings
+                WHERE operation_id = ? AND session_hash = ?
+                """,
+                (operation_id, session_hash),
+            ).fetchone()
+            connection.commit()
+        return bound is not None
+
+    def reserve_operation(self, idempotency_key: str, session_id: str) -> bool:
+        if not idempotency_key or not session_id:
+            return False
+        session_hash = self._hash(session_id)
+        current = _format_timestamp(self._now())
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            active = connection.execute(
+                """
+                SELECT 1 FROM sessions
+                WHERE session_hash = ? AND revoked_at IS NULL
+                  AND expires_at > ? AND absolute_expires_at > ?
+                """,
+                (session_hash, current, current),
+            ).fetchone()
+            if active is None:
+                connection.rollback()
+                return False
+            connection.execute(
+                """
+                INSERT OR IGNORE INTO operation_session_reservations (
+                    idempotency_key, session_hash, created_at
+                ) VALUES (?, ?, ?)
+                """,
+                (idempotency_key, session_hash, current),
+            )
+            reserved = connection.execute(
+                """
+                SELECT 1 FROM operation_session_reservations
+                WHERE idempotency_key = ? AND session_hash = ?
+                """,
+                (idempotency_key, session_hash),
+            ).fetchone()
+            connection.commit()
+        return reserved is not None
+
+    def operation_bound_to(
+        self,
+        operation_id: str,
+        session_id: str,
+        *,
+        idempotency_key: str = "",
+    ) -> bool:
+        if not operation_id or not session_id:
+            return False
+        session_hash = self._hash(session_id)
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT session_hash FROM operation_session_bindings
+                WHERE operation_id = ?
+                """,
+                (operation_id,),
+            ).fetchone()
+            if row is not None:
+                return secrets.compare_digest(
+                    str(row["session_hash"]),
+                    session_hash,
+                )
+            if not idempotency_key:
+                return False
+            reservation = connection.execute(
+                """
+                SELECT session_hash FROM operation_session_reservations
+                WHERE idempotency_key = ?
+                """,
+                (idempotency_key,),
+            ).fetchone()
+        return reservation is not None and secrets.compare_digest(
+            str(reservation["session_hash"]),
+            session_hash,
+        )
 
     def purge(self) -> int:
         cutoff = _format_timestamp(self._now() - SESSION_RETENTION_SECONDS)

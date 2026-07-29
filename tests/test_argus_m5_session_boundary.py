@@ -207,12 +207,16 @@ class SessionBoundaryTests(unittest.TestCase):
         self.assertIn("wait_for_api_fail_closed", script)
         self.assertIn("SESSION_API_READY", script)
         self.assertIn("control API did not become ready within 10 seconds", script)
-        self.assertIn(
-            "wait_for_api_fail_closed\n  systemctl reload caddy.service",
-            script,
+        self.assertLess(
+            script.rindex("  wait_for_api_fail_closed"),
+            script.rindex("  systemctl reload caddy.service"),
         )
         self.assertIn("trap rollback_on_exit EXIT", script)
         self.assertIn("restore_session_db", script)
+        self.assertIn("validate_session_store", script)
+        self.assertIn("SESSION_SCHEMA_OK version=3", script)
+        self.assertIn("operation_session_bindings", script)
+        self.assertIn("operation_session_reservations", script)
         self.assertIn("SESSION_BOUNDARY_ROLLED_BACK", script)
         self.assertIn("publicExposureChanged=false", script)
         self.assertIn("secretsPrinted=false", script)

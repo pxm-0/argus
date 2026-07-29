@@ -13,6 +13,7 @@ readonly API_UNIT="/etc/systemd/system/argus-control-api.service"
 readonly CADDY_DROPIN_DIR="/etc/systemd/system/caddy.service.d"
 readonly CADDY_DROPIN="$CADDY_DROPIN_DIR/argus-operator-proxy.conf"
 readonly SESSION_DB="/var/lib/argus/control/session.sqlite3"
+readonly OPERATIONS_DB="/var/lib/argus/control/operations.sqlite3"
 
 ROLLBACK_REQUIRED=false
 ROLLBACK_BACKUP_DIR=""
@@ -120,6 +121,85 @@ wait_for_api_fail_closed() {
   fail "control API did not become ready within 10 seconds"
 }
 
+validate_session_store() {
+  [[ -f "$SESSION_DB" ]] || fail "session database was not initialized"
+  [[ "$(file_mode "$SESSION_DB")" == "600" ]] ||
+    fail "session database must be mode 0600"
+  [[ "$(stat -c '%U:%G' "$SESSION_DB")" == "oreo:argus-control" ]] ||
+    fail "session database has unexpected ownership"
+  python3 - "$SESSION_DB" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 3:
+        raise SystemExit("session database schema version is not 3")
+    tables = {
+        row[0]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+    }
+    if not {
+        "sessions",
+        "operation_session_bindings",
+        "operation_session_reservations",
+    }.issubset(tables):
+        raise SystemExit("session database is missing required tables")
+    binding_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(operation_session_bindings)"
+        )
+    }
+    if binding_columns != {"operation_id", "session_hash", "created_at"}:
+        raise SystemExit("operation session-binding schema is invalid")
+    reservation_columns = {
+        row[1]
+        for row in connection.execute(
+            "PRAGMA table_info(operation_session_reservations)"
+        )
+    }
+    if reservation_columns != {
+        "idempotency_key",
+        "session_hash",
+        "created_at",
+    }:
+        raise SystemExit("operation session-reservation schema is invalid")
+finally:
+    connection.close()
+print("SESSION_SCHEMA_OK version=3 operationBinding=hashed reservation=atomic")
+PY
+}
+
+validate_no_unresolved_operations() {
+  [[ -f "$OPERATIONS_DB" ]] || return
+  python3 - "$OPERATIONS_DB" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    count = connection.execute(
+        """
+        SELECT COUNT(*) FROM operations
+        WHERE state IN (
+            'planned', 'awaiting-approval', 'queued', 'running',
+            'rollback-running', 'indeterminate'
+        )
+        """
+    ).fetchone()[0]
+finally:
+    connection.close()
+if count:
+    raise SystemExit(
+        f"{count} unresolved operation(s) block session-binding activation"
+    )
+print("SESSION_OPERATION_LEDGER_OK unresolved=0")
+PY
+}
+
 preflight() {
   local funnel_status
   [[ $EUID -eq 0 ]] || fail "run with sudo"
@@ -133,6 +213,7 @@ preflight() {
   getent group argus-control >/dev/null || fail "argus-control group is missing"
   validate_private_inputs
   validate_caddy_contract
+  validate_no_unresolved_operations
   systemd-analyze verify "$ROOT/systemd/argus-control-api.service"
   validate_caddy
   funnel_status="$(tailscale funnel status 2>&1 || true)"
@@ -244,6 +325,8 @@ apply_boundary() {
   ROLLBACK_REQUIRED=true
   trap rollback_on_exit EXIT
 
+  systemctl stop argus-control-api.service
+  validate_no_unresolved_operations
   install -d -o root -g root -m 0755 "$CADDY_DROPIN_DIR"
   install -o root -g root -m 0644 "$ROOT/systemd/argus-control-api.service" "$API_UNIT"
   install -o root -g root -m 0644 \
@@ -262,6 +345,7 @@ apply_boundary() {
     grep -Fq '/var/run/docker.sock' ||
     fail "control API unit does not deny the rootful Docker socket"
   wait_for_api_fail_closed
+  validate_session_store
   systemctl reload caddy.service
   systemctl is-active --quiet caddy.service || fail "Caddy is not active"
 

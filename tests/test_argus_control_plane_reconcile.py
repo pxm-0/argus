@@ -74,7 +74,13 @@ class ControlPlaneReconcileTests(unittest.TestCase):
             other = server.Session("other", "other@example.com", "csrf", 0, int(time.time()) + 60, 0)
             handler.handle_operation_cancel(operation["operation_id"], other)
             self.assertEqual(responses[-1], (403, {"error": "operation belongs to another operator"}))
-            owner = server.Session("owner", "operator@example.com", "csrf", 0, int(time.time()) + 60, 0)
+            owner = server.SESSIONS.create("operator@example.com")
+            self.assertTrue(
+                server.SESSIONS.bind_operation(
+                    str(operation["operation_id"]),
+                    owner.session_id,
+                )
+            )
             handler.handle_operation_cancel(operation["operation_id"], owner)
             self.assertEqual(responses[-1][0], 200)
             self.assertEqual(responses[-1][1]["state"], "denied")
