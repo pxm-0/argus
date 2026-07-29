@@ -1,6 +1,8 @@
 import importlib.machinery
 import importlib.util
 from pathlib import Path
+import subprocess
+import tempfile
 import unittest
 
 
@@ -96,6 +98,47 @@ class WorkloadCutoverTests(unittest.TestCase):
             ("api", "local-proxy", "web"),
             module.SPECS["intake-os"]["writers"],
         )
+
+    def test_cron_source_resurrection_detection_is_secret_safe_and_scoped(self) -> None:
+        source = "/home/oreo/intake-os"
+        crontab = """
+        # docker compose up -d in /home/oreo/intake-os
+        */5 * * * * cd /home/oreo/intake-os && /usr/bin/docker compose -f docker-compose.server.yml up -d
+        @reboot cd /home/oreo/intake-os && docker-compose start
+        */5 * * * * cd /home/oreo/other && docker compose up -d
+        0 1 * * * cd /home/oreo/intake-os && docker compose ps
+        """
+        self.assertEqual(
+            2,
+            module.cron_source_resurrection_count(source, crontab),
+        )
+
+    def test_crontab_inspection_exit_one_fails_closed_unless_explicitly_empty(self) -> None:
+        original_run = module.run
+        with tempfile.TemporaryDirectory() as source:
+            spec = {"source": source}
+            try:
+                module.run = lambda command, **kwargs: subprocess.CompletedProcess(
+                    command,
+                    1,
+                    b"",
+                    b"permission denied",
+                )
+                with self.assertRaisesRegex(
+                    module.CutoverError,
+                    "could not be inspected safely",
+                ):
+                    module.scheduled_source_resurrections(spec)
+
+                module.run = lambda command, **kwargs: subprocess.CompletedProcess(
+                    command,
+                    1,
+                    b"",
+                    b"no crontab for operator",
+                )
+                self.assertEqual(0, module.scheduled_source_resurrections(spec))
+            finally:
+                module.run = original_run
 
     def test_runtime_socket_path_fits_linux_sun_path(self) -> None:
         for workload, workload_spec in module.SPECS.items():
