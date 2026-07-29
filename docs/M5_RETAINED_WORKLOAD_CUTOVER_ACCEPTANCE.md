@@ -36,7 +36,7 @@ Accepted: 2026-07-29
 - LociGraph: a PostgreSQL readiness race was caught before target authority; source writers were restored, readiness was tightened to the real server process, and PostgreSQL, Redis, and raw-volume parity passed.
 - Intake OS: final staging, restore, health, fencing, and reconcile checks passed without recovery.
 
-After acceptance, a legacy Intake OS cron self-heal attempted to restart the fenced source Compose project. Reconcile detected the source immediately. The source was stopped again, both periodic and `@reboot` entries were backed up under the root-only cutover evidence directory and removed, and the cutover guard was extended to refuse any source-owner crontab that can start the legacy Compose runtime.
+After acceptance, a legacy Intake OS cron self-heal attempted to restart the fenced source Compose project. Reconcile detected the source immediately. The source was stopped again, both periodic and `@reboot` entries were backed up under the root-only cutover evidence directory and removed, and the cutover guard was extended to refuse any source-owner crontab that can start the legacy Compose runtime. The new guard then found a dormant Hastur `@reboot` Compose entry; it was separately backed up and removed before reboot could resurrect that source. All five workloads subsequently passed guarded reconcile.
 
 The stopped retained source stacks are rollback assets and are not deletion candidates. The previously retired uptime, Dozzle, publication/archive, and review UI workloads and their source were removed separately at the operator's request.
 
