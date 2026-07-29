@@ -238,6 +238,14 @@ class CapabilityTests(unittest.TestCase):
         self.assertIn("runuser -u oreo -- test ! -r", script)
         self.assertIn("wait_for_capability_runtime", script)
         self.assertIn("CAPABILITY_AGENT_STATUS_OK", script)
+        self.assertIn("argus-domain-agent@work-sandbox.service", script)
+        self.assertIn(
+            'for domain in legacy-rootful personal-sandbox work-sandbox',
+            script,
+        )
+        self.assertIn("CAPABILITY_AGENT_STATUS_OK domains=3", script)
+        self.assertIn("work-sandbox-capabilities.sqlite3", script)
+        self.assertIn("restore_sqlite", script)
         self.assertIn(
             "capability runtime did not become ready within 10 seconds",
             script,

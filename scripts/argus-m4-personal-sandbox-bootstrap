@@ -1,42 +1,455 @@
 #!/usr/bin/env bash
-# Provision only the sealed M4 personal-sandbox target cell; never a workload.
+# Provision one sealed sandbox target cell; never a workload.
 set -euo pipefail
 
-readonly CELL_USER="argus-personal-sandbox"
-readonly CELL_NS="argus-personal-sandbox"
+readonly CELL_DOMAIN="${ARGUS_SANDBOX_DOMAIN:-personal-sandbox}"
+[[ "$CELL_DOMAIN" == personal-sandbox || "$CELL_DOMAIN" == work-sandbox ]] || {
+  echo "refusing apply: unsupported sandbox domain" >&2
+  exit 2
+}
+readonly CELL_USER="argus-${CELL_DOMAIN}"
+readonly CELL_NS="argus-${CELL_DOMAIN}"
 readonly CELL_HOME="/home/${CELL_USER}"
-readonly CELL_STORAGE="/var/lib/argus/personal-sandbox"
+readonly CELL_STORAGE="/var/lib/argus/${CELL_DOMAIN}"
 readonly USER_UNIT_DIR="$CELL_HOME/.config/systemd/user"
 readonly ARGUS_DIR="/etc/argus"
 readonly UNIT_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
-readonly NFT_FILE="${ARGUS_DIR}/argus-personal-sandbox.nft"
-readonly HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-netns"
-readonly FIREWALL_HELPER="/usr/local/lib/argus/argus-m4-personal-sandbox-firewall"
-readonly NS_UNIT="argus-personal-sandbox-namespace.service"
-readonly DAEMON_UNIT="argus-personal-sandbox-rootless-docker.service"
-readonly FIREWALL_UNIT="argus-personal-sandbox-firewall.service"
+readonly NFT_TABLE="argus_${CELL_DOMAIN//-/_}"
+readonly NFT_FILE="${ARGUS_DIR}/argus-${CELL_DOMAIN}.nft"
+readonly HOST_GUARD_TABLE="${NFT_TABLE}_host_guard"
+readonly HOST_GUARD_FILE="${ARGUS_DIR}/argus-${CELL_DOMAIN}-host-guard.nft"
+if [[ "$CELL_DOMAIN" == personal-sandbox ]]; then
+  readonly HELPER_PREFIX="argus-m4-personal-sandbox"
+else
+  readonly HELPER_PREFIX="argus-work-sandbox"
+fi
+readonly HELPER="/usr/local/lib/argus/${HELPER_PREFIX}-netns"
+readonly FIREWALL_HELPER="/usr/local/lib/argus/${HELPER_PREFIX}-firewall"
+readonly NS_UNIT="argus-${CELL_DOMAIN}-namespace.service"
+readonly DAEMON_UNIT="argus-${CELL_DOMAIN}-rootless-docker.service"
+readonly FIREWALL_UNIT="argus-${CELL_DOMAIN}-firewall.service"
+
+CELL_RUNTIME=""
+USER_MANAGER_DROPIN=""
+backup_dir=""
+rollback_required=false
+user_existed=false
+user_created=false
+storage_existed=false
+home_existed=false
+linger_was_enabled=false
+daemon_was_active=false
+daemon_was_enabled=false
+daemon_restarted=false
+namespace_was_active=false
+namespace_was_enabled=false
+firewall_was_active=false
+firewall_was_enabled=false
+inventory_digest_before=""
 
 user_systemctl() {
   runuser -u "$CELL_USER" -- env HOME="$CELL_HOME" XDG_RUNTIME_DIR="$CELL_RUNTIME" systemctl --user "$@"
 }
 
+backup_file() {
+  local source="$1" destination="$2"
+  install -d -m 0700 "$(dirname "$destination")"
+  if [[ -e "$source" ]]; then
+    cp --preserve=mode,ownership,timestamps "$source" "$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+restore_file() {
+  local destination="$1" backup="$2"
+  if [[ -e "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    install -D --preserve-timestamps "$backup" "$destination"
+    chown --reference="$backup" "$destination"
+    chmod --reference="$backup" "$destination"
+  fi
+}
+
+restore_subid_entry() {
+  local destination="$1" backup="$2"
+  python3 - "$destination" "$backup" "$CELL_USER" <<'PY'
+import os
+from pathlib import Path
+import stat
+import sys
+import tempfile
+
+destination = Path(sys.argv[1])
+backup = Path(sys.argv[2])
+user = sys.argv[3]
+prefix = f"{user}:"
+
+current_lines = destination.read_text().splitlines()
+backup_lines = backup.read_text().splitlines()
+replacement = [line for line in backup_lines if line.startswith(prefix)]
+preserved = [line for line in current_lines if not line.startswith(prefix)]
+
+metadata = destination.stat()
+descriptor, temporary_name = tempfile.mkstemp(
+    dir=destination.parent,
+    prefix=f".{destination.name}.argus-rollback-",
+    text=True,
+)
+try:
+    with os.fdopen(descriptor, "w") as temporary:
+        for line in [*preserved, *replacement]:
+            temporary.write(line + "\n")
+        temporary.flush()
+        os.fsync(temporary.fileno())
+    os.chmod(temporary_name, stat.S_IMODE(metadata.st_mode))
+    os.chown(temporary_name, metadata.st_uid, metadata.st_gid)
+    os.replace(temporary_name, destination)
+finally:
+    if os.path.exists(temporary_name):
+        os.unlink(temporary_name)
+PY
+}
+
+restore_enabled_state() {
+  local unit="$1" enabled="$2"
+  if [[ "$enabled" == true ]]; then
+    systemctl enable "$unit"
+  else
+    systemctl disable "$unit" 2>/dev/null || true
+  fi
+}
+
+remove_new_storage() {
+  case "$CELL_STORAGE" in
+    /var/lib/argus/personal-sandbox|/var/lib/argus/work-sandbox) ;;
+    *) echo "refusing rollback: invalid storage path" >&2; return 1 ;;
+  esac
+  rm -rf --one-file-system -- "$CELL_STORAGE"
+}
+
+capture_inventory_digest() {
+  local inventory_file digest
+  inventory_file="$(mktemp)"
+  if id "$CELL_USER" >/dev/null 2>&1; then
+    if [[ -S "$CELL_STORAGE/docker.sock" ]]; then
+      runuser -u "$CELL_USER" -- docker \
+        --host "unix://$CELL_STORAGE/docker.sock" ps -aq |
+        awk 'NF { print "container:" $0 }' >>"$inventory_file"
+      runuser -u "$CELL_USER" -- docker \
+        --host "unix://$CELL_STORAGE/docker.sock" image ls -aq |
+        awk 'NF { print "image:" $0 }' >>"$inventory_file"
+      runuser -u "$CELL_USER" -- docker \
+        --host "unix://$CELL_STORAGE/docker.sock" volume ls -q |
+        awk 'NF { print "volume:" $0 }' >>"$inventory_file"
+    elif [[ -d "$CELL_STORAGE/docker-data" ]] &&
+         find "$CELL_STORAGE/docker-data" -mindepth 1 -print -quit |
+           grep -q .; then
+      rm -f -- "$inventory_file"
+      echo "cannot inventory existing Docker state without its rootless socket" >&2
+      return 1
+    fi
+  elif [[ -e "$CELL_STORAGE" ]]; then
+    rm -f -- "$inventory_file"
+    echo "cannot inventory sandbox storage without its dedicated identity" >&2
+    return 1
+  fi
+  if [[ -d "$CELL_STORAGE" ]]; then
+    find "$CELL_STORAGE" -mindepth 1 -maxdepth 1 \
+      ! -name docker-data \
+      ! -name docker.sock \
+      ! -name rootlesskit \
+      -printf 'path:%f\n' >>"$inventory_file"
+  fi
+  digest="$(
+    sort -u "$inventory_file" |
+      sha256sum |
+      awk '{print $1}'
+  )"
+  rm -f -- "$inventory_file"
+  [[ "$digest" =~ ^[0-9a-f]{64}$ ]] || return 1
+  printf '%s\n' "$digest"
+}
+
+rollback() {
+  local failed=false inventory_unchanged=true current_inventory=""
+  set +e
+  printf 'SANDBOX_ROLLBACK_STARTED backup=%s\n' "$backup_dir" >&2
+
+  if [[ "$user_created" == true && "$storage_existed" != true ]]; then
+    current_inventory="$(capture_inventory_digest 2>/dev/null || true)"
+    if [[ "$current_inventory" != "$inventory_digest_before" ]]; then
+      printf 'ERROR refusing rollback storage removal: sandbox inventory changed\n' >&2
+      inventory_unchanged=false
+      failed=true
+    fi
+  fi
+
+  if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]] &&
+     [[ "$daemon_was_active" != true ]]; then
+    user_systemctl stop "$DAEMON_UNIT" || failed=true
+  fi
+  if [[ "$firewall_was_active" != true ]]; then
+    systemctl stop "$FIREWALL_UNIT" 2>/dev/null || true
+  fi
+  if [[ "$namespace_was_active" != true ]]; then
+    systemctl stop "$NS_UNIT" 2>/dev/null || true
+  fi
+
+  restore_subid_entry /etc/subuid "$backup_dir/etc/subuid" || failed=true
+  restore_subid_entry /etc/subgid "$backup_dir/etc/subgid" || failed=true
+  for destination in \
+    "$UNIT_DIR/$NS_UNIT" \
+    "$UNIT_DIR/$FIREWALL_UNIT" \
+    "$USER_UNIT_DIR/$DAEMON_UNIT" \
+    "$NFT_FILE" \
+    "$HOST_GUARD_FILE" \
+    "$HELPER" \
+    "$FIREWALL_HELPER"; do
+    restore_file "$destination" "$backup_dir$destination" || failed=true
+  done
+  if [[ -n "$USER_MANAGER_DROPIN" ]]; then
+    restore_file \
+      "$USER_MANAGER_DROPIN" "$backup_dir$USER_MANAGER_DROPIN" ||
+      failed=true
+  fi
+  systemctl daemon-reload || failed=true
+
+  if [[ "$user_existed" == true ]]; then
+    if [[ -S "$CELL_RUNTIME/bus" ]]; then
+      user_systemctl daemon-reload || failed=true
+      if [[ "$daemon_was_enabled" == true ]]; then
+        user_systemctl enable "$DAEMON_UNIT" || failed=true
+      else
+        user_systemctl disable "$DAEMON_UNIT" 2>/dev/null || true
+      fi
+      if [[ "$daemon_was_active" == true ]]; then
+        user_systemctl is-active --quiet "$DAEMON_UNIT" ||
+          user_systemctl start "$DAEMON_UNIT" || failed=true
+      else
+        user_systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
+      fi
+    fi
+    if [[ "$linger_was_enabled" == true ]]; then
+      loginctl enable-linger "$CELL_USER" || failed=true
+    else
+      loginctl disable-linger "$CELL_USER" || failed=true
+    fi
+    restore_enabled_state "$NS_UNIT" "$namespace_was_enabled" || failed=true
+    restore_enabled_state "$FIREWALL_UNIT" "$firewall_was_enabled" || failed=true
+    if [[ "$namespace_was_active" == true ]]; then
+      systemctl start "$NS_UNIT" || failed=true
+    fi
+    if [[ "$firewall_was_active" == true ]]; then
+      systemctl restart "$FIREWALL_UNIT" || failed=true
+    fi
+    if [[ -e "$backup_dir$HOST_GUARD_FILE.absent" ]] &&
+       [[ "$failed" != true ]]; then
+      nft list table inet "$HOST_GUARD_TABLE" >/dev/null 2>&1 &&
+        nft delete table inet "$HOST_GUARD_TABLE" || true
+    fi
+    if [[ "$storage_existed" != true ]]; then
+      remove_new_storage || failed=true
+    fi
+  elif [[ "$user_created" == true ]]; then
+    if [[ "$inventory_unchanged" == true ]]; then
+      loginctl disable-linger "$CELL_USER" 2>/dev/null || true
+      loginctl terminate-user "$CELL_USER" 2>/dev/null || true
+      if id "$CELL_USER" >/dev/null 2>&1; then
+        if [[ "$home_existed" == true ]]; then
+          userdel "$CELL_USER" || failed=true
+        else
+          userdel -r "$CELL_USER" 2>/dev/null || userdel "$CELL_USER" ||
+            failed=true
+        fi
+      fi
+      if [[ "$storage_existed" != true ]]; then
+        remove_new_storage || failed=true
+      fi
+    fi
+  fi
+
+  if [[ "$failed" == true ]]; then
+    printf 'ERROR sandbox rollback incomplete backup=%s\n' "$backup_dir" >&2
+    return 1
+  fi
+  printf 'SANDBOX_ROLLED_BACK backup=%s\n' "$backup_dir" >&2
+}
+
+rollback_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$rollback_required" == true ]] && ! rollback; then
+    status=1
+  fi
+  exit "$status"
+}
+
+write_rollback_state() {
+  python3 - \
+    "$backup_dir/bootstrap-state.json" \
+    "$CELL_DOMAIN" \
+    "$CELL_RUNTIME" \
+    "$USER_MANAGER_DROPIN" \
+    "$inventory_digest_before" \
+    "$user_existed" \
+    "$storage_existed" \
+    "$home_existed" \
+    "$linger_was_enabled" \
+    "$daemon_was_active" \
+    "$daemon_was_enabled" \
+    "$namespace_was_active" \
+    "$namespace_was_enabled" \
+    "$firewall_was_active" \
+    "$firewall_was_enabled" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+keys = (
+    "userExisted",
+    "storageExisted",
+    "homeExisted",
+    "lingerWasEnabled",
+    "daemonWasActive",
+    "daemonWasEnabled",
+    "namespaceWasActive",
+    "namespaceWasEnabled",
+    "firewallWasActive",
+    "firewallWasEnabled",
+)
+inventory_digest = sys.argv[5]
+if len(inventory_digest) != 64 or any(character not in "0123456789abcdef" for character in inventory_digest):
+    raise SystemExit("invalid rollback inventory digest")
+boolean_values = sys.argv[6:]
+if len(boolean_values) != len(keys) or any(value not in {"true", "false"} for value in boolean_values):
+    raise SystemExit("invalid rollback state")
+payload = {
+    "schemaVersion": 1,
+    "domain": sys.argv[2],
+    "cellRuntime": sys.argv[3],
+    "userManagerDropIn": sys.argv[4],
+    "inventoryDigest": inventory_digest,
+    **{key: value == "true" for key, value in zip(keys, boolean_values, strict=True)},
+}
+Path(sys.argv[1]).write_text(json.dumps(payload, sort_keys=True) + "\n")
+PY
+  chmod 0600 "$backup_dir/bootstrap-state.json"
+}
+
+load_rollback_state() {
+  local state_file="$backup_dir/bootstrap-state.json"
+  [[ -f "$state_file" ]] || {
+    echo "refusing rollback: backup state is missing" >&2
+    return 1
+  }
+  mapfile -t rollback_values < <(
+    python3 - "$state_file" "$CELL_DOMAIN" <<'PY'
+import json
+from pathlib import Path
+import re
+import sys
+
+payload = json.loads(Path(sys.argv[1]).read_text())
+keys = (
+    "userExisted",
+    "storageExisted",
+    "homeExisted",
+    "lingerWasEnabled",
+    "daemonWasActive",
+    "daemonWasEnabled",
+    "namespaceWasActive",
+    "namespaceWasEnabled",
+    "firewallWasActive",
+    "firewallWasEnabled",
+)
+if payload.get("schemaVersion") != 1 or payload.get("domain") != sys.argv[2]:
+    raise SystemExit("rollback state does not match the requested domain")
+for key in keys:
+    if not isinstance(payload.get(key), bool):
+        raise SystemExit(f"invalid rollback state field: {key}")
+runtime = payload.get("cellRuntime")
+drop_in = payload.get("userManagerDropIn")
+inventory_digest = payload.get("inventoryDigest")
+runtime_match = re.fullmatch(r"/run/user/([0-9]+)", runtime or "")
+if runtime_match is None:
+    raise SystemExit("invalid rollback runtime path")
+uid = runtime_match.group(1)
+expected_drop_in = (
+    f"/etc/systemd/system/user@{uid}.service.d/"
+    f"argus-{sys.argv[2]}.conf"
+)
+if drop_in != expected_drop_in:
+    raise SystemExit("invalid rollback drop-in path")
+if (
+    not isinstance(inventory_digest, str)
+    or re.fullmatch(r"[0-9a-f]{64}", inventory_digest) is None
+):
+    raise SystemExit("invalid rollback inventory digest")
+print(runtime)
+print(drop_in)
+print(inventory_digest)
+for key in keys:
+    print("true" if payload[key] else "false")
+PY
+  )
+  [[ "${#rollback_values[@]}" == 13 ]] || {
+    echo "refusing rollback: invalid state field count" >&2
+    return 1
+  }
+  CELL_RUNTIME="${rollback_values[0]}"
+  USER_MANAGER_DROPIN="${rollback_values[1]}"
+  inventory_digest_before="${rollback_values[2]}"
+  user_existed="${rollback_values[3]}"
+  storage_existed="${rollback_values[4]}"
+  home_existed="${rollback_values[5]}"
+  linger_was_enabled="${rollback_values[6]}"
+  daemon_was_active="${rollback_values[7]}"
+  daemon_was_enabled="${rollback_values[8]}"
+  namespace_was_active="${rollback_values[9]}"
+  namespace_was_enabled="${rollback_values[10]}"
+  firewall_was_active="${rollback_values[11]}"
+  firewall_was_enabled="${rollback_values[12]}"
+  [[ "$user_existed" == true ]] || user_created=true
+}
+
 usage() {
   cat <<'EOF'
-Usage: sudo ./scripts/argus-m4-personal-sandbox-bootstrap [--plan | --apply --acknowledge-personal-sandbox-cell]
+Usage:
+  sudo ./scripts/argus-m4-personal-sandbox-bootstrap --plan
+  sudo ./scripts/argus-m4-personal-sandbox-bootstrap --apply --acknowledge-sandbox-cell
+  sudo ./scripts/argus-m4-personal-sandbox-bootstrap --rollback BACKUP --acknowledge-sandbox-rollback
 
-Creates only an empty personal-sandbox rootless Docker cell. It never imports,
+Creates only an empty sealed rootless Docker cell. It never imports,
 mounts, copies, starts, stops, or exposes a workload.
 EOF
 }
 
 mode=plan
 ack=false
+rollback_ack=false
+rollback_path=""
 while (($#)); do
   case "$1" in
     --plan) mode=plan ;;
     --apply) mode=apply ;;
-    --acknowledge-personal-sandbox-cell) ack=true ;;
+    --rollback)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      mode=rollback
+      rollback_path="$2"
+      shift
+      ;;
+    --acknowledge-personal-sandbox-cell)
+      [[ "$CELL_DOMAIN" == personal-sandbox ]] || {
+        echo "legacy acknowledgement is personal-sandbox only" >&2
+        exit 2
+      }
+      ack=true
+      ;;
+    --acknowledge-sandbox-cell) ack=true ;;
+    --acknowledge-sandbox-rollback) rollback_ack=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
   esac
@@ -44,33 +457,137 @@ while (($#)); do
 done
 
 if [[ "$mode" == plan ]]; then
-  cat <<'EOF'
-Argus M4 personal-sandbox target-cell plan
-- create only the argus-personal-sandbox identity with a dedicated subordinate-ID range
+  cat <<EOF
+Argus sealed $CELL_DOMAIN target-cell plan
+- create only the $CELL_USER identity with a dedicated subordinate-ID range
 - install a separate rootless Docker daemon, storage root, socket, namespace, and default-deny firewall policy
 - prohibit workload mounts, Docker-socket mounts, host networking, published ports, public routes, and cross-domain routes
 - do not deploy or migrate any workload
 EOF
   exit 0
 fi
-[[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-personal-sandbox-cell" >&2; exit 2; }
+if [[ "$mode" == apply ]]; then
+  [[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-sandbox-cell" >&2; exit 2; }
+else
+  [[ "$mode" == rollback && "$rollback_ack" == true ]] || {
+    echo "refusing rollback: explicit acknowledgement is required" >&2
+    exit 2
+  }
+fi
 [[ "$(id -u)" == 0 ]] || { echo "refusing apply: run as root with sudo" >&2; exit 2; }
-for command in useradd usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp tee chmod pgrep ps readlink stat tr ss; do
+for command in useradd userdel usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp tee chmod pgrep ps readlink stat tr ss mktemp rm docker awk grep date find sort sha256sum; do
   command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
 done
-[[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
-
-backup_dir="/var/lib/argus/bootstrap-backups/personal-sandbox-$(date -u +%Y%m%dT%H%M%SZ)"
-install -d -m 0700 "$backup_dir"
-for config in /etc/subuid /etc/subgid; do [[ -f "$config" ]] && cp --preserve=mode,ownership,timestamps "$config" "$backup_dir/"; done
-for config in "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$DAEMON_UNIT" "$UNIT_DIR/$FIREWALL_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT" "$NFT_FILE" "$HELPER" "$FIREWALL_HELPER"; do
-  if [[ -f "$config" ]]; then
-    destination="$backup_dir$config"
-    install -d -m 0700 "$(dirname "$destination")"
-    cp --preserve=mode,ownership,timestamps "$config" "$destination"
+for subid_file in /etc/subuid /etc/subgid; do
+  if [[ ! -f "$subid_file" || -L "$subid_file" || ! -r "$subid_file" ]] ||
+     [[ "$(stat -c %U "$subid_file")" != root ]]; then
+    echo "refusing apply: $subid_file must be a readable root-owned regular file" >&2
+    exit 2
   fi
 done
-if ! id "$CELL_USER" >/dev/null 2>&1; then useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"; fi
+if [[ "$mode" == rollback ]]; then
+  backup_dir="$(readlink -e -- "$rollback_path" 2>/dev/null || true)"
+  case "$backup_dir" in
+    "/var/lib/argus/bootstrap-backups/${CELL_DOMAIN}-"*) ;;
+    *)
+      echo "refusing rollback: backup is outside the domain backup root" >&2
+      exit 2
+      ;;
+  esac
+  [[ "$(stat -c '%U:%G:%a' "$backup_dir")" == root:root:700 ]] || {
+    echo "refusing rollback: backup ownership or mode is unsafe" >&2
+    exit 2
+  }
+  load_rollback_state
+  if ! id "$CELL_USER" >/dev/null 2>&1 && [[ -e "$CELL_STORAGE" ]]; then
+    echo "refusing rollback: sandbox storage exists without its identity" >&2
+    exit 2
+  fi
+  if id "$CELL_USER" >/dev/null 2>&1; then
+    [[ "$CELL_RUNTIME" == "/run/user/$(id -u "$CELL_USER")" ]] || {
+      echo "refusing rollback: runtime identity does not match backup state" >&2
+      exit 2
+    }
+  fi
+  if [[ "$user_existed" != true ]] &&
+     systemctl is-active --quiet "argus-domain-agent@${CELL_DOMAIN}.service"; then
+    echo "refusing rollback: rollback capability issuer/domain agent first" >&2
+    exit 2
+  fi
+  current_inventory="$(capture_inventory_digest)"
+  if [[ "$current_inventory" != "$inventory_digest_before" ]]; then
+    echo "refusing rollback: sandbox workload or volume inventory changed" >&2
+    exit 2
+  fi
+  rollback
+  exit
+fi
+[[ -f /sys/fs/cgroup/cgroup.controllers ]] || { echo "refusing apply: cgroup v2 is required" >&2; exit 2; }
+if [[ -e "$UNIT_DIR/$DAEMON_UNIT" ]] ||
+   systemctl is-active --quiet "$DAEMON_UNIT" ||
+   systemctl is-enabled --quiet "$DAEMON_UNIT" 2>/dev/null; then
+  echo "refusing apply: legacy system-level daemon unit requires separate reconciliation" >&2
+  exit 2
+fi
+
+[[ -e "$CELL_STORAGE" ]] && storage_existed=true
+[[ -e "$CELL_HOME" ]] && home_existed=true
+systemctl is-active --quiet "$NS_UNIT" && namespace_was_active=true
+systemctl is-enabled --quiet "$NS_UNIT" && namespace_was_enabled=true
+systemctl is-active --quiet "$FIREWALL_UNIT" && firewall_was_active=true
+systemctl is-enabled --quiet "$FIREWALL_UNIT" && firewall_was_enabled=true
+if id "$CELL_USER" >/dev/null 2>&1; then
+  user_existed=true
+  CELL_RUNTIME="/run/user/$(id -u "$CELL_USER")"
+  USER_MANAGER_DROPIN="$UNIT_DIR/user@$(id -u "$CELL_USER").service.d/argus-${CELL_DOMAIN}.conf"
+  [[ "$(loginctl show-user "$CELL_USER" -p Linger --value 2>/dev/null || true)" == yes ]] &&
+    linger_was_enabled=true
+  if [[ -S "$CELL_RUNTIME/bus" ]]; then
+    user_systemctl is-active --quiet "$DAEMON_UNIT" && daemon_was_active=true
+    user_systemctl is-enabled --quiet "$DAEMON_UNIT" && daemon_was_enabled=true
+  fi
+fi
+inventory_digest_before="$(capture_inventory_digest)"
+
+install -d -m 0700 /var/lib/argus/bootstrap-backups
+backup_dir="$(mktemp -d "/var/lib/argus/bootstrap-backups/${CELL_DOMAIN}-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+chmod 0700 "$backup_dir"
+backup_file /etc/subuid "$backup_dir/etc/subuid"
+backup_file /etc/subgid "$backup_dir/etc/subgid"
+for config in \
+  "$UNIT_DIR/$NS_UNIT" \
+  "$UNIT_DIR/$FIREWALL_UNIT" \
+  "$USER_UNIT_DIR/$DAEMON_UNIT" \
+  "$NFT_FILE" \
+  "$HOST_GUARD_FILE" \
+  "$HELPER" \
+  "$FIREWALL_HELPER"; do
+  backup_file "$config" "$backup_dir$config"
+done
+if [[ -n "$USER_MANAGER_DROPIN" ]]; then
+  backup_file "$USER_MANAGER_DROPIN" "$backup_dir$USER_MANAGER_DROPIN"
+fi
+rollback_required=true
+trap rollback_on_exit EXIT
+
+if [[ "$user_existed" != true ]]; then
+  useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"
+  user_created=true
+  CELL_RUNTIME="/run/user/$(id -u "$CELL_USER")"
+  USER_MANAGER_DROPIN="$UNIT_DIR/user@$(id -u "$CELL_USER").service.d/argus-${CELL_DOMAIN}.conf"
+  backup_file "$USER_MANAGER_DROPIN" "$backup_dir$USER_MANAGER_DROPIN"
+fi
+python3 - "$CELL_USER" <<'PY'
+import pwd
+import sys
+
+user = pwd.getpwnam(sys.argv[1])
+owners = [entry.pw_name for entry in pwd.getpwall() if entry.pw_uid == user.pw_uid]
+if owners != [sys.argv[1]]:
+    raise SystemExit("sandbox identity must own a unique numeric UID")
+print("SANDBOX_UID_OK unique=true")
+PY
+write_rollback_state
 have_uid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subuid 2>/dev/null || true)"
 have_gid="$(awk -F: -v user="$CELL_USER" '$1 == user { print $2 ":" $3 }' /etc/subgid 2>/dev/null || true)"
 if [[ -z "$have_uid" && -z "$have_gid" ]]; then
@@ -85,33 +602,94 @@ PY
 elif [[ "$have_uid" != "$have_gid" ]]; then
   echo "refusing apply: subordinate UID/GID allocations differ" >&2; exit 2
 fi
+PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_USER" <<'PY'
+from pathlib import Path
+import sys
 
-install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME" "$CELL_STORAGE"
-loginctl enable-linger "$CELL_USER"
-CELL_RUNTIME="/run/user/$(id -u "$CELL_USER")"
-for _ in {1..50}; do [[ -S "$CELL_RUNTIME/bus" ]] && break; sleep 0.1; done
-[[ -S "$CELL_RUNTIME/bus" ]] || { echo "refusing apply: sandbox user manager is unavailable" >&2; exit 1; }
-install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 "$CELL_HOME/.config" "$USER_UNIT_DIR"
+from argus_m2_bootstrap import validate_user_subid_range
+
+validate_user_subid_range(
+    user=sys.argv[1],
+    subuid=Path("/etc/subuid").read_text(),
+    subgid=Path("/etc/subgid").read_text(),
+)
+print("SANDBOX_SUBID_OK distinct=true")
+PY
+
+install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 \
+  "$CELL_HOME" "$CELL_STORAGE" "$CELL_HOME/.config" "$USER_UNIT_DIR"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
-tee "$NFT_FILE" >/dev/null <<'EOF'
-destroy table inet argus_personal_sandbox
-table inet argus_personal_sandbox {
+tee "$NFT_FILE" >/dev/null <<EOF
+destroy table inet $NFT_TABLE
+table inet $NFT_TABLE {
   chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
   chain forward { type filter hook forward priority filter; policy drop; }
   chain output { type filter hook output priority filter; policy drop; oifname "lo" accept; }
 }
 EOF
-chmod 0644 "$NFT_FILE"
+tee "$HOST_GUARD_FILE" >/dev/null <<EOF
+destroy table inet $HOST_GUARD_TABLE
+table inet $HOST_GUARD_TABLE {
+  chain output {
+    type filter hook output priority -10; policy accept;
+    meta skuid $(id -u "$CELL_USER") oifname "lo" accept
+    meta skuid $(id -u "$CELL_USER") drop
+  }
+}
+EOF
+chmod 0644 "$NFT_FILE" "$HOST_GUARD_FILE"
 tee "$HELPER" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
 case "\${1:-}" in
-  ensure) ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null || ip netns add "$CELL_NS"; ip -n "$CELL_NS" link set lo up; ip netns exec "$CELL_NS" nft -f "$NFT_FILE" ;;
-  remove) ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null && ip netns del "$CELL_NS" || true ;;
+  ensure)
+    nft -f "$HOST_GUARD_FILE"
+    ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null || ip netns add "$CELL_NS"
+    ip -n "$CELL_NS" link set lo up
+    ip netns exec "$CELL_NS" nft -f "$NFT_FILE"
+    ;;
+  remove)
+    ip netns list | awk '{print \$1}' | grep -Fx "$CELL_NS" >/dev/null && ip netns del "$CELL_NS" || true
+    nft list table inet "$HOST_GUARD_TABLE" >/dev/null 2>&1 &&
+      nft delete table inet "$HOST_GUARD_TABLE" || true
+    ;;
   *) exit 2 ;;
 esac
 EOF
 chmod 0755 "$HELPER"
+tee "$UNIT_DIR/$NS_UNIT" >/dev/null <<EOF
+[Unit]
+Description=Argus sealed $CELL_DOMAIN namespace and host egress guard
+Before=user@$(id -u "$CELL_USER").service
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=$HELPER ensure
+ExecStop=$HELPER remove
+[Install]
+WantedBy=multi-user.target
+EOF
+install -d -m 0755 "$(dirname "$USER_MANAGER_DROPIN")"
+tee "$USER_MANAGER_DROPIN" >/dev/null <<EOF
+[Unit]
+Requires=$NS_UNIT
+After=$NS_UNIT
+EOF
+chmod 0644 "$UNIT_DIR/$NS_UNIT" "$USER_MANAGER_DROPIN"
+systemctl daemon-reload
+systemctl enable "$NS_UNIT"
+if [[ "$namespace_was_active" == true ]]; then
+  "$HELPER" ensure
+else
+  systemctl start "$NS_UNIT"
+fi
+systemctl is-active --quiet "$NS_UNIT"
+nft list table inet "$HOST_GUARD_TABLE" >/dev/null
+ip netns exec "$CELL_NS" nft list table inet "$NFT_TABLE" >/dev/null
+
+loginctl enable-linger "$CELL_USER"
+for _ in {1..50}; do [[ -S "$CELL_RUNTIME/bus" ]] && break; sleep 0.1; done
+[[ -S "$CELL_RUNTIME/bus" ]] || { echo "refusing apply: sandbox user manager is unavailable" >&2; exit 1; }
 tee "$FIREWALL_HELPER" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
@@ -125,7 +703,7 @@ for _ in {1..300}; do
        [[ "\$(readlink "/proc/\$rootless_child_pid/ns/net")" != "\$(readlink /proc/1/ns/net)" ]]; then
       nsenter -t "\$rootless_child_pid" -n nft -f "$NFT_FILE"
       [[ -z "\$(nsenter -t "\$rootless_child_pid" -n ss -H -ltn)" ]]
-      nsenter -t "\$rootless_child_pid" -n nft list table inet argus_personal_sandbox >/dev/null
+      nsenter -t "\$rootless_child_pid" -n nft list table inet $NFT_TABLE >/dev/null
       exit 0
     fi
   fi
@@ -135,21 +713,9 @@ echo "refusing success: verified RootlessKit child did not become ready" >&2
 exit 1
 EOF
 chmod 0755 "$FIREWALL_HELPER"
-tee "$UNIT_DIR/$NS_UNIT" >/dev/null <<EOF
-[Unit]
-Description=Argus M4 personal-sandbox isolated namespace
-Before=$DAEMON_UNIT
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=$HELPER ensure
-ExecStop=$HELPER remove
-[Install]
-WantedBy=multi-user.target
-EOF
 tee "$UNIT_DIR/$FIREWALL_UNIT" >/dev/null <<EOF
 [Unit]
-Description=Argus M4 personal-sandbox namespace firewall
+Description=Argus sealed $CELL_DOMAIN namespace firewall
 Requires=user@$(id -u "$CELL_USER").service
 After=user@$(id -u "$CELL_USER").service
 [Service]
@@ -161,7 +727,7 @@ WantedBy=multi-user.target
 EOF
 tee "$USER_UNIT_DIR/$DAEMON_UNIT" >/dev/null <<EOF
 [Unit]
-Description=Argus M4 personal-sandbox rootless Docker daemon
+Description=Argus sealed $CELL_DOMAIN rootless Docker daemon
 [Service]
 Environment=HOME=$CELL_HOME
 Environment=XDG_RUNTIME_DIR=$CELL_RUNTIME
@@ -179,19 +745,22 @@ EOF
 chown "$CELL_USER:$CELL_USER" "$USER_UNIT_DIR/$DAEMON_UNIT"
 chmod 0644 "$UNIT_DIR/$NS_UNIT" "$UNIT_DIR/$FIREWALL_UNIT" "$USER_UNIT_DIR/$DAEMON_UNIT"
 systemctl daemon-reload
-systemctl disable --now "$DAEMON_UNIT" 2>/dev/null || true
-rm -f "$UNIT_DIR/$DAEMON_UNIT"
-systemctl daemon-reload
 user_systemctl daemon-reload
 user_systemctl enable "$DAEMON_UNIT"
-user_systemctl stop "$DAEMON_UNIT" 2>/dev/null || true
-systemctl restart "$NS_UNIT"
-user_systemctl start "$DAEMON_UNIT"
+if [[ "$daemon_was_active" != true ]]; then
+  user_systemctl start "$DAEMON_UNIT"
+  daemon_restarted=true
+fi
 systemctl is-active --quiet "$NS_UNIT"
 user_systemctl is-active --quiet "$DAEMON_UNIT"
 systemctl enable "$FIREWALL_UNIT"
 systemctl restart "$FIREWALL_UNIT"
 systemctl is-active --quiet "$FIREWALL_UNIT"
 [[ -z "$(ip netns exec "$CELL_NS" ss -H -ltn)" ]] || { echo "refusing success: target namespace has a TCP listener" >&2; exit 1; }
-ip netns exec "$CELL_NS" nft list table inet argus_personal_sandbox >/dev/null
-echo '{"schemaVersion":1,"applied":true,"domain":"personal-sandbox","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}'
+ip netns exec "$CELL_NS" nft list table inet "$NFT_TABLE" >/dev/null
+nft list table inet "$HOST_GUARD_TABLE" >/dev/null
+rollback_required=false
+trap - EXIT
+printf 'SANDBOX_BOOTSTRAP_APPLIED backup=%s daemonRestarted=%s\n' \
+  "$backup_dir" "$daemon_restarted"
+printf '{"schemaVersion":1,"applied":true,"domain":"%s","publishedPorts":false,"publicRoute":false,"workloadsDeployed":false,"configBackup":true}\n' "$CELL_DOMAIN"

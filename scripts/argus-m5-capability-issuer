@@ -14,6 +14,7 @@ readonly WORKER_SERVICE="argus-operation-worker.service"
 readonly API_SERVICE="argus-control-api.service"
 readonly LEGACY_SERVICE="argus-domain-agent-legacy-rootful.service"
 readonly SANDBOX_SERVICE="argus-domain-agent@personal-sandbox.service"
+readonly WORK_SANDBOX_SERVICE="argus-domain-agent@work-sandbox.service"
 readonly ISSUER_UNIT="/etc/systemd/system/$ISSUER_SERVICE"
 readonly WORKER_UNIT="/etc/systemd/system/$WORKER_SERVICE"
 readonly LEGACY_UNIT="/etc/systemd/system/$LEGACY_SERVICE"
@@ -26,6 +27,8 @@ readonly M1_RUNTIME="$ROOT/runtime/argus/m1"
 readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
 readonly DASHBOARD_PUBLIC="$ROOT/control-plane/dashboard/public"
 readonly SANDBOX_USER="argus-personal-sandbox"
+readonly WORK_SANDBOX_USER="argus-work-sandbox"
+readonly WORK_SANDBOX_REPLAY_DB="/var/lib/argus/work-sandbox/capabilities.sqlite3"
 
 ROLLBACK_REQUIRED=false
 ROLLBACK_DIR=""
@@ -35,6 +38,8 @@ PRIOR_WORKER_ACTIVE=false
 PRIOR_API_ACTIVE=false
 PRIOR_LEGACY_ACTIVE=false
 PRIOR_SANDBOX_ACTIVE=false
+PRIOR_WORK_SANDBOX_ACTIVE=false
+PRIOR_WORK_SANDBOX_ENABLED=false
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -51,6 +56,39 @@ backup_file() {
     cp --preserve=mode,ownership,timestamps "$source" "$destination"
   else
     : >"$destination.absent"
+  fi
+}
+
+backup_sqlite() {
+  local source="$1" destination="$2"
+  if [[ ! -e "$source" ]]; then
+    : >"$destination.absent"
+    return
+  fi
+  python3 - "$source" "$destination" <<'PY'
+import os
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+os.chmod(sys.argv[2], 0o600)
+PY
+}
+
+restore_sqlite() {
+  local destination="$1" backup="$2"
+  rm -f -- "$destination-wal" "$destination-shm"
+  if [[ -e "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    install -o "$WORK_SANDBOX_USER" -g "$CONTROL_GROUP" -m 0600 \
+      "$backup" "$destination"
   fi
 }
 
@@ -124,6 +162,7 @@ rollback() {
   local failed=false
   set +e
   systemctl stop "$API_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+    "$WORK_SANDBOX_SERVICE" \
     "$ISSUER_SERVICE" ||
     failed=true
   systemctl stop "$WORKER_SERVICE" || failed=true
@@ -132,7 +171,10 @@ rollback() {
   restore_file "$LEGACY_UNIT" "$ROLLBACK_DIR/legacy.service" || failed=true
   restore_file "$DOMAIN_UNIT" "$ROLLBACK_DIR/domain.service" || failed=true
   restore_file "$PRIVATE_KEY" "$ROLLBACK_DIR/ed25519.key" || failed=true
-  for domain in legacy-rootful personal-sandbox; do
+  restore_sqlite \
+    "$WORK_SANDBOX_REPLAY_DB" "$ROLLBACK_DIR/work-sandbox-capabilities.sqlite3" ||
+    failed=true
+  for domain in legacy-rootful personal-sandbox work-sandbox; do
     restore_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$ROLLBACK_DIR/$domain-issuer.pub" || failed=true
@@ -162,6 +204,13 @@ rollback() {
   restore_service "$ISSUER_SERVICE" "$PRIOR_ISSUER_ACTIVE" || failed=true
   restore_service "$LEGACY_SERVICE" "$PRIOR_LEGACY_ACTIVE" || failed=true
   restore_service "$SANDBOX_SERVICE" "$PRIOR_SANDBOX_ACTIVE" || failed=true
+  restore_service "$WORK_SANDBOX_SERVICE" "$PRIOR_WORK_SANDBOX_ACTIVE" ||
+    failed=true
+  if [[ "$PRIOR_WORK_SANDBOX_ENABLED" == true ]]; then
+    systemctl enable "$WORK_SANDBOX_SERVICE" || failed=true
+  else
+    systemctl disable "$WORK_SANDBOX_SERVICE" 2>/dev/null || true
+  fi
   restore_service "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
   if [[ "$failed" == true ]]; then
     printf 'ERROR capability issuer rollback incomplete backup=%s\n' \
@@ -215,6 +264,8 @@ preflight() {
   getent passwd "$API_USER" >/dev/null || fail "control API user is missing"
   getent passwd "$SANDBOX_USER" >/dev/null ||
     fail "personal-sandbox runtime user is missing"
+  getent passwd "$WORK_SANDBOX_USER" >/dev/null ||
+    fail "work-sandbox runtime user is missing"
   systemctl is-active --quiet "$WORKER_SERVICE" ||
     fail "durable operation worker must be active first"
   systemctl is-active --quiet "$API_SERVICE" ||
@@ -223,6 +274,10 @@ preflight() {
     fail "legacy domain agent must be active first"
   systemctl is-active --quiet "$SANDBOX_SERVICE" ||
     fail "personal-sandbox domain agent must be active first"
+  if [[ -f "$DOMAIN_KEYS/work-sandbox/issuer.pub" ]]; then
+    systemctl is-active --quiet "$WORK_SANDBOX_SERVICE" ||
+      fail "work-sandbox domain agent must be active after initial activation"
+  fi
   for source in \
     "$ROOT/scripts/argus_capabilities.py" \
     "$ROOT/scripts/argus_capability_issuer.py" \
@@ -271,7 +326,7 @@ ensure_issuer_user() {
 install_key_material() {
   local temporary
   install -d -o "$ISSUER_USER" -g root -m 0700 "$PRIVATE_DIR"
-  for domain in legacy-rootful personal-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox; do
     install -d -o root -g root -m 0755 "$DOMAIN_KEYS/$domain"
   done
   if [[ ! -f "$PRIVATE_KEY" ]]; then
@@ -285,7 +340,7 @@ install_key_material() {
   chmod 0600 "$PRIVATE_KEY"
   temporary="$(mktemp "$PRIVATE_DIR/.issuer-pub.XXXXXX")"
   openssl pkey -in "$PRIVATE_KEY" -pubout -out "$temporary"
-  for domain in legacy-rootful personal-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox; do
     install -o root -g root -m 0444 \
       "$temporary" "$DOMAIN_KEYS/$domain/issuer.pub"
   done
@@ -296,7 +351,7 @@ validate_capability_runtime() {
   [[ "$(stat -c '%U:%G:%a' /run/argus/capability-issuer.sock)" == \
     "$ISSUER_USER:$CONTROL_GROUP:660" ]] ||
     return 1
-  for domain in legacy-rootful personal-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox; do
     local expected_owner
     if [[ "$domain" == legacy-rootful ]]; then
       expected_owner="oreo"
@@ -313,13 +368,16 @@ validate_capability_runtime() {
   [[ "$(stat -c '%U:%G:%a' /var/lib/argus/personal-sandbox/capabilities.sqlite3)" == \
     "argus-personal-sandbox:$CONTROL_GROUP:600" ]] ||
     return 1
+  [[ "$(stat -c '%U:%G:%a' /var/lib/argus/work-sandbox/capabilities.sqlite3)" == \
+    "argus-work-sandbox:$CONTROL_GROUP:600" ]] ||
+    return 1
   python3 - "$ROOT" <<'PY'
 import sys
 
 sys.path.insert(0, f"{sys.argv[1]}/scripts")
 from argus_ipc import request
 
-for domain in ("legacy-rootful", "personal-sandbox"):
+for domain in ("legacy-rootful", "personal-sandbox", "work-sandbox"):
     result = request(
         f"/run/argus/domains/{domain}/agent.sock",
         {"method": "agent.status"},
@@ -331,7 +389,7 @@ for domain in ("legacy-rootful", "personal-sandbox"):
     }
     if result != expected:
         raise SystemExit(f"{domain} typed status failed")
-print("CAPABILITY_AGENT_STATUS_OK domains=2")
+print("CAPABILITY_AGENT_STATUS_OK domains=3")
 PY
 }
 
@@ -342,7 +400,8 @@ wait_for_capability_runtime() {
       printf '%s attempts=%s\n' "$result" "$attempt"
       return
     fi
-    for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE"; do
+    for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+      "$WORK_SANDBOX_SERVICE"; do
       systemctl is-active --quiet "$service" ||
         fail "$service stopped while waiting for capability runtime readiness"
     done
@@ -375,22 +434,23 @@ validate_shared_writer_runtime() {
     [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC/$path")" == \
       "$API_USER:$CONTROL_GROUP:664" ]] || return 1
   done
-  runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
-    test -w "$ROOT/config" || return 1
-  for path in \
-    "$ACCESS_CONFIG" \
-    "$M1_RUNTIME" \
-    "$M1_RUNTIME/state.sqlite3" \
-    "$M1_RUNTIME/access-journal.jsonl" \
-    "$AUDIT_DATABASE" \
-    "$DASHBOARD_PUBLIC/app.js" \
-    "$DASHBOARD_PUBLIC/index.html" \
-    "$DASHBOARD_PUBLIC/style.css"; do
-    runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
-      test -w "$path" || return 1
+  for agent_user in "$SANDBOX_USER" "$WORK_SANDBOX_USER"; do
+    runuser -u "$agent_user" -g "$CONTROL_GROUP" -- \
+      test -w "$ROOT/config" || return 1
+    for path in \
+      "$ACCESS_CONFIG" \
+      "$M1_RUNTIME" \
+      "$M1_RUNTIME/state.sqlite3" \
+      "$M1_RUNTIME/access-journal.jsonl" \
+      "$AUDIT_DATABASE" \
+      "$DASHBOARD_PUBLIC/app.js" \
+      "$DASHBOARD_PUBLIC/index.html" \
+      "$DASHBOARD_PUBLIC/style.css"; do
+      runuser -u "$agent_user" -g "$CONTROL_GROUP" -- \
+        test -w "$path" || return 1
+    done
   done
-  printf 'M5_SHARED_WRITER_OK agent=%s accessMode=0664 runtimeMode=0660 dashboardMode=0664\n' \
-    "$SANDBOX_USER"
+  printf 'M5_SHARED_WRITER_OK agents=2 accessMode=0664 runtimeMode=0660 dashboardMode=0664\n'
 }
 
 apply_issuer() {
@@ -403,7 +463,9 @@ apply_issuer() {
   backup_file "$LEGACY_UNIT" "$backup_dir/legacy.service"
   backup_file "$DOMAIN_UNIT" "$backup_dir/domain.service"
   backup_file "$PRIVATE_KEY" "$backup_dir/ed25519.key"
-  for domain in legacy-rootful personal-sandbox; do
+  backup_sqlite \
+    "$WORK_SANDBOX_REPLAY_DB" "$backup_dir/work-sandbox-capabilities.sqlite3"
+  for domain in legacy-rootful personal-sandbox work-sandbox; do
     backup_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$backup_dir/$domain-issuer.pub"
@@ -427,6 +489,9 @@ apply_issuer() {
   service_active "$API_SERVICE" && PRIOR_API_ACTIVE=true
   service_active "$LEGACY_SERVICE" && PRIOR_LEGACY_ACTIVE=true
   service_active "$SANDBOX_SERVICE" && PRIOR_SANDBOX_ACTIVE=true
+  service_active "$WORK_SANDBOX_SERVICE" && PRIOR_WORK_SANDBOX_ACTIVE=true
+  systemctl is-enabled --quiet "$WORK_SANDBOX_SERVICE" &&
+    PRIOR_WORK_SANDBOX_ENABLED=true
   systemctl is-enabled --quiet "$ISSUER_SERVICE" &&
     PRIOR_ISSUER_ENABLED=true
   ROLLBACK_DIR="$backup_dir"
@@ -435,7 +500,8 @@ apply_issuer() {
 
   systemctl stop "$API_SERVICE"
   systemctl stop "$WORKER_SERVICE"
-  systemctl stop "$LEGACY_SERVICE" "$SANDBOX_SERVICE"
+  systemctl stop "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+    "$WORK_SANDBOX_SERVICE" 2>/dev/null || true
   systemctl stop "$ISSUER_SERVICE" 2>/dev/null || true
   verify_no_unresolved_operations
   "$ROOT/scripts/argus-m5-runtime-permissions"
@@ -451,13 +517,15 @@ apply_issuer() {
     "$ROOT/systemd/argus-domain-agent@.service" "$DOMAIN_UNIT"
   systemctl daemon-reload
   systemctl enable "$ISSUER_SERVICE"
+  systemctl enable "$WORK_SANDBOX_SERVICE"
   systemctl restart "$WORKER_SERVICE"
   systemctl start "$ISSUER_SERVICE"
-  systemctl restart "$LEGACY_SERVICE" "$SANDBOX_SERVICE"
+  systemctl restart "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+    "$WORK_SANDBOX_SERVICE"
   systemctl restart "$API_SERVICE"
 
   for service in "$WORKER_SERVICE" "$ISSUER_SERVICE" "$LEGACY_SERVICE" \
-    "$SANDBOX_SERVICE" "$API_SERVICE"; do
+    "$SANDBOX_SERVICE" "$WORK_SANDBOX_SERVICE" "$API_SERVICE"; do
     systemctl is-active --quiet "$service" || fail "$service is not active"
   done
   [[ "$(stat -c '%U:%G:%a' "$PRIVATE_KEY")" == "$ISSUER_USER:root:600" ]] ||
@@ -473,7 +541,7 @@ apply_issuer() {
 
   ROLLBACK_REQUIRED=false
   trap - EXIT
-  printf 'CAPABILITY_ISSUER_APPLIED backup=%s issuerActive=true domains=2\n' \
+  printf 'CAPABILITY_ISSUER_APPLIED backup=%s issuerActive=true domains=3\n' \
     "$backup_dir"
   printf 'privateKeysInManagement=false publicExposureChanged=false secretsPrinted=false\n'
 }

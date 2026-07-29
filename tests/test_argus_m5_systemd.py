@@ -32,6 +32,7 @@ class PhaseOneSystemdTests(unittest.TestCase):
         self.assertIn("ReadOnlyPaths=/var/lib/argus/control", unit)
         self.assertIn("InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock", unit)
         self.assertNotIn("DOCKER_HOST", unit)
+        self.assertIn("/etc/argus/domains/work-sandbox/issuer.pub", unit)
 
 
 if __name__ == "__main__":

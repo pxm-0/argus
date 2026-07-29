@@ -4,7 +4,12 @@ from pathlib import Path
 import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
-from argus_m2_bootstrap import BootstrapError, first_free_subid_range, pilot_contract  # noqa: E402
+from argus_m2_bootstrap import (  # noqa: E402
+    BootstrapError,
+    first_free_subid_range,
+    pilot_contract,
+    validate_user_subid_range,
+)
 class M2BootstrapTest(unittest.TestCase):
     def test_contract_is_fixed_and_has_no_exposure_path(self) -> None:
         contract = pilot_contract(domain="personal-sandbox-pilot", user="argus-pilot")
@@ -19,6 +24,30 @@ class M2BootstrapTest(unittest.TestCase):
             subgid="argus:165536:65536\n",
         )
         self.assertEqual((296608, 362143), (start, end))
+
+    def test_existing_sandbox_range_must_be_unique_matching_and_disjoint(self) -> None:
+        subuid = "personal:100000:65536\nwork:165536:65536\n"
+        subgid = "personal:100000:65536\nwork:165536:65536\n"
+        self.assertEqual(
+            (165536, 231071),
+            validate_user_subid_range(
+                user="work",
+                subuid=subuid,
+                subgid=subgid,
+            ),
+        )
+        with self.assertRaisesRegex(BootstrapError, "overlaps"):
+            validate_user_subid_range(
+                user="work",
+                subuid="personal:100000:65536\nwork:150000:65536\n",
+                subgid="personal:100000:65536\nwork:150000:65536\n",
+            )
+        with self.assertRaisesRegex(BootstrapError, "exactly one"):
+            validate_user_subid_range(
+                user="work",
+                subuid="work:165536:65536\nwork:231072:65536\n",
+                subgid="work:165536:65536\n",
+            )
 
     def test_bootstrap_is_explicit_and_sealed(self) -> None:
         script = (ROOT / "scripts" / "argus-m2-bootstrap").read_text(encoding="utf-8")

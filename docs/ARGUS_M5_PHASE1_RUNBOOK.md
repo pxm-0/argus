@@ -66,15 +66,16 @@ active domains are:
 ```text
 legacy-rootful
 personal-sandbox
+work-sandbox
 ```
 
 The reviewed activation creates the private key without printing it and
 installs only `issuer.pub` below `/etc/argus/domains/<domain>/`. Issuance stops
 if any distributed public key does not match the active private key.
 
-The non-legacy service template maps `personal-sandbox` to the existing
-`argus-personal-sandbox` Unix identity. The legacy compatibility unit runs as
-the existing `oreo` operator identity while retaining the same typed contract.
+The non-legacy service template maps each sandbox to its dedicated
+`argus-<domain>` Unix identity. The legacy compatibility unit runs as the
+existing `oreo` operator identity while retaining the same typed contract.
 Non-legacy agents derive their rootless engine socket from the reviewed domain
 contract (`/var/lib/argus/<domain>/docker.sock`) and explicitly make the host
 rootful Docker sockets inaccessible.
