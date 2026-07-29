@@ -199,17 +199,24 @@ Token file:
 Permissions:
 
 ```text
-root:argus
-0640
+root:root
+0600
 ```
 
-Requests use:
+systemd loads the file as a service credential, so the source remains
+root-only.
+
+Normal requests use:
 
 ```text
-Authorization: Bearer <token>
+verified trusted-proxy identity
+Argus session cookie
+CSRF double-submit for POST
 ```
 
-The API must never log the token.
+The existing credential is accepted only in the JSON body for session exchange
+and step-up reauthentication. The API compares it in constant time and must
+never log it.
 
 ## Audit Events
 

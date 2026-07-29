@@ -4,6 +4,7 @@ set -euo pipefail
 
 readonly ROOT="${ARGUS_ROOT:-/srv/argus}"
 readonly RUNTIME="$ROOT/runtime/argus/m5"
+readonly CONTROL_STATE="/var/lib/argus/control"
 readonly API_USER="oreo"
 readonly CONTROL_GROUP="argus-control"
 
@@ -15,9 +16,10 @@ getent group "$CONTROL_GROUP" >/dev/null || fail "missing control group: $CONTRO
 
 install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" \
   "$ROOT/runtime/argus" "$RUNTIME" "$RUNTIME/agents"
+install -d -m 0700 -o "$API_USER" -g "$CONTROL_GROUP" "$CONTROL_STATE"
 
 reconciled=0
-for database in operations.sqlite3 sessions.sqlite3; do
+for database in operations.sqlite3; do
   for suffix in "" -wal -shm; do
     path="$RUNTIME/$database$suffix"
     [[ -e "$path" ]] || continue
@@ -27,5 +29,13 @@ for database in operations.sqlite3 sessions.sqlite3; do
   done
 done
 
-printf 'M5_RUNTIME_PERMISSIONS_OK files=%d owner=%s group=%s mode=0660\n' \
+for suffix in "" -wal -shm; do
+  path="$CONTROL_STATE/session.sqlite3$suffix"
+  [[ -e "$path" ]] || continue
+  chown "$API_USER:$CONTROL_GROUP" "$path"
+  chmod 0600 "$path"
+  reconciled=$((reconciled + 1))
+done
+
+printf 'M5_RUNTIME_PERMISSIONS_OK files=%d owner=%s group=%s operationMode=0660 sessionMode=0600\n' \
   "$reconciled" "$API_USER" "$CONTROL_GROUP"

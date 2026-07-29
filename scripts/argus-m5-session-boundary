@@ -1,0 +1,287 @@
+#!/usr/bin/env bash
+# Install only the reviewed M5 Phase 1 session and trusted-proxy boundary.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly ACK="--acknowledge-m5-session-boundary"
+readonly BACKUP_ROOT="/var/backups/argus-m5-phase1/session-boundary"
+readonly OPERATORS="/etc/argus/operators.json"
+readonly PROXY_TOKEN="/etc/argus/operator-proxy-token"
+readonly BOOTSTRAP_TOKEN="/etc/argus/control-token"
+readonly CADDYFILE="/etc/caddy/Caddyfile"
+readonly API_UNIT="/etc/systemd/system/argus-control-api.service"
+readonly CADDY_DROPIN_DIR="/etc/systemd/system/caddy.service.d"
+readonly CADDY_DROPIN="$CADDY_DROPIN_DIR/argus-operator-proxy.conf"
+readonly SESSION_DB="/var/lib/argus/control/session.sqlite3"
+
+ROLLBACK_REQUIRED=false
+ROLLBACK_BACKUP_DIR=""
+PRIOR_API_ACTIVE=false
+PRIOR_CADDY_ACTIVE=false
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  sudo ./scripts/argus-m5-session-boundary --preflight" \
+    "  sudo ./scripts/argus-m5-session-boundary --apply $ACK"
+}
+
+file_mode() {
+  stat -c '%a' "$1"
+}
+
+validate_private_inputs() {
+  [[ -f "$OPERATORS" ]] || fail "missing server-local operator allowlist"
+  [[ -f "$PROXY_TOKEN" ]] || fail "missing server-local proxy marker"
+  [[ -f "$BOOTSTRAP_TOKEN" ]] || fail "missing server-local bootstrap credential"
+  [[ "$(file_mode "$OPERATORS")" == "600" ]] || fail "operator allowlist must be mode 0600"
+  [[ "$(stat -c '%U:%G' "$OPERATORS")" == "root:root" ]] ||
+    fail "operator allowlist must be root-owned"
+  [[ "$(file_mode "$PROXY_TOKEN")" == "600" ]] || fail "proxy marker must be mode 0600"
+  [[ "$(stat -c '%U:%G' "$PROXY_TOKEN")" == "root:root" ]] ||
+    fail "proxy marker must be root-owned"
+  [[ "$(file_mode "$BOOTSTRAP_TOKEN")" == "600" ]] ||
+    fail "bootstrap credential must be mode 0600"
+  [[ "$(stat -c '%U:%G' "$BOOTSTRAP_TOKEN")" == "root:root" ]] ||
+    fail "bootstrap credential must be root-owned"
+
+  python3 - "$OPERATORS" "$PROXY_TOKEN" "$BOOTSTRAP_TOKEN" <<'PY'
+import json
+import re
+import sys
+from pathlib import Path
+
+operators = json.loads(Path(sys.argv[1]).read_text())
+if set(operators) != {"schemaVersion", "operators"} or operators["schemaVersion"] != 1:
+    raise SystemExit("operator allowlist schema is invalid")
+enabled = []
+for item in operators["operators"]:
+    if not isinstance(item, dict) or set(item) != {"tailnetLogin", "role", "enabled"}:
+        raise SystemExit("operator record schema is invalid")
+    login = str(item["tailnetLogin"]).strip().lower()
+    if item["enabled"] is True:
+        if item["role"] != "owner" or not login or login.endswith(".invalid"):
+            raise SystemExit("enabled operator must be a real owner login")
+        enabled.append(login)
+if len(enabled) != 1:
+    raise SystemExit("exactly one enabled owner is required for Phase 1")
+
+marker = Path(sys.argv[2]).read_text().strip()
+prefix = "ARGUS_OPERATOR_PROXY_TOKEN="
+if not marker.startswith(prefix) or not re.fullmatch(r"[A-Za-z0-9_-]{43,256}", marker.removeprefix(prefix)):
+    raise SystemExit("proxy marker file must contain one strong environment assignment")
+bootstrap = Path(sys.argv[3]).read_text().strip()
+if len(bootstrap) < 32:
+    raise SystemExit("bootstrap credential is too short")
+PY
+}
+
+validate_caddy_contract() {
+  [[ -f "$CADDYFILE" ]] || fail "Caddyfile is missing"
+  python3 - "$CADDYFILE" "$ROOT/caddy/dashboard.Caddyfile" <<'PY'
+import sys
+from pathlib import Path
+
+installed = Path(sys.argv[1]).read_text()
+reviewed = Path(sys.argv[2]).read_text().strip()
+if reviewed not in installed:
+    raise SystemExit("installed Caddyfile does not contain the exact reviewed Argus route")
+PY
+}
+
+validate_caddy() {
+  local marker
+  marker="$(sed -n 's/^ARGUS_OPERATOR_PROXY_TOKEN=//p' "$PROXY_TOKEN")"
+  [[ -n "$marker" ]] || fail "proxy marker assignment is empty"
+  ARGUS_OPERATOR_PROXY_TOKEN="$marker" caddy validate --config "$CADDYFILE"
+}
+
+wait_for_api_fail_closed() {
+  local attempt status
+  for attempt in {1..40}; do
+    status="$(
+      curl --silent --connect-timeout 1 --max-time 2 \
+        --output /dev/null --write-out '%{http_code}' \
+        http://127.0.0.1:8099/api/session ||
+        true
+    )"
+    if [[ "$status" == "401" ]]; then
+      printf 'SESSION_API_READY attempts=%s directStatus=401\n' "$attempt"
+      return
+    fi
+    [[ "$status" == "000" ]] ||
+      fail "direct loopback request returned unexpected status $status"
+    systemctl is-active --quiet argus-control-api.service ||
+      fail "control API stopped while waiting for readiness"
+    sleep 0.25
+  done
+  fail "control API did not become ready within 10 seconds"
+}
+
+preflight() {
+  local funnel_status
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  for command in caddy chmod cp curl getent git grep install python3 rm sed sleep stat systemctl systemd-analyze tailscale; do
+    command -v "$command" >/dev/null || fail "missing required command: $command"
+  done
+  [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
+  [[ -f "$ROOT/systemd/argus-control-api.service" ]] || fail "reviewed API unit is missing"
+  [[ -f "$ROOT/systemd/caddy.service.d/argus-operator-proxy.conf" ]] ||
+    fail "reviewed Caddy drop-in is missing"
+  getent group argus-control >/dev/null || fail "argus-control group is missing"
+  validate_private_inputs
+  validate_caddy_contract
+  systemd-analyze verify "$ROOT/systemd/argus-control-api.service"
+  validate_caddy
+  funnel_status="$(tailscale funnel status 2>&1 || true)"
+  printf '%s\n' "$funnel_status" |
+    python3 "$ROOT/scripts/argus_tailscale.py" --validate-funnel-disabled ||
+    fail "Tailscale Funnel state is not safely disabled"
+  printf 'SESSION_BOUNDARY_PREFLIGHT commit=%s caddyValid=true funnelDisabled=true\n' \
+    "$(git -C "$ROOT" rev-parse --short HEAD)"
+  printf 'publicExposureChanged=false routesChanged=false workloadsChanged=false secretsPrinted=false\n'
+}
+
+backup_if_present() {
+  local source="$1" destination="$2"
+  if [[ -e "$source" ]]; then
+    cp --preserve=mode,ownership,timestamps "$source" "$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+backup_sqlite_if_present() {
+  local source="$1" destination="$2"
+  if [[ ! -e "$source" ]]; then
+    : >"$destination.absent"
+    return
+  fi
+  python3 - "$source" "$destination" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(sys.argv[2])
+try:
+    source.backup(destination)
+finally:
+    destination.close()
+    source.close()
+PY
+  chmod 0600 "$destination"
+}
+
+restore_file() {
+  local destination="$1" backup="$2"
+  if [[ -f "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    cp --preserve=mode,ownership,timestamps "$backup" "$destination"
+  fi
+}
+
+restore_session_db() {
+  local backup="$1"
+  rm -f -- "$SESSION_DB-wal" "$SESSION_DB-shm"
+  if [[ -f "$backup.absent" ]]; then
+    rm -f -- "$SESSION_DB"
+  else
+    install -o oreo -g argus-control -m 0600 "$backup" "$SESSION_DB"
+  fi
+}
+
+rollback_boundary() {
+  local failed=false
+  set +e
+  printf 'SESSION_BOUNDARY_ROLLBACK_STARTED backup=%s\n' "$ROLLBACK_BACKUP_DIR" >&2
+  systemctl stop argus-control-api.service || failed=true
+  restore_file "$API_UNIT" "$ROLLBACK_BACKUP_DIR/argus-control-api.service" || failed=true
+  restore_file "$CADDY_DROPIN" "$ROLLBACK_BACKUP_DIR/argus-operator-proxy.conf" || failed=true
+  restore_session_db "$ROLLBACK_BACKUP_DIR/session.sqlite3" || failed=true
+  systemctl daemon-reload || failed=true
+  if [[ "$PRIOR_API_ACTIVE" == true ]]; then
+    systemctl restart argus-control-api.service || failed=true
+  else
+    systemctl stop argus-control-api.service || failed=true
+  fi
+  if [[ "$PRIOR_CADDY_ACTIVE" == true ]]; then
+    systemctl restart caddy.service || failed=true
+  else
+    systemctl stop caddy.service || failed=true
+  fi
+  if [[ "$failed" == true ]]; then
+    printf 'ERROR session boundary rollback was incomplete; inspect backup=%s\n' \
+      "$ROLLBACK_BACKUP_DIR" >&2
+    return 1
+  fi
+  printf 'SESSION_BOUNDARY_ROLLED_BACK backup=%s\n' "$ROLLBACK_BACKUP_DIR" >&2
+}
+
+rollback_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$ROLLBACK_REQUIRED" == true ]] && ! rollback_boundary; then
+    status=1
+  fi
+  exit "$status"
+}
+
+apply_boundary() {
+  local backup_dir
+  preflight
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -o root -g root -m 0700 "$backup_dir"
+  backup_if_present "$API_UNIT" "$backup_dir/argus-control-api.service"
+  backup_if_present "$CADDY_DROPIN" "$backup_dir/argus-operator-proxy.conf"
+  backup_if_present "$CADDYFILE" "$backup_dir/Caddyfile"
+  backup_sqlite_if_present "$SESSION_DB" "$backup_dir/session.sqlite3"
+  ROLLBACK_BACKUP_DIR="$backup_dir"
+  systemctl is-active --quiet argus-control-api.service && PRIOR_API_ACTIVE=true
+  systemctl is-active --quiet caddy.service && PRIOR_CADDY_ACTIVE=true
+  ROLLBACK_REQUIRED=true
+  trap rollback_on_exit EXIT
+
+  install -d -o root -g root -m 0755 "$CADDY_DROPIN_DIR"
+  install -o root -g root -m 0644 "$ROOT/systemd/argus-control-api.service" "$API_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/caddy.service.d/argus-operator-proxy.conf" "$CADDY_DROPIN"
+
+  validate_caddy
+  systemctl daemon-reload
+  systemctl restart argus-control-api.service
+
+  systemctl is-active --quiet argus-control-api.service || fail "control API is not active"
+  [[ "$(systemctl show argus-control-api.service -p User --value)" == "oreo" ]] ||
+    fail "control API user changed unexpectedly"
+  [[ "$(systemctl show argus-control-api.service -p Group --value)" == "argus-control" ]] ||
+    fail "control API group is not argus-control"
+  systemctl show argus-control-api.service -p InaccessiblePaths --value |
+    grep -Fq '/var/run/docker.sock' ||
+    fail "control API unit does not deny the rootful Docker socket"
+  wait_for_api_fail_closed
+  systemctl reload caddy.service
+  systemctl is-active --quiet caddy.service || fail "Caddy is not active"
+
+  ROLLBACK_REQUIRED=false
+  trap - EXIT
+  printf 'SESSION_BOUNDARY_APPLIED backup=%s apiActive=true caddyActive=true\n' "$backup_dir"
+  printf 'publicExposureChanged=false routesChanged=false workloadsChanged=false secretsPrinted=false\n'
+}
+
+case "${1:-}" in
+  --preflight)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    preflight
+    ;;
+  --apply)
+    [[ $# -eq 2 && "${2:-}" == "$ACK" ]] || { usage; exit 2; }
+    apply_boundary
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

@@ -37,14 +37,22 @@ class ControlPlaneReconcileTests(unittest.TestCase):
         self.assertIn("Restart=on-failure", text)
 
     def test_get_state_failure_returns_secret_safe_json_error(self) -> None:
-        server = load_server()
-        handler = object.__new__(server.Handler)
-        handler.path = "/api/dashboard-state"
-        responses = []
-        handler.send_json = lambda status, payload: responses.append((status, payload))
-        with patch.object(server, "dashboard_state", side_effect=PermissionError("sensitive path")):
-            handler.do_GET()
-        self.assertEqual(responses, [(500, {"error": "PermissionError"})])
+        with tempfile.TemporaryDirectory() as directory, patch.dict(
+            os.environ,
+            {"ARGUS_RUNTIME": directory},
+        ):
+            server = load_server()
+            handler = object.__new__(server.Handler)
+            handler.path = "/api/dashboard-state"
+            responses = []
+            handler.send_json = lambda status, payload: responses.append((status, payload))
+            with patch.object(
+                server,
+                "dashboard_state",
+                side_effect=PermissionError("sensitive path"),
+            ):
+                handler.do_GET()
+            self.assertEqual(responses, [(500, {"error": "PermissionError"})])
 
     def test_only_requesting_operator_can_cancel_pending_operation(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.dict(os.environ, {"ARGUS_RUNTIME": directory}):
