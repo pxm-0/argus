@@ -13,6 +13,8 @@ class RuntimePermissionContractTests(unittest.TestCase):
         self.assertIn("operations.sqlite3", script)
         self.assertIn('CONTROL_STATE="/var/lib/argus/control"', script)
         self.assertIn("session.sqlite3", script)
+        self.assertIn('WORKER_USER="argus-worker"', script)
+        self.assertIn('$CONTROL_STATE/operations.sqlite3', script)
         self.assertIn("chmod 0660", script)
         self.assertIn("chmod 0600", script)
         self.assertIn('CONTROL_GROUP="argus-control"', script)

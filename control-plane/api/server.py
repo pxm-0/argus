@@ -8,10 +8,8 @@ import json
 import os
 import re
 import secrets
-import socket
 import subprocess
 import sys
-import threading
 import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -26,6 +24,9 @@ TOKEN_FILE = Path(os.environ.get("ARGUS_TOKEN_FILE", "/etc/argus/control-token")
 OPERATORS_FILE = Path(os.environ.get("ARGUS_OPERATORS_FILE", "/etc/argus/operators.json"))
 PROXY_TOKEN_FILE = Path(os.environ.get("ARGUS_PROXY_TOKEN_FILE", "/etc/argus/operator-proxy-token"))
 SESSION_DB = Path(os.environ.get("ARGUS_SESSION_DB", RUNTIME / "sessions.sqlite3"))
+OPERATIONS_DB = Path(
+    os.environ.get("ARGUS_OPERATIONS_DB", RUNTIME / "operations.sqlite3")
+)
 HOST = "127.0.0.1"
 PORT = int(os.environ.get("ARGUS_API_PORT", "8099"))
 SESSION_COOKIE = "argus_session"
@@ -34,6 +35,7 @@ TAILSCALE_IDENTITY_HEADER = "X-Argus-Tailnet-Login"
 PROXY_TOKEN_HEADER = "X-Argus-Proxy-Token"
 CSRF_BOOTSTRAP_HEADER = "X-Argus-CSRF-Bootstrap"
 SAFE_REQUEST_NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+PREVIEW_TTL_SECONDS = 60
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_actions import backup_preview, logs_preview, restart_preview  # noqa: E402
@@ -44,12 +46,17 @@ from argus_operations import (  # noqa: E402
     OperationConflict,
     OperationLedger,
     digest,
+    parse_timestamp,
 )
 from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
 
 
 SESSIONS = SessionStore(SESSION_DB)
-LEDGER = OperationLedger(RUNTIME / "operations.sqlite3")
+LEDGER = OperationLedger(
+    OPERATIONS_DB,
+    require_existing=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") == "1",
+    migrate_schema=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") != "1",
+)
 
 
 def bootstrap_token() -> str:
@@ -248,30 +255,6 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
         decision = policy_decision(workload_id, desired)
         return bool(decision.get("allowed")), str(decision.get("reason", "access policy denied"))
     return False, "unsupported typed operation"
-
-
-def dispatch_operation(operation_id: str, domain: str) -> None:
-    def send() -> None:
-        socket_path = RUNTIME / "agents" / f"{domain}.sock"
-        try:
-            with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
-                client.settimeout(5)
-                client.connect(str(socket_path))
-                client.sendall((json.dumps({"operationId": operation_id}) + "\n").encode())
-                response = json.loads(client.makefile("rb").readline(65537))
-                if not response.get("ok"):
-                    raise RuntimeError("domain agent rejected operation")
-        except Exception as exc:  # noqa: BLE001
-            try:
-                LEDGER.transition(
-                    operation_id, {"queued"}, "failed", finished_at=int(time.time()),
-                    error_class="agent-unavailable", redacted_summary="Domain agent was unavailable or rejected dispatch.",
-                )
-            except OperationConflict:
-                pass
-            audit("operation.dispatch", "-", "failed", operationId=operation_id, errorClass=exc.__class__.__name__)
-
-    threading.Thread(target=send, daemon=True).start()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -507,7 +490,7 @@ class Handler(BaseHTTPRequestHandler):
         if not preview["allowed"]:
             self.send_json(403, preview)
             return
-        operation, _ = LEDGER.create(
+        operation, created = LEDGER.create(
             workload_id=workload_id,
             trust_domain=preview["trustDomain"],
             operation_type=operation_type,
@@ -517,10 +500,16 @@ class Handler(BaseHTTPRequestHandler):
             expected_revision=preview["expectedRevision"],
             policy_version=preview["policyVersion"],
             idempotency_key=str(self.headers.get("Idempotency-Key") or f"compat-{uuid.uuid4()}"),
+            preview=preview,
         )
-        audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation["operation_id"], operationType=operation_type)
-        operation = LEDGER.transition(operation["operation_id"], {"awaiting-approval"}, "queued", approved_at=int(time.time()))
-        dispatch_operation(operation["operation_id"], operation["trust_domain"])
+        if created:
+            audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation["operation_id"], operationType=operation_type)
+            operation = LEDGER.transition(
+                operation["operation_id"],
+                {"awaiting-approval"},
+                "queued",
+                approved_at=int(time.time()),
+            )
         self.send_json(202, operation)
 
     def handle_session_exchange(self, body: dict[str, Any]) -> None:
@@ -557,10 +546,14 @@ class Handler(BaseHTTPRequestHandler):
         if not preview["allowed"]:
             self.send_json(403, preview)
             return
-        if body.get("previewDigest") != preview["previewDigest"] or body.get("expectedRevision") != preview["expectedRevision"]:
+        if (
+            body.get("previewDigest") != preview["previewDigest"]
+            or body.get("expectedRevision") != preview["expectedRevision"]
+            or body.get("policyVersion") != preview["policyVersion"]
+        ):
             self.send_json(409, {"error": "preview or canonical revision is stale"})
             return
-        operation, created = LEDGER.create(
+        operation, _created = LEDGER.create(
             workload_id=workload_id,
             trust_domain=preview["trustDomain"],
             operation_type=operation_type,
@@ -570,10 +563,9 @@ class Handler(BaseHTTPRequestHandler):
             expected_revision=preview["expectedRevision"],
             policy_version=preview["policyVersion"],
             idempotency_key=str(self.headers.get("Idempotency-Key", "")),
+            preview=preview,
         )
         audit("operation.intent", workload_id, "ok", actor=session.identity, operationId=operation["operation_id"], operationType=operation_type)
-        if operation_type not in MUTATIONS and created:
-            dispatch_operation(operation["operation_id"], operation["trust_domain"])
         self.send_json(202, operation)
 
     def handle_operation_approve(self, operation_id: str, session: Session, body: dict[str, Any]) -> None:
@@ -587,8 +579,52 @@ class Handler(BaseHTTPRequestHandler):
         if str(body.get("confirmation", "")) != operation["workload_id"]:
             self.send_json(403, {"error": "typed workload confirmation required"})
             return
+        if int(time.time()) - parse_timestamp(str(operation["created_at"])) >= PREVIEW_TTL_SECONDS:
+            LEDGER.transition(
+                operation_id,
+                {"awaiting-approval"},
+                "expired",
+                finished_at=int(time.time()),
+                error_class="preview-expired",
+                redacted_summary="Preview expired before approval.",
+                event_detail="Approval rejected because the preview expired.",
+            )
+            self.send_json(410, {"error": "preview expired; create a new operation"})
+            return
+        current_preview = operation_preview(
+            str(operation["workload_id"]),
+            str(operation["operation_type"]),
+            dict(operation["parameters"]),
+        )
+        if (
+            operation["expected_revision"] != current_preview["expectedRevision"]
+            or operation["policy_version"] != current_preview["policyVersion"]
+            or operation["preview_digest"] != current_preview["previewDigest"]
+        ):
+            LEDGER.transition(
+                operation_id,
+                {"awaiting-approval"},
+                "expired",
+                finished_at=int(time.time()),
+                error_class="preview-stale",
+                redacted_summary="Canonical revision, policy, or preview changed before approval.",
+                event_detail="Approval rejected after canonical state drift.",
+            )
+            self.send_json(409, {"error": "preview, revision, or policy changed"})
+            return
+        if not current_preview["allowed"]:
+            LEDGER.transition(
+                operation_id,
+                {"awaiting-approval"},
+                "denied",
+                finished_at=int(time.time()),
+                error_class="policy-denied",
+                redacted_summary=str(current_preview["reason"])[:1000],
+                event_detail="Approval rejected by the current policy decision.",
+            )
+            self.send_json(403, current_preview)
+            return
         operation = LEDGER.transition(operation_id, {"awaiting-approval"}, "queued", approved_at=int(time.time()))
-        dispatch_operation(operation_id, operation["trust_domain"])
         self.send_json(202, operation)
 
     def handle_operation_cancel(self, operation_id: str, session: Session) -> None:
@@ -600,7 +636,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(403, {"error": "operation belongs to another operator"})
             return
         operation = LEDGER.transition(
-            operation_id, {"planned", "awaiting-approval", "queued"}, "denied",
+            operation_id, {"awaiting-approval", "queued"}, "denied",
             finished_at=int(time.time()), error_class="operator-cancelled",
             redacted_summary="Cancelled by operator before execution.",
         )

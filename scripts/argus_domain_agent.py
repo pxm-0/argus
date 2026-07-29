@@ -5,6 +5,7 @@ import os
 import socketserver
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -42,8 +43,20 @@ class AgentService:
     def __init__(self, root: Path, runtime: Path, domain: str, key: bytes) -> None:
         self.root = root
         self.domain = domain
-        self.ledger = OperationLedger(runtime / "operations.sqlite3", recover_on_init=False)
+        operations_db = Path(
+            os.environ.get(
+                "ARGUS_OPERATIONS_DB",
+                runtime / "operations.sqlite3",
+            )
+        )
+        self.ledger = OperationLedger(
+            operations_db,
+            require_existing=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") == "1",
+            migrate_schema=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") != "1",
+        )
         self.codec = CapabilityCodec(key)
+        self.active_operations: set[str] = set()
+        self.active_lock = threading.Lock()
         if domain != "legacy-rootful":
             os.environ["DOCKER_HOST"] = f"unix:///var/lib/argus/{domain}/docker.sock"
         self.agent = DomainAgent(
@@ -177,11 +190,19 @@ class AgentService:
             raise ValueError("unknown operation")
         if operation["trust_domain"] != self.domain:
             raise ValueError("wrong operation domain")
-        if operation["state"] != "queued":
-            raise ValueError("operation is not queued")
+        if operation["state"] != "running":
+            raise ValueError("operation is not worker-claimed")
         claims = capability_claims(operation)
         capability = self.codec.issue(claims)
-        self.ledger.transition(operation_id, {"queued"}, "running", started_at=int(time.time()))
+        heartbeat_stop = threading.Event()
+
+        def heartbeat() -> None:
+            while not heartbeat_stop.wait(5):
+                if not self.ledger.heartbeat(operation_id):
+                    return
+
+        heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
+        heartbeat_thread.start()
         try:
             request = {
                 key: operation[key]
@@ -204,7 +225,7 @@ class AgentService:
             )
         except PermissionError as exc:
             return self.ledger.transition(
-                operation_id, {"running"}, "denied", finished_at=int(time.time()),
+                operation_id, {"running"}, "failed", finished_at=int(time.time()),
                 error_class="policy-denied", redacted_summary=str(exc)[:1000],
             )
         except Exception as exc:  # noqa: BLE001
@@ -213,16 +234,48 @@ class AgentService:
                 error_class=exc.__class__.__name__, redacted_summary="Domain agent rejected or failed the operation.",
             )
             raise
+        finally:
+            heartbeat_stop.set()
+            heartbeat_thread.join(timeout=1)
+
+    def accept_operation(self, operation_id: str) -> None:
+        operation = self.ledger.get(operation_id)
+        if not operation:
+            raise ValueError("unknown operation")
+        if operation["trust_domain"] != self.domain:
+            raise ValueError("wrong operation domain")
+        if operation["state"] != "running":
+            raise ValueError("operation is not worker-claimed")
+        with self.active_lock:
+            if operation_id in self.active_operations:
+                raise ValueError("operation is already active")
+            self.active_operations.add(operation_id)
+
+        def execute() -> None:
+            try:
+                self.run_operation(operation_id)
+            except Exception:
+                # run_operation has already persisted a safe terminal outcome
+                # whenever the ledger still permits one.
+                pass
+            finally:
+                with self.active_lock:
+                    self.active_operations.discard(operation_id)
+
+        threading.Thread(target=execute, daemon=True).start()
 
 
 class AgentRequestHandler(socketserver.StreamRequestHandler):
     def handle(self) -> None:
         try:
-            request = json.loads(self.rfile.readline(65537))
+            encoded = self.rfile.readline(65_537)
+            if len(encoded) > 65_536 or not encoded.endswith(b"\n"):
+                raise ValueError("typed request exceeds 64 KiB")
+            request = json.loads(encoded)
             if set(request) != {"operationId"}:
                 raise ValueError("only typed operation IDs are accepted")
-            response = self.server.service.run_operation(str(request["operationId"]))  # type: ignore[attr-defined]
-            payload = {"ok": True, "operation": response}
+            self.server.service.accept_operation(str(request["operationId"]))  # type: ignore[attr-defined]
+            payload = {"accepted": True, "ok": True}
         except Exception as exc:  # noqa: BLE001
             payload = {"ok": False, "error": exc.__class__.__name__}
         self.wfile.write((json.dumps(payload, sort_keys=True) + "\n").encode())

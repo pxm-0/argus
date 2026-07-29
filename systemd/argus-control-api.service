@@ -1,6 +1,7 @@
 [Unit]
 Description=Argus control API
-After=network.target
+Requires=argus-operation-worker.service
+After=network.target argus-operation-worker.service
 
 [Service]
 Type=simple
@@ -15,12 +16,14 @@ Environment=ARGUS_TOKEN_FILE=%d/control-token
 Environment=ARGUS_OPERATORS_FILE=%d/operators.json
 Environment=ARGUS_PROXY_TOKEN_FILE=%d/operator-proxy-token
 Environment=ARGUS_SESSION_DB=/var/lib/argus/control/session.sqlite3
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_LEDGER_REQUIRE_EXISTING=1
 ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
 Restart=on-failure
 RestartSec=3
 UMask=0007
 StateDirectory=argus/control
-StateDirectoryMode=0700
+StateDirectoryMode=0770
 NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict

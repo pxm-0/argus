@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +84,12 @@ class OperationLedgerTests(unittest.TestCase):
         self.assertEqual(first["operation_id"], repeated["operation_id"])
         with self.assertRaises(OperationConflict):
             self.create(operation_type="backup.create", idempotency_key="idem-2")
+        with self.assertRaisesRegex(OperationConflict, "different operation intent"):
+            self.create(
+                workload_id="other",
+                operation_type="workload.restart",
+                idempotency_key="idem-1",
+            )
 
     def test_terminal_operation_releases_lock(self) -> None:
         operation, _ = self.create()
@@ -93,11 +102,214 @@ class OperationLedgerTests(unittest.TestCase):
         self.assertEqual(second["state"], "awaiting-approval")
 
     def test_restart_marks_unknown_running_outcome_indeterminate(self) -> None:
-        operation, _ = self.create(operation_type="health.refresh")
-        self.ledger.transition(str(operation["operation_id"]), {"queued"}, "running", started_at=int(time.time()))
-        recovered = OperationLedger(self.path).get(str(operation["operation_id"]))
+        current = [1_000_000]
+        ledger = OperationLedger(self.path, clock=lambda: current[0])
+        operation, _ = ledger.create(
+            workload_id="demo",
+            trust_domain="personal-sandbox",
+            operation_type="health.refresh",
+            requested_by="operator@example.com",
+            parameters={},
+            preview_digest="preview",
+            expected_revision="revision",
+            policy_version="1",
+            idempotency_key="stale-running",
+        )
+        claimed = ledger.claim(str(operation["operation_id"]))
+        self.assertEqual("running", claimed["state"])
+        current[0] += 29
+        self.assertEqual(0, ledger.recover_running())
+        self.assertEqual("running", ledger.get(str(operation["operation_id"]))["state"])
+        current[0] += 2
+        self.assertEqual(1, ledger.recover_running())
+        recovered = ledger.get(str(operation["operation_id"]))
         self.assertEqual(recovered["state"], "indeterminate")
-        self.assertEqual(recovered["error_class"], "process-restarted")
+        self.assertEqual(recovered["error_class"], "worker-recovery-timeout")
+        self.assertEqual(
+            ["queued", "running", "indeterminate"],
+            [event["state"] for event in ledger.events(str(operation["operation_id"]))],
+        )
+
+    def test_required_schema_digests_events_and_pragmas(self) -> None:
+        operation, _ = self.create()
+        self.assertEqual(64, len(str(operation["parameters_digest"])))
+        self.assertEqual({}, operation["parameters"])
+        self.assertEqual("demo", operation["preview"]["workloadId"])
+        self.assertTrue(str(operation["created_at"]).endswith("Z"))
+        self.assertEqual(
+            ["awaiting-approval"],
+            [event["state"] for event in self.ledger.events(str(operation["operation_id"]))],
+        )
+        with self.ledger._connect() as connection:
+            columns = {
+                str(row["name"])
+                for row in connection.execute("PRAGMA table_info(operations)")
+            }
+            self.assertTrue(
+                {
+                    "parameters_digest",
+                    "preview_json",
+                    "heartbeat_at",
+                    "rollback_operation_id",
+                }.issubset(columns)
+            )
+            self.assertEqual("wal", connection.execute("PRAGMA journal_mode").fetchone()[0])
+            self.assertEqual(2, connection.execute("PRAGMA synchronous").fetchone()[0])
+            self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
+            self.assertEqual(1, connection.execute("PRAGMA user_version").fetchone()[0])
+
+    def test_state_change_and_event_are_one_transaction(self) -> None:
+        operation, _ = self.create()
+        with sqlite3.connect(self.path) as connection:
+            connection.execute(
+                """
+                CREATE TRIGGER reject_queued_event
+                BEFORE INSERT ON operation_events
+                WHEN NEW.state = 'queued'
+                BEGIN
+                  SELECT RAISE(ABORT, 'event rejected');
+                END
+                """
+            )
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "event rejected"):
+            self.ledger.transition(
+                str(operation["operation_id"]),
+                {"awaiting-approval"},
+                "queued",
+                approved_at=int(time.time()),
+            )
+        self.assertEqual(
+            "awaiting-approval",
+            self.ledger.get(str(operation["operation_id"]))["state"],
+        )
+
+    def test_concurrent_idempotency_returns_one_operation(self) -> None:
+        barrier = threading.Barrier(6)
+        results: list[tuple[str, bool]] = []
+        failures: list[Exception] = []
+
+        def create() -> None:
+            try:
+                barrier.wait()
+                operation, created = self.create()
+                results.append((str(operation["operation_id"]), created))
+            except Exception as exc:  # noqa: BLE001
+                failures.append(exc)
+
+        threads = [threading.Thread(target=create) for _ in range(6)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+        self.assertEqual([], failures)
+        self.assertEqual(1, len({operation_id for operation_id, _ in results}))
+        self.assertEqual(1, sum(1 for _, created in results if created))
+
+    def test_legacy_schema_is_backed_up_and_migrated(self) -> None:
+        legacy_path = Path(self.directory.name) / "legacy.sqlite3"
+        with sqlite3.connect(legacy_path) as connection:
+            connection.execute(
+                """
+                CREATE TABLE operations (
+                    operation_id TEXT PRIMARY KEY,
+                    idempotency_key TEXT NOT NULL UNIQUE,
+                    workload_id TEXT NOT NULL,
+                    trust_domain TEXT NOT NULL,
+                    operation_type TEXT NOT NULL,
+                    requested_by TEXT NOT NULL,
+                    parameters_json TEXT NOT NULL,
+                    preview_digest TEXT NOT NULL,
+                    expected_revision TEXT NOT NULL,
+                    policy_version TEXT NOT NULL,
+                    state TEXT NOT NULL,
+                    created_at INTEGER NOT NULL,
+                    approved_at INTEGER,
+                    started_at INTEGER,
+                    finished_at INTEGER,
+                    error_class TEXT,
+                    redacted_summary TEXT NOT NULL DEFAULT '',
+                    redacted_result_json TEXT NOT NULL DEFAULT '{}',
+                    rollback_operation_id TEXT
+                )
+                """
+            )
+            connection.execute(
+                """
+                INSERT INTO operations VALUES (
+                    'op', 'idem', 'demo', 'personal-sandbox',
+                    'health.refresh', 'operator@example.com', '{}', 'preview',
+                    'revision', '1', 'queued', 1000, NULL, NULL, NULL, NULL,
+                    '', '{}', NULL
+                )
+                """
+            )
+        migrated = OperationLedger(legacy_path)
+        self.assertTrue(
+            legacy_path.with_name("legacy.sqlite3.pre-v1.bak").is_file()
+        )
+        operation = migrated.get("op")
+        self.assertEqual("queued", operation["state"])
+        self.assertEqual({}, operation["parameters"])
+        self.assertEqual(["queued"], [event["state"] for event in migrated.events("op")])
+
+    def test_declared_current_schema_must_be_structurally_complete(self) -> None:
+        incomplete_path = Path(self.directory.name) / "incomplete.sqlite3"
+        with sqlite3.connect(incomplete_path) as connection:
+            connection.execute(
+                "CREATE TABLE operations (operation_id TEXT PRIMARY KEY)"
+            )
+            connection.execute("PRAGMA user_version=1")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "missing operations columns",
+        ):
+            OperationLedger(incomplete_path)
+
+    def test_non_owner_clients_validate_without_changing_ledger_mode(self) -> None:
+        with patch("argus_operations.os.chmod") as chmod:
+            client = OperationLedger(
+                self.path,
+                require_existing=True,
+                migrate_schema=False,
+            )
+        chmod.assert_not_called()
+        self.assertIsNotNone(client)
+
+    def test_recovery_preserves_queued_terminal_and_indeterminate_states(self) -> None:
+        queued, _ = self.create(
+            operation_type="health.refresh",
+            idempotency_key="queued",
+        )
+        succeeded, _ = self.create(
+            workload_id="succeeded",
+            operation_type="health.refresh",
+            idempotency_key="succeeded",
+        )
+        self.ledger.claim(str(succeeded["operation_id"]))
+        self.ledger.transition(
+            str(succeeded["operation_id"]),
+            {"running"},
+            "succeeded",
+            finished_at=int(time.time()),
+        )
+        unknown, _ = self.create(
+            workload_id="unknown",
+            operation_type="health.refresh",
+            idempotency_key="unknown",
+        )
+        self.ledger.claim(str(unknown["operation_id"]))
+        self.ledger.mark_dispatch_indeterminate(str(unknown["operation_id"]))
+
+        self.assertEqual(0, self.ledger.recover_running(stale_after_seconds=0))
+        self.assertEqual("queued", self.ledger.get(str(queued["operation_id"]))["state"])
+        self.assertEqual(
+            "succeeded",
+            self.ledger.get(str(succeeded["operation_id"]))["state"],
+        )
+        self.assertEqual(
+            "indeterminate",
+            self.ledger.get(str(unknown["operation_id"]))["state"],
+        )
 
 
 class DomainCapabilityTests(unittest.TestCase):

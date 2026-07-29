@@ -78,6 +78,25 @@ Caddy removes incoming `Tailscale-*` and `X-Argus-*` headers before setting
 those values. The normalized login must be an enabled owner in the structured
 server-local `/etc/argus/operators.json` allowlist.
 
+## Durable operation boundary
+
+The API writes approved operation intent to
+`/var/lib/argus/control/operations.sqlite3` but does not connect to domain-agent
+sockets. A separate `argus-worker:argus-control` service owns the ledger,
+claims queued rows inside `BEGIN IMMEDIATE`, and sends only the durable
+operation ID over a Unix socket.
+
+Every state transition and its redacted event are one transaction. The ledger
+uses WAL, `synchronous=FULL`, foreign keys, a five-second busy timeout, hashed
+parameter binding, immutable preview/revision/policy binding, and one active
+mutation lock per workload. A stale running heartbeat becomes
+`indeterminate`; neither API nor worker restart redispatches it.
+
+The API and worker units make both rootful Docker socket paths inaccessible.
+Only the domain agents receive their domain runtime access. The worker service
+uses `RestrictAddressFamilies=AF_UNIX` and has no Docker environment or
+runtime-socket path.
+
 ## Git Hygiene
 
 Git should track platform config and docs only.

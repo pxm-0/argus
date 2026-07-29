@@ -48,9 +48,10 @@ transcript. The API stores only SHA-256 hashes of session and CSRF values in
 
 The runtime permission reconciliation is required before starting the API or
 agents. It safely upgrades the durable operation ledger and its sidecars to
-`oreo:argus-control` mode `0660`, so domain agents can persist state
-transitions without making the ledger world-readable. The separate API-owned
-session database and its sidecars remain mode `0600`.
+`argus-worker:argus-control` mode `0660` at
+`/var/lib/argus/control/operations.sqlite3`, so the API and domain agents can
+persist state transitions without making the ledger world-readable. The
+separate API-owned session database and its sidecars remain mode `0600`.
 
 Create one independent random 32-byte-or-longer capability key for every active
 domain. Do not copy, print, or commit key material. Ownership must let only the
@@ -118,6 +119,46 @@ All commands run on `oreochiserver` after the PR merges.
    Confirm the resulting URL is
    `https://oreochiserver.tail0a3a58.ts.net:8448`. Do not use a Funnel command.
 
+## Durable ledger and worker activation
+
+The API persists intent and approval but never opens an agent socket or starts
+a dispatch thread. `argus-operation-worker.service`, running as the locked
+`argus-worker` identity, is the only process that claims queued work. It sends
+only an operation ID to the matching domain agent and has no Docker socket.
+
+After the reviewed ledger/worker PR is staged, run the read-only preflight:
+
+```text
+sudo /srv/argus/scripts/argus-m5-ledger-worker --preflight
+```
+
+The preflight refuses unresolved operations, two competing ledger locations,
+invalid units, or API/worker runtime-socket access. It prints counts only and
+does not print operation contents.
+
+Apply with the explicit acknowledgement:
+
+```text
+sudo /srv/argus/scripts/argus-m5-ledger-worker \
+  --apply --acknowledge-m5-ledger-worker
+```
+
+The apply path:
+
+- backs up the old and new SQLite locations plus all affected units;
+- stops the API first, then the worker and agents, rechecks that no operation
+  became unresolved, and takes the final consistent SQLite backups;
+- creates `argus-worker` as a locked system identity if absent;
+- migrates the ledger under SQLite `BEGIN IMMEDIATE` with a pre-version backup;
+- installs and starts the worker before the API and agents;
+- verifies schema version, events, ownership, service state, socket denial,
+  unresolved-operation count, and direct-API rejection;
+- retires the old runtime ledger into the root-only backup directory;
+- restores prior units, databases, enablement, and service states on failure.
+
+It does not change Caddy, Tailscale Serve, Funnel, a route, listener, workload,
+DNS record, or firewall rule.
+
 ## Acceptance evidence
 
 Record only secret-safe results:
@@ -126,6 +167,7 @@ Record only secret-safe results:
 python3 -m unittest discover -s tests -v
 python3 -m json.tool config/operators.json
 systemctl is-active argus-control-api.service
+systemctl is-active argus-operation-worker.service
 systemctl is-active argus-domain-agent-legacy-rootful.service
 systemctl is-active argus-domain-agent@personal-sandbox.service
 ss -ltn

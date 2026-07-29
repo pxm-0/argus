@@ -1,6 +1,7 @@
 [Unit]
 Description=Argus typed operation agent for %i
-After=network.target
+Requires=argus-operation-worker.service
+After=network.target argus-operation-worker.service
 
 [Service]
 Type=simple
@@ -9,6 +10,8 @@ Group=argus-control
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_RUNTIME=/srv/argus/runtime/argus/m5
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_LEDGER_REQUIRE_EXISTING=1
 Environment=ARGUS_TRUST_DOMAIN=%i
 Environment=ARGUS_CAPABILITY_KEY_FILE=/etc/argus/domain-keys/%i.key
 Environment=HOME=/var/lib/argus/%i
@@ -21,7 +24,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
-ReadWritePaths=/srv/argus/runtime/argus -/srv/argus/runtime/audit.log /srv/argus/runtime/backups /srv/argus/config /srv/argus/control-plane/dashboard/public
+ReadWritePaths=/srv/argus/runtime/argus -/srv/argus/runtime/audit.log /var/lib/argus/control /srv/argus/runtime/backups /srv/argus/config /srv/argus/control-plane/dashboard/public
 
 [Install]
 WantedBy=multi-user.target

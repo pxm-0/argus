@@ -1,0 +1,31 @@
+[Unit]
+Description=Argus durable operation worker
+After=network.target
+Before=argus-control-api.service
+
+[Service]
+Type=simple
+User=argus-worker
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_AGENT_SOCKET_DIR=/srv/argus/runtime/argus/m5/agents
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_operation_worker.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadWritePaths=/var/lib/argus/control
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target
