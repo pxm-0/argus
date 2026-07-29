@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 
 MUTATIONS = {"workload.restart", "backup.create", "access.apply"}
-TYPED_OPERATIONS = {"health.refresh", "logs.preview", *MUTATIONS}
+TYPED_OPERATIONS = {"health.refresh", "logs.preview", "migration.preflight", *MUTATIONS}
 TERMINAL_STATES = {"succeeded", "failed", "rolled-back", "denied", "expired", "indeterminate"}
 ALLOWED_STATES = {
     "planned", "awaiting-approval", "queued", "running", "succeeded", "failed",
@@ -85,6 +85,7 @@ def validate_typed_parameters(
     schemas: dict[str, set[str]] = {
         "health.refresh": set(),
         "logs.preview": {"maxLines"},
+        "migration.preflight": set(),
         "workload.restart": {"healthTimeoutSeconds"},
         "backup.create": {"planRevision"},
         "access.apply": {"desired"},

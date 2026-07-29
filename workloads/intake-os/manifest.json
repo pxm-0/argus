@@ -51,6 +51,9 @@
     "backup": {
       "allowed": false
     },
+    "migrationPreflight": {
+      "allowed": true
+    },
     "logsAllowed": false,
     "restartAllowed": false,
     "backupAllowed": false,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 import subprocess
 import time
@@ -60,6 +62,171 @@ def _compose_runtime(workload_id: str) -> tuple[dict[str, Any], str | None]:
     if not runtime.get("composePath") or not runtime.get("composeProject"):
         return runtime, "missing composePath or composeProject"
     return runtime, None
+
+
+def _verify_backup_artifact(latest: Path, workload_id: str) -> bool:
+    required = ("manifest.json", "files.tar.gz", "checksums.sha256", "restore-plan.md", "backup-summary.json")
+    if any(not (latest / name).is_file() for name in required):
+        return False
+    try:
+        summary = json.loads((latest / "backup-summary.json").read_text())
+        rows = (latest / "checksums.sha256").read_text().splitlines()
+        artifact_root = latest.resolve()
+        if summary.get("workloadId") != workload_id or not rows:
+            return False
+        verified_names: set[str] = set()
+        for row in rows:
+            expected, separator, name = row.partition("  ")
+            target = (latest / name).resolve()
+            if (
+                not separator
+                or name in verified_names
+                or artifact_root not in target.parents
+                or not target.is_file()
+            ):
+                return False
+            if hashlib.sha256(target.read_bytes()).hexdigest() != expected:
+                return False
+            verified_names.add(name)
+        if not (set(required) - {"checksums.sha256"}).issubset(verified_names):
+            return False
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return True
+
+
+def _backup_artifact_evidence(workload_id: str, backup: dict[str, Any]) -> tuple[bool, str]:
+    destination = Path(str(backup.get("destination", "")))
+    if destination != Path(f"/srv/argus/runtime/backups/{workload_id}") or not destination.is_dir():
+        return False, ""
+    runs = sorted(path for path in destination.iterdir() if path.is_dir())
+    if not runs:
+        return False, ""
+    latest = runs[-1]
+    if not _verify_backup_artifact(latest, workload_id):
+        return False, ""
+    return True, latest.name
+
+
+def _health_evidence(health: dict[str, Any]) -> bool:
+    url = str(health.get("url", ""))
+    expected = health.get("expectedStatus")
+    if not url or not isinstance(expected, int):
+        return False
+    status, _detail = http_status(url, float(health.get("timeoutSeconds", 3)))
+    return status == str(expected)
+
+
+def migration_preflight(
+    workload_id: str,
+    *,
+    record_audit: bool = True,
+    actor: str = "local-cli",
+) -> dict[str, Any]:
+    """Return a redacted, read-only migration readiness assessment."""
+    workload = _workload(workload_id)
+    if workload is None:
+        return _blocked("migration-preflight", workload_id, "unknown workload", status=404)
+    manifest = load_manifest(workload_id)
+    operations = manifest.get("operations", {})
+    permission = operations.get("migrationPreflight", {})
+    allowed = (
+        operations.get("migrationPreflightAllowed") is True
+        or (isinstance(permission, dict) and permission.get("allowed") is True)
+    )
+    migration = manifest.get("migration", {})
+    status = str(migration.get("status", workload.get("migration", {}).get("status", "")))
+    if not allowed:
+        return _blocked(
+            "migration-preflight",
+            workload_id,
+            "migration preflight disabled by manifest",
+        )
+    if status not in {"planned", "rolled-back"}:
+        return _blocked(
+            "migration-preflight",
+            workload_id,
+            f"migration status {status or 'unknown'} is not a migration candidate",
+        )
+
+    runtime = runtime_config(workload_id)
+    backup = manifest.get("backup", {})
+    source_path = str(
+        migration.get("originalPath")
+        or workload.get("migration", {}).get("originalPath")
+        or workload.get("paths", {}).get("legacy")
+        or ""
+    )
+    target_path = str(manifest.get("sourcePath") or workload.get("paths", {}).get("source") or "")
+    compose_path = str(runtime.get("composePath", ""))
+    blockers: list[str] = []
+    if not source_path:
+        blockers.append("Source path is not recorded.")
+    elif not Path(source_path).is_dir():
+        blockers.append("Recorded source path is unavailable.")
+    if target_path != f"/srv/argus/workloads/{workload_id}/source":
+        blockers.append("Target source path is outside the canonical workload root.")
+    elif not Path(target_path).is_dir():
+        blockers.append("Target source path is unavailable.")
+    if runtime.get("type") != "docker-compose":
+        blockers.append("Runtime is not Docker Compose.")
+    if not compose_path:
+        blockers.append("Target Compose path is not recorded.")
+    elif not Path(compose_path).is_file():
+        blockers.append("Target Compose file is unavailable.")
+    if not runtime.get("composeProject"):
+        blockers.append("Compose project name is not recorded.")
+    if not backup.get("backupAllowed"):
+        blockers.append("Backup execution is not approved.")
+    if not backup.get("restoreAllowed"):
+        blockers.append("Restore execution is not approved.")
+    if not backup.get("restoreTested"):
+        blockers.append("An isolated restore test is not recorded.")
+    artifact_verified, artifact_id = _backup_artifact_evidence(workload_id, backup)
+    if not artifact_verified:
+        blockers.append("A checksum-verified backup artifact is unavailable.")
+    if not str(migration.get("rollback", "")).strip():
+        blockers.append("Rollback contract is not recorded.")
+    health = manifest.get("health", {})
+    health_verified = False
+    if not health.get("url"):
+        blockers.append("Target health URL is not recorded.")
+    else:
+        health_verified = _health_evidence(health)
+        if not health_verified:
+            blockers.append("Target health check did not return the expected status.")
+
+    result = {
+        **_base("migration-preflight", workload_id),
+        "allowed": True,
+        "migrationStatus": status,
+        "readyForCutover": not blockers,
+        "blockers": blockers,
+        "sourcePathRecorded": bool(source_path),
+        "targetPath": target_path,
+        "composeProject": str(runtime.get("composeProject", "")),
+        "backupApproved": bool(backup.get("backupAllowed")),
+        "restoreApproved": bool(backup.get("restoreAllowed")),
+        "restoreTested": bool(backup.get("restoreTested")),
+        "backupArtifactVerified": artifact_verified,
+        "backupArtifactId": artifact_id,
+        "healthVerified": health_verified,
+        "rollbackRecorded": bool(str(migration.get("rollback", "")).strip()),
+        "summary": (
+            "Migration preflight passed; cutover still requires a separately approved operation."
+            if not blockers
+            else f"Migration preflight found {len(blockers)} blocking condition(s)."
+        ),
+    }
+    if record_audit:
+        audit(
+            "migration.preflight",
+            workload_id,
+            "ok" if not blockers else "blocked",
+            actor=actor,
+            blockerCount=len(blockers),
+        )
+    return result
 
 
 def sanitize_log_text(text: str, *, max_lines: int = MAX_LOG_LINES, max_bytes: int = MAX_LOG_BYTES) -> tuple[list[str], bool]:

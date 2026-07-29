@@ -11,7 +11,13 @@ import time
 from pathlib import Path
 from typing import Any
 
-from argus_actions import backup_apply, logs_preview, restart_apply, wait_for_health
+from argus_actions import (
+    backup_apply,
+    logs_preview,
+    migration_preflight,
+    restart_apply,
+    wait_for_health,
+)
 from argus_access_runtime import apply_tailscale_access, route_contract
 from argus_canonical import canonical_policy_version, canonical_revision
 from argus_capabilities import (
@@ -92,6 +98,14 @@ class AgentService:
             return allowed, "health check not configured"
         if operation_type == "logs.preview":
             return bool(operations.get("logsAllowed") or operations.get("logs", {}).get("allowed")), "logs disabled by manifest"
+        if operation_type == "migration.preflight":
+            preview = migration_preflight(workload_id, record_audit=False)
+            allowed = bool(preview.get("allowed"))
+            return allowed, (
+                "migration preflight enabled by manifest"
+                if allowed
+                else str(preview.get("reason", "migration preflight disabled by manifest"))
+            )
         if operation_type == "workload.restart":
             return bool(operations.get("restartAllowed") or operations.get("restart", {}).get("allowed")), "restart disabled by manifest"
         if operation_type == "backup.create":
@@ -161,6 +175,11 @@ class AgentService:
             return {"summary": "Health evidence refreshed.", "health": wait_for_health(item, float(parameters.get("timeoutSeconds", 5)))}
         if operation_type == "logs.preview":
             return logs_preview(workload_id, max_lines=int(parameters.get("maxLines", 100)))
+        if operation_type == "migration.preflight":
+            return migration_preflight(
+                workload_id,
+                actor=str(parameters.get("_operator", "domain-agent")),
+            )
         if operation_type == "workload.restart":
             if self.domain != "legacy-rootful":
                 restart_arguments = ["restart"]
