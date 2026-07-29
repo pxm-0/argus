@@ -623,7 +623,10 @@ tee "$NFT_FILE" >/dev/null <<EOF
 destroy table inet $NFT_TABLE
 table inet $NFT_TABLE {
   chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
-  chain forward { type filter hook forward priority filter; policy drop; }
+  chain forward {
+    type filter hook forward priority filter; policy drop;
+    iifname "br-*" oifname "br-*" accept;
+  }
   chain output { type filter hook output priority filter; policy drop; oifname "lo" accept; }
 }
 EOF

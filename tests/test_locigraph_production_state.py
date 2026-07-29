@@ -9,16 +9,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class LociGraphProductionStateTests(unittest.TestCase):
-    def test_inventory_records_only_loopback_caddy_publication(self) -> None:
+    def test_inventory_records_tailnet_only_sandbox_publication(self) -> None:
         workloads = json.loads((ROOT / "config" / "workloads.json").read_text())["workloads"]
         locigraph = next(item for item in workloads if item["id"] == "locigraph")
-        self.assertEqual(["127.0.0.1:8090->80/tcp"], locigraph["network"]["observedBindings"])
-        self.assertEqual("planned", locigraph["migration"]["status"])
+        self.assertEqual([], locigraph["network"]["observedBindings"])
+        self.assertEqual("https://oreochiserver.tail0a3a58.ts.net/", locigraph["health"]["url"])
+        self.assertEqual("migrated", locigraph["migration"]["status"])
         self.assertFalse(locigraph["actions"]["restart"])
 
     def test_manifest_records_restore_evidence_but_keeps_generic_actions_disabled(self) -> None:
         manifest = json.loads((ROOT / "workloads" / "locigraph" / "manifest.json").read_text())
-        self.assertEqual("planned", manifest["migration"]["status"])
+        self.assertEqual("migrated", manifest["migration"]["status"])
         self.assertEqual("personal-sandbox", manifest["migration"]["targetTrustDomain"])
         self.assertEqual("ok", manifest["backup"]["status"])
         self.assertTrue(manifest["backup"]["restoreTested"])
@@ -26,7 +27,6 @@ class LociGraphProductionStateTests(unittest.TestCase):
         self.assertFalse(manifest["operations"]["restartAllowed"])
         self.assertFalse(manifest["operations"]["backupAllowed"])
         notes = " ".join(manifest["security"]["notes"])
-        self.assertIn("127.0.0.1:8090", notes)
         self.assertIn("no host-published ports", notes)
 
 

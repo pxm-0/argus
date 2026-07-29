@@ -1,12 +1,12 @@
 {
   "id": "nodens",
   "name": "Nodens",
-  "description": "Nodens website retained for migration from the legacy rootful Compose runtime.",
+  "description": "Nodens website running in the sealed personal sandbox.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/nodens",
   "sourcePath": "/srv/argus/workloads/nodens/source",
   "privacyCompatibility": "unclassified",
-  "accessCompatibility": "local",
+  "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
@@ -25,19 +25,21 @@
     ]
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/nodens",
     "compatibilitySymlink": false,
-    "rollback": "Fence the personal-sandbox target, then restart Compose project nodens from the preserved legacy source and verify HTTP 200 on port 8081.",
+    "migratedAt": "2026-07-29T12:46:43Z",
+    "lastHealthCheck": "2026-07-29T13:51:08Z",
+    "rollback": "Use the acknowledged stateless M5 rollback to stop the personal-sandbox target, restore the preserved source restart policy, and restore the prior tailnet route.",
     "notes": [
-      "Operator-selected destination is personal-sandbox.",
-      "Preserve the Compose project name nodens during migration.",
-      "The current wildcard host publication must not be reproduced in the sandbox."
+      "Compose project name nodens is preserved in personal-sandbox.",
+      "The target has no published port or public route.",
+      "Tailnet-only HTTPS port 8444 proxies to a root-owned Unix socket."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:8081",
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8444/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -99,8 +101,8 @@
     "publicExposureAllowed": false,
     "forbiddenTargets": [],
     "notes": [
-      "Admission remains denied until personal-sandbox capacity, backup, restore, health, and rollback evidence passes.",
-      "Do not add a published port or public route during migration."
+      "Admitted only to personal-sandbox after M5 restore, health, rollback, and reconciliation evidence passed.",
+      "Do not add a published port or public route."
     ]
   }
 }

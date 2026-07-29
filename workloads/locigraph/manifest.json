@@ -25,19 +25,21 @@
     ]
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/LociGraph",
     "compatibilitySymlink": false,
-    "rollback": "Run the acknowledged stopped-state rollback; preserve the named volumes, verified snapshots, and private override.",
+    "migratedAt": "2026-07-29T13:47:44Z",
+    "lastHealthCheck": "2026-07-29T13:51:08Z",
+    "rollback": "Stateful rollback requires reviewed target-write reconciliation. Preserve the stopped legacy source, original named volumes, and final M5 restore evidence.",
     "notes": [
-      "The legacy source remains at /home/oreo/LociGraph pending canonical source migration.",
-      "A root-owned production override publishes only Caddy at 127.0.0.1:8090.",
-      "Backend, PostgreSQL, and Redis have no host-published ports; all six services use unless-stopped."
+      "All six workload services run in personal-sandbox with no host-published ports.",
+      "PostgreSQL, Redis, and raw-data restores passed final parity checks.",
+      "Tailnet-only HTTPS on the default port proxies to a root-owned Unix socket."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:8090",
+    "url": "https://oreochiserver.tail0a3a58.ts.net/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -102,7 +104,7 @@
     "forbiddenTargets": [],
     "notes": [
       "Handles JWT auth, an OpenAI API key, and an app login password as environment variables.",
-      "The production override binds only Caddy to 127.0.0.1:8090.",
+      "The sealed runtime publishes no host ports and is reachable only through a root-owned Unix socket.",
       "Backend, PostgreSQL, and Redis are internal-only with no host-published ports."
     ]
   }

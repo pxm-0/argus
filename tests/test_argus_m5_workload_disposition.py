@@ -28,7 +28,7 @@ class WorkloadDispositionTests(unittest.TestCase):
         for active_set in (workloads, access, privacy, routes, legacy, manifests):
             self.assertFalse(retired & active_set)
 
-    def test_retained_workloads_have_fail_closed_destination_plans(self) -> None:
+    def test_retained_workloads_have_accepted_fail_closed_destinations(self) -> None:
         destinations = {
             "hastur": "personal-sandbox",
             "kadath": "personal-sandbox",
@@ -65,8 +65,10 @@ class WorkloadDispositionTests(unittest.TestCase):
                 expected_projects[workload_id],
                 inventory[workload_id]["runtime"]["composeProject"],
             )
-            self.assertEqual("planned", inventory[workload_id]["migration"]["status"])
-            self.assertNotIn(workload_id, admitted)
+            self.assertEqual("migrated", inventory[workload_id]["migration"]["status"])
+            self.assertEqual(destination, inventory[workload_id]["migration"]["targetTrustDomain"])
+            self.assertIn(workload_id, admitted)
+            self.assertEqual(destination, admitted[workload_id]["trustDomain"])
 
 
 if __name__ == "__main__":

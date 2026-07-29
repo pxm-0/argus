@@ -1,7 +1,7 @@
 {
   "id": "intake-os",
   "name": "Intake OS",
-  "description": "Sensitive company workload with PostgreSQL and Caddy state.",
+  "description": "Sensitive company workload running in the sealed work sandbox.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/intake-os",
   "sourcePath": "/srv/argus/workloads/intake-os/source",
@@ -27,18 +27,21 @@
     ]
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "work-sandbox",
     "originalPath": "/home/oreo/intake-os",
     "compatibilitySymlink": false,
-    "rollback": "Do not migrate without explicit P4 re-scope, database backup proof, and restore approval.",
+    "migratedAt": "2026-07-29T13:51:08Z",
+    "lastHealthCheck": "2026-07-29T13:51:08Z",
+    "rollback": "Stateful rollback requires reviewed target-write reconciliation. Keep the stopped legacy source, PostgreSQL volume, and Caddy volumes fenced until review completes.",
     "notes": [
-      "Sensitive/company workload with database and Caddy state.",
-      "Caddyfile bind mount and wildcard app bind require remediation before access promotion."
+      "Compose project intake-os is preserved in work-sandbox.",
+      "PostgreSQL and both Caddy volumes passed final restore validation.",
+      "Tailnet-only HTTPS port 8446 proxies to a root-owned Unix socket; no host port is published."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:8080",
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8446/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },

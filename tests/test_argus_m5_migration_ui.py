@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_actions import _verify_backup_artifact, migration_preflight
+from argus_common import policy_decision
 from argus_operations import TYPED_OPERATIONS, validate_typed_parameters
 
 
@@ -68,14 +69,19 @@ class MigrationUiTests(unittest.TestCase):
             result = migration_preflight("candidate")
         return result, audit
 
-    def test_planned_workload_preflight_is_available_but_cutover_is_blocked(self) -> None:
+    def test_migrated_workload_preflight_is_disabled(self) -> None:
         with patch("argus_actions.audit"):
             result = migration_preflight("hastur")
 
-        self.assertTrue(result["allowed"])
-        self.assertFalse(result["readyForCutover"])
-        self.assertIn("Restore execution is not approved.", result["blockers"])
+        self.assertFalse(result["allowed"])
+        self.assertIn("not a migration candidate", result["reason"])
         self.assertNotIn("sourcePath", result)
+
+    def test_sandbox_reconcile_only_workload_blocks_shared_access_policy(self) -> None:
+        decision = policy_decision("hastur", "none")
+        self.assertFalse(decision["allowed"])
+        self.assertEqual("access mutation disabled by workload policy", decision["reason"])
+        self.assertEqual("tailnet", decision["effective"])
 
     def test_non_candidate_workload_preflight_fails_closed(self) -> None:
         with patch("argus_actions.audit"):

@@ -13,7 +13,10 @@ class M4ReportTest(unittest.TestCase):
         placements = json.loads((ROOT / "config" / "argus" / "workload-classification.json").read_text())
         report = classification_report(workloads, legacy, placements)
         self.assertTrue(report["complete"])
-        self.assertEqual(["hello-nginx"], report["supersededLegacyClassification"])
+        self.assertEqual(
+            ["hastur", "hello-nginx", "intake-os", "kadath", "locigraph", "nodens"],
+            report["supersededLegacyClassification"],
+        )
 
         access = json.loads((ROOT / "config" / "access.json").read_text())["workloads"]["hello-nginx"]
         workload = next(item for item in workloads if item["id"] == "hello-nginx")

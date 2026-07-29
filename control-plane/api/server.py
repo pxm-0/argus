@@ -288,6 +288,8 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
     if not agent_available(domain):
         return False, f"{domain} domain agent unavailable"
     if operation_type == "health.refresh":
+        if item.get("actions", {}).get("sandboxReconcileOnly") is True:
+            return False, "health refresh disabled by workload policy"
         manifest_path = ROOT / "workloads" / workload_id / "manifest.json"
         manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
         runtime = manifest.get("runtime", item.get("runtime", {}))
@@ -313,6 +315,8 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
         preview = backup_preview(workload_id)
         return bool(preview.get("allowed")), str(preview.get("reason") or preview.get("summary", "backup disabled"))
     if operation_type == "access.apply":
+        if item.get("actions", {}).get("sandboxReconcileOnly") is True:
+            return False, "access mutation disabled by workload policy"
         desired = str(parameters.get("desired", ""))
         if desired not in {"none", "local", "tailnet"}:
             return False, "Phase 1 access state must be none, local, or tailnet"

@@ -1,7 +1,7 @@
 {
   "id": "hastur",
   "name": "Hastur",
-  "description": "Sensitive workload with SSH, auth, and data bind mounts.",
+  "description": "Sensitive workload running in the sealed personal sandbox with restored application data.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/hastur",
   "sourcePath": "/srv/argus/workloads/hastur/source",
@@ -25,18 +25,21 @@
     ]
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/hastur",
     "compatibilitySymlink": false,
-    "rollback": "Do not migrate until SSH/auth/data handling, backup exclusions, and restore isolation are approved.",
+    "migratedAt": "2026-07-29T13:23:54Z",
+    "lastHealthCheck": "2026-07-29T13:51:08Z",
+    "rollback": "Stateful rollback requires reviewed target-write reconciliation. Keep the stopped legacy source and original data bind fenced until that review is complete.",
     "notes": [
-      "Sensitive workload with SSH and auth bind mounts.",
-      "Wildcard host bind must be remediated before access promotion."
+      "SSH and auth host binds were excluded from the sandbox target.",
+      "Application data was restored into a private target volume and compared with the fixed source archive.",
+      "Tailnet-only HTTPS port 8445 proxies to a root-owned Unix socket; no host port is published."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:4173",
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8445/api/health",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },

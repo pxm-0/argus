@@ -25,21 +25,22 @@
     ]
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-sandbox",
     "originalPath": "/home/oreo/kadath",
     "compatibilitySymlink": false,
-    "rollback": "Keep /home/oreo/kadath intact. Use /home/oreo/kadath/deploy/scripts/release.sh with the previous merged SHA; the release command restores the prior Compose build and verifies readiness.",
+    "migratedAt": "2026-07-29T13:07:09Z",
+    "lastHealthCheck": "2026-07-29T13:51:08Z",
+    "rollback": "Stateful rollback requires reviewed target-write reconciliation. Keep the stopped /home/oreo/kadath source and original named volume fenced until that review is complete.",
     "notes": [
-      "Running as Docker Compose project kadath-live from /home/oreo/kadath/deploy/compose.yml.",
-      "Web and API bind only to 127.0.0.1 on ports 3000 and 3001; Tailscale Serve provides tailnet-only HTTPS on port 8443.",
-      "Postgres is not published on a host port and uses the kadath-live_postgres-data named volume.",
-      "Canonical Argus source migration into /srv/argus/workloads/kadath/source is still pending.",
-      "Release, health, backup, restore, and client-replica procedures are documented in /home/oreo/kadath/deploy/README.md."
+      "Compose project kadath-live is preserved in personal-sandbox.",
+      "Web, API, and PostgreSQL have no host-published ports.",
+      "Tailnet-only HTTPS port 8443 proxies to a root-owned Unix socket.",
+      "PostgreSQL role, database, logical contents, and TCP-auth posture passed final restore validation."
     ]
   },
   "health": {
-    "url": "http://127.0.0.1:3000",
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8443/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -66,7 +67,7 @@
   "backup": {
     "backupAllowed": false,
     "restoreAllowed": false,
-    "status": "application-managed",
+    "status": "ok",
     "source": false,
     "env": false,
     "namedVolumes": [

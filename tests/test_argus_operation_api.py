@@ -140,23 +140,34 @@ class OperationApiTests(unittest.TestCase):
                 {"operationType", "parameters"},
             )
 
-    def test_migration_preflight_preview_exposes_readiness_without_confirmation(self) -> None:
+    def test_migration_preflight_preview_disables_completed_workload(self) -> None:
         with patch.object(self.server, "agent_available", return_value=True):
             preview = self.server.operation_preview(
                 "hastur",
                 "migration.preflight",
                 {},
             )
-        self.assertTrue(preview["allowed"])
-        self.assertEqual(
-            "migration preflight enabled by manifest",
-            preview["reason"],
-        )
+            access_policy = self.server.operation_policy(
+                "hastur",
+                "access.apply",
+                {"desired": "none"},
+            )
+            health_policy = self.server.operation_policy(
+                "hastur",
+                "health.refresh",
+                {},
+            )
+        self.assertFalse(preview["allowed"])
+        self.assertIn("not a migration candidate", preview["reason"])
         self.assertEqual("", preview["confirmationPhrase"])
-        self.assertFalse(preview["migrationReadiness"]["readyForCutover"])
-        self.assertIn(
-            "Restore execution is not approved.",
-            preview["migrationReadiness"]["blockers"],
+        self.assertIsNone(preview["migrationReadiness"]["readyForCutover"])
+        self.assertEqual(
+            (False, "access mutation disabled by workload policy"),
+            access_policy,
+        )
+        self.assertEqual(
+            (False, "health refresh disabled by workload policy"),
+            health_policy,
         )
 
     def test_approval_expires_old_preview_and_releases_mutation_lock(self) -> None:

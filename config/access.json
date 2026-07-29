@@ -11,25 +11,25 @@
   "workloads": {
     "intake-os": {
       "desired": "tailnet",
-      "effective": "local",
+      "effective": "tailnet",
       "urls": {
-        "local": "http://127.0.0.1:8080",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8444",
+        "local": "",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8446",
         "cloudflare": ""
       },
-      "lastAppliedAt": "",
-      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8444 -> 127.0.0.1:8080). Pending 0.0.0.0:3000 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
+      "lastAppliedAt": "2026-07-29T13:51:08Z",
+      "lastError": ""
     },
     "hastur": {
       "desired": "tailnet",
-      "effective": "local",
+      "effective": "tailnet",
       "urls": {
-        "local": "http://127.0.0.1:4173",
+        "local": "",
         "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8445",
         "cloudflare": ""
       },
-      "lastAppliedAt": "",
-      "lastError": "Standardised on Tailscale Serve (https://oreochiserver.tail0a3a58.ts.net:8445 -> 127.0.0.1:4173). Pending 0.0.0.0:4173 -> 127.0.0.1 rebind and serve apply on oreochiserver; see docs/TAILSCALE_ACCESS_STANDARD.md."
+      "lastAppliedAt": "2026-07-29T13:23:54Z",
+      "lastError": ""
     },
     "hello-nginx": {
       "desired": "none",
@@ -43,37 +43,37 @@
       "lastError": ""
     },
     "locigraph": {
-      "desired": "none",
-      "effective": "local",
+      "desired": "tailnet",
+      "effective": "tailnet",
       "urls": {
-        "local": "http://127.0.0.1:8090",
-        "tailnet": "",
+        "local": "",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net",
         "cloudflare": ""
       },
-      "lastAppliedAt": "",
-      "lastError": "Legacy Caddy is loopback-bound on 127.0.0.1:8090; desired access remains none pending personal-sandbox migration."
+      "lastAppliedAt": "2026-07-29T13:47:44Z",
+      "lastError": ""
     },
     "kadath": {
       "desired": "tailnet",
       "effective": "tailnet",
       "urls": {
-        "local": "http://127.0.0.1:3000",
+        "local": "",
         "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8443",
         "cloudflare": ""
       },
-      "lastAppliedAt": "2026-07-19T07:26:51Z",
+      "lastAppliedAt": "2026-07-29T13:07:09Z",
       "lastError": ""
     },
     "nodens": {
-      "desired": "none",
-      "effective": "local",
+      "desired": "tailnet",
+      "effective": "tailnet",
       "urls": {
-        "local": "http://127.0.0.1:8081",
-        "tailnet": "",
+        "local": "",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8444",
         "cloudflare": ""
       },
-      "lastAppliedAt": "",
-      "lastError": "Legacy Compose publishes 0.0.0.0:8081; no Argus route is enabled and the wildcard bind must not be reproduced during personal-sandbox migration."
+      "lastAppliedAt": "2026-07-29T12:46:43Z",
+      "lastError": ""
     }
   }
 }
