@@ -1,0 +1,31 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [main, argus]
+
+permissions:
+  contents: read
+
+jobs:
+  unittest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # caddy/dashboard.Caddyfile is a generated runtime file and stays
+      # gitignored, but test_argus_m5_session_boundary asserts on it.
+      - name: Generate the private dashboard Caddy route
+        run: ./scripts/argus-caddy-dashboard-plan --json
+
+      # tests/ has no __init__.py, so `unittest discover` cannot import it.
+      - name: Run the test suite
+        run: |
+          python3 -m unittest $(
+            cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./'
+          )
