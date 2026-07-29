@@ -21,6 +21,17 @@ class PhaseOneSystemdTests(unittest.TestCase):
         self.assertIn("ProtectSystem=strict", unit)
         self.assertIn("InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock", unit)
         self.assertNotIn("ReadWritePaths=/var/lib/argus", unit)
+        self.assertIn("ARGUS_ISSUER_PUBLIC_KEY=/etc/argus/domains/%i/issuer.pub", unit)
+        self.assertIn("RuntimeDirectory=argus/domains/%i", unit)
+        self.assertNotIn("ARGUS_CAPABILITY_KEY_FILE", unit)
+
+    def test_issuer_is_separate_read_only_and_has_no_runtime_socket(self) -> None:
+        unit = (ROOT / "systemd" / "argus-capability-issuer.service").read_text()
+        self.assertIn("User=argus-issuer", unit)
+        self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
+        self.assertIn("ReadOnlyPaths=/var/lib/argus/control", unit)
+        self.assertIn("InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock", unit)
+        self.assertNotIn("DOCKER_HOST", unit)
 
 
 if __name__ == "__main__":

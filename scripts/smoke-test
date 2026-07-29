@@ -554,18 +554,34 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
 
     worker_script = repo / "scripts" / "argus_operation_worker.py"
     worker_unit = repo / "systemd" / "argus-operation-worker.service"
+    issuer_script = repo / "scripts" / "argus_capability_issuer.py"
+    issuer_unit = repo / "systemd" / "argus-capability-issuer.service"
     api_source = (repo / "control-plane" / "api" / "server.py").read_text()
-    architecture_ok = worker_script.is_file() and worker_unit.is_file()
+    architecture_ok = (
+        worker_script.is_file()
+        and worker_unit.is_file()
+        and issuer_script.is_file()
+        and issuer_unit.is_file()
+    )
     if architecture_ok:
         unit = worker_unit.read_text()
+        issuer = issuer_unit.read_text()
         architecture_ok = (
             "User=argus-worker" in unit
             and "ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3" in unit
+            and "ARGUS_AGENT_SOCKET_DIR=/run/argus/domains" in unit
             and "InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock" in unit
             and "DOCKER_HOST" not in unit
             and "dispatch_operation" not in api_source
+            and "User=argus-issuer" in issuer
+            and "ReadOnlyPaths=/var/lib/argus/control" in issuer
+            and "ARGUS_ISSUER_PRIVATE_KEY" not in unit
+            and "ARGUS_ISSUER_PRIVATE_KEY" not in api_source
         )
-    smoke.check(architecture_ok, "durable worker is separate from API and runtime sockets")
+    smoke.check(
+        architecture_ok,
+        "worker, issuer, API, and runtime sockets have separate authority",
+    )
 
     with tempfile.TemporaryDirectory() as directory:
         environment = os.environ.copy()

@@ -1,0 +1,494 @@
+#!/usr/bin/env bash
+# Install the reviewed M5 Ed25519 issuer and domain-agent socket boundary.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly ACK="--acknowledge-m5-capability-issuer"
+readonly BACKUP_ROOT="/var/backups/argus-m5-phase1/capability-issuer"
+readonly CONTROL_LEDGER="/var/lib/argus/control/operations.sqlite3"
+readonly ISSUER_USER="argus-issuer"
+readonly API_USER="oreo"
+readonly CONTROL_GROUP="argus-control"
+readonly ISSUER_SERVICE="argus-capability-issuer.service"
+readonly WORKER_SERVICE="argus-operation-worker.service"
+readonly API_SERVICE="argus-control-api.service"
+readonly LEGACY_SERVICE="argus-domain-agent-legacy-rootful.service"
+readonly SANDBOX_SERVICE="argus-domain-agent@personal-sandbox.service"
+readonly ISSUER_UNIT="/etc/systemd/system/$ISSUER_SERVICE"
+readonly WORKER_UNIT="/etc/systemd/system/$WORKER_SERVICE"
+readonly LEGACY_UNIT="/etc/systemd/system/$LEGACY_SERVICE"
+readonly DOMAIN_UNIT="/etc/systemd/system/argus-domain-agent@.service"
+readonly PRIVATE_DIR="/etc/argus/capability-issuer"
+readonly PRIVATE_KEY="$PRIVATE_DIR/ed25519.key"
+readonly DOMAIN_KEYS="/etc/argus/domains"
+readonly ACCESS_CONFIG="$ROOT/config/access.json"
+readonly M1_RUNTIME="$ROOT/runtime/argus/m1"
+readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
+readonly DASHBOARD_PUBLIC="$ROOT/control-plane/dashboard/public"
+readonly SANDBOX_USER="argus-personal-sandbox"
+
+ROLLBACK_REQUIRED=false
+ROLLBACK_DIR=""
+PRIOR_ISSUER_ACTIVE=false
+PRIOR_ISSUER_ENABLED=false
+PRIOR_WORKER_ACTIVE=false
+PRIOR_API_ACTIVE=false
+PRIOR_LEGACY_ACTIVE=false
+PRIOR_SANDBOX_ACTIVE=false
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  sudo ./scripts/argus-m5-capability-issuer --preflight" \
+    "  sudo ./scripts/argus-m5-capability-issuer --apply $ACK"
+}
+
+backup_file() {
+  local source="$1" destination="$2"
+  if [[ -e "$source" ]]; then
+    cp --preserve=mode,ownership,timestamps "$source" "$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+restore_file() {
+  local destination="$1" backup="$2"
+  if [[ -e "$backup.absent" ]]; then
+    rm -f -- "$destination"
+  else
+    install -D --preserve-timestamps "$backup" "$destination"
+    chown --reference="$backup" "$destination"
+    chmod --reference="$backup" "$destination"
+  fi
+}
+
+backup_metadata() {
+  local source="$1" destination="$2"
+  if [[ -e "$source" ]]; then
+    stat -c '%u %g %a' "$source" >"$destination"
+  else
+    : >"$destination.absent"
+  fi
+}
+
+restore_metadata() {
+  local destination="$1" backup="$2" owner group mode
+  [[ ! -e "$backup.absent" ]] || return 0
+  [[ -e "$destination" ]] || return 1
+  read -r owner group mode <"$backup"
+  [[ "$owner" =~ ^[0-9]+$ && "$group" =~ ^[0-9]+$ &&
+    "$mode" =~ ^[0-7]{3,4}$ ]] || return 1
+  chown "$owner:$group" "$destination"
+  chmod "$mode" "$destination"
+}
+
+service_active() {
+  systemctl is-active --quiet "$1"
+}
+
+wait_for_api_fail_closed() {
+  local attempt status
+  for attempt in {1..40}; do
+    status="$(
+      curl --silent --connect-timeout 1 --max-time 2 \
+        --output /dev/null --write-out '%{http_code}' \
+        http://127.0.0.1:8099/api/session ||
+        true
+    )"
+    if [[ "$status" == "401" ]]; then
+      printf 'CAPABILITY_API_READY attempts=%s directStatus=401\n' "$attempt"
+      return
+    fi
+    [[ "$status" == "000" ]] ||
+      fail "direct loopback request returned unexpected status $status"
+    systemctl is-active --quiet "$API_SERVICE" ||
+      fail "control API stopped while waiting for readiness"
+    sleep 0.25
+  done
+  fail "control API did not become ready within 10 seconds"
+}
+
+restore_service() {
+  local service="$1" active="$2"
+  if [[ "$active" == true ]]; then
+    systemctl restart "$service"
+  else
+    systemctl stop "$service" 2>/dev/null || true
+  fi
+}
+
+rollback() {
+  local failed=false
+  set +e
+  systemctl stop "$API_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+    "$ISSUER_SERVICE" ||
+    failed=true
+  systemctl stop "$WORKER_SERVICE" || failed=true
+  restore_file "$ISSUER_UNIT" "$ROLLBACK_DIR/issuer.service" || failed=true
+  restore_file "$WORKER_UNIT" "$ROLLBACK_DIR/worker.service" || failed=true
+  restore_file "$LEGACY_UNIT" "$ROLLBACK_DIR/legacy.service" || failed=true
+  restore_file "$DOMAIN_UNIT" "$ROLLBACK_DIR/domain.service" || failed=true
+  restore_file "$PRIVATE_KEY" "$ROLLBACK_DIR/ed25519.key" || failed=true
+  for domain in legacy-rootful personal-sandbox; do
+    restore_file \
+      "$DOMAIN_KEYS/$domain/issuer.pub" \
+      "$ROLLBACK_DIR/$domain-issuer.pub" || failed=true
+  done
+  restore_file "$ACCESS_CONFIG" "$ROLLBACK_DIR/access.json" || failed=true
+  for entry in \
+    "$M1_RUNTIME/state.sqlite3:m1-state.meta" \
+    "$M1_RUNTIME/access-journal.jsonl:access-journal.meta" \
+    "$AUDIT_DATABASE:audit.meta" \
+    "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
+    "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
+    "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
+    "$ROOT/config:config-dir.meta" \
+    "$ROOT/runtime/argus:argus-runtime-dir.meta" \
+    "$M1_RUNTIME:m1-runtime-dir.meta" \
+    "$DASHBOARD_PUBLIC:dashboard-public-dir.meta"; do
+    restore_metadata "${entry%%:*}" "$ROLLBACK_DIR/${entry#*:}" ||
+      failed=true
+  done
+  systemctl daemon-reload || failed=true
+  if [[ "$PRIOR_ISSUER_ENABLED" == true ]]; then
+    systemctl enable "$ISSUER_SERVICE" || failed=true
+  else
+    systemctl disable "$ISSUER_SERVICE" 2>/dev/null || true
+  fi
+  restore_service "$WORKER_SERVICE" "$PRIOR_WORKER_ACTIVE" || failed=true
+  restore_service "$ISSUER_SERVICE" "$PRIOR_ISSUER_ACTIVE" || failed=true
+  restore_service "$LEGACY_SERVICE" "$PRIOR_LEGACY_ACTIVE" || failed=true
+  restore_service "$SANDBOX_SERVICE" "$PRIOR_SANDBOX_ACTIVE" || failed=true
+  restore_service "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
+  if [[ "$failed" == true ]]; then
+    printf 'ERROR capability issuer rollback incomplete backup=%s\n' \
+      "$ROLLBACK_DIR" >&2
+    return 1
+  fi
+  printf 'CAPABILITY_ISSUER_ROLLED_BACK backup=%s\n' "$ROLLBACK_DIR" >&2
+}
+
+rollback_on_exit() {
+  local status=$?
+  trap - EXIT
+  if [[ "$ROLLBACK_REQUIRED" == true ]] && ! rollback; then
+    status=1
+  fi
+  exit "$status"
+}
+
+verify_no_unresolved_operations() {
+  python3 - "$CONTROL_LEDGER" <<'PY'
+import sqlite3
+import sys
+
+connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+try:
+    count = connection.execute(
+        """
+        SELECT COUNT(*) FROM operations
+        WHERE state IN (
+            'planned', 'awaiting-approval', 'queued', 'running',
+            'rollback-running', 'indeterminate'
+        )
+        """
+    ).fetchone()[0]
+finally:
+    connection.close()
+if count:
+    raise SystemExit(f"{count} unresolved operation(s) block issuer activation")
+print("CAPABILITY_LEDGER_OK unresolved=0")
+PY
+}
+
+preflight() {
+  [[ $EUID -eq 0 ]] || fail "run with sudo"
+  for command in chown chmod cmp cp curl date getent git grep install mktemp mv openssl \
+    python3 rm runuser sleep stat systemctl systemd-analyze useradd; do
+    command -v "$command" >/dev/null || fail "missing required command: $command"
+  done
+  [[ -f "$CONTROL_LEDGER" ]] || fail "durable operation ledger is missing"
+  getent group "$CONTROL_GROUP" >/dev/null || fail "control group is missing"
+  getent passwd "$API_USER" >/dev/null || fail "control API user is missing"
+  getent passwd "$SANDBOX_USER" >/dev/null ||
+    fail "personal-sandbox runtime user is missing"
+  systemctl is-active --quiet "$WORKER_SERVICE" ||
+    fail "durable operation worker must be active first"
+  systemctl is-active --quiet "$API_SERVICE" ||
+    fail "control API must be active first"
+  systemctl is-active --quiet "$LEGACY_SERVICE" ||
+    fail "legacy domain agent must be active first"
+  systemctl is-active --quiet "$SANDBOX_SERVICE" ||
+    fail "personal-sandbox domain agent must be active first"
+  for source in \
+    "$ROOT/scripts/argus_capabilities.py" \
+    "$ROOT/scripts/argus_capability_issuer.py" \
+    "$ROOT/scripts/argus_domain_agent.py" \
+    "$ROOT/scripts/argus_ipc.py" \
+    "$ROOT/scripts/argus-m5-runtime-permissions" \
+    "$ROOT/systemd/argus-capability-issuer.service" \
+    "$ROOT/systemd/argus-operation-worker.service" \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
+    "$ROOT/systemd/argus-domain-agent@.service"; do
+    [[ -f "$source" ]] || fail "reviewed source is missing: $source"
+  done
+  for source in \
+    "$ACCESS_CONFIG" \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE" \
+    "$DASHBOARD_PUBLIC/app.js" \
+    "$DASHBOARD_PUBLIC/index.html" \
+    "$DASHBOARD_PUBLIC/style.css"; do
+    [[ -f "$source" ]] || fail "shared writer input is missing: $source"
+  done
+  python3 -m json.tool "$ACCESS_CONFIG" >/dev/null ||
+    fail "access compatibility store is invalid"
+  verify_no_unresolved_operations
+  systemd-analyze verify \
+    "$ROOT/systemd/argus-capability-issuer.service" \
+    "$ROOT/systemd/argus-operation-worker.service" \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
+    "$ROOT/systemd/argus-domain-agent@.service"
+  ! grep -Eq 'ARGUS_CAPABILITY_KEY_FILE|hmac' \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
+    "$ROOT/systemd/argus-domain-agent@.service" ||
+    fail "domain units still reference private per-domain signing keys"
+  printf 'CAPABILITY_ISSUER_PREFLIGHT commit=%s unresolved=0 publicExposureChanged=false\n' \
+    "$(git -C "$ROOT" rev-parse --short HEAD)"
+}
+
+ensure_issuer_user() {
+  if ! getent passwd "$ISSUER_USER" >/dev/null; then
+    useradd --system --gid "$CONTROL_GROUP" --home-dir /nonexistent \
+      --shell /usr/sbin/nologin "$ISSUER_USER"
+  fi
+}
+
+install_key_material() {
+  local temporary
+  install -d -o "$ISSUER_USER" -g root -m 0700 "$PRIVATE_DIR"
+  for domain in legacy-rootful personal-sandbox; do
+    install -d -o root -g root -m 0755 "$DOMAIN_KEYS/$domain"
+  done
+  if [[ ! -f "$PRIVATE_KEY" ]]; then
+    temporary="$(mktemp "$PRIVATE_DIR/.ed25519.XXXXXX")"
+    openssl genpkey -algorithm ED25519 -out "$temporary"
+    chown "$ISSUER_USER:root" "$temporary"
+    chmod 0600 "$temporary"
+    mv "$temporary" "$PRIVATE_KEY"
+  fi
+  chown "$ISSUER_USER:root" "$PRIVATE_KEY"
+  chmod 0600 "$PRIVATE_KEY"
+  temporary="$(mktemp "$PRIVATE_DIR/.issuer-pub.XXXXXX")"
+  openssl pkey -in "$PRIVATE_KEY" -pubout -out "$temporary"
+  for domain in legacy-rootful personal-sandbox; do
+    install -o root -g root -m 0444 \
+      "$temporary" "$DOMAIN_KEYS/$domain/issuer.pub"
+  done
+  rm -f -- "$temporary"
+}
+
+validate_capability_runtime() {
+  [[ "$(stat -c '%U:%G:%a' /run/argus/capability-issuer.sock)" == \
+    "$ISSUER_USER:$CONTROL_GROUP:660" ]] ||
+    return 1
+  for domain in legacy-rootful personal-sandbox; do
+    local expected_owner
+    if [[ "$domain" == legacy-rootful ]]; then
+      expected_owner="oreo"
+    else
+      expected_owner="argus-$domain"
+    fi
+    [[ "$(stat -c '%U:%G:%a' "/run/argus/domains/$domain/agent.sock")" == \
+      "$expected_owner:$CONTROL_GROUP:660" ]] ||
+      return 1
+  done
+  [[ "$(stat -c '%U:%G:%a' /var/lib/argus/legacy-rootful/capabilities.sqlite3)" == \
+    "oreo:$CONTROL_GROUP:600" ]] ||
+    return 1
+  [[ "$(stat -c '%U:%G:%a' /var/lib/argus/personal-sandbox/capabilities.sqlite3)" == \
+    "argus-personal-sandbox:$CONTROL_GROUP:600" ]] ||
+    return 1
+  python3 - "$ROOT" <<'PY'
+import sys
+
+sys.path.insert(0, f"{sys.argv[1]}/scripts")
+from argus_ipc import request
+
+for domain in ("legacy-rootful", "personal-sandbox"):
+    result = request(
+        f"/run/argus/domains/{domain}/agent.sock",
+        {"method": "agent.status"},
+    )
+    expected = {
+        "ok": True,
+        "status": "available",
+        "trustDomain": domain,
+    }
+    if result != expected:
+        raise SystemExit(f"{domain} typed status failed")
+print("CAPABILITY_AGENT_STATUS_OK domains=2")
+PY
+}
+
+wait_for_capability_runtime() {
+  local attempt result service
+  for attempt in {1..40}; do
+    if result="$(validate_capability_runtime 2>/dev/null)"; then
+      printf '%s attempts=%s\n' "$result" "$attempt"
+      return
+    fi
+    for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE"; do
+      systemctl is-active --quiet "$service" ||
+        fail "$service stopped while waiting for capability runtime readiness"
+    done
+    sleep 0.25
+  done
+  validate_capability_runtime ||
+    fail "capability runtime did not become ready within 10 seconds"
+}
+
+validate_shared_writer_runtime() {
+  local path
+  [[ "$(stat -c '%U:%G:%a' "$ROOT/config")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$ACCESS_CONFIG")" == \
+    "$API_USER:$CONTROL_GROUP:664" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$ROOT/runtime/argus")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  [[ "$(stat -c '%U:%G:%a' "$M1_RUNTIME")" == \
+    "$API_USER:$CONTROL_GROUP:2770" ]] || return 1
+  for path in \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE"; do
+    [[ "$(stat -c '%U:%G:%a' "$path")" == \
+      "$API_USER:$CONTROL_GROUP:660" ]] || return 1
+  done
+  [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC")" == \
+    "$API_USER:$CONTROL_GROUP:2775" ]] || return 1
+  for path in app.js index.html style.css; do
+    [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC/$path")" == \
+      "$API_USER:$CONTROL_GROUP:664" ]] || return 1
+  done
+  runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
+    test -w "$ROOT/config" || return 1
+  for path in \
+    "$ACCESS_CONFIG" \
+    "$M1_RUNTIME" \
+    "$M1_RUNTIME/state.sqlite3" \
+    "$M1_RUNTIME/access-journal.jsonl" \
+    "$AUDIT_DATABASE" \
+    "$DASHBOARD_PUBLIC/app.js" \
+    "$DASHBOARD_PUBLIC/index.html" \
+    "$DASHBOARD_PUBLIC/style.css"; do
+    runuser -u "$SANDBOX_USER" -g "$CONTROL_GROUP" -- \
+      test -w "$path" || return 1
+  done
+  printf 'M5_SHARED_WRITER_OK agent=%s accessMode=0664 runtimeMode=0660 dashboardMode=0664\n' \
+    "$SANDBOX_USER"
+}
+
+apply_issuer() {
+  local backup_dir
+  preflight
+  backup_dir="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%SZ)"
+  install -d -o root -g root -m 0700 "$backup_dir"
+  backup_file "$ISSUER_UNIT" "$backup_dir/issuer.service"
+  backup_file "$WORKER_UNIT" "$backup_dir/worker.service"
+  backup_file "$LEGACY_UNIT" "$backup_dir/legacy.service"
+  backup_file "$DOMAIN_UNIT" "$backup_dir/domain.service"
+  backup_file "$PRIVATE_KEY" "$backup_dir/ed25519.key"
+  for domain in legacy-rootful personal-sandbox; do
+    backup_file \
+      "$DOMAIN_KEYS/$domain/issuer.pub" \
+      "$backup_dir/$domain-issuer.pub"
+  done
+  backup_file "$ACCESS_CONFIG" "$backup_dir/access.json"
+  for entry in \
+    "$M1_RUNTIME/state.sqlite3:m1-state.meta" \
+    "$M1_RUNTIME/access-journal.jsonl:access-journal.meta" \
+    "$AUDIT_DATABASE:audit.meta" \
+    "$DASHBOARD_PUBLIC/app.js:dashboard-app.meta" \
+    "$DASHBOARD_PUBLIC/index.html:dashboard-index.meta" \
+    "$DASHBOARD_PUBLIC/style.css:dashboard-style.meta" \
+    "$ROOT/config:config-dir.meta" \
+    "$ROOT/runtime/argus:argus-runtime-dir.meta" \
+    "$M1_RUNTIME:m1-runtime-dir.meta" \
+    "$DASHBOARD_PUBLIC:dashboard-public-dir.meta"; do
+    backup_metadata "${entry%%:*}" "$backup_dir/${entry#*:}"
+  done
+  service_active "$ISSUER_SERVICE" && PRIOR_ISSUER_ACTIVE=true
+  service_active "$WORKER_SERVICE" && PRIOR_WORKER_ACTIVE=true
+  service_active "$API_SERVICE" && PRIOR_API_ACTIVE=true
+  service_active "$LEGACY_SERVICE" && PRIOR_LEGACY_ACTIVE=true
+  service_active "$SANDBOX_SERVICE" && PRIOR_SANDBOX_ACTIVE=true
+  systemctl is-enabled --quiet "$ISSUER_SERVICE" &&
+    PRIOR_ISSUER_ENABLED=true
+  ROLLBACK_DIR="$backup_dir"
+  ROLLBACK_REQUIRED=true
+  trap rollback_on_exit EXIT
+
+  systemctl stop "$API_SERVICE"
+  systemctl stop "$WORKER_SERVICE"
+  systemctl stop "$LEGACY_SERVICE" "$SANDBOX_SERVICE"
+  systemctl stop "$ISSUER_SERVICE" 2>/dev/null || true
+  verify_no_unresolved_operations
+  "$ROOT/scripts/argus-m5-runtime-permissions"
+  ensure_issuer_user
+  install_key_material
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-capability-issuer.service" "$ISSUER_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-operation-worker.service" "$WORKER_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" "$LEGACY_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-domain-agent@.service" "$DOMAIN_UNIT"
+  systemctl daemon-reload
+  systemctl enable "$ISSUER_SERVICE"
+  systemctl restart "$WORKER_SERVICE"
+  systemctl start "$ISSUER_SERVICE"
+  systemctl restart "$LEGACY_SERVICE" "$SANDBOX_SERVICE"
+  systemctl restart "$API_SERVICE"
+
+  for service in "$WORKER_SERVICE" "$ISSUER_SERVICE" "$LEGACY_SERVICE" \
+    "$SANDBOX_SERVICE" "$API_SERVICE"; do
+    systemctl is-active --quiet "$service" || fail "$service is not active"
+  done
+  [[ "$(stat -c '%U:%G:%a' "$PRIVATE_KEY")" == "$ISSUER_USER:root:600" ]] ||
+    fail "issuer private-key ownership or mode is incorrect"
+  runuser -u oreo -- test ! -r "$PRIVATE_KEY" ||
+    fail "API identity can read the issuer private key"
+  runuser -u argus-worker -- test ! -r "$PRIVATE_KEY" ||
+    fail "worker identity can read the issuer private key"
+  validate_shared_writer_runtime ||
+    fail "shared access-writer permissions are incomplete"
+  wait_for_capability_runtime
+  wait_for_api_fail_closed
+
+  ROLLBACK_REQUIRED=false
+  trap - EXIT
+  printf 'CAPABILITY_ISSUER_APPLIED backup=%s issuerActive=true domains=2\n' \
+    "$backup_dir"
+  printf 'privateKeysInManagement=false publicExposureChanged=false secretsPrinted=false\n'
+}
+
+case "${1:-}" in
+  --preflight)
+    [[ $# -eq 1 ]] || { usage; exit 2; }
+    preflight
+    ;;
+  --apply)
+    [[ $# -eq 2 && "${2:-}" == "$ACK" ]] || { usage; exit 2; }
+    apply_issuer
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

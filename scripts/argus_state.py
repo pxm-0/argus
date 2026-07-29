@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import stat
 import tempfile
 import uuid
 from dataclasses import dataclass
@@ -89,8 +90,12 @@ def _sync_directory(path: Path) -> None:
 def _atomic_json_replace(path: Path, value: dict[str, Any]) -> None:
     """Durably replace a small control record without leaving a partial file."""
     path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.stat() if path.exists() else None
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
+        if existing is not None:
+            os.fchown(descriptor, -1, existing.st_gid)
+            os.fchmod(descriptor, stat.S_IMODE(existing.st_mode))
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(value, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")

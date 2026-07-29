@@ -1,10 +1,8 @@
 from __future__ import annotations
 
 import hashlib
-import hmac
 import json
 import os
-import secrets
 import sqlite3
 import time
 import tempfile
@@ -76,6 +74,63 @@ class OperationConflict(Exception):
     pass
 
 
+class OperationValidationError(ValueError):
+    pass
+
+
+def validate_typed_parameters(
+    operation_type: str,
+    parameters: dict[str, Any],
+) -> None:
+    schemas: dict[str, set[str]] = {
+        "health.refresh": set(),
+        "logs.preview": {"maxLines"},
+        "workload.restart": {"healthTimeoutSeconds"},
+        "backup.create": {"planRevision"},
+        "access.apply": {"desired"},
+    }
+    if operation_type not in schemas:
+        raise OperationValidationError("unsupported operation type")
+    unknown = set(parameters) - schemas[operation_type]
+    if unknown:
+        raise OperationValidationError(
+            f"unknown operation parameter(s): {','.join(sorted(unknown))}"
+        )
+    if operation_type == "logs.preview" and "maxLines" in parameters:
+        max_lines = parameters["maxLines"]
+        if (
+            isinstance(max_lines, bool)
+            or not isinstance(max_lines, int)
+            or not 1 <= max_lines <= 100
+        ):
+            raise OperationValidationError("maxLines must be an integer from 1 to 100")
+    if operation_type == "workload.restart" and "healthTimeoutSeconds" in parameters:
+        timeout = parameters["healthTimeoutSeconds"]
+        if (
+            isinstance(timeout, bool)
+            or not isinstance(timeout, int)
+            or not 1 <= timeout <= 300
+        ):
+            raise OperationValidationError(
+                "healthTimeoutSeconds must be an integer from 1 to 300"
+            )
+    if operation_type == "backup.create" and "planRevision" in parameters:
+        revision = parameters["planRevision"]
+        if (
+            not isinstance(revision, str)
+            or len(revision) != 64
+            or any(character not in "0123456789abcdef" for character in revision)
+        ):
+            raise OperationValidationError(
+                "planRevision must be a lowercase SHA-256 digest"
+            )
+    if operation_type == "access.apply":
+        if parameters.get("desired") not in {"none", "local", "tailnet"}:
+            raise OperationValidationError(
+                "desired must be none, local, or tailnet"
+            )
+
+
 class OperationLedger:
     def __init__(
         self,
@@ -84,12 +139,16 @@ class OperationLedger:
         recover_on_init: bool = False,
         require_existing: bool = False,
         migrate_schema: bool = True,
+        read_only: bool = False,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self.path = path
         self.clock = clock
         self.migrate_schema = migrate_schema
-        self.manage_permissions = not require_existing
+        self.read_only = read_only
+        self.manage_permissions = not require_existing and not read_only
+        if read_only and (not require_existing or migrate_schema):
+            raise ValueError("read-only ledger requires an existing current schema")
         if require_existing and not self.path.is_file():
             raise RuntimeError("operation ledger must be initialized by the worker")
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -98,11 +157,16 @@ class OperationLedger:
             self.recover_running()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(
+            f"file:{self.path}?mode=ro" if self.read_only else self.path,
+            timeout=5,
+            uri=self.read_only,
+        )
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("PRAGMA foreign_keys=ON")
-        connection.execute("PRAGMA synchronous=FULL")
+        if not self.read_only:
+            connection.execute("PRAGMA synchronous=FULL")
         return connection
 
     def _now(self) -> int:
@@ -199,12 +263,6 @@ class OperationLedger:
             CREATE INDEX operation_events_operation
               ON operation_events(operation_id, sequence)
             """,
-            """
-            CREATE TABLE IF NOT EXISTS used_nonces (
-                nonce TEXT PRIMARY KEY,
-                expires_at INTEGER NOT NULL
-            )
-            """,
         )
         for statement in statements:
             connection.execute(statement)
@@ -271,14 +329,6 @@ class OperationLedger:
                 """
                 CREATE INDEX IF NOT EXISTS operation_events_operation
                   ON operation_events(operation_id, sequence)
-                """
-            )
-            connection.execute(
-                """
-                CREATE TABLE IF NOT EXISTS used_nonces (
-                    nonce TEXT PRIMARY KEY,
-                    expires_at INTEGER NOT NULL
-                )
                 """
             )
             return
@@ -412,7 +462,6 @@ class OperationLedger:
                 "created_at",
                 "redacted_detail",
             },
-            "used_nonces": {"nonce", "expires_at"},
         }
         for table, required_columns in required_tables.items():
             if not self._table_exists(connection, table):
@@ -444,7 +493,8 @@ class OperationLedger:
 
     def _initialize(self) -> None:
         with self._connect() as connection:
-            connection.execute("PRAGMA journal_mode=WAL")
+            if not self.read_only:
+                connection.execute("PRAGMA journal_mode=WAL")
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             if version > SCHEMA_VERSION:
                 raise RuntimeError(
@@ -576,8 +626,7 @@ class OperationLedger:
         expected_revision: str, policy_version: str, idempotency_key: str,
         preview: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], bool]:
-        if operation_type not in TYPED_OPERATIONS:
-            raise ValueError("unsupported operation type")
+        validate_typed_parameters(operation_type, parameters)
         if not idempotency_key:
             raise ValueError("idempotency key required")
         operation_id = str(uuid.uuid4())
@@ -842,110 +891,3 @@ class OperationLedger:
                 (cutoff,),
             )
         return int(cursor.rowcount)
-
-    def consume_nonce(self, nonce: str, expires_at: int) -> bool:
-        with self._connect() as connection:
-            connection.execute("DELETE FROM used_nonces WHERE expires_at <= ?", (self._now(),))
-            try:
-                connection.execute("INSERT INTO used_nonces VALUES (?, ?)", (nonce, expires_at))
-            except sqlite3.IntegrityError:
-                return False
-        return True
-
-
-class CapabilityCodec:
-    """Domain-side capability codec. Keys belong in each agent's private runtime."""
-
-    def __init__(self, key: bytes) -> None:
-        if len(key) < 32:
-            raise ValueError("domain capability key must be at least 32 bytes")
-        self.key = key
-
-    def issue(self, claims: dict[str, Any]) -> str:
-        payload = canonical_json(claims).encode()
-        signature = hmac.new(self.key, payload, hashlib.sha256).hexdigest()
-        return f"{payload.hex()}.{signature}"
-
-    def verify(self, token: str) -> dict[str, Any]:
-        encoded, separator, signature = token.partition(".")
-        if not separator:
-            raise ValueError("malformed capability")
-        try:
-            payload = bytes.fromhex(encoded)
-        except ValueError as exc:
-            raise ValueError("malformed capability") from exc
-        expected = hmac.new(self.key, payload, hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(signature, expected):
-            raise ValueError("invalid capability signature")
-        return json.loads(payload)
-
-
-class DomainAgent:
-    def __init__(
-        self, domain_id: str, ledger: OperationLedger, codec: CapabilityCodec,
-        executor: Callable[[str, str, dict[str, Any]], dict[str, Any]],
-        policy_check: Callable[[str, str, dict[str, Any]], tuple[bool, str]],
-        revision: Callable[[str], str],
-    ) -> None:
-        self.domain_id = domain_id
-        self.ledger = ledger
-        self.codec = codec
-        self.executor = executor
-        self.policy_check = policy_check
-        self.revision = revision
-
-    def execute(self, request: dict[str, Any]) -> dict[str, Any]:
-        claims = self.codec.verify(str(request.get("capability", "")))
-        required = {
-            "operator", "workload_id", "trust_domain", "operation_type", "parameters",
-            "expected_revision", "preview_digest", "policy_version", "expires_at",
-            "nonce", "idempotency_key",
-        }
-        if not required.issubset(claims):
-            raise ValueError("incomplete capability")
-        if claims["trust_domain"] != self.domain_id:
-            raise ValueError("wrong capability domain")
-        if claims["operation_type"] not in TYPED_OPERATIONS:
-            raise ValueError("untyped operation")
-        if int(claims["expires_at"]) <= int(time.time()):
-            raise ValueError("expired capability")
-        approved = {key: request.get(key) for key in ("workload_id", "trust_domain", "operation_type", "parameters", "expected_revision", "preview_digest", "policy_version", "idempotency_key")}
-        claimed = {key: claims.get(key) for key in approved}
-        if not hmac.compare_digest(digest(approved), digest(claimed)):
-            raise ValueError("capability request mismatch")
-        if self.revision(str(claims["workload_id"])) != claims["expected_revision"]:
-            raise ValueError("stale canonical revision")
-        preview = {
-            "workloadId": claims["workload_id"],
-            "trustDomain": claims["trust_domain"],
-            "operationType": claims["operation_type"],
-            "parameters": claims["parameters"],
-            "expectedRevision": claims["expected_revision"],
-            "policyVersion": claims["policy_version"],
-        }
-        if digest(preview) != claims["preview_digest"]:
-            raise ValueError("preview digest mismatch")
-        allowed, reason = self.policy_check(str(claims["workload_id"]), str(claims["operation_type"]), dict(claims["parameters"]))
-        if not allowed:
-            raise PermissionError(reason)
-        if not self.ledger.consume_nonce(str(claims["nonce"]), int(claims["expires_at"])):
-            raise ValueError("replayed capability")
-        execution_parameters = dict(claims["parameters"])
-        execution_parameters["_operator"] = str(claims["operator"])
-        return self.executor(str(claims["operation_type"]), str(claims["workload_id"]), execution_parameters)
-
-
-def capability_claims(operation: dict[str, Any], *, ttl_seconds: int = 60) -> dict[str, Any]:
-    return {
-        "operator": operation["requested_by"],
-        "workload_id": operation["workload_id"],
-        "trust_domain": operation["trust_domain"],
-        "operation_type": operation["operation_type"],
-        "parameters": operation["parameters"],
-        "expected_revision": operation["expected_revision"],
-        "preview_digest": operation["preview_digest"],
-        "policy_version": operation["policy_version"],
-        "expires_at": int(time.time()) + ttl_seconds,
-        "nonce": secrets.token_urlsafe(24),
-        "idempotency_key": operation["idempotency_key"],
-    }

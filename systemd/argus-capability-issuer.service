@@ -1,0 +1,37 @@
+[Unit]
+Description=Argus scoped Ed25519 capability issuer
+Requires=argus-operation-worker.service
+After=argus-operation-worker.service
+Before=argus-domain-agent-legacy-rootful.service argus-domain-agent@.service
+
+[Service]
+Type=simple
+User=argus-issuer
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_ISSUER_PRIVATE_KEY=/etc/argus/capability-issuer/ed25519.key
+Environment=ARGUS_ISSUER_SOCKET=/run/argus/capability-issuer.sock
+Environment=ARGUS_ISSUER_PUBLIC_KEYS=/etc/argus/domains/legacy-rootful/issuer.pub:/etc/argus/domains/personal-sandbox/issuer.pub
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_capability_issuer.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+RuntimeDirectory=argus
+RuntimeDirectoryMode=0770
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+ReadOnlyPaths=/var/lib/argus/control
+ReadWritePaths=/run/argus
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

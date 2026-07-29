@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socketserver
 import subprocess
 import sys
@@ -12,35 +13,37 @@ from typing import Any
 
 from argus_actions import backup_apply, logs_preview, restart_apply, wait_for_health
 from argus_access_runtime import apply_tailscale_access, route_contract
+from argus_canonical import canonical_policy_version, canonical_revision
+from argus_capabilities import (
+    Ed25519Verifier,
+    ReplayStore,
+    validate_envelope,
+)
 from argus_common import by_id, load_manifest, now, policy_decision, regenerate_dashboard
+from argus_ipc import receive_frame, request as ipc_request, send_frame
 from argus_m1 import access_writer
 from argus_operations import (
-    CapabilityCodec,
-    DomainAgent,
     OperationLedger,
     canonical_json,
-    capability_claims,
+    digest,
     operation_result_failure,
+    validate_typed_parameters,
 )
 
-
-def canonical_revision(root: Path, workload_id: str) -> str:
-    import hashlib
-
-    inputs = []
-    for path in (
-        root / "config" / "workloads.json",
-        root / "config" / "policy.json",
-        root / "config" / "access.json",
-        root / "workloads" / workload_id / "manifest.json",
-    ):
-        if path.exists():
-            inputs.append(path.read_bytes())
-    return hashlib.sha256(b"\0".join(inputs)).hexdigest()
+DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
 class AgentService:
-    def __init__(self, root: Path, runtime: Path, domain: str, key: bytes) -> None:
+    def __init__(
+        self,
+        root: Path,
+        runtime: Path,
+        domain: str,
+        public_keys: list[Path],
+        *,
+        issuer_socket: Path | None = None,
+        replay_db: Path | None = None,
+    ) -> None:
         self.root = root
         self.domain = domain
         operations_db = Path(
@@ -54,15 +57,26 @@ class AgentService:
             require_existing=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") == "1",
             migrate_schema=os.environ.get("ARGUS_LEDGER_REQUIRE_EXISTING") != "1",
         )
-        self.codec = CapabilityCodec(key)
+        self.verifier = Ed25519Verifier(public_keys)
+        self.issuer_socket = issuer_socket or Path(
+            os.environ.get(
+                "ARGUS_ISSUER_SOCKET",
+                "/run/argus/capability-issuer.sock",
+            )
+        )
+        self.replay = ReplayStore(
+            replay_db
+            or Path(
+                os.environ.get(
+                    "ARGUS_CAPABILITY_REPLAY_DB",
+                    f"/var/lib/argus/{domain}/capabilities.sqlite3",
+                )
+            )
+        )
         self.active_operations: set[str] = set()
         self.active_lock = threading.Lock()
         if domain != "legacy-rootful":
             os.environ["DOCKER_HOST"] = f"unix:///var/lib/argus/{domain}/docker.sock"
-        self.agent = DomainAgent(
-            domain, self.ledger, self.codec, self.execute_typed, self.policy_check,
-            lambda workload_id: canonical_revision(root, workload_id),
-        )
 
     def policy_check(self, workload_id: str, operation_type: str, parameters: dict[str, Any]) -> tuple[bool, str]:
         item = by_id().get(workload_id)
@@ -192,8 +206,6 @@ class AgentService:
             raise ValueError("wrong operation domain")
         if operation["state"] != "running":
             raise ValueError("operation is not worker-claimed")
-        claims = capability_claims(operation)
-        capability = self.codec.issue(claims)
         heartbeat_stop = threading.Event()
 
         def heartbeat() -> None:
@@ -204,12 +216,64 @@ class AgentService:
         heartbeat_thread = threading.Thread(target=heartbeat, daemon=True)
         heartbeat_thread.start()
         try:
-            request = {
-                key: operation[key]
-                for key in ("workload_id", "trust_domain", "operation_type", "parameters", "expected_revision", "preview_digest", "policy_version", "idempotency_key")
+            issued = ipc_request(
+                str(self.issuer_socket),
+                {
+                    "method": "capability.issue",
+                    "operationId": operation_id,
+                    "trustDomain": self.domain,
+                },
+            )
+            if set(issued) != {"ok", "signedCapability"} or issued["ok"] is not True:
+                raise ValueError("capability issuer rejected operation")
+            envelope = self.verifier.verify(dict(issued["signedCapability"]))
+            validate_envelope(
+                envelope,
+                operation,
+                trust_domain=self.domain,
+            )
+            workload_id = str(operation["workload_id"])
+            if canonical_revision(self.root, workload_id) != operation["expected_revision"]:
+                raise ValueError("stale canonical revision")
+            if (
+                canonical_policy_version(self.root, workload_id)
+                != operation["policy_version"]
+            ):
+                raise ValueError("stale policy version")
+            preview = {
+                "workloadId": operation["workload_id"],
+                "trustDomain": operation["trust_domain"],
+                "operationType": operation["operation_type"],
+                "parameters": operation["parameters"],
+                "expectedRevision": operation["expected_revision"],
+                "policyVersion": operation["policy_version"],
             }
-            request["capability"] = capability
-            result = self.agent.execute(request)
+            if digest(preview) != operation["preview_digest"]:
+                raise ValueError("preview digest mismatch")
+            validate_typed_parameters(
+                str(operation["operation_type"]),
+                dict(operation["parameters"]),
+            )
+            allowed, reason = self.policy_check(
+                workload_id,
+                str(operation["operation_type"]),
+                dict(operation["parameters"]),
+            )
+            if not allowed:
+                raise PermissionError(reason)
+            if not self.replay.consume(
+                str(envelope["capabilityId"]),
+                str(envelope["nonce"]),
+                str(envelope["expiresAt"]),
+            ):
+                raise ValueError("replayed capability")
+            execution_parameters = dict(operation["parameters"])
+            execution_parameters["_operator"] = str(operation["requested_by"])
+            result = self.execute_typed(
+                str(operation["operation_type"]),
+                workload_id,
+                execution_parameters,
+            )
             failure = operation_result_failure(str(operation["operation_type"]), result)
             if failure:
                 error_class, summary = failure
@@ -265,34 +329,58 @@ class AgentService:
         threading.Thread(target=execute, daemon=True).start()
 
 
-class AgentRequestHandler(socketserver.StreamRequestHandler):
+class AgentRequestHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         try:
-            encoded = self.rfile.readline(65_537)
-            if len(encoded) > 65_536 or not encoded.endswith(b"\n"):
-                raise ValueError("typed request exceeds 64 KiB")
-            request = json.loads(encoded)
-            if set(request) != {"operationId"}:
-                raise ValueError("only typed operation IDs are accepted")
-            self.server.service.accept_operation(str(request["operationId"]))  # type: ignore[attr-defined]
-            payload = {"accepted": True, "ok": True}
+            request = receive_frame(self.request)
+            if request == {"method": "agent.status"}:
+                payload = {
+                    "ok": True,
+                    "status": "available",
+                    "trustDomain": self.server.service.domain,  # type: ignore[attr-defined]
+                }
+            else:
+                if set(request) != {"method", "operationId"}:
+                    raise ValueError("only typed operation IDs are accepted")
+                if request["method"] != "operation.execute":
+                    raise ValueError("unsupported agent method")
+                self.server.service.accept_operation(  # type: ignore[attr-defined]
+                    str(request["operationId"])
+                )
+                payload = {"accepted": True, "ok": True}
         except Exception as exc:  # noqa: BLE001
             payload = {"ok": False, "error": exc.__class__.__name__}
-        self.wfile.write((json.dumps(payload, sort_keys=True) + "\n").encode())
+        send_frame(self.request, payload)
 
 
 def main() -> int:
     root = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
     runtime = Path(os.environ.get("ARGUS_RUNTIME", root / "runtime" / "argus" / "m5"))
     domain = os.environ.get("ARGUS_TRUST_DOMAIN", "").strip()
-    key_file = Path(os.environ.get("ARGUS_CAPABILITY_KEY_FILE", ""))
-    if not domain or not key_file.is_file():
-        raise SystemExit("domain and private capability key are required")
-    key = key_file.read_bytes().strip()
-    socket_path = runtime / "agents" / f"{domain}.sock"
+    public_key = Path(os.environ.get("ARGUS_ISSUER_PUBLIC_KEY", ""))
+    previous_public_key_value = os.environ.get(
+        "ARGUS_ISSUER_PREVIOUS_PUBLIC_KEY",
+        "",
+    )
+    public_keys = [
+        public_key,
+        *(
+            [Path(previous_public_key_value)]
+            if previous_public_key_value
+            else []
+        ),
+    ]
+    if not DOMAIN_ID.fullmatch(domain) or not public_key.is_file():
+        raise SystemExit("domain and issuer public key are required")
+    socket_path = Path(
+        os.environ.get(
+            "ARGUS_AGENT_SOCKET",
+            f"/run/argus/domains/{domain}/agent.sock",
+        )
+    )
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
-    service = AgentService(root, runtime, domain, key)
+    service = AgentService(root, runtime, domain, public_keys)
     with socketserver.ThreadingUnixStreamServer(str(socket_path), AgentRequestHandler) as server:
         server.service = service  # type: ignore[attr-defined]
         os.chmod(socket_path, 0o660)

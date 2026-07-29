@@ -5,6 +5,7 @@ import unittest
 import sqlite3
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -233,6 +234,44 @@ class ArgusStateTest(unittest.TestCase):
             self.assertEqual({"reconciled": True, "alreadyApplied": False}, result)
             self.assertTrue(writer._parity(deployed))
             self.assertEqual({"reconciled": True, "alreadyApplied": True}, writer.reconcile_deployed(workload_id="project-a", expected_before=before, expected_after=after, actor="operator", trust_domain="personal-sandbox"))
+
+    def test_access_writer_atomic_replace_preserves_operator_readable_mode(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            path = root / "access.json"
+            path.write_text(json.dumps({
+                "states": ["none", "local"],
+                "workloads": {
+                    "project-a": {
+                        "desired": "local",
+                        "effective": "local",
+                        "lastError": "",
+                        "lastAppliedAt": "",
+                    },
+                },
+            }))
+            path.chmod(0o664)
+            writer = AccessMutationWriter(
+                path,
+                root / "state.sqlite3",
+                root / "audit.sqlite3",
+                root / "journal.jsonl",
+            )
+
+            writer.apply(
+                workload_id="project-a",
+                desired="none",
+                decision={
+                    "allowed": True,
+                    "plannedOnly": False,
+                    "reason": "safe local state",
+                    "effective": "none",
+                },
+                actor="operator",
+                timestamp="2026-07-29T00:00:00Z",
+            )
+
+            self.assertEqual(0o664, stat.S_IMODE(path.stat().st_mode))
 
     def test_access_writer_rejects_unreviewed_deployment_or_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

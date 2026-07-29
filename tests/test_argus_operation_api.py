@@ -122,6 +122,17 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual("1", operation["policy_version"])
         self.assertEqual(self.preview, operation["preview"])
 
+    def test_request_shapes_reject_unknown_fields(self) -> None:
+        with self.assertRaises(self.server.OperationValidationError):
+            self.server.validate_body_keys(
+                {
+                    "operationType": "health.refresh",
+                    "parameters": {},
+                    "rawCommand": "forbidden",
+                },
+                {"operationType", "parameters"},
+            )
+
     def test_approval_expires_old_preview_and_releases_mutation_lock(self) -> None:
         operation = self.create_operation()
         created = self.server.parse_timestamp(str(operation["created_at"]))
