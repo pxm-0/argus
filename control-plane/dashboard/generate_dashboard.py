@@ -1063,6 +1063,9 @@ function renderWorkload(workload) {
   const healthLabel = health.enabled ? "configured" : "not configured";
   const topologyNode = state?.topology?.nodes?.find((node) => node.id === id) || {};
   const agentAvailable = Boolean(topologyNode.agentAvailable);
+  const sandboxReconcileOnly = workload.actions?.sandboxReconcileOnly === true;
+  const healthAllowed = !sandboxReconcileOnly;
+  const accessAllowed = !sandboxReconcileOnly;
   const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
   const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
   const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
@@ -1155,7 +1158,7 @@ function renderWorkload(workload) {
         </div>
         <div class="operation-row">
           <span class="control-label">Inspect</span>
-          <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Refresh health</button>
+          <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${healthAllowed && agentAvailable ? "" : "disabled"}>Refresh health</button>
           <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
           <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
           <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
@@ -1168,10 +1171,10 @@ function renderWorkload(workload) {
       </section>
       <div class="admin-row" hidden>
         <div class="admin-heading"><strong>Mutation controls</strong><span>Step-up and typed confirmation required</span></div>
-        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}"></select></label>
+        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}" ${accessAllowed ? "" : "disabled"}></select></label>
         <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
-        <button type="button" data-preview="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Preview</button>
-        <button type="button" data-apply="${escapeHtml(id)}" ${agentAvailable ? "" : "disabled"}>Apply</button>
+        <button type="button" data-preview="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Preview</button>
+        <button type="button" data-apply="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Apply</button>
         <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
         <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
       </div>

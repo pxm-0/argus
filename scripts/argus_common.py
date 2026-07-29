@@ -289,6 +289,16 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
             "confirmationPhrase": "",
             "changes": changes,
         }
+    if workload_map[workload_id].get("actions", {}).get("sandboxReconcileOnly") is True:
+        return {
+            "allowed": False,
+            "reason": "access mutation disabled by workload policy",
+            "effective": access.get("workloads", {}).get(workload_id, {}).get("effective"),
+            "plannedOnly": False,
+            "confirmationRequired": False,
+            "confirmationPhrase": "",
+            "changes": changes,
+        }
     if desired not in access.get("states", []):
         return {
             "allowed": False,

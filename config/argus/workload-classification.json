@@ -1,7 +1,47 @@
 {
   "schemaVersion": 1,
   "workloads": {
+    "hastur": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    },
     "hello-nginx": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    },
+    "intake-os": {
+      "realm": "work",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "work-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    },
+    "kadath": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    },
+    "locigraph": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "none",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
+    },
+    "nodens": {
       "realm": "personal",
       "zone": "sandbox",
       "stage": "none",

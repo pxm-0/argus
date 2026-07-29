@@ -109,15 +109,23 @@ class DomainAgentServiceTests(unittest.TestCase):
                 self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "restart disabled by manifest"))
                 self.assertEqual(
                     service.policy_check("hastur", "migration.preflight", {}),
-                    (True, "migration preflight enabled by manifest"),
+                    (False, "migration status migrated is not a migration candidate"),
+                )
+                self.assertEqual(
+                    service.policy_check("hastur", "access.apply", {"desired": "none"}),
+                    (False, "access mutation disabled by workload policy"),
+                )
+                self.assertEqual(
+                    service.policy_check("hastur", "health.refresh", {}),
+                    (False, "health refresh disabled by workload policy"),
                 )
                 preflight = service.execute_typed(
                     "migration.preflight",
                     "hastur",
                     {},
                 )
-                self.assertTrue(preflight["allowed"])
-                self.assertFalse(preflight["readyForCutover"])
+                self.assertFalse(preflight["allowed"])
+                self.assertIn("not a migration candidate", preflight["reason"])
                 with patch(
                     "argus_domain_agent.migration_preflight",
                     return_value={"allowed": True},

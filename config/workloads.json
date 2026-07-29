@@ -5,7 +5,7 @@
     {
       "id": "intake-os",
       "name": "Intake OS",
-      "description": "Application workload discovered from Docker Compose.",
+      "description": "Intake OS migrated into the sealed work sandbox.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
@@ -25,31 +25,31 @@
         "service": ""
       },
       "network": {
-        "localUrl": "http://127.0.0.1:8080",
+        "localUrl": "",
         "internalPort": 8080,
-        "observedBindings": [
-          "0.0.0.0:3000->3000/tcp",
-          "127.0.0.1:5433->5432/tcp",
-          "127.0.0.1:8080->8080/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
         "enabled": true,
-        "url": "http://127.0.0.1:8080",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8446/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
         "open": true,
-        "health": true,
+        "health": false,
         "logs": false,
         "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
+        "sandboxReconcileOnly": true,
         "privacyToggle": true
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
+        "targetTrustDomain": "work-sandbox",
+        "migratedAt": "2026-07-29T13:51:08Z",
+        "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/intake-os",
         "compatibilitySymlink": false,
         "bindMountRisks": [
@@ -59,13 +59,17 @@
           "intake-os_intake_os_pgdata",
           "intake-os_caddy_data",
           "intake-os_caddy_config"
+        ],
+        "notes": [
+          "Cut over to the sealed work sandbox with the original Compose project name preserved.",
+          "Stateful rollback requires manual reconciliation of target-side writes."
         ]
       }
     },
     {
       "id": "hastur",
       "name": "Hastur",
-      "description": "Application workload discovered from Docker Compose.",
+      "description": "Hastur migrated into the sealed personal sandbox.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
@@ -84,29 +88,31 @@
         "service": "hastur"
       },
       "network": {
-        "localUrl": "http://127.0.0.1:4173",
+        "localUrl": "",
         "internalPort": 4173,
-        "observedBindings": [
-          "0.0.0.0:4173->4173/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
         "enabled": true,
-        "url": "http://127.0.0.1:4173",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8445/api/health",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
         "open": true,
-        "health": true,
+        "health": false,
         "logs": false,
         "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
+        "sandboxReconcileOnly": true,
         "privacyToggle": true
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
+        "targetTrustDomain": "personal-sandbox",
+        "migratedAt": "2026-07-29T13:23:54Z",
+        "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/hastur",
         "compatibilitySymlink": false,
         "bindMountRisks": [
@@ -114,14 +120,19 @@
           "/home/oreo/hastur/data -> /app/data",
           "/home/oreo/hastur/auth -> /app/auth"
         ],
-        "namedVolumeRisks": []
+        "namedVolumeRisks": [],
+        "notes": [
+          "Cut over to the sealed personal sandbox with the original Compose project name preserved.",
+          "The legacy SSH bind mount was excluded from the sealed runtime.",
+          "Stateful rollback requires manual reconciliation of target-side writes."
+        ]
       }
     },
     {
       "id": "locigraph",
       "name": "LociGraph",
-      "description": "AI-assisted claim extraction and knowledge graph app running through a production-safe legacy Compose containment override.",
-      "lifecycle": "discovered",
+      "description": "AI-assisted claim extraction and knowledge graph app migrated into the sealed personal sandbox.",
+      "lifecycle": "active",
       "kind": "web-app",
       "paths": {
         "root": "/srv/argus/workloads/locigraph",
@@ -139,29 +150,31 @@
         "service": ""
       },
       "network": {
-        "localUrl": "http://127.0.0.1:8090",
+        "localUrl": "",
         "internalPort": 80,
-        "observedBindings": [
-          "127.0.0.1:8090->80/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
         "enabled": true,
-        "url": "http://127.0.0.1:8090",
+        "url": "https://oreochiserver.tail0a3a58.ts.net/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
         "open": true,
-        "health": true,
+        "health": false,
         "logs": false,
         "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
+        "sandboxReconcileOnly": true,
         "privacyToggle": true
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
+        "targetTrustDomain": "personal-sandbox",
+        "migratedAt": "2026-07-29T13:47:44Z",
+        "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/LociGraph",
         "compatibilitySymlink": false,
         "bindMountRisks": [
@@ -173,14 +186,16 @@
           "locigraph_raw_data"
         ],
         "notes": [
-          "Operator-selected destination is personal-sandbox; admission remains denied until migration evidence is reviewed."
+          "Cut over to the sealed personal sandbox with the original Compose project name preserved.",
+          "PostgreSQL, Redis, and raw-data restore fingerprints matched the final source snapshots.",
+          "Stateful rollback requires manual reconciliation of target-side writes."
         ]
       }
     },
     {
       "id": "kadath",
       "name": "Kadath",
-      "description": "Personal strategic HQ app (life, work, relationship, and risk tracking), running as the kadath-live Docker Compose stack.",
+      "description": "Personal strategic HQ app migrated into the sealed personal sandbox.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
@@ -197,42 +212,48 @@
         "service": ""
       },
       "network": {
-        "localUrl": "http://127.0.0.1:3000",
+        "localUrl": "",
         "internalPort": 3000,
-        "observedBindings": [
-          "127.0.0.1:3000->3000/tcp",
-          "127.0.0.1:3001->3001/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
         "enabled": true,
-        "url": "http://127.0.0.1:3000",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8443/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
         "open": true,
-        "health": true,
+        "health": false,
         "logs": false,
         "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
+        "sandboxReconcileOnly": true,
         "privacyToggle": true
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
+        "targetTrustDomain": "personal-sandbox",
+        "migratedAt": "2026-07-29T13:07:09Z",
+        "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/kadath",
         "compatibilitySymlink": false,
         "bindMountRisks": [],
         "namedVolumeRisks": [
           "kadath-live_postgres-data"
+        ],
+        "notes": [
+          "Cut over to the sealed personal sandbox with the kadath-live Compose project name preserved.",
+          "PostgreSQL identity, authentication behavior, and restore fingerprint matched the final source snapshot.",
+          "Stateful rollback requires manual reconciliation of target-side writes."
         ]
       }
     },
     {
       "id": "nodens",
       "name": "Nodens",
-      "description": "Nodens website discovered from Docker Compose and retained for personal-sandbox migration.",
+      "description": "Nodens website migrated into the sealed personal sandbox.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
@@ -251,35 +272,38 @@
         "service": "nodens"
       },
       "network": {
-        "localUrl": "http://127.0.0.1:8081",
+        "localUrl": "",
         "internalPort": 80,
-        "observedBindings": [
-          "0.0.0.0:8081->80/tcp"
-        ]
+        "observedBindings": []
       },
       "health": {
         "enabled": true,
-        "url": "http://127.0.0.1:8081",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8444/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
-        "open": false,
+        "open": true,
         "health": false,
         "logs": false,
         "restart": false,
         "deploy": false,
-        "accessToggle": true,
+        "accessToggle": false,
+        "sandboxReconcileOnly": true,
         "privacyToggle": true
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
+        "targetTrustDomain": "personal-sandbox",
+        "migratedAt": "2026-07-29T12:46:43Z",
+        "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/nodens",
         "compatibilitySymlink": false,
         "bindMountRisks": [],
         "namedVolumeRisks": [],
         "notes": [
-          "Operator-selected destination is personal-sandbox; admission remains denied until migration evidence is reviewed."
+          "Cut over to the sealed personal sandbox with the original Compose project name preserved.",
+          "Stateless rollback was rehearsed successfully before the accepted cutover was reapplied."
         ]
       }
     },

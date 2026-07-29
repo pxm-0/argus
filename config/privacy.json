@@ -41,9 +41,9 @@
     },
     "nodens": {
       "privacy": "unclassified",
-      "reason": "Retained workload pending personal-sandbox admission review.",
-      "updatedAt": "2026-07-29T08:37:01Z",
-      "updatedBy": "operator-disposition"
+      "reason": "Retained workload admitted to the sealed personal sandbox after migration acceptance.",
+      "updatedAt": "2026-07-29T13:51:08Z",
+      "updatedBy": "m5-cutover-acceptance"
     }
   }
 }

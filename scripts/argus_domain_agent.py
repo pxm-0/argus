@@ -91,6 +91,8 @@ class AgentService:
         manifest = load_manifest(workload_id)
         operations = manifest.get("operations", {})
         if operation_type == "health.refresh":
+            if item.get("actions", {}).get("sandboxReconcileOnly") is True:
+                return False, "health refresh disabled by workload policy"
             runtime = manifest.get("runtime", item.get("runtime", {}))
             allowed = bool(item.get("health", {}).get("enabled", False)) or (
                 self.domain != "legacy-rootful" and runtime.get("type") == "docker-compose"
@@ -111,6 +113,8 @@ class AgentService:
         if operation_type == "backup.create":
             return bool(operations.get("backupAllowed") or operations.get("backup", {}).get("allowed") or manifest.get("backup", {}).get("backupAllowed")), "backup disabled by manifest"
         if operation_type == "access.apply":
+            if item.get("actions", {}).get("sandboxReconcileOnly") is True:
+                return False, "access mutation disabled by workload policy"
             desired = str(parameters.get("desired", ""))
             if desired not in {"none", "local", "tailnet"}:
                 return False, "Phase 1 access state must be none, local, or tailnet"
