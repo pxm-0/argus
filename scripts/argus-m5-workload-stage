@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import copy
 import fcntl
 import hashlib
 import io
@@ -24,6 +25,7 @@ import urllib.request
 
 ACK = "--acknowledge-m5-workload-stage"
 ROLLBACK_ACK = "--acknowledge-m5-workload-stage-rollback"
+CUTOVER_QUIESCE_ACK = "--acknowledge-source-writers-stopped"
 ROOT = Path("/srv/argus")
 BACKUP_ROOT = Path("/var/backups/argus-m5-workload-staging")
 STAGE_ROOT = Path("/var/lib/argus/migration-staging")
@@ -43,6 +45,14 @@ SPECS = {
         "state_quiesce": {"data": ("hastur",)},
         "exclude": (".git", "node_modules", "auth", "data", ".env"),
         "blocked_mounts": ("/home/oreo/hastur/auth", "/home/oreo/.ssh"),
+        "cutover_writers": ("hastur",),
+        "offline_command_overrides": {
+            "hastur": {
+                "packageScript": "start",
+                "expectedScript": "node src/server.mjs",
+                "command": ["node", "src/server.mjs"],
+            }
+        },
     },
     "kadath": {
         "domain": "personal-sandbox",
@@ -56,6 +66,7 @@ SPECS = {
         "state_quiesce": {},
         "exclude": (".git", "node_modules"),
         "blocked_mounts": (),
+        "cutover_writers": ("api", "web"),
     },
     "nodens": {
         "domain": "personal-sandbox",
@@ -69,6 +80,7 @@ SPECS = {
         "state_quiesce": {},
         "exclude": (".git", "node_modules", ".env"),
         "blocked_mounts": (),
+        "cutover_writers": ("nodens",),
     },
     "locigraph": {
         "domain": "personal-sandbox",
@@ -82,6 +94,7 @@ SPECS = {
         "state_quiesce": {"raw-data": ("backend", "worker")},
         "exclude": (".git", "node_modules", ".env"),
         "blocked_mounts": (),
+        "cutover_writers": ("backend", "caddy", "frontend", "worker"),
     },
     "intake-os": {
         "domain": "work-sandbox",
@@ -98,6 +111,7 @@ SPECS = {
         "state_quiesce": {},
         "exclude": (".git", "node_modules", "backups", ".env.server"),
         "blocked_mounts": ("/home/oreo/intake-os/backups",),
+        "cutover_writers": ("api", "local-proxy", "web"),
     },
 }
 DATABASE_FINGERPRINT_SQL = r"""
@@ -143,6 +157,7 @@ def run(
     check: bool = True,
     timeout: float | None = None,
     child_signal_mask: set[signal.Signals] | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess:
     preexec_fn = None
     if child_signal_mask is not None:
@@ -156,6 +171,7 @@ def run(
             stderr=subprocess.PIPE,
             start_new_session=True,
             preexec_fn=preexec_fn,
+            env=env,
         )
         caught_signal: int | None = None
         forwarded_at: float | None = None
@@ -199,6 +215,7 @@ def run(
         check=check,
         timeout=timeout,
         preexec_fn=preexec_fn,
+        env=env,
     )
 
 
@@ -433,6 +450,16 @@ def quiesced_archive_state(
     ]
     if len(containers) != len(services):
         raise StageError("state quiesce services do not match source inventory")
+    states = {
+        record["stateStatus"]
+        for record in inventory
+        if record["composeService"] in set(services)
+    }
+    if states == {"exited"}:
+        archive_state(["docker"], source, source_kind, destination)
+        return []
+    if states != {"running"}:
+        raise StageError("state quiesce services have mixed or unsafe states")
     archive_error: BaseException | None = None
     previous_mask = signal.pthread_sigmask(signal.SIG_BLOCK, HANDLED_SIGNALS)
     try:
@@ -591,7 +618,7 @@ def ensure_root_owned_directory(path: Path, mode: int = 0o700) -> None:
     os.chmod(path, mode)
 
 
-def source_inventory(spec: dict) -> list[dict]:
+def source_inventory(spec: dict, source_writers_stopped: bool = False) -> list[dict]:
     project = str(spec["project"])
     all_ids = text(
         [
@@ -611,7 +638,9 @@ def source_inventory(spec: dict) -> list[dict]:
             f"label=com.docker.compose.project={project}",
         ]
     ).splitlines()
-    if not all_ids or sorted(all_ids) != sorted(running_ids):
+    if not all_ids or (
+        not source_writers_stopped and sorted(all_ids) != sorted(running_ids)
+    ):
         raise StageError("every source Compose container must be running")
     records = []
     for identifier in sorted(all_ids):
@@ -635,8 +664,13 @@ def source_inventory(spec: dict) -> list[dict]:
         labels = payload.pop("labels") or {}
         state = payload.pop("state")
         health = (state.get("Health") or {}).get("Status", "not-configured")
-        if state.get("Status") != "running" or health not in {"healthy", "not-configured"}:
-            raise StageError("source container is not ready")
+        service = labels.get("com.docker.compose.service", "")
+        status = state.get("Status")
+        if source_writers_stopped and service in set(spec["cutover_writers"]):
+            if status != "exited":
+                raise StageError("every declared source writer must be stopped")
+        elif status != "running" or health not in {"healthy", "not-configured"}:
+            raise StageError("non-writer source container is not ready")
         if labels.get("com.docker.compose.project") != project:
             raise StageError("source Compose identity does not match")
         networks = sorted((payload.pop("networks") or {}).keys())
@@ -655,7 +689,8 @@ def source_inventory(spec: dict) -> list[dict]:
                 **payload,
                 "name": str(payload["name"]).removeprefix("/"),
                 "composeProject": project,
-                "composeService": labels.get("com.docker.compose.service", ""),
+                "composeService": service,
+                "stateStatus": status,
                 "health": health,
                 "networks": networks,
                 "mounts": mounts,
@@ -751,7 +786,9 @@ def capacity_report(spec: dict, inventory: list[dict]) -> dict:
     }
 
 
-def preflight(workload: str) -> tuple[dict, list[dict], dict]:
+def preflight(
+    workload: str, source_writers_stopped: bool = False
+) -> tuple[dict, list[dict], dict]:
     if os.geteuid() != 0:
         raise StageError("run with sudo")
     spec = SPECS[workload]
@@ -768,9 +805,10 @@ def preflight(workload: str) -> tuple[dict, list[dict], dict]:
     if text(["systemctl", "is-active", f"argus-domain-agent@{domain}.service"]) != "active":
         raise StageError("target domain agent is inactive")
     validate_state_sources(spec)
-    inventory = source_inventory(spec)
+    inventory = source_inventory(spec, source_writers_stopped)
     target_resources(user, socket, str(spec["project"]))
-    validate_health(manifest)
+    if not source_writers_stopped:
+        validate_health(manifest)
     capacity = capacity_report(spec, inventory)
     report = {
         "schemaVersion": 1,
@@ -783,43 +821,177 @@ def preflight(workload: str) -> tuple[dict, list[dict], dict]:
         "publishedPortsCreated": False,
         "publicRouteChanged": False,
         "sourceStopped": False,
+        "sourceWritersStopped": source_writers_stopped,
         "safeForStage": True,
     }
     return report, inventory, manifest
 
 
-def source_database_dump(container: str, destination: Path) -> None:
+def source_database_dump(
+    container: str,
+    destination: Path,
+    role: str,
+    database: str,
+) -> None:
     with destination.open("wb") as handle:
         run(
             [
                 "docker",
                 "exec",
                 container,
-                "sh",
-                "-ceu",
-                'exec pg_dump -U "$POSTGRES_USER" -d "$POSTGRES_DB" '
-                "--format=custom --no-owner --no-privileges",
+                "pg_dump",
+                "-U",
+                role,
+                "-d",
+                database,
+                "--format=custom",
+                "--no-owner",
+                "--no-privileges",
             ],
             stdout=handle,
         )
 
 
-def source_database_fingerprint(container: str) -> bytes:
+def source_database_environment(
+    container: str,
+) -> tuple[dict[str, str], str, str]:
+    entries = json.loads(
+        text(
+            [
+                "docker",
+                "inspect",
+                "--format",
+                "{{json .Config.Env}}",
+                container,
+            ]
+        )
+    )
+    values = {
+        entry.split("=", 1)[0]: entry.split("=", 1)[1]
+        for entry in entries
+        if "=" in entry
+    }
+    file_variables = sorted(
+        key
+        for key in (
+            "POSTGRES_USER_FILE",
+            "POSTGRES_PASSWORD_FILE",
+            "POSTGRES_DB_FILE",
+        )
+        if values.get(key)
+    )
+    if file_variables:
+        raise StageError(
+            "PostgreSQL file-based bootstrap identity requires reviewed "
+            "migration support"
+        )
+    role = values.get("POSTGRES_USER") or "postgres"
+    database = values.get("POSTGRES_DB") or role
+    if not role or not database or "\x00" in role or "\x00" in database:
+        raise StageError("PostgreSQL bootstrap identity is invalid")
+    selected = {
+        key: values[key]
+        for key in (
+            "POSTGRES_USER",
+            "POSTGRES_PASSWORD",
+            "POSTGRES_DB",
+            "POSTGRES_INITDB_ARGS",
+            "POSTGRES_HOST_AUTH_METHOD",
+            "PGDATA",
+        )
+        if values.get(key) is not None
+    }
+    if (
+        "POSTGRES_PASSWORD" not in selected
+        and selected.get("POSTGRES_HOST_AUTH_METHOD") != "trust"
+    ):
+        raise StageError(
+            "PostgreSQL bootstrap password or explicit trust mode is required"
+        )
+    selected["POSTGRES_USER"] = role
+    selected["POSTGRES_DB"] = database
+    return selected, role, database
+
+
+def source_database_fingerprint(
+    container: str,
+    role: str,
+    database: str,
+) -> bytes:
     return subprocess.run(
         [
             "docker",
             "exec",
             "-i",
             container,
-            "sh",
-            "-ceu",
-            'exec psql -X -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB"',
+            "psql",
+            "-X",
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-U",
+            role,
+            "-d",
+            database,
         ],
         input=DATABASE_FINGERPRINT_SQL.encode(),
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         check=True,
     ).stdout
+
+
+def database_tcp_authentication(
+    docker_prefix: list[str],
+    container: str,
+    role: str,
+    database: str,
+    password: str | None,
+) -> dict[str, bool]:
+    def probe(candidate: str | None) -> bool:
+        command = [
+            *docker_prefix,
+            "exec",
+        ]
+        child_environment = os.environ.copy()
+        if candidate is not None:
+            command.extend(["-e", "PGPASSWORD"])
+            child_environment["PGPASSWORD"] = candidate
+        command.extend(
+            [
+                container,
+                "psql",
+                "-X",
+                "-h",
+                "127.0.0.1",
+                "-U",
+                role,
+                "-d",
+                database,
+                "-Atc",
+                "SELECT 1",
+            ]
+        )
+        return (
+            run(
+                command,
+                check=False,
+                stdout=subprocess.DEVNULL,
+                env=child_environment,
+            ).returncode
+            == 0
+        )
+
+    if not probe(password):
+        raise StageError(
+            "PostgreSQL TCP authentication failed with captured identity"
+        )
+    rejects_incorrect = not probe(
+        f"argus-invalid-{secrets.token_hex(16)}"
+    )
+    return {
+        "capturedIdentityAccepted": True,
+        "incorrectPasswordRejected": rejects_incorrect,
+    }
 
 
 def source_redis_snapshot(container: str, destination: Path) -> int:
@@ -846,7 +1018,12 @@ def redis_archive(rdb: Path, destination: Path) -> None:
         archive.addfile(info, io.BytesIO(payload))
 
 
-def target_database_fingerprint(target: list[str], container: str) -> bytes:
+def target_database_fingerprint(
+    target: list[str],
+    container: str,
+    role: str = "postgres",
+    database: str = "postgres",
+) -> bytes:
     return subprocess.run(
         [
             *target,
@@ -858,9 +1035,9 @@ def target_database_fingerprint(target: list[str], container: str) -> bytes:
             "-v",
             "ON_ERROR_STOP=1",
             "-U",
-            "postgres",
+            role,
             "-d",
-            "postgres",
+            database,
         ],
         input=DATABASE_FINGERPRINT_SQL.encode(),
         stdout=subprocess.PIPE,
@@ -869,16 +1046,58 @@ def target_database_fingerprint(target: list[str], container: str) -> bytes:
     ).stdout
 
 
+def wait_target_database_ready(
+    target: list[str],
+    container: str,
+    role: str,
+    database: str,
+    timeout: int = 90,
+) -> None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        final_server = run(
+            [*target, "exec", container, "cat", "/proc/1/comm"],
+            check=False,
+            stdout=subprocess.PIPE,
+        )
+        ready = run(
+            [
+                *target,
+                "exec",
+                container,
+                "pg_isready",
+                "-U",
+                role,
+                "-d",
+                database,
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if (
+            final_server.returncode == 0
+            and final_server.stdout.decode().strip() == "postgres"
+            and ready.returncode == 0
+        ):
+            return
+        time.sleep(1)
+    raise StageError("isolated PostgreSQL restore target did not become ready")
+
+
 def sanitize_compose(
     rendered: dict,
     inventory: list[dict],
     stage: Path,
     spec: dict,
     state_volume_map: dict[str, str] | None = None,
+    target_image_map: dict[str, str] | None = None,
+    target_runtime_config_map: dict[str, dict] | None = None,
 ) -> tuple[dict, list[str]]:
     by_service = {record["composeService"]: record for record in inventory}
     blocked = set(spec["blocked_mounts"])
     state_volume_map = state_volume_map or {}
+    target_image_map = target_image_map or {}
+    target_runtime_config_map = target_runtime_config_map or {}
     credential_blockers: list[str] = []
     consumed_stage_volumes: dict[str, int] = {}
     services = rendered.get("services", {})
@@ -889,7 +1108,46 @@ def sanitize_compose(
             raise StageError(f"Compose service lacks a running source container: {name}")
         if service.get("environment") or service.get("env_file"):
             credential_blockers.append(f"service:{name}:runtime-environment")
-        service["image"] = record["imageId"]
+        source_image_id = str(record["imageId"])
+        service["image"] = target_image_map.get(source_image_id, source_image_id)
+        runtime_defaults = target_runtime_config_map.get(source_image_id, {})
+        for field, value in runtime_defaults.items():
+            if field == "labels":
+                image_labels = copy.deepcopy(value)
+                compose_labels = service.get("labels") or {}
+                if not isinstance(compose_labels, dict):
+                    raise StageError(
+                        f"Compose service labels are not normalized: {name}"
+                    )
+                image_labels.update(compose_labels)
+                service["labels"] = image_labels
+            else:
+                service.setdefault(field, copy.deepcopy(value))
+        command_override = (
+            spec.get("offline_command_overrides", {}).get(name)
+        )
+        if command_override:
+            package_path = stage / "source" / "package.json"
+            stage_metadata = os.lstat(stage)
+            if (
+                stage_metadata.st_uid != 0
+                or stat.S_IMODE(stage_metadata.st_mode) != 0o700
+                or stat.S_ISLNK(stage_metadata.st_mode)
+                or not stat.S_ISDIR(stage_metadata.st_mode)
+                or package_path.is_symlink()
+                or not package_path.is_file()
+            ):
+                raise StageError(
+                    f"offline command package evidence is unsafe: {name}"
+                )
+            package = json.loads(package_path.read_text())
+            script_name = str(command_override["packageScript"])
+            expected_script = str(command_override["expectedScript"])
+            if (package.get("scripts") or {}).get(script_name) != expected_script:
+                raise StageError(
+                    f"offline command package script changed: {name}"
+                )
+            service["command"] = list(command_override["command"])
         service.pop("build", None)
         service.pop("ports", None)
         service.pop("environment", None)
@@ -1062,8 +1320,193 @@ def remove_owned_volume(target: list[str], name: str, stage_id: str) -> None:
     run([*target, "volume", "rm", name], stdout=subprocess.DEVNULL)
 
 
-def apply(workload: str) -> dict:
-    report, inventory, _manifest = preflight(workload)
+def image_config(image_id: str) -> dict:
+    return json.loads(
+        text(
+            [
+                "docker",
+                "image",
+                "inspect",
+                "--format",
+                "{{json .Config}}",
+                image_id,
+            ]
+        )
+    )
+
+
+def healthcheck_for_compose(config: dict | None) -> dict | None:
+    if not config:
+        return None
+    test = config.get("Test") or []
+    if test == ["NONE"]:
+        return {"disable": True}
+    if not test:
+        return None
+    healthcheck: dict[str, object] = {"test": test}
+    for source_key, compose_key in (
+        ("Interval", "interval"),
+        ("Timeout", "timeout"),
+        ("StartPeriod", "start_period"),
+        ("StartInterval", "start_interval"),
+    ):
+        value = config.get(source_key)
+        if isinstance(value, int) and value > 0:
+            healthcheck[compose_key] = f"{value}ns"
+    retries = config.get("Retries")
+    if isinstance(retries, int) and retries > 0:
+        healthcheck["retries"] = retries
+    return healthcheck
+
+
+def image_runtime_config_for_compose(image_id: str) -> dict:
+    config = image_config(image_id)
+    if config.get("Volumes"):
+        raise StageError(
+            "rootless compatibility flattening refuses image-declared volumes"
+        )
+    unsupported = []
+    for key in (
+        "AttachStdin",
+        "AttachStdout",
+        "AttachStderr",
+        "Tty",
+        "OpenStdin",
+        "StdinOnce",
+        "NetworkDisabled",
+        "ArgsEscaped",
+    ):
+        if config.get(key):
+            unsupported.append(key)
+    for key in ("Hostname", "Domainname", "MacAddress"):
+        if config.get(key):
+            unsupported.append(key)
+    if config.get("Shell"):
+        unsupported.append("Shell")
+    if unsupported:
+        raise StageError(
+            "rootless compatibility flattening refuses unsupported image "
+            f"runtime configuration: {','.join(sorted(unsupported))}"
+        )
+    runtime: dict[str, object] = {}
+    if config.get("Entrypoint"):
+        runtime["entrypoint"] = config["Entrypoint"]
+    if config.get("Cmd"):
+        runtime["command"] = config["Cmd"]
+    if config.get("WorkingDir"):
+        runtime["working_dir"] = config["WorkingDir"]
+    if config.get("User"):
+        runtime["user"] = config["User"]
+    if config.get("StopSignal"):
+        runtime["stop_signal"] = config["StopSignal"]
+    ports = sorted((config.get("ExposedPorts") or {}).keys())
+    if ports:
+        runtime["expose"] = ports
+    labels = config.get("Labels") or {}
+    if labels:
+        runtime["labels"] = labels
+    healthcheck = healthcheck_for_compose(config.get("Healthcheck"))
+    if healthcheck is not None:
+        runtime["healthcheck"] = healthcheck
+    # Cutover injects the complete live Config.Env for every service. Keeping
+    # image Env out of import arguments avoids exposing embedded values in argv.
+    return runtime
+
+
+def validate_target_image_unpack(
+    target: list[str], image_id: str, workload: str, stage_id: str
+) -> bool:
+    container = f"argus-m5-stage-{workload}-unpack-{secrets.token_hex(4)}"
+    created = run(
+        [
+            *target,
+            "create",
+            "--name",
+            container,
+            "--label",
+            resource_label(stage_id),
+            "--network",
+            "none",
+            image_id,
+            "true",
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    if created.returncode != 0:
+        run(
+            [*target, "rm", "-f", container],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        return False
+    run([*target, "rm", "-f", container], stdout=subprocess.DEVNULL)
+    return True
+
+
+def flatten_image_for_rootless(
+    target: list[str],
+    workload: str,
+    image_id: str,
+    artifact: Path,
+    stage_id: str,
+) -> str:
+    source_container = (
+        f"argus-m5-flat-{workload}-{secrets.token_hex(6)}"
+    )
+    if (
+        run(
+            ["docker", "container", "inspect", source_container],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        ).returncode
+        == 0
+    ):
+        raise StageError("random compatibility source container unexpectedly exists")
+    try:
+        run(
+            [
+                "docker",
+                "create",
+                "--name",
+                source_container,
+                "--network",
+                "none",
+                image_id,
+                "true",
+            ],
+            stdout=subprocess.DEVNULL,
+        )
+        with artifact.open("wb") as handle:
+            run(["docker", "export", source_container], stdout=handle)
+    finally:
+        run(
+            ["docker", "rm", "-f", "-v", source_container],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+    command = [*target, "import", "--platform", "linux/amd64", "-"]
+    with artifact.open("rb") as handle:
+        flattened_id = run(command, stdin=handle, stdout=subprocess.PIPE).stdout.decode().strip()
+    if not re.fullmatch(r"sha256:[0-9a-f]{64}", flattened_id):
+        raise StageError("rootless compatibility import returned an invalid image ID")
+    try:
+        if not validate_target_image_unpack(
+            target, flattened_id, workload, stage_id
+        ):
+            raise StageError("rootless compatibility image still cannot unpack")
+    except BaseException:
+        run(
+            [*target, "image", "rm", "-f", flattened_id],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        raise
+    return flattened_id
+
+
+def apply(workload: str, source_writers_stopped: bool = False) -> dict:
+    report, inventory, _manifest = preflight(workload, source_writers_stopped)
     spec = SPECS[workload]
     domain = str(spec["domain"])
     user = f"argus-{domain}"
@@ -1123,16 +1566,71 @@ def apply(workload: str) -> dict:
             loaded = text([*target, "image", "inspect", "--format", "{{.Id}}", identifier])
             if loaded != identifier:
                 raise StageError("target image ID does not match source")
+        target_image_map: dict[str, str] = {}
+        target_runtime_config_map: dict[str, dict] = {}
+        compatibility_images: list[dict[str, object]] = []
+        for identifier in image_ids:
+            if validate_target_image_unpack(
+                target, identifier, workload, stage_id
+            ):
+                target_image_map[identifier] = identifier
+                continue
+            runtime_config = image_runtime_config_for_compose(identifier)
+            artifact = backup / f"rootfs-{identifier.removeprefix('sha256:')[:16]}.tar"
+            flattened = flatten_image_for_rootless(
+                target,
+                workload,
+                identifier,
+                artifact,
+                stage_id,
+            )
+            new_images.append(flattened)
+            target_image_map[identifier] = flattened
+            target_runtime_config_map[identifier] = runtime_config
+            compatibility_images.append(
+                {
+                    "sourceImageId": identifier,
+                    "targetImageId": flattened,
+                    "rootfsArtifact": artifact.name,
+                    "rootfsSha256": f"sha256:{sha256(artifact)}",
+                    "sourceWasPristineImageContainer": True,
+                    "runtimeConfigRestoredInCompose": sorted(runtime_config),
+                    "liveEnvironmentRestoredAtCutover": True,
+                }
+            )
 
         database_container = spec["database"]
         database_restored = False
+        database_identity_restored = False
+        database_tcp_authentication_verified = False
         state_volume_map: dict[str, str] = {}
         if database_container:
-            source_fingerprint_before = source_database_fingerprint(
-                str(database_container)
+            database_environment, database_role, database_name = (
+                source_database_environment(str(database_container))
             )
-            source_database_dump(str(database_container), backup / "database.dump")
-            source_fingerprint = source_database_fingerprint(str(database_container))
+            source_tcp_authentication = database_tcp_authentication(
+                ["docker"],
+                str(database_container),
+                database_role,
+                database_name,
+                database_environment.get("POSTGRES_PASSWORD"),
+            )
+            source_fingerprint_before = source_database_fingerprint(
+                str(database_container),
+                database_role,
+                database_name,
+            )
+            source_database_dump(
+                str(database_container),
+                backup / "database.dump",
+                database_role,
+                database_name,
+            )
+            source_fingerprint = source_database_fingerprint(
+                str(database_container),
+                database_role,
+                database_name,
+            )
             if source_fingerprint_before != source_fingerprint:
                 raise StageError("PostgreSQL source changed during logical backup")
             (backup / "database.source.fingerprint").write_bytes(source_fingerprint)
@@ -1157,37 +1655,45 @@ def apply(workload: str) -> dict:
                     state_volume_map[str(mount["source"])] = volume
                     if mount["name"]:
                         state_volume_map[str(mount["name"])] = volume
-            run(
+            database_command = [
+                *target,
+                "run",
+                "-d",
+                "--name",
+                container,
+                "--label",
+                resource_label(stage_id),
+                "--network",
+                "none",
+            ]
+            for key in sorted(database_environment):
+                database_command.extend(["-e", key])
+            database_command.extend(
                 [
-                    *target,
-                    "run",
-                    "-d",
-                    "--name",
-                    container,
-                    "--label",
-                    resource_label(stage_id),
-                    "--network",
-                    "none",
-                    "-e",
-                    "POSTGRES_HOST_AUTH_METHOD=trust",
                     "--mount",
-                    mount_argument("volume", volume, "/var/lib/postgresql/data", False),
+                    mount_argument(
+                        "volume",
+                        volume,
+                        "/var/lib/postgresql/data",
+                        False,
+                    ),
                     str(database_record["imageId"]),
-                ],
+                ]
+            )
+            child_environment = os.environ.copy()
+            child_environment.update(database_environment)
+            run(
+                database_command,
                 stdout=subprocess.DEVNULL,
+                env=child_environment,
             )
             created_containers.append(container)
-            for _ in range(90):
-                ready = run(
-                    [*target, "exec", container, "pg_isready", "-U", "postgres"],
-                    check=False,
-                    stdout=subprocess.DEVNULL,
-                )
-                if ready.returncode == 0:
-                    break
-                time.sleep(1)
-            else:
-                raise StageError("isolated PostgreSQL restore target did not become ready")
+            wait_target_database_ready(
+                target,
+                container,
+                database_role,
+                database_name,
+            )
             with (backup / "database.dump").open("rb") as dump:
                 run(
                     [
@@ -1197,18 +1703,41 @@ def apply(workload: str) -> dict:
                         container,
                         "pg_restore",
                         "-U",
-                        "postgres",
+                        database_role,
                         "-d",
-                        "postgres",
+                        database_name,
                         "--no-owner",
                         "--no-privileges",
+                        "--role",
+                        database_role,
                     ],
                     stdin=dump,
                 )
-            target_fingerprint = target_database_fingerprint(target, container)
+            target_fingerprint = target_database_fingerprint(
+                target,
+                container,
+                database_role,
+                database_name,
+            )
             (backup / "database.target.fingerprint").write_bytes(target_fingerprint)
             if source_fingerprint != target_fingerprint:
                 raise StageError("PostgreSQL logical fingerprint mismatch")
+            target_tcp_authentication = database_tcp_authentication(
+                target,
+                container,
+                database_role,
+                database_name,
+                database_environment.get("POSTGRES_PASSWORD"),
+            )
+            if (
+                target_tcp_authentication["incorrectPasswordRejected"]
+                != source_tcp_authentication["incorrectPasswordRejected"]
+            ):
+                raise StageError(
+                    "PostgreSQL source and target TCP authentication differ"
+                )
+            database_identity_restored = True
+            database_tcp_authentication_verified = True
             run([*target, "rm", "-f", container], stdout=subprocess.DEVNULL)
             created_containers.remove(container)
             database_restored = True
@@ -1341,7 +1870,13 @@ def apply(workload: str) -> dict:
             )
         )
         target_compose, credential_blockers = sanitize_compose(
-            rendered, inventory, stage, spec, state_volume_map
+            rendered,
+            inventory,
+            stage,
+            spec,
+            state_volume_map,
+            target_image_map,
+            target_runtime_config_map,
         )
         validate_sanitized_compose(target_compose, stage, str(spec["project"]))
         target_compose_path = stage / "target-compose.json"
@@ -1386,7 +1921,24 @@ def apply(workload: str) -> dict:
             "sourceImageIds": image_ids,
             "imagesLoaded": len(transfer_ids),
             "newTargetImageIds": new_images,
+            "targetImageMap": target_image_map,
+            "rootlessCompatibilityImages": compatibility_images,
+            "offlineCommandOverrides": [
+                {
+                    "service": service,
+                    "packageScript": definition["packageScript"],
+                    "expectedScript": definition["expectedScript"],
+                    "command": definition["command"],
+                }
+                for service, definition in sorted(
+                    spec.get("offline_command_overrides", {}).items()
+                )
+            ],
             "databaseRestored": database_restored,
+            "databaseIdentityRestored": database_identity_restored,
+            "databaseTcpAuthenticationVerified": (
+                database_tcp_authentication_verified
+            ),
             "stateRestored": state_results,
             "sourcePausedDuringStage": bool(quiesced_services),
             "quiescedServices": sorted(set(quiesced_services)),
@@ -1573,6 +2125,7 @@ def main() -> int:
     action.add_argument("--rollback", type=Path)
     parser.add_argument(ACK, action="store_true")
     parser.add_argument(ROLLBACK_ACK, action="store_true")
+    parser.add_argument(CUTOVER_QUIESCE_ACK, action="store_true")
     arguments = parser.parse_args()
     if arguments.apply and not getattr(arguments, ACK[2:].replace("-", "_")):
         raise StageError(f"refusing apply: add {ACK}")
@@ -1580,6 +2133,11 @@ def main() -> int:
         arguments, ROLLBACK_ACK[2:].replace("-", "_")
     ):
         raise StageError(f"refusing rollback: add {ROLLBACK_ACK}")
+    source_writers_stopped = getattr(
+        arguments, CUTOVER_QUIESCE_ACK[2:].replace("-", "_")
+    )
+    if source_writers_stopped and not arguments.apply:
+        raise StageError(f"{CUTOVER_QUIESCE_ACK} is apply-only")
     def interrupt(signum, _frame):
         raise InterruptedError(f"received signal {signum}")
 
@@ -1602,7 +2160,7 @@ def main() -> int:
     with os.fdopen(descriptor, "a+") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         if arguments.apply:
-            result = apply(arguments.workload)
+            result = apply(arguments.workload, source_writers_stopped)
         elif arguments.rollback:
             result = rollback(arguments.workload, arguments.rollback)
         else:

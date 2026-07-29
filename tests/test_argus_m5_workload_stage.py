@@ -106,6 +106,200 @@ class WorkloadStageTests(unittest.TestCase):
         self.assertTrue(sanitized["networks"]["default"]["internal"])
         self.assertEqual(["service:web:runtime-environment"], blockers)
 
+    def test_sanitized_compose_uses_verified_rootless_image_map(self) -> None:
+        rendered = {"services": {"web": {}}, "networks": {"default": {}}}
+        inventory = [
+            {
+                "composeService": "web",
+                "imageId": "sha256:source",
+                "mounts": [],
+            }
+        ]
+        sanitized, _blockers = module.sanitize_compose(
+            rendered,
+            inventory,
+            Path("/var/lib/argus/migration-staging/personal-sandbox/nodens/id"),
+            module.SPECS["nodens"],
+            target_image_map={"sha256:source": "sha256:flattened"},
+            target_runtime_config_map={
+                "sha256:source": {
+                    "command": ["server"],
+                    "healthcheck": {
+                        "test": ["CMD", "true"],
+                        "interval": "30000000000ns",
+                    },
+                }
+            },
+        )
+        self.assertEqual(
+            "sha256:flattened", sanitized["services"]["web"]["image"]
+        )
+        self.assertEqual(["server"], sanitized["services"]["web"]["command"])
+        self.assertEqual(
+            {
+                "test": ["CMD", "true"],
+                "interval": "30000000000ns",
+            },
+            sanitized["services"]["web"]["healthcheck"],
+        )
+
+    def test_image_runtime_config_is_rendered_for_compose(self) -> None:
+        original_image_config = module.image_config
+        module.image_config = lambda _image_id: {
+            "Cmd": ["server"],
+            "Entrypoint": ["/entrypoint"],
+            "Env": ["SECRET=image-default"],
+            "WorkingDir": "/app",
+            "User": "1000",
+            "StopSignal": "SIGQUIT",
+            "ExposedPorts": {"8080/tcp": {}},
+            "Labels": {"example": "value"},
+            "Healthcheck": {
+                "Test": ["CMD-SHELL", "wget -qO- localhost/healthz"],
+                "Interval": 30_000_000_000,
+                "Timeout": 3_000_000_000,
+                "StartPeriod": 5_000_000_000,
+                "Retries": 3,
+            },
+        }
+        try:
+            self.assertEqual(
+                {
+                    "command": ["server"],
+                    "entrypoint": ["/entrypoint"],
+                    "working_dir": "/app",
+                    "user": "1000",
+                    "stop_signal": "SIGQUIT",
+                    "expose": ["8080/tcp"],
+                    "labels": {"example": "value"},
+                    "healthcheck": {
+                        "test": ["CMD-SHELL", "wget -qO- localhost/healthz"],
+                        "interval": "30000000000ns",
+                        "timeout": "3000000000ns",
+                        "start_period": "5000000000ns",
+                        "retries": 3,
+                    },
+                },
+                module.image_runtime_config_for_compose("sha256:source"),
+            )
+        finally:
+            module.image_config = original_image_config
+
+    def test_flatten_import_never_places_image_environment_in_argv(self) -> None:
+        script = SCRIPT.read_text()
+        self.assertNotIn('changes.append(f"ENV {entry}")', script)
+        self.assertIn(
+            'command = [*target, "import", "--platform", "linux/amd64", "-"]',
+            script,
+        )
+
+    def test_postgres_bootstrap_identity_stays_out_of_argv(self) -> None:
+        original_text = module.text
+        module.text = lambda _command: (
+            '["POSTGRES_USER=kadath","POSTGRES_PASSWORD=private-value",'
+            '"POSTGRES_DB=kadath","PGDATA=/var/lib/postgresql/data"]'
+        )
+        try:
+            environment, role, database = module.source_database_environment(
+                "source-postgres"
+            )
+        finally:
+            module.text = original_text
+        self.assertEqual("kadath", role)
+        self.assertEqual("kadath", database)
+        self.assertEqual("private-value", environment["POSTGRES_PASSWORD"])
+        script = SCRIPT.read_text()
+        self.assertIn('database_command.extend(["-e", key])', script)
+        self.assertNotIn('"POSTGRES_HOST_AUTH_METHOD=trust"', script)
+
+    def test_postgres_default_identity_is_resolved(self) -> None:
+        original_text = module.text
+        module.text = lambda _command: '["POSTGRES_PASSWORD=private-value"]'
+        try:
+            environment, role, database = module.source_database_environment(
+                "source-postgres"
+            )
+        finally:
+            module.text = original_text
+        self.assertEqual("postgres", role)
+        self.assertEqual("postgres", database)
+        self.assertEqual("postgres", environment["POSTGRES_USER"])
+        self.assertEqual("postgres", environment["POSTGRES_DB"])
+        script = SCRIPT.read_text()
+        self.assertNotIn("$POSTGRES_USER", script)
+        self.assertNotIn("$POSTGRES_DB", script)
+
+    def test_postgres_tcp_password_is_environment_only(self) -> None:
+        original_run = module.run
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append((command, kwargs.get("env", {})))
+            return type(
+                "Completed",
+                (),
+                {"returncode": 0 if len(calls) == 1 else 1},
+            )()
+
+        module.run = fake_run
+        try:
+            result = module.database_tcp_authentication(
+                ["docker"],
+                "postgres-container",
+                "postgres",
+                "postgres",
+                "private-value",
+            )
+        finally:
+            module.run = original_run
+        self.assertTrue(result["capturedIdentityAccepted"])
+        self.assertTrue(result["incorrectPasswordRejected"])
+        for command, environment in calls:
+            self.assertIn("-e", command)
+            self.assertIn("PGPASSWORD", command)
+            self.assertNotIn("private-value", command)
+            self.assertIn("PGPASSWORD", environment)
+
+    def test_hastur_package_manager_is_not_needed_at_runtime(self) -> None:
+        override = module.SPECS["hastur"]["offline_command_overrides"][
+            "hastur"
+        ]
+        self.assertEqual("start", override["packageScript"])
+        self.assertEqual("node src/server.mjs", override["expectedScript"])
+        self.assertEqual(["node", "src/server.mjs"], override["command"])
+        script = SCRIPT.read_text()
+        self.assertIn("offline command package script changed", script)
+        self.assertIn('"offlineCommandOverrides"', script)
+
+    def test_postgres_readiness_waits_for_final_pid_one(self) -> None:
+        original_run = module.run
+        original_sleep = module.time.sleep
+        responses = [
+            (0, b"bash\n"),
+            (0, b""),
+            (0, b"postgres\n"),
+            (0, b""),
+        ]
+
+        def fake_run(_command, **_kwargs):
+            returncode, stdout = responses.pop(0)
+            return type(
+                "Completed",
+                (),
+                {"returncode": returncode, "stdout": stdout},
+            )()
+
+        module.run = fake_run
+        module.time.sleep = lambda _seconds: None
+        try:
+            module.wait_target_database_ready(
+                ["docker"], "postgres", "app", "app", timeout=1
+            )
+        finally:
+            module.run = original_run
+            module.time.sleep = original_sleep
+        self.assertEqual([], responses)
+
     def test_cleanup_resources_require_random_ownership_label(self) -> None:
         script = SCRIPT.read_text()
         self.assertIn("com.argus.m5-stage-id", script)
@@ -122,6 +316,9 @@ class WorkloadStageTests(unittest.TestCase):
         self.assertIn("compare_restored_state", script)
         self.assertIn("gnuTarContentMetadataCompare", script)
         self.assertIn("source container unpause failed", script)
+        self.assertIn("sourceWasPristineImageContainer", script)
+        self.assertIn("rootlessCompatibilityImages", script)
+        self.assertIn("docker\", \"export\", source_container", script)
         self.assertIn("--acknowledge-m5-workload-stage-rollback", script)
 
     def test_parent_only_signal_interrupts_archive_child(self) -> None:

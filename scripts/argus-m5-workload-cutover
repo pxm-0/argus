@@ -1,0 +1,1817 @@
+#!/usr/bin/env python3
+"""Fenced retained-workload cutover into sealed rootless Docker sandboxes."""
+from __future__ import annotations
+
+import argparse
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import pwd
+import shutil
+import signal
+import stat
+import subprocess
+import sys
+import time
+
+
+ROOT = Path("/srv/argus")
+STATE_ROOT = Path("/var/lib/argus/migration-cutovers")
+RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
+LOCK_PATH = Path("/run/argus-m5-workload-cutover/lock")
+UNIX_SOCKET_PATH_LIMIT = 108
+APPLY_ACK = "--acknowledge-m5-workload-cutover"
+ROLLBACK_ACK = "--acknowledge-m5-workload-cutover-rollback"
+STAGE_ACK = "--acknowledge-m5-workload-stage"
+QUIESCE_ACK = "--acknowledge-source-writers-stopped"
+HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+SPECS = {
+    "hastur": {
+        "domain": "personal-sandbox",
+        "project": "hastur",
+        "source": "/home/oreo/hastur",
+        "compose": "compose.yml",
+        "writers": ("hastur",),
+        "endpoint_service": "hastur",
+        "endpoint_port": 4173,
+        "health_path": "/api/health",
+        "tail_port": 8445,
+        "stateful": True,
+        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+    },
+    "kadath": {
+        "domain": "personal-sandbox",
+        "project": "kadath-live",
+        "source": "/home/oreo/kadath",
+        "compose": "deploy/compose.yml",
+        "writers": ("api", "web"),
+        "endpoint_service": "web",
+        "endpoint_port": 3000,
+        "health_path": "/",
+        "tail_port": 8443,
+        "stateful": True,
+        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+    },
+    "nodens": {
+        "domain": "personal-sandbox",
+        "project": "nodens",
+        "source": "/home/oreo/nodens",
+        "compose": "docker-compose.yml",
+        "writers": ("nodens",),
+        "endpoint_service": "nodens",
+        "endpoint_port": 80,
+        "health_path": "/",
+        "tail_port": 8444,
+        "stateful": False,
+        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+    },
+    "locigraph": {
+        "domain": "personal-sandbox",
+        "project": "locigraph",
+        "source": "/home/oreo/LociGraph",
+        "compose": "docker-compose.yml",
+        "writers": ("backend", "caddy", "frontend", "worker"),
+        "endpoint_service": "caddy",
+        "endpoint_port": 80,
+        "health_path": "/",
+        "tail_port": 443,
+        "stateful": True,
+        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+    },
+    "intake-os": {
+        "domain": "work-sandbox",
+        "project": "intake-os",
+        "source": "/home/oreo/intake-os",
+        "compose": "docker-compose.server.yml",
+        "writers": ("api", "local-proxy", "web"),
+        "endpoint_service": "local-proxy",
+        "endpoint_port": 8080,
+        "health_path": "/",
+        "tail_port": 8446,
+        "stateful": True,
+        "ingress_image": "sha256:cfeb0b281bc44a5a51fecde39e9e577c60d863c0b6196e6bbdf58fd00960887f",
+    },
+}
+
+
+class CutoverError(RuntimeError):
+    pass
+
+
+def run(
+    command: list[str],
+    *,
+    stdin=None,
+    stdout=None,
+    check: bool = True,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        command,
+        stdin=stdin,
+        stdout=stdout,
+        stderr=subprocess.PIPE,
+        check=check,
+        timeout=timeout,
+    )
+
+
+def output(command: list[str], timeout: float | None = None) -> bytes:
+    return run(command, stdout=subprocess.PIPE, timeout=timeout).stdout
+
+
+def text(command: list[str], timeout: float | None = None) -> str:
+    return output(command, timeout).decode().strip()
+
+
+def run_interruptible(command: list[str]) -> subprocess.CompletedProcess:
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        start_new_session=True,
+    )
+    try:
+        stdout, stderr = process.communicate()
+    except BaseException:
+        try:
+            os.killpg(process.pid, signal.SIGTERM)
+            process.wait(timeout=15)
+        except (ProcessLookupError, subprocess.TimeoutExpired):
+            try:
+                os.killpg(process.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            process.wait()
+        raise
+    completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+    if process.returncode:
+        raise subprocess.CalledProcessError(
+            process.returncode, command, output=stdout, stderr=stderr
+        )
+    return completed
+
+
+def ensure_directory(
+    path: Path, uid: int = 0, gid: int = 0, mode: int = 0o700
+) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink() or not path.is_dir():
+        raise CutoverError(f"unsafe directory: {path}")
+    os.chown(path, uid, gid)
+    os.chmod(path, mode)
+
+
+def ensure_root_anchor(path: Path, mode: int = 0o700) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    current = Path(path.anchor)
+    for part in path.parts[1:]:
+        current /= part
+        metadata = os.lstat(current)
+        if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+            raise CutoverError(f"unsafe privileged path: {current}")
+    os.chown(path, 0, 0)
+    os.chmod(path, mode)
+
+
+def atomic_write(
+    path: Path, payload: bytes, uid: int = 0, gid: int = 0, mode: int = 0o600
+) -> None:
+    directory_fd = os.open(
+        path.parent,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            path.name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | os.O_NOFOLLOW
+            | os.O_CLOEXEC,
+            mode,
+            dir_fd=directory_fd,
+        )
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fchown(descriptor, uid, gid)
+        os.fchmod(descriptor, mode)
+        os.fsync(descriptor)
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        os.close(directory_fd)
+
+
+def target_command(spec: dict, *arguments: str) -> list[str]:
+    domain = str(spec["domain"])
+    user = f"argus-{domain}"
+    return [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        f"HOME=/home/{user}",
+        "docker",
+        "--host",
+        f"unix:///var/lib/argus/{domain}/docker.sock",
+        *arguments,
+    ]
+
+
+def source_compose(spec: dict, *arguments: str) -> list[str]:
+    source = str(spec["source"])
+    return [
+        "docker",
+        "compose",
+        "--project-directory",
+        source,
+        "-p",
+        str(spec["project"]),
+        "-f",
+        str(Path(source) / str(spec["compose"])),
+        *arguments,
+    ]
+
+
+def source_container_records(spec: dict) -> list[dict]:
+    identifiers = text(
+        [
+            "docker",
+            "ps",
+            "-aq",
+            "--filter",
+            f"label=com.docker.compose.project={spec['project']}",
+        ]
+    ).splitlines()
+    if not identifiers:
+        raise CutoverError("source Compose project is absent")
+    records = []
+    for identifier in identifiers:
+        payload = json.loads(
+            text(
+                [
+                    "docker",
+                    "inspect",
+                    "--format",
+                    (
+                        '{"name":{{json .Name}},"labels":{{json .Config.Labels}},'
+                        '"environment":{{json .Config.Env}},'
+                        '"restartPolicy":{{json .HostConfig.RestartPolicy}},'
+                        '"state":{{json .State}}}'
+                    ),
+                    identifier,
+                ]
+            )
+        )
+        labels = payload["labels"] or {}
+        records.append(
+            {
+                "name": str(payload["name"]).removeprefix("/"),
+                "service": labels.get("com.docker.compose.service", ""),
+                "environment": payload["environment"] or [],
+                "restartPolicy": payload["restartPolicy"] or {},
+                "state": payload["state"],
+            }
+        )
+    return records
+
+
+def runtime_environment(spec: dict) -> dict[str, dict[str, str]]:
+    environments: dict[str, dict[str, str]] = {}
+    for record in source_container_records(spec):
+        values: dict[str, str] = {}
+        for entry in record["environment"]:
+            key, separator, value = str(entry).partition("=")
+            if separator and key:
+                values[key] = value
+        environments[str(record["service"])] = values
+    return environments
+
+
+def source_states(spec: dict) -> dict[str, str]:
+    return {
+        str(record["service"]): str(record["state"].get("Status"))
+        for record in source_container_records(spec)
+    }
+
+
+def source_restart_policies(spec: dict) -> dict[str, dict]:
+    return {
+        str(record["name"]): dict(record["restartPolicy"])
+        for record in source_container_records(spec)
+    }
+
+
+def fence_source_restart(policies: dict[str, dict]) -> None:
+    for name in sorted(policies):
+        run(["docker", "update", "--restart=no", name], stdout=subprocess.DEVNULL)
+
+
+def restore_source_restart(policies: dict[str, dict]) -> None:
+    for name, policy in sorted(policies.items()):
+        value = str(policy.get("Name") or "no")
+        maximum = int(policy.get("MaximumRetryCount") or 0)
+        if value == "on-failure" and maximum:
+            value = f"{value}:{maximum}"
+        run(
+            ["docker", "update", f"--restart={value}", name],
+            stdout=subprocess.DEVNULL,
+        )
+
+
+def wait_source_ready(workload: str, timeout: int = 300) -> None:
+    deadline = time.monotonic() + timeout
+    command = [
+        str(ROOT / "scripts" / "argus-m5-workload-stage"),
+        "--workload",
+        workload,
+        "--preflight",
+    ]
+    while time.monotonic() < deadline:
+        if run(command, check=False, stdout=subprocess.DEVNULL).returncode == 0:
+            return
+        time.sleep(2)
+    raise CutoverError("source workload did not recover")
+
+
+def wait_source_containers_ready(names: list[str], timeout: int = 180) -> None:
+    if not names:
+        return
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        ready = True
+        for name in names:
+            state = json.loads(
+                text(
+                    [
+                        "docker",
+                        "inspect",
+                        "--format",
+                        "{{json .State}}",
+                        name,
+                    ]
+                )
+            )
+            health = (state.get("Health") or {}).get(
+                "Status", "not-configured"
+            )
+            if (
+                state.get("Status") != "running"
+                or health not in {"healthy", "not-configured"}
+            ):
+                ready = False
+        if ready:
+            return
+        time.sleep(2)
+    raise CutoverError("source dependency containers did not recover")
+
+
+def source_up(workload: str, spec: dict) -> None:
+    records = source_container_records(spec)
+    writers = set(spec["writers"])
+    dependencies = [
+        record
+        for record in records
+        if str(record["service"]) not in writers
+    ]
+    writer_records = [
+        record
+        for record in records
+        if str(record["service"]) in writers
+    ]
+    if any(
+        record["state"].get("Status") not in {"exited", "running"}
+        for record in records
+    ):
+        raise CutoverError("source container recovery state is unsafe")
+    dependency_names = sorted(
+        str(record["name"])
+        for record in dependencies
+    )
+    stopped_dependencies = sorted(
+        str(record["name"])
+        for record in dependencies
+        if record["state"].get("Status") == "exited"
+    )
+    stopped_writers = sorted(
+        str(record["name"])
+        for record in writer_records
+        if record["state"].get("Status") == "exited"
+    )
+    if stopped_dependencies:
+        run(
+            ["docker", "start", *stopped_dependencies],
+            stdout=subprocess.DEVNULL,
+        )
+    wait_source_containers_ready(dependency_names)
+    if stopped_writers:
+        run(["docker", "start", *stopped_writers], stdout=subprocess.DEVNULL)
+    wait_source_ready(workload)
+
+
+def source_stop_writers(spec: dict) -> None:
+    run(
+        source_compose(
+            spec,
+            "stop",
+            "--timeout",
+            "45",
+            *[str(value) for value in spec["writers"]],
+        ),
+        stdout=subprocess.DEVNULL,
+    )
+    states = source_states(spec)
+    if any(states.get(str(service)) != "exited" for service in spec["writers"]):
+        raise CutoverError("source writer did not stop")
+
+
+def source_stop_all(spec: dict) -> None:
+    run(source_compose(spec, "stop", "--timeout", "45"), stdout=subprocess.DEVNULL)
+    if any(status != "exited" for status in source_states(spec).values()):
+        raise CutoverError("source Compose project did not fully stop")
+
+
+def rootless_child_pid(spec: dict) -> str:
+    user = f"argus-{spec['domain']}"
+    daemon_ids = text(["pgrep", "-u", user, "-x", "dockerd"]).splitlines()
+    if len(daemon_ids) != 1:
+        raise CutoverError("target rootless Docker daemon identity is ambiguous")
+    child = text(["ps", "-o", "ppid=", "-p", daemon_ids[0]])
+    command_line = Path(f"/proc/{child}/cmdline").read_bytes().replace(b"\0", b" ")
+    expected = f"--state-dir=/var/lib/argus/{spec['domain']}/rootlesskit".encode()
+    if expected not in command_line:
+        raise CutoverError("target RootlessKit namespace identity does not match")
+    return child
+
+
+def firewall_text(domain: str) -> str:
+    table = domain.replace("-", "_")
+    return (
+        f"destroy table inet argus_{table}\n"
+        f"table inet argus_{table} {{\n"
+        "  chain input { type filter hook input priority filter; policy drop; "
+        'iifname "lo" accept; }\n'
+        "  chain forward {\n"
+        "    type filter hook forward priority filter; policy drop;\n"
+        '    iifname "br-*" oifname "br-*" accept;\n'
+        "  }\n"
+        "  chain output { type filter hook output priority filter; policy drop; "
+        'oifname "lo" accept; }\n'
+        "}\n"
+    )
+
+
+def rendered_firewall_rules(config: Path, table: str) -> str:
+    return text(
+        [
+            "unshare",
+            "--net",
+            "sh",
+            "-ceu",
+            'nft -f "$1"; nft list table inet "$2"',
+            "sh",
+            str(config),
+            table,
+        ]
+    )
+
+
+def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
+    domain = str(spec["domain"])
+    destination = Path(f"/etc/argus/argus-{domain}.nft")
+    metadata = destination.stat()
+    if metadata.st_uid != 0 or not stat.S_ISREG(metadata.st_mode):
+        raise CutoverError("sandbox firewall config ownership is unsafe")
+    backup = state_dir / f"argus-{domain}.nft.before"
+    shutil.copy2(destination, backup)
+    os.chmod(backup, 0o600)
+    candidate = state_dir / f"argus-{domain}.nft.candidate"
+    candidate.write_text(firewall_text(domain))
+    os.chmod(candidate, 0o600)
+    child = rootless_child_pid(spec)
+    list_command = [
+        "nsenter",
+        "-t",
+        child,
+        "-n",
+        "nft",
+        "list",
+        "table",
+        "inet",
+        f"argus_{domain.replace('-', '_')}",
+    ]
+    rules_before = text(list_command)
+    persisted_rules = rendered_firewall_rules(
+        destination, f"argus_{domain.replace('-', '_')}"
+    )
+    if persisted_rules != rules_before:
+        raise CutoverError(
+            "sandbox firewall live rules differ from persisted policy"
+        )
+    run(["nsenter", "-t", child, "-n", "nft", "-c", "-f", str(candidate)])
+    try:
+        shutil.copyfile(candidate, destination)
+        os.chown(destination, 0, 0)
+        os.chmod(destination, 0o644)
+        run(["nsenter", "-t", child, "-n", "nft", "-f", str(destination)])
+        rules = text(list_command)
+        if 'iifname "br-*"' not in rules or 'oifname "br-*"' not in rules:
+            raise CutoverError("sandbox east-west firewall rule is not effective")
+    except BaseException:
+        shutil.copyfile(backup, destination)
+        os.chown(destination, 0, 0)
+        os.chmod(destination, 0o644)
+        run(["nsenter", "-t", child, "-n", "nft", "-f", str(destination)])
+        if text(list_command) != rules_before:
+            raise CutoverError("sandbox firewall active-rule restore failed")
+        raise
+    return backup
+
+
+def restore_firewall(spec: dict, backup: Path) -> None:
+    metadata = backup.stat()
+    if (
+        metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or backup.is_symlink()
+    ):
+        raise CutoverError("sandbox firewall backup ownership is unsafe")
+    destination = Path(f"/etc/argus/argus-{spec['domain']}.nft")
+    child = rootless_child_pid(spec)
+    run(["nsenter", "-t", child, "-n", "nft", "-c", "-f", str(backup)])
+    shutil.copyfile(backup, destination)
+    os.chown(destination, 0, 0)
+    os.chmod(destination, 0o644)
+    run(["nsenter", "-t", child, "-n", "nft", "-f", str(destination)])
+    run(
+        [
+            "nsenter",
+            "-t",
+            child,
+            "-n",
+            "nft",
+            "list",
+            "table",
+            "inet",
+            f"argus_{str(spec['domain']).replace('-', '_')}",
+        ],
+        stdout=subprocess.DEVNULL,
+    )
+    if destination.read_bytes() != backup.read_bytes():
+        raise CutoverError("sandbox firewall restore digest does not match")
+
+
+def stage_final(workload: str) -> dict:
+    completed = run_interruptible(
+        [
+            str(ROOT / "scripts" / "argus-m5-workload-stage"),
+            "--workload",
+            workload,
+            "--apply",
+            STAGE_ACK,
+            QUIESCE_ACK,
+        ]
+    )
+    lines = completed.stdout.decode().splitlines()
+    if not lines:
+        raise CutoverError("final stage produced no summary")
+    result = json.loads(lines[-1])
+    if (
+        not result.get("verified")
+        or not result.get("sourceWritersStopped")
+        or result.get("targetContainers") != 0
+        or not result.get("targetComposeValidated")
+    ):
+        raise CutoverError("final stage evidence is incomplete")
+    return result
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verified_stage_compose(workload: str, spec: dict, stage: dict) -> dict:
+    stage_id = str(stage["stageId"])
+    backup = Path(str(stage["backupPath"]))
+    expected = Path("/var/backups/argus-m5-workload-staging") / workload / stage_id
+    if (
+        backup != expected
+        or backup.is_symlink()
+        or backup.stat().st_uid != 0
+        or stat.S_IMODE(backup.stat().st_mode) != 0o700
+    ):
+        raise CutoverError("final stage backup path is unsafe")
+    subprocess.run(
+        ["sha256sum", "--check", "checksums.sha256"],
+        cwd=backup,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+        timeout=300,
+        check=True,
+    )
+    compose_path = backup / "target-compose.json"
+    metadata = compose_path.stat()
+    if (
+        compose_path.is_symlink()
+        or metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise CutoverError("final stage Compose evidence ownership is unsafe")
+    digest = f"sha256:{sha256(compose_path)}"
+    if digest != stage.get("targetComposeDigest"):
+        raise CutoverError("final stage Compose digest does not match evidence")
+    loader = importlib.machinery.SourceFileLoader(
+        "argus_m5_workload_stage_cutover_validation",
+        str(ROOT / "scripts" / "argus-m5-workload-stage"),
+    )
+    module_spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(module_spec)
+    loader.exec_module(module)
+    compose = json.loads(compose_path.read_text())
+    module.validate_sanitized_compose(
+        compose,
+        Path(str(stage["stagePath"])),
+        str(spec["project"]),
+    )
+    return compose
+
+
+def runtime_directory(workload: str, spec: dict, stage_id: str) -> Path:
+    if not stage_id:
+        raise CutoverError("runtime stage ID is empty")
+    runtime_leaf = hashlib.sha256(stage_id.encode()).hexdigest()[:16]
+    return RUNTIME_ROOT / str(spec["domain"]) / workload / runtime_leaf
+
+
+def build_runtime(
+    workload: str,
+    spec: dict,
+    stage: dict,
+    compose: dict,
+    environments: dict[str, dict[str, str]],
+) -> tuple[Path, Path, Path]:
+    domain = str(spec["domain"])
+    identity = pwd.getpwnam(f"argus-{domain}")
+    runtime_parent = RUNTIME_ROOT / domain / workload
+    ensure_root_anchor(RUNTIME_ROOT, 0o711)
+    ensure_root_anchor(RUNTIME_ROOT / domain, 0o711)
+    ensure_root_anchor(runtime_parent, 0o711)
+    runtime_dir = runtime_directory(
+        workload, spec, str(stage["stageId"])
+    )
+    ingress_dir = runtime_dir / "ingress"
+    socket_path = ingress_dir / "upstream.sock"
+    if len(os.fsencode(socket_path)) >= UNIX_SOCKET_PATH_LIMIT:
+        raise CutoverError("target ingress Unix socket path is too long")
+    if runtime_dir.exists():
+        raise CutoverError("target runtime attempt directory already exists")
+    os.mkdir(runtime_dir, 0o711)
+    os.chown(runtime_dir, 0, 0)
+    os.mkdir(ingress_dir, 0o700)
+    os.chown(ingress_dir, identity.pw_uid, identity.pw_gid)
+
+    for service, definition in compose["services"].items():
+        if service not in environments:
+            raise CutoverError(f"runtime environment is missing for service {service}")
+        definition["environment"] = environments[service]
+        definition["restart"] = "no"
+
+    ingress_config = {
+        "apps": {
+            "http": {
+                "servers": {
+                    "sandbox": {
+                        "listen": [
+                            "unix//run/argus-ingress/upstream.sock|0666"
+                        ],
+                        "routes": [
+                            {
+                                "handle": [
+                                    {
+                                        "handler": "reverse_proxy",
+                                        "upstreams": [
+                                            {
+                                                "dial": (
+                                                    f"{spec['endpoint_service']}:"
+                                                    f"{spec['endpoint_port']}"
+                                                )
+                                            }
+                                        ],
+                                    }
+                                ]
+                            }
+                        ],
+                    }
+                }
+            }
+        }
+    }
+    ingress_config_path = runtime_dir / "ingress.json"
+    atomic_write(
+        ingress_config_path,
+        (json.dumps(ingress_config, sort_keys=True) + "\n").encode(),
+        0,
+        identity.pw_gid,
+        0o640,
+    )
+    compose["services"]["argus-ingress"] = {
+        "command": ["caddy", "run", "--config", "/etc/caddy/ingress.json"],
+        "depends_on": {
+            str(spec["endpoint_service"]): {"condition": "service_started"}
+        },
+        "image": str(spec["ingress_image"]),
+        "networks": {"default": None},
+        "restart": "no",
+        "volumes": [
+            {
+                "type": "bind",
+                "source": str(ingress_config_path),
+                "target": "/etc/caddy/ingress.json",
+                "read_only": True,
+            },
+            {
+                "type": "bind",
+                "source": str(ingress_dir),
+                "target": "/run/argus-ingress",
+            },
+        ],
+    }
+    forbidden = {
+        "ports",
+        "privileged",
+        "cap_add",
+        "devices",
+        "network_mode",
+        "pid",
+        "ipc",
+        "volumes_from",
+    }
+    for service, definition in compose["services"].items():
+        present = forbidden.intersection(definition)
+        if present:
+            raise CutoverError(
+                f"target service {service} has forbidden runtime fields"
+            )
+    runtime_compose = runtime_dir / "docker-compose.json"
+    atomic_write(
+        runtime_compose,
+        (json.dumps(compose, sort_keys=True) + "\n").encode(),
+        0,
+        identity.pw_gid,
+        0o640,
+    )
+    run(
+        [
+            *target_command(
+                spec,
+                "compose",
+                "-p",
+                str(spec["project"]),
+                "-f",
+                str(runtime_compose),
+                "config",
+                "--no-interpolate",
+            )
+        ],
+        stdout=subprocess.DEVNULL,
+    )
+    return runtime_dir, runtime_compose, socket_path
+
+
+def lock_ingress_socket(socket_path: Path) -> None:
+    metadata = os.lstat(socket_path)
+    if not stat.S_ISSOCK(metadata.st_mode):
+        raise CutoverError("sandbox ingress endpoint is not a Unix socket")
+    directory = socket_path.parent
+    directory_metadata = os.lstat(directory)
+    if (
+        stat.S_ISLNK(directory_metadata.st_mode)
+        or not stat.S_ISDIR(directory_metadata.st_mode)
+    ):
+        raise CutoverError("sandbox ingress directory is unsafe")
+    os.chown(directory, 0, 0)
+    os.chmod(directory, 0o711)
+    if not stat.S_ISSOCK(os.lstat(socket_path).st_mode):
+        raise CutoverError("sandbox ingress socket changed during lock")
+
+
+def prepare_ingress_start(spec: dict, socket_path: Path) -> None:
+    directory = socket_path.parent
+    metadata = os.lstat(directory)
+    if (
+        metadata.st_uid != 0
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise CutoverError("locked ingress directory ownership is unsafe")
+    try:
+        socket_metadata = os.lstat(socket_path)
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISSOCK(socket_metadata.st_mode):
+            raise CutoverError("stale ingress endpoint is not a Unix socket")
+        os.unlink(socket_path)
+    identity = pwd.getpwnam(f"argus-{spec['domain']}")
+    os.chown(directory, identity.pw_uid, identity.pw_gid)
+    os.chmod(directory, 0o700)
+
+
+def persistence_unit_name(workload: str) -> str:
+    return f"argus-m5-workload-{workload}.service"
+
+
+def install_persistence_unit(workload: str, spec: dict) -> Path:
+    unit_name = persistence_unit_name(workload)
+    path = Path("/etc/systemd/system") / unit_name
+    timer_path = path.with_suffix(".timer")
+    if (
+        path.exists()
+        or path.is_symlink()
+        or timer_path.exists()
+        or timer_path.is_symlink()
+    ):
+        raise CutoverError("target persistence unit already exists")
+    payload = (
+        "[Unit]\n"
+        f"Description=Argus M5 {workload} sealed-sandbox runtime\n"
+        "After=network-online.target tailscaled.service "
+        f"argus-domain-agent@{spec['domain']}.service\n"
+        f"Requires=argus-domain-agent@{spec['domain']}.service\n"
+        "\n"
+        "[Service]\n"
+        "Type=oneshot\n"
+        f"ExecStart={ROOT}/scripts/argus-m5-workload-cutover "
+        f"--workload {workload} --reconcile\n"
+    )
+    timer_payload = (
+        "[Unit]\n"
+        f"Description=Retry Argus M5 {workload} runtime reconciliation\n"
+        "\n"
+        "[Timer]\n"
+        f"Unit={unit_name}\n"
+        "OnActiveSec=60s\n"
+        "OnUnitInactiveSec=60s\n"
+        "Persistent=true\n"
+        "\n"
+        "[Install]\n"
+        "WantedBy=timers.target\n"
+    )
+    try:
+        atomic_write(path, payload.encode(), mode=0o644)
+        atomic_write(timer_path, timer_payload.encode(), mode=0o644)
+        run(["systemctl", "daemon-reload"])
+        run(
+            ["systemctl", "enable", "--now", timer_path.name],
+            stdout=subprocess.DEVNULL,
+        )
+    except BaseException:
+        run(
+            ["systemctl", "disable", "--now", timer_path.name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        for candidate in (timer_path, path):
+            try:
+                if stat.S_ISREG(os.lstat(candidate).st_mode):
+                    os.unlink(candidate)
+            except FileNotFoundError:
+                pass
+        run(["systemctl", "daemon-reload"], check=False)
+        raise
+    return path
+
+
+def remove_persistence_unit(path: Path) -> None:
+    expected_parent = Path("/etc/systemd/system")
+    if path.parent != expected_parent or path.is_symlink():
+        raise CutoverError("target persistence unit path is unsafe")
+    timer_path = path.with_suffix(".timer")
+    run(
+        ["systemctl", "disable", "--now", timer_path.name],
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    for candidate in (timer_path, path):
+        metadata = os.lstat(candidate)
+        if metadata.st_uid != 0 or not stat.S_ISREG(metadata.st_mode):
+            raise CutoverError("target persistence unit ownership is unsafe")
+        os.unlink(candidate)
+    run(["systemctl", "daemon-reload"])
+
+
+def target_compose(
+    spec: dict, runtime_compose: Path, *arguments: str
+) -> list[str]:
+    return target_command(
+        spec,
+        "compose",
+        "-p",
+        str(spec["project"]),
+        "-f",
+        str(runtime_compose),
+        *arguments,
+    )
+
+
+def target_container_ids(spec: dict) -> list[str]:
+    return text(
+        [
+            *target_command(
+                spec,
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={spec['project']}",
+            )
+        ]
+    ).splitlines()
+
+
+def validate_ingress_image_unpack(spec: dict, workload: str) -> None:
+    container = f"argus-m5-ingress-unpack-{workload}-{time.time_ns()}"
+    created = run(
+        [
+            *target_command(
+                spec,
+                "create",
+                "--name",
+                container,
+                "--network",
+                "none",
+                str(spec["ingress_image"]),
+                "true",
+            )
+        ],
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    try:
+        if created.returncode != 0:
+            raise CutoverError("target ingress image cannot unpack")
+    finally:
+        run(
+            [*target_command(spec, "rm", "-f", container)],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+
+
+def wait_target_socket(spec: dict, timeout: int = 300) -> None:
+    socket = Path(f"/var/lib/argus/{spec['domain']}/docker.sock")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if socket.is_socket():
+            try:
+                ready = run(
+                    [*target_command(spec, "info")],
+                    check=False,
+                    stdout=subprocess.DEVNULL,
+                    timeout=10,
+                ).returncode == 0
+            except subprocess.TimeoutExpired:
+                ready = False
+            if ready:
+                return
+        time.sleep(2)
+    raise CutoverError("target rootless Docker daemon did not become ready")
+
+
+def require_target_absent(spec: dict) -> None:
+    if target_container_ids(spec):
+        raise CutoverError("target Compose containers remain present")
+
+
+def wait_target_ready(
+    workload: str,
+    spec: dict,
+    runtime_compose: Path,
+    socket_path: Path,
+    timeout: int = 300,
+) -> list[str]:
+    expected = len(
+        json.loads(runtime_compose.read_text())["services"]
+    )
+    deadline = time.monotonic() + timeout
+    container_ids: list[str] = []
+    while time.monotonic() < deadline:
+        container_ids = target_container_ids(spec)
+        ready = len(container_ids) == expected
+        for identifier in container_ids:
+            payload = json.loads(
+                text(
+                    [
+                        *target_command(
+                            spec,
+                            "inspect",
+                            "--format",
+                            (
+                                '{"state":{{json .State}},'
+                                '"ports":{{json .HostConfig.PortBindings}}}'
+                            ),
+                            identifier,
+                        )
+                    ]
+                )
+            )
+            state = payload["state"]
+            health = (state.get("Health") or {}).get("Status", "not-configured")
+            if (
+                state.get("Status") != "running"
+                or health not in {"healthy", "not-configured"}
+                or payload["ports"]
+            ):
+                ready = False
+        if ready and socket_path.is_socket():
+            probe = run(
+                [
+                    "curl",
+                    "--fail",
+                    "--silent",
+                    "--show-error",
+                    "--max-time",
+                    "5",
+                    "--unix-socket",
+                    str(socket_path),
+                    f"http://localhost{spec['health_path']}",
+                ],
+                check=False,
+                stdout=subprocess.DEVNULL,
+            )
+            if probe.returncode == 0:
+                return container_ids
+        time.sleep(2)
+    raise CutoverError(f"{workload} target did not become healthy")
+
+
+def serve_status() -> dict:
+    return json.loads(text(["tailscale", "serve", "status", "--json"]))
+
+
+def require_funnel_disabled() -> None:
+    status = text(["tailscale", "funnel", "status"])
+    for line in status.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("https://") and not stripped.endswith(
+            "(tailnet only)"
+        ):
+            raise CutoverError("Tailscale Funnel exposure is enabled")
+        if "funnel on" in stripped.lower():
+            raise CutoverError("Tailscale Funnel exposure is enabled")
+
+
+def tail_dns_name() -> str:
+    status = json.loads(text(["tailscale", "status", "--json"]))
+    name = str(status["Self"]["DNSName"]).rstrip(".")
+    if not name:
+        raise CutoverError("tailnet DNS name is unavailable")
+    return name
+
+
+def previous_proxy(status: dict, port: int) -> str | None:
+    suffix = f":{port}"
+    for name, site in status.get("Web", {}).items():
+        if name.endswith(suffix):
+            handler = site.get("Handlers", {}).get("/", {})
+            proxy = handler.get("Proxy")
+            return str(proxy) if proxy else None
+    return None
+
+
+def set_private_route(port: int, target: str) -> None:
+    run(
+        [
+            "tailscale",
+            "serve",
+            "--bg",
+            "--yes",
+            f"--https={port}",
+            target,
+        ],
+        stdout=subprocess.DEVNULL,
+    )
+
+
+def restore_private_route(port: int, proxy: str | None) -> None:
+    if proxy:
+        set_private_route(port, proxy)
+    else:
+        if previous_proxy(serve_status(), port) is None:
+            return
+        run(
+            ["tailscale", "serve", "--yes", f"--https={port}", "off"],
+            stdout=subprocess.DEVNULL,
+        )
+
+
+def verify_tail_route(spec: dict) -> None:
+    port = int(spec["tail_port"])
+    url = (
+        f"https://{tail_dns_name()}:{port}{spec['health_path']}"
+    )
+    for _ in range(30):
+        probe = run(
+            [
+                "curl",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--max-time",
+                "10",
+                url,
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        if probe.returncode == 0:
+            return
+        time.sleep(2)
+    raise CutoverError("tailnet-only endpoint did not become healthy")
+
+
+def preflight(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    require_funnel_disabled()
+    source = Path(str(spec["source"]))
+    compose = source / str(spec["compose"])
+    if (
+        not source.is_dir()
+        or source.is_symlink()
+        or not compose.is_file()
+        or compose.is_symlink()
+    ):
+        raise CutoverError("source Compose path is missing or unsafe")
+    states = source_states(spec)
+    if any(state != "running" for state in states.values()):
+        raise CutoverError("every source container must be running")
+    if text(
+        [
+            *target_command(
+                spec,
+                "ps",
+                "-aq",
+                "--filter",
+                f"label=com.docker.compose.project={spec['project']}",
+            )
+        ]
+    ):
+        raise CutoverError("target Compose project is not empty")
+    run(
+        [*target_command(spec, "image", "inspect", str(spec["ingress_image"]))],
+        stdout=subprocess.DEVNULL,
+    )
+    stage_report = json.loads(
+        text(
+            [
+                str(ROOT / "scripts" / "argus-m5-workload-stage"),
+                "--workload",
+                workload,
+                "--preflight",
+            ]
+        )
+    )
+    if not stage_report.get("safeForStage"):
+        raise CutoverError("final staging preflight is not safe")
+    state_path = STATE_ROOT / workload / "cutover.json"
+    journal_path = STATE_ROOT / workload / "journal.json"
+    if state_path.exists() or journal_path.exists():
+        raise CutoverError("cutover or in-progress journal state already exists")
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "composeProject": spec["project"],
+        "targetTrustDomain": spec["domain"],
+        "sourceContainers": len(states),
+        "sourceWriters": list(spec["writers"]),
+        "targetContainers": 0,
+        "tailnetPort": spec["tail_port"],
+        "publishedPorts": False,
+        "publicRoute": False,
+        "safeForCutover": True,
+    }
+
+
+def write_state(path: Path, state: dict) -> None:
+    parent = path.parent
+    metadata = os.lstat(parent)
+    if (
+        metadata.st_uid != 0
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o700
+    ):
+        raise CutoverError("cutover state directory ownership is unsafe")
+    temporary = parent / f".{path.name}.{os.getpid()}.{time.time_ns()}"
+    atomic_write(
+        temporary,
+        (json.dumps(state, sort_keys=True) + "\n").encode(),
+    )
+    os.replace(temporary, path)
+    directory_fd = os.open(
+        parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+    )
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def archive_recovered_attempt(workload: str, spec: dict) -> None:
+    state_dir = STATE_ROOT / workload
+    journal_path = state_dir / "journal.json"
+    failed_path = state_dir / "FAILED"
+    if not journal_path.exists() and not failed_path.exists():
+        return
+    if not journal_path.is_file() or not failed_path.is_file():
+        raise CutoverError("recovered cutover evidence is incomplete")
+    for path in (journal_path, failed_path):
+        metadata = os.lstat(path)
+        if (
+            metadata.st_uid != 0
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o600
+        ):
+            raise CutoverError("recovered cutover evidence ownership is unsafe")
+    journal = json.loads(journal_path.read_text())
+    failed = json.loads(failed_path.read_text())
+    if (
+        journal.get("workloadId") != workload
+        or journal.get("phase") != "source-recovered"
+        or journal.get("recoveryRequired")
+        or failed.get("workloadId") != workload
+        or not failed.get("recoveryComplete")
+        or failed.get("targetVerifiedAbsent") is not True
+    ):
+        raise CutoverError("previous cutover is not proven safely recovered")
+    require_target_absent(spec)
+    if any(status != "running" for status in source_states(spec).values()):
+        raise CutoverError("recovered source is not running")
+    if source_restart_policies(spec) != journal.get("sourceRestartPolicies"):
+        raise CutoverError("recovered source restart policies do not match")
+    current_proxy = previous_proxy(serve_status(), int(spec["tail_port"]))
+    if current_proxy != journal.get("previousTailnetProxy"):
+        raise CutoverError("recovered tailnet route does not match")
+    unit_path = Path("/etc/systemd/system") / persistence_unit_name(workload)
+    if unit_path.exists() or unit_path.with_suffix(".timer").exists():
+        raise CutoverError("recovered persistence unit still exists")
+    suffix = (
+        time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        + f"-{time.time_ns()}"
+    )
+    os.replace(journal_path, state_dir / f"journal.recovered.{suffix}.json")
+    os.replace(failed_path, state_dir / f"FAILED.recovered.{suffix}.json")
+    directory_fd = os.open(
+        state_dir,
+        os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+    )
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def apply(workload: str) -> dict:
+    spec = SPECS[workload]
+    archive_recovered_attempt(workload, spec)
+    report = preflight(workload)
+    state_dir = STATE_ROOT / workload
+    ensure_root_anchor(STATE_ROOT)
+    ensure_root_anchor(state_dir)
+    state_path = state_dir / "cutover.json"
+    failed_path = state_dir / "FAILED"
+    journal_path = state_dir / "journal.json"
+    environment = runtime_environment(spec)
+    restart_policies = source_restart_policies(spec)
+    prior_proxy = previous_proxy(serve_status(), int(spec["tail_port"]))
+    runtime_dir: Path | None = None
+    runtime_compose: Path | None = None
+    socket_path: Path | None = None
+    route_may_have_changed = False
+    source_changed = False
+    target_started = False
+    target_verified_absent = True
+    firewall_applied = False
+    firewall_backup: Path | None = None
+    persistence_unit: Path | None = None
+    restart_fenced = False
+    authority_committed = False
+    acceptance_may_exist = False
+    stage: dict | None = None
+    journal = {
+        **report,
+        "startedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        "phase": "prepared",
+        "previousTailnetProxy": prior_proxy,
+        "sourceRestartPolicies": restart_policies,
+        "targetAuthoritative": False,
+        "recoveryRequired": False,
+    }
+
+    def record_phase(phase: str, **values) -> None:
+        journal.update(values)
+        journal["phase"] = phase
+        journal["updatedAt"] = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        write_state(journal_path, journal)
+
+    record_phase("prepared")
+    try:
+        validate_ingress_image_unpack(spec, workload)
+        record_phase("ingress-image-verified")
+        firewall_backup = install_internal_firewall(spec, state_dir)
+        firewall_applied = True
+        record_phase("firewall-applied", firewallBackupPath=str(firewall_backup))
+        restart_fenced = True
+        record_phase("fencing-source-restart")
+        fence_source_restart(restart_policies)
+        source_changed = True
+        record_phase("stopping-source-writers")
+        source_stop_writers(spec)
+        record_phase("source-writers-stopped")
+        stage = stage_final(workload)
+        compose = verified_stage_compose(workload, spec, stage)
+        record_phase(
+            "final-stage-verified",
+            finalStageId=stage["stageId"],
+            finalStagePath=stage["stagePath"],
+            finalStageComposeDigest=stage["targetComposeDigest"],
+        )
+        record_phase("stopping-source")
+        source_stop_all(spec)
+        record_phase("source-stopped")
+        runtime_dir, runtime_compose, socket_path = build_runtime(
+            workload, spec, stage, compose, environment
+        )
+        record_phase(
+            "target-runtime-prepared",
+            runtimeComposePath=str(runtime_compose),
+            ingressSocketPath=str(socket_path),
+        )
+        persistence_unit = install_persistence_unit(workload, spec)
+        record_phase(
+            "target-persistence-enabled",
+            persistenceUnit=str(persistence_unit),
+        )
+        if spec["stateful"]:
+            record_phase(
+                "authority-committed",
+                targetAuthoritative=True,
+                recoveryRequired=True,
+            )
+            authority_committed = True
+        target_started = True
+        target_verified_absent = False
+        record_phase("target-starting")
+        run(
+            target_compose(spec, runtime_compose, "up", "-d"),
+            stdout=subprocess.DEVNULL,
+        )
+        record_phase("target-running")
+        container_ids = wait_target_ready(
+            workload, spec, runtime_compose, socket_path
+        )
+        lock_ingress_socket(socket_path)
+        record_phase("target-healthy", targetContainers=len(container_ids))
+        require_funnel_disabled()
+        if not authority_committed:
+            record_phase(
+                "authority-committed",
+                targetAuthoritative=True,
+                recoveryRequired=True,
+            )
+            authority_committed = True
+        route_may_have_changed = True
+        record_phase("tailnet-route-switching")
+        set_private_route(
+            int(spec["tail_port"]), f"unix:{socket_path}"
+        )
+        verify_tail_route(spec)
+        require_funnel_disabled()
+        if any(status != "exited" for status in source_states(spec).values()):
+            raise CutoverError("source restarted unexpectedly during cutover")
+        state = {
+            **report,
+            "cutoverAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+            "finalStageId": stage["stageId"],
+            "finalStagePath": stage["stagePath"],
+            "runtimeComposePath": str(runtime_compose),
+            "ingressSocketPath": str(socket_path),
+            "firewallBackupPath": str(firewall_backup),
+            "persistenceUnit": str(persistence_unit),
+            "targetContainers": len(container_ids),
+            "sourceStopped": True,
+            "targetRunning": True,
+            "targetHealthy": True,
+            "tailnetRouteHealthy": True,
+            "tailnetOnly": True,
+            "publishedPorts": False,
+            "publicRoute": False,
+            "funnelEnabled": False,
+            "previousTailnetProxy": prior_proxy,
+            "sourceRestartPolicies": restart_policies,
+            "rollbackRequiresTargetWriteReview": bool(spec["stateful"]),
+            "cutoverComplete": True,
+        }
+        record_phase(
+            "accepted",
+            targetAuthoritative=True,
+            recoveryRequired=False,
+            tailnetRouteHealthy=True,
+            cutoverComplete=True,
+        )
+        acceptance_may_exist = True
+        write_state(state_path, state)
+        return state
+    except BaseException as error:
+        recovery_errors: list[str] = []
+        acceptance_clear_failed = False
+        if acceptance_may_exist:
+            try:
+                try:
+                    acceptance_metadata = os.lstat(state_path)
+                except FileNotFoundError:
+                    pass
+                else:
+                    if (
+                        acceptance_metadata.st_uid != 0
+                        or not stat.S_ISREG(acceptance_metadata.st_mode)
+                    ):
+                        raise CutoverError(
+                            "uncertain cutover acceptance marker is unsafe"
+                        )
+                    archive = state_dir / (
+                        "cutover.recovered-before-acceptance."
+                        f"{time.time_ns()}.json"
+                    )
+                    os.replace(state_path, archive)
+                    directory_fd = os.open(
+                        state_dir,
+                        os.O_RDONLY
+                        | os.O_DIRECTORY
+                        | os.O_NOFOLLOW
+                        | os.O_CLOEXEC,
+                    )
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+            except BaseException:
+                acceptance_clear_failed = True
+                recovery_errors.append("cutover-acceptance-marker")
+        manual_authority_recovery = (
+            authority_committed and bool(spec["stateful"])
+        ) or acceptance_clear_failed
+        if manual_authority_recovery:
+            recovery_errors.append("target-authoritative-manual-recovery")
+        if route_may_have_changed and not manual_authority_recovery:
+            try:
+                restore_private_route(int(spec["tail_port"]), prior_proxy)
+            except BaseException:
+                recovery_errors.append("tailnet-route")
+        if target_started and runtime_compose is not None and not manual_authority_recovery:
+            try:
+                run(
+                    target_compose(spec, runtime_compose, "down"),
+                    stdout=subprocess.DEVNULL,
+                )
+                require_target_absent(spec)
+                target_verified_absent = True
+            except BaseException:
+                recovery_errors.append("target-compose")
+                target_verified_absent = False
+        if target_verified_absent and not manual_authority_recovery:
+            if persistence_unit is not None:
+                try:
+                    remove_persistence_unit(persistence_unit)
+                except BaseException:
+                    recovery_errors.append("target-persistence")
+            if firewall_applied and firewall_backup is not None:
+                try:
+                    restore_firewall(spec, firewall_backup)
+                except BaseException:
+                    recovery_errors.append("sandbox-firewall")
+            if restart_fenced:
+                try:
+                    restore_source_restart(restart_policies)
+                except BaseException:
+                    recovery_errors.append("source-restart-policy")
+            if source_changed:
+                try:
+                    source_up(workload, spec)
+                except BaseException:
+                    recovery_errors.append("source-compose")
+        elif source_changed and "target-authoritative-manual-recovery" not in recovery_errors:
+            recovery_errors.append("source-restart-refused-target-present")
+        try:
+            record_phase(
+                "manual-recovery-required"
+                if recovery_errors
+                else "source-recovered",
+                targetAuthoritative=manual_authority_recovery,
+                recoveryRequired=bool(recovery_errors),
+                recoveryErrors=recovery_errors,
+                failureType=type(error).__name__,
+            )
+        except BaseException:
+            recovery_errors.append("durable-journal")
+        try:
+            write_state(
+                failed_path,
+                {
+                    "schemaVersion": 1,
+                    "workloadId": workload,
+                    "errorType": type(error).__name__,
+                    "error": str(error),
+                    "finalStageId": stage.get("stageId") if stage else None,
+                    "targetAuthoritative": manual_authority_recovery,
+                    "targetVerifiedAbsent": target_verified_absent,
+                    "recoveryComplete": not recovery_errors,
+                    "recoveryErrors": recovery_errors,
+                    "sourceRestoreAttempted": source_changed
+                    and target_verified_absent
+                    and not manual_authority_recovery,
+                    "publicRoute": False,
+                },
+            )
+        except BaseException:
+            pass
+        raise
+
+
+def reconcile(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    wait_target_socket(spec)
+    state_dir = STATE_ROOT / workload
+    state_path = state_dir / "cutover.json"
+    metadata = os.lstat(state_path)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise CutoverError("cutover evidence ownership is unsafe")
+    state = json.loads(state_path.read_text())
+    if (
+        state.get("workloadId") != workload
+        or not state.get("cutoverComplete")
+        or not state.get("targetRunning")
+    ):
+        raise CutoverError("accepted cutover evidence is required")
+    if any(status != "exited" for status in source_states(spec).values()):
+        raise CutoverError("legacy source is not fenced")
+    for record in source_container_records(spec):
+        if (record["restartPolicy"] or {}).get("Name") != "no":
+            raise CutoverError("legacy source restart policy is not fenced")
+    runtime_compose = Path(str(state["runtimeComposePath"]))
+    expected_runtime = runtime_directory(
+        workload,
+        spec,
+        str(state["finalStageId"]),
+    )
+    socket_path = Path(str(state["ingressSocketPath"]))
+    if (
+        runtime_compose != expected_runtime / "docker-compose.json"
+        or socket_path != expected_runtime / "ingress" / "upstream.sock"
+        or runtime_compose.is_symlink()
+        or not runtime_compose.is_file()
+    ):
+        raise CutoverError("accepted runtime paths are unsafe")
+    identity = pwd.getpwnam(f"argus-{spec['domain']}")
+    runtime_metadata = os.lstat(runtime_compose)
+    if (
+        runtime_metadata.st_uid != 0
+        or runtime_metadata.st_gid != identity.pw_gid
+        or stat.S_IMODE(runtime_metadata.st_mode) != 0o640
+    ):
+        raise CutoverError("accepted runtime Compose ownership is unsafe")
+    for directory in (
+        RUNTIME_ROOT,
+        RUNTIME_ROOT / str(spec["domain"]),
+        RUNTIME_ROOT / str(spec["domain"]) / workload,
+        expected_runtime,
+    ):
+        directory_metadata = os.lstat(directory)
+        if (
+            directory_metadata.st_uid != 0
+            or stat.S_ISLNK(directory_metadata.st_mode)
+            or not stat.S_ISDIR(directory_metadata.st_mode)
+        ):
+            raise CutoverError("accepted runtime anchor is unsafe")
+    container_ids = target_container_ids(spec)
+    running = 0
+    for identifier in container_ids:
+        if (
+            text(
+                [
+                    *target_command(
+                        spec,
+                        "inspect",
+                        "--format",
+                        "{{.State.Status}}",
+                        identifier,
+                    )
+                ]
+            )
+            == "running"
+        ):
+            running += 1
+    expected = len(json.loads(runtime_compose.read_text())["services"])
+    if running != expected:
+        if running:
+            raise CutoverError("target runtime is partially running")
+        run(
+            target_compose(spec, runtime_compose, "down"),
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        require_target_absent(spec)
+        prepare_ingress_start(spec, socket_path)
+        run(
+            target_compose(spec, runtime_compose, "up", "-d"),
+            stdout=subprocess.DEVNULL,
+        )
+    container_ids = wait_target_ready(
+        workload, spec, runtime_compose, socket_path
+    )
+    lock_ingress_socket(socket_path)
+    require_funnel_disabled()
+    verify_tail_route(spec)
+    journal = json.loads((state_dir / "journal.json").read_text())
+    journal.update(
+        {
+            "phase": "accepted",
+            "lastReconciledAt": time.strftime(
+                "%Y%m%dT%H%M%SZ", time.gmtime()
+            ),
+            "targetContainers": len(container_ids),
+            "targetAuthoritative": True,
+            "recoveryRequired": False,
+        }
+    )
+    write_state(state_dir / "journal.json", journal)
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "sourceStopped": True,
+        "targetRunning": True,
+        "targetHealthy": True,
+        "tailnetRouteHealthy": True,
+        "publishedPorts": False,
+        "publicRoute": False,
+        "reconciled": True,
+    }
+
+
+def rollback(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    state_dir = STATE_ROOT / workload
+    state_path = state_dir / "cutover.json"
+    metadata = state_path.stat()
+    if (
+        metadata.st_uid != 0
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+        or state_path.is_symlink()
+    ):
+        raise CutoverError("cutover evidence ownership is unsafe")
+    state = json.loads(state_path.read_text())
+    if (
+        state.get("workloadId") != workload
+        or not state.get("cutoverComplete")
+        or not state.get("targetRunning")
+    ):
+        raise CutoverError("cutover evidence is not rollback-capable")
+    if spec["stateful"]:
+        raise CutoverError(
+            "stateful post-cutover rollback requires reviewed target-write "
+            "reconciliation; automatic source restart is refused"
+        )
+    runtime_compose = Path(str(state["runtimeComposePath"]))
+    if runtime_compose.is_symlink() or not runtime_compose.is_file():
+        raise CutoverError("runtime Compose path is unsafe")
+    run(
+        target_compose(spec, runtime_compose, "down"),
+        stdout=subprocess.DEVNULL,
+    )
+    require_target_absent(spec)
+    unit_path = Path(str(state["persistenceUnit"]))
+    remove_persistence_unit(unit_path)
+    policies = state.get("sourceRestartPolicies")
+    if not isinstance(policies, dict):
+        raise CutoverError("source restart-policy evidence is invalid")
+    restore_source_restart(policies)
+    source_up(workload, spec)
+    restore_private_route(
+        int(spec["tail_port"]), state.get("previousTailnetProxy")
+    )
+    require_funnel_disabled()
+    result = {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "rolledBackAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        "targetStopped": True,
+        "sourceRestored": True,
+        "tailnetRouteRestored": True,
+        "postCutoverTargetWritesReconciled": False,
+        "manualDataReviewRequired": True,
+        "rolledBack": True,
+    }
+    write_state(state_dir / "rollback.json", result)
+    suffix = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    os.replace(state_path, state_dir / f"cutover.rolled-back.{suffix}.json")
+    journal_path = state_dir / "journal.json"
+    if journal_path.exists():
+        os.replace(
+            journal_path,
+            state_dir / f"journal.rolled-back.{suffix}.json",
+        )
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workload", required=True, choices=sorted(SPECS))
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--preflight", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--rollback", action="store_true")
+    action.add_argument("--reconcile", action="store_true")
+    parser.add_argument(APPLY_ACK, action="store_true")
+    parser.add_argument(ROLLBACK_ACK, action="store_true")
+    arguments = parser.parse_args()
+    if arguments.apply and not getattr(
+        arguments, APPLY_ACK[2:].replace("-", "_")
+    ):
+        raise CutoverError(f"refusing apply: add {APPLY_ACK}")
+    if arguments.rollback and not getattr(
+        arguments, ROLLBACK_ACK[2:].replace("-", "_")
+    ):
+        raise CutoverError(f"refusing rollback: add {ROLLBACK_ACK}")
+
+    def interrupt(signum, _frame):
+        raise InterruptedError(f"received signal {signum}")
+
+    for signum in HANDLED_SIGNALS:
+        signal.signal(signum, interrupt)
+    ensure_directory(LOCK_PATH.parent)
+    descriptor = os.open(
+        LOCK_PATH,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    metadata = os.fstat(descriptor)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise CutoverError("serialization lock ownership or mode is unsafe")
+    with os.fdopen(descriptor, "a+") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if arguments.apply:
+            result = apply(arguments.workload)
+        elif arguments.rollback:
+            result = rollback(arguments.workload)
+        elif arguments.reconcile:
+            result = reconcile(arguments.workload)
+        else:
+            result = preflight(arguments.workload)
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        BlockingIOError,
+        FileNotFoundError,
+        InterruptedError,
+        json.JSONDecodeError,
+        KeyError,
+        OSError,
+        subprocess.CalledProcessError,
+        subprocess.TimeoutExpired,
+        CutoverError,
+        ValueError,
+    ) as error:
+        print(f"refusing workload cutover: {error}", file=sys.stderr)
+        raise SystemExit(2)
