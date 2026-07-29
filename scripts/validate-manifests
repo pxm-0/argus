@@ -130,6 +130,15 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
 
     for operation in ("logs", "restart", "backup"):
         require_type(manifest, workload_id, f"operations.{operation}.allowed", bool, errors)
+    migration_preflight_permission = manifest.get("operations", {}).get("migrationPreflight")
+    if migration_preflight_permission is not None:
+        if not isinstance(migration_preflight_permission, dict):
+            add_error(errors, workload_id, "operations.migrationPreflight", "must be object")
+        elif not isinstance(migration_preflight_permission.get("allowed"), bool):
+            add_error(errors, workload_id, "operations.migrationPreflight.allowed", "must be bool")
+    legacy_migration_preflight = manifest.get("operations", {}).get("migrationPreflightAllowed")
+    if legacy_migration_preflight is not None and not isinstance(legacy_migration_preflight, bool):
+        add_error(errors, workload_id, "operations.migrationPreflightAllowed", "must be bool")
 
     backup_allowed = require_type(manifest, workload_id, "backup.backupAllowed", bool, errors)
     require_type(manifest, workload_id, "backup.restoreAllowed", bool, errors)

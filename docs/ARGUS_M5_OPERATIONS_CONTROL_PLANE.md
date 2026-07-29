@@ -247,6 +247,16 @@ access.cloudflare-protected.apply
 Each operation requires an explicit manifest capability and workload-specific
 rollback contract.
 
+The private dashboard may expose `migration.preflight` before cutover is
+enabled. This operation is read-only, runs through the durable operation
+contract, and reports manifest plus live filesystem, backup-artifact, and health
+readiness blockers. A workload opts in with
+`operations.migrationPreflight.allowed`. It requires an authenticated management
+session but, because it cannot mutate workload state, does not require typed
+confirmation or step-up reauthentication. Preflight success does not enable or
+perform `migration.cutover`; cutover remains unavailable until verified backup,
+isolated restore, health, and rollback evidence satisfy the policy.
+
 Restore, deployment, and migration previews show:
 
 - exact workload and environment;
@@ -259,9 +269,9 @@ Restore, deployment, and migration previews show:
 - rollback steps;
 - whether rollback restores data or only runtime state.
 
-Restore and migration require step-up reauthentication and exact typed
-confirmation. Operations without a verified backup and restore contract remain
-disabled.
+Restore and migration mutations require step-up reauthentication and exact
+typed confirmation. Operations without a verified backup and restore contract
+remain disabled.
 
 ### Protected-public view
 

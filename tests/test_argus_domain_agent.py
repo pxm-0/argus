@@ -107,6 +107,30 @@ class DomainAgentServiceTests(unittest.TestCase):
                 self.assertEqual(os.environ["DOCKER_HOST"], "unix:///var/lib/argus/personal-sandbox/docker.sock")
                 self.assertEqual(service.policy_check("hello-nginx", "logs.preview", {}), (True, "logs disabled by manifest"))
                 self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "restart disabled by manifest"))
+                self.assertEqual(
+                    service.policy_check("hastur", "migration.preflight", {}),
+                    (True, "migration preflight enabled by manifest"),
+                )
+                preflight = service.execute_typed(
+                    "migration.preflight",
+                    "hastur",
+                    {},
+                )
+                self.assertTrue(preflight["allowed"])
+                self.assertFalse(preflight["readyForCutover"])
+                with patch(
+                    "argus_domain_agent.migration_preflight",
+                    return_value={"allowed": True},
+                ) as migration_preflight:
+                    service.execute_typed(
+                        "migration.preflight",
+                        "hastur",
+                        {"_operator": "oreo@example.test"},
+                    )
+                migration_preflight.assert_called_once_with(
+                    "hastur",
+                    actor="oreo@example.test",
+                )
                 command = service.compose_command("hello-nginx", "restart", "web")
                 self.assertEqual(command[-2:], ["restart", "web"])
                 self.assertNotIn("/var/run/docker.sock", " ".join(command))

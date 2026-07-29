@@ -112,6 +112,9 @@
         },
         "backup": {
           "$ref": "#/$defs/operationPermission"
+        },
+        "migrationPreflight": {
+          "$ref": "#/$defs/operationPermission"
         }
       }
     },

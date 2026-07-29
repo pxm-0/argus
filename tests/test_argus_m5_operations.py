@@ -110,6 +110,7 @@ class OperationLedgerTests(unittest.TestCase):
         for operation_type, parameters in [
             ("health.refresh", {}),
             ("logs.preview", {"maxLines": 100}),
+            ("migration.preflight", {}),
             ("workload.restart", {"healthTimeoutSeconds": 30}),
             ("backup.create", {"planRevision": "a" * 64}),
             ("access.apply", {"desired": "tailnet"}),

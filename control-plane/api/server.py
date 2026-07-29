@@ -40,7 +40,12 @@ SAFE_REQUEST_NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
 PREVIEW_TTL_SECONDS = 60
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_actions import backup_preview, logs_preview, restart_preview  # noqa: E402
+from argus_actions import (  # noqa: E402
+    backup_preview,
+    logs_preview,
+    migration_preflight,
+    restart_preview,
+)
 from argus_access_runtime import route_contract  # noqa: E402
 from argus_canonical import (  # noqa: E402
     canonical_policy_version,
@@ -217,6 +222,7 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
     rollback = {
         "health.refresh": "No mutation; no rollback required.",
         "logs.preview": "No mutation; no rollback required.",
+        "migration.preflight": "No mutation; no rollback required.",
         "workload.restart": "Restart is not data-destructive; investigate and restart the previous canonical revision.",
         "backup.create": "No live-state rollback; remove the failed or unwanted artifact through retention tooling.",
         "access.apply": "Apply the previously effective none/local/tailnet state as a new audited operation.",
@@ -251,6 +257,26 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
     if operation_type == "health.refresh" and item:
         result["currentHealth"] = item.get("health", {})
         result["evidenceFreshness"] = item.get("migration", {}).get("lastHealthCheck", "")
+    if operation_type == "migration.preflight" and item:
+        assessment = migration_preflight(workload_id, record_audit=False)
+        result["migrationReadiness"] = {
+            key: assessment.get(key)
+            for key in (
+                "readyForCutover",
+                "blockers",
+                "migrationStatus",
+                "sourcePathRecorded",
+                "targetPath",
+                "composeProject",
+                "backupApproved",
+                "restoreApproved",
+                "restoreTested",
+                "backupArtifactVerified",
+                "backupArtifactId",
+                "healthVerified",
+                "rollbackRecorded",
+            )
+        }
     return result
 
 
@@ -272,6 +298,14 @@ def operation_policy(workload_id: str, operation_type: str, parameters: dict[str
     if operation_type == "logs.preview":
         preview = logs_preview(workload_id, max_lines=int(parameters.get("maxLines", 100)))
         return bool(preview.get("allowed")), str(preview.get("reason", "logs disabled by manifest"))
+    if operation_type == "migration.preflight":
+        preview = migration_preflight(workload_id, record_audit=False)
+        allowed = bool(preview.get("allowed"))
+        return allowed, (
+            "migration preflight enabled by manifest"
+            if allowed
+            else str(preview.get("reason", "migration preflight disabled by manifest"))
+        )
     if operation_type == "workload.restart":
         preview = restart_preview(workload_id)
         return bool(preview.get("allowed")), str(preview.get("reason", "restart disabled by manifest"))

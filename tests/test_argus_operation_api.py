@@ -140,6 +140,25 @@ class OperationApiTests(unittest.TestCase):
                 {"operationType", "parameters"},
             )
 
+    def test_migration_preflight_preview_exposes_readiness_without_confirmation(self) -> None:
+        with patch.object(self.server, "agent_available", return_value=True):
+            preview = self.server.operation_preview(
+                "hastur",
+                "migration.preflight",
+                {},
+            )
+        self.assertTrue(preview["allowed"])
+        self.assertEqual(
+            "migration preflight enabled by manifest",
+            preview["reason"],
+        )
+        self.assertEqual("", preview["confirmationPhrase"])
+        self.assertFalse(preview["migrationReadiness"]["readyForCutover"])
+        self.assertIn(
+            "Restore execution is not approved.",
+            preview["migrationReadiness"]["blockers"],
+        )
+
     def test_approval_expires_old_preview_and_releases_mutation_lock(self) -> None:
         operation = self.create_operation()
         created = self.server.parse_timestamp(str(operation["created_at"]))

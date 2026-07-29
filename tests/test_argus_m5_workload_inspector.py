@@ -42,6 +42,9 @@ class WorkloadInspectorTests(unittest.TestCase):
             "Effective access",
             "Health evidence",
             "Disabled operation reasons",
+            "Run migration preflight",
+            "migration.preflight",
+            "Migration readiness",
         ):
             self.assertIn(marker, html + javascript)
         self.assertIn("document.visibilityState", javascript)
@@ -57,6 +60,10 @@ class WorkloadInspectorTests(unittest.TestCase):
         self.assertNotIn("localStorage.setItem(\"argus", javascript.replace('localStorage.setItem("argus-theme"', ""))
         self.assertNotIn("headers.Authorization", javascript)
         self.assertIn("focus({ preventScroll: true })", javascript)
+        self.assertNotIn(
+            'showCommandResult("Operator authentication"',
+            javascript,
+        )
         self.assertIn("@media(max-width:520px)", css)
 
 

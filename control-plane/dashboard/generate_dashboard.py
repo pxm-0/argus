@@ -737,6 +737,7 @@ function commandResultHighlights(payload) {
 function commandResultAssurance(payload) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return "";
   const rows = [];
+  const migrationReadiness = payload.migrationReadiness || payload.redactedResult;
   const digestValue = payload.previewDigest || payload.preview_digest;
   const revision = payload.expectedRevision || payload.expected_revision;
   if (payload.reason) rows.push(["Policy decision", payload.reason]);
@@ -746,6 +747,15 @@ function commandResultAssurance(payload) {
   if (revision) rows.push(["Canonical revision", revision]);
   if (Array.isArray(payload.healthChecks) && payload.healthChecks.length) {
     rows.push(["Health checks", payload.healthChecks]);
+  }
+  if (migrationReadiness?.operation === "migration-preflight" || payload.migrationReadiness) {
+    rows.push([
+      "Migration readiness",
+      migrationReadiness.readyForCutover ? "Ready for a separately approved cutover" : "Blocked"
+    ]);
+    if (Array.isArray(migrationReadiness.blockers) && migrationReadiness.blockers.length) {
+      rows.push(["Blocking conditions", migrationReadiness.blockers]);
+    }
   }
   return rows.map(([label, value]) => {
     const content = Array.isArray(value)
@@ -1015,12 +1025,24 @@ function evidenceFreshness(value) {
   return `${Math.floor(seconds / 86400)}d old`;
 }
 
-function operationBlockers({ agentAvailable, logsAllowed, restartAllowed, backupAllowed }) {
+function operationBlockers({
+  agentAvailable,
+  logsAllowed,
+  restartAllowed,
+  backupAllowed,
+  migrationAllowed,
+  migrationStatus
+}) {
   const blockers = [];
   if (!agentAvailable) blockers.push("All commands: the trust-domain agent is unavailable.");
   if (!logsAllowed) blockers.push("Logs preview: disabled by the workload manifest.");
   if (!restartAllowed) blockers.push("Restart: disabled by the workload manifest.");
   if (!backupAllowed) blockers.push("Backup: no approved backup plan in the workload manifest.");
+  if (!["planned", "rolled-back"].includes(migrationStatus)) {
+    blockers.push(`Migration preflight: status ${migrationStatus || "unknown"} is not a migration candidate.`);
+  } else if (!migrationAllowed) {
+    blockers.push("Migration preflight: disabled by the workload manifest.");
+  }
   return blockers;
 }
 
@@ -1044,6 +1066,12 @@ function renderWorkload(workload) {
   const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
   const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
   const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
+  const migrationAllowed = (
+    operations.migrationPreflightAllowed === true
+    || operations.migrationPreflight?.allowed === true
+  );
+  const migrationStatus = String(migration.status || "");
+  const migrationCandidate = ["planned", "rolled-back"].includes(migrationStatus);
   const desiredAccess = access.desired || "-";
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
@@ -1052,7 +1080,9 @@ function renderWorkload(workload) {
     agentAvailable,
     logsAllowed,
     restartAllowed,
-    backupAllowed
+    backupAllowed,
+    migrationAllowed,
+    migrationStatus
   });
   return `
     <article
@@ -1129,6 +1159,7 @@ function renderWorkload(workload) {
           <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
           <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
           <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
+          <button type="button" data-operation="migration-preflight" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate && agentAvailable ? "" : "disabled"}>Run migration preflight</button>
         </div>
         ${blockers.length ? `<details class="operation-blockers"><summary>${blockers.length} blocking ${blockers.length === 1 ? "condition" : "conditions"}</summary><ul aria-label="Disabled operation reasons">${blockers.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}
         <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">
@@ -1364,7 +1395,7 @@ themeToggle.addEventListener("click", () => {
 adminToggle.addEventListener("click", async () => {
   if (!adminEnabled) {
     setAdmin(true);
-    showCommandResult("Operator authentication", "Enter the one-time bootstrap credential, then choose Authenticate.");
+    adminTokenInput.focus({ preventScroll: true });
     return;
   }
   if (!csrfToken) {
@@ -1475,13 +1506,24 @@ document.addEventListener("click", async (event) => {
       return;
     }
     if (action.endsWith("-apply") && !(await ensureStepUp())) return;
-    const operationType = action.startsWith("health") ? "health.refresh" : action.startsWith("logs") ? "logs.preview" : action.startsWith("restart") ? "workload.restart" : "backup.create";
+    const operationType = action.startsWith("health")
+      ? "health.refresh"
+      : action.startsWith("logs")
+        ? "logs.preview"
+        : action.startsWith("restart")
+          ? "workload.restart"
+          : action.startsWith("migration")
+            ? "migration.preflight"
+            : "backup.create";
     try {
       const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
         operationType,
         parameters: {}
       });
-      if (!action.endsWith("-apply") && operationType !== "health.refresh") {
+      if (
+        !action.endsWith("-apply")
+        && !["health.refresh", "migration.preflight"].includes(operationType)
+      ) {
         showCommandResult(`${workload} ${action}`, previewResult.payload);
         return;
       }
@@ -1500,8 +1542,9 @@ document.addEventListener("click", async (event) => {
         showCommandResult(`${workload} operation`, created.payload);
         return;
       }
-      if (operationType === "health.refresh") {
-        showCommandResult(`${workload} health queued`, created.payload);
+      if (["health.refresh", "migration.preflight"].includes(operationType)) {
+        const label = operationType === "migration.preflight" ? "migration preflight" : "health";
+        showCommandResult(`${workload} ${label} queued`, created.payload);
         pollOperation(created.payload.operation_id, workload);
         return;
       }
