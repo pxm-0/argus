@@ -30,6 +30,11 @@ ROLLBACK_ACK = "--acknowledge-m5-workload-cutover-rollback"
 STAGE_ACK = "--acknowledge-m5-workload-stage"
 QUIESCE_ACK = "--acknowledge-source-writers-stopped"
 HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
+# Every retained workload has its own 60s reconcile timer but they all share one
+# serialization lock, so overlapping firings must queue instead of failing.
+# Stays under the oneshot TimeoutStartSec=90s default.
+RECONCILE_LOCK_WAIT_SECONDS = 60
+RECONCILE_LOCK_POLL_SECONDS = 0.5
 SPECS = {
     "hastur": {
         "domain": "personal-sandbox",
@@ -872,6 +877,23 @@ def prepare_ingress_start(spec: dict, socket_path: Path) -> None:
 
 def persistence_unit_name(workload: str) -> str:
     return f"argus-m5-workload-{workload}.service"
+
+
+def acquire_lock(lock, wait_seconds: float = 0.0) -> None:
+    """Take the serialization lock, waiting only when the caller allows it.
+
+    Cutovers and rollbacks still refuse instantly on contention; idempotent
+    timer-driven reconciles queue behind whichever run holds the lock.
+    """
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(RECONCILE_LOCK_POLL_SECONDS)
 
 
 def install_persistence_unit(workload: str, spec: dict) -> Path:
@@ -1835,7 +1857,10 @@ def main() -> int:
         os.close(descriptor)
         raise CutoverError("serialization lock ownership or mode is unsafe")
     with os.fdopen(descriptor, "a+") as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        acquire_lock(
+            lock,
+            RECONCILE_LOCK_WAIT_SECONDS if arguments.reconcile else 0.0,
+        )
         if arguments.apply:
             result = apply(arguments.workload)
         elif arguments.rollback:

@@ -64,6 +64,31 @@ class WorkloadCutoverTests(unittest.TestCase):
             module.run = original_run
         self.assertEqual([], calls)
 
+    def test_reconcile_queues_on_the_shared_lock_and_cutover_refuses(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "lock"
+            with open(path, "a+") as holder, open(path, "a+") as waiter:
+                module.acquire_lock(holder)
+                # Cutovers and rollbacks keep refusing instantly.
+                with self.assertRaises(BlockingIOError):
+                    module.acquire_lock(waiter)
+                # Reconciles poll until the deadline instead of failing fast.
+                sleeps = []
+                original_sleep = module.time.sleep
+                module.time.sleep = sleeps.append
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        module.acquire_lock(waiter, 1.0)
+                finally:
+                    module.time.sleep = original_sleep
+                self.assertGreater(len(sleeps), 0)
+            # Releasing the holder lets a queued reconcile through.
+            with open(path, "a+") as waiter:
+                module.acquire_lock(waiter, 1.0)
+
+    def test_reconcile_lock_wait_stays_under_systemd_start_timeout(self) -> None:
+        self.assertLess(module.RECONCILE_LOCK_WAIT_SECONDS, 90)
+
     def test_cutover_contract_has_no_public_exposure_commands(self) -> None:
         script = SCRIPT.read_text()
         self.assertIn("unix:/", script)
