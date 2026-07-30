@@ -58,8 +58,13 @@ SPECS = {
         "tail_port": 8445,
         "stateful": True,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
-        # Sealed until #267 grants a policy; the crawler needs 443 + DNS.
-        "egress": None,
+        # Declared egress: the crawler needs DNS and TLS, nothing else.
+        # Effective at the next cutover, when the bridge is renamed. See #267.
+        "egress": {
+            "resolver": "10.0.2.3",
+            "allow": (("tcp", 443),),
+            "reason": "threads.net crawl for the archive",
+        },
         # Sealed replacement for the excluded /home/oreo/hastur/auth bind.
         "credentials": {"hastur": "/app/auth"},
         # Scraping schedules in-process; the host crontab entry is retired.

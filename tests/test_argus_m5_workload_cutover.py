@@ -344,18 +344,37 @@ class DeclaredEgressTest(unittest.TestCase):
         for workload, spec in module.SPECS.items():
             self.assertIn("egress", spec, workload)
 
-    def test_every_workload_is_sealed_today(self) -> None:
-        self.assertEqual({}, module.domain_egress("personal-sandbox"))
+    def test_only_hastur_is_granted_egress(self) -> None:
+        self.assertEqual(
+            ["hastur"], sorted(module.domain_egress("personal-sandbox"))
+        )
         self.assertEqual({}, module.domain_egress("work-sandbox"))
+        for workload in ("kadath", "nodens", "locigraph", "intake-os"):
+            self.assertIsNone(
+                module.validated_egress(workload, module.SPECS[workload]),
+                workload,
+            )
+
+    def test_hastur_is_granted_dns_and_tls_only(self) -> None:
+        policy = module.validated_egress("hastur", module.SPECS["hastur"])
+        self.assertEqual((("tcp", 443),), policy["allow"])
+        self.assertEqual("10.0.2.3", policy["resolver"])
+
+    def test_granted_domain_still_seals_every_other_workload(self) -> None:
+        rendered = module.firewall_text(
+            "personal-sandbox", module.domain_egress("personal-sandbox")
+        )
+        for workload in ("kadath", "nodens", "locigraph"):
+            self.assertNotIn(module.egress_bridge(workload), rendered)
 
     def test_sealed_rendering_is_byte_identical_to_the_installed_policy(self) -> None:
         self.assertEqual(
             self.SEALED_POLICY, module.firewall_text("personal-sandbox")
         )
         self.assertEqual(
-            self.SEALED_POLICY,
+            self.SEALED_POLICY.replace("personal_sandbox", "work_sandbox"),
             module.firewall_text(
-                "personal-sandbox", module.domain_egress("personal-sandbox")
+                "work-sandbox", module.domain_egress("work-sandbox")
             ),
         )
 
@@ -391,7 +410,10 @@ class DeclaredEgressTest(unittest.TestCase):
         self.assertNotIn("argus-nodens", rendered)
 
     def test_sealed_domains_render_no_nat_table(self) -> None:
-        self.assertNotIn("_nat", module.firewall_text("personal-sandbox"))
+        self.assertNotIn(
+            "_nat",
+            module.firewall_text("work-sandbox", module.domain_egress("work-sandbox")),
+        )
 
     def test_incomplete_policies_are_refused(self) -> None:
         for policy in (
