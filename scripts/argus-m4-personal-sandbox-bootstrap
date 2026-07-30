@@ -764,7 +764,16 @@ user_systemctl is-active --quiet "$DAEMON_UNIT"
 # systemd reporting the daemon "active" only means the process is running; a
 # corrupted docker-data can still leave it unable to create a container
 # (EOVERFLOW on containerd-mount, seen 2026-07-30). Prove it actually works
-# before anything is cut over onto it.
+# before anything is cut over onto it. The sandbox's default-deny egress has
+# no route to Docker Hub, so the smoke image is vendored and loaded locally
+# rather than pulled (confirmed live on oreochiserver: a bare `docker run
+# hello-world` here is a registry-timeout false positive, not a daemon
+# failure). ponytail: amd64-only fixture; regenerate if the host arch changes.
+SMOKE_IMAGE_FIXTURE="$SCRIPT_DIR/fixtures/argus-hello-world-amd64.tar"
+if ! timeout 60 runuser -u "$CELL_USER" -- docker --host "unix://$CELL_STORAGE/docker.sock" load -i "$SMOKE_IMAGE_FIXTURE" >/dev/null; then
+  echo "refusing success: could not load the smoke-test image into the sandbox daemon" >&2
+  exit 1
+fi
 if ! timeout 60 runuser -u "$CELL_USER" -- docker --host "unix://$CELL_STORAGE/docker.sock" run --rm hello-world >/dev/null; then
   echo "refusing success: sandbox docker daemon is active but cannot run a container" >&2
   exit 1
