@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Argus hastur data and auth backup
+
+[Timer]
+OnCalendar=*-*-* 02:35:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=argus-hastur-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""Back up hastur's data and credentials.
+
+Hastur runs rootful, outside the sandbox (see docs/HANDOFF notes on the
+2026-07-30 outage), so its data is plain host directories, not a database
+behind a sandboxed daemon. This has no backup today — the same silent-failure
+class as #266 (kadath's orphaned nightly dump), just simpler to fix because
+there is no docker exec or sandbox socket involved: it's a tar of two paths.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tarfile
+import time
+
+
+BACKUP_ROOT = Path("/var/backups/argus-m5-workload-files")
+SPECS = {
+    "hastur": {
+        "data": Path("/home/oreo/hastur/data"),
+        "auth": Path("/home/oreo/hastur/auth"),
+    },
+}
+RETAINED_COPIES = 14
+
+
+class BackupError(RuntimeError):
+    pass
+
+
+def ensure_root_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError(f"unsafe backup directory: {path}")
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o700)
+
+
+def prune(directory: Path, keep: int) -> list[str]:
+    archives = sorted(
+        (item for item in directory.iterdir() if item.suffixes[-2:] == [".tar", ".gz"]),
+        reverse=True,
+    )
+    removed = []
+    for stale in archives[keep:]:
+        stale.unlink()
+        removed.append(stale.name)
+    return removed
+
+
+def archive_one(source: Path, directory: Path, name: str, stamp: str) -> dict:
+    if not source.exists():
+        raise BackupError(f"source path missing: {source}")
+    artifact = directory / f"{name}-{stamp}.tar.gz"
+    partial = directory / f".{artifact.name}.partial"
+    descriptor = os.open(
+        partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
+    )
+    try:
+        with os.fdopen(descriptor, "wb"):
+            pass
+        with tarfile.open(partial, "w:gz") as tar:
+            tar.add(source, arcname=name)
+        # An unlistable tar is not a backup: prove it before it counts.
+        with tarfile.open(partial, "r:gz") as tar:
+            if not tar.getmembers():
+                raise BackupError(f"{name} archive verified empty")
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, artifact)
+    return {"name": name, "artifactPath": str(artifact), "artifactBytes": artifact.stat().st_size}
+
+
+def backup(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise BackupError("run with sudo")
+    spec = SPECS[workload]
+    directory = BACKUP_ROOT / workload
+    ensure_root_directory(BACKUP_ROOT)
+    ensure_root_directory(directory)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    artifacts = [archive_one(source, directory, name, stamp) for name, source in spec.items()]
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "artifacts": artifacts,
+        "verified": True,
+        "prunedCopies": prune(directory, RETAINED_COPIES),
+        "retainedCopies": RETAINED_COPIES,
+        "completedAt": stamp,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workload", required=True, choices=sorted(SPECS))
+    arguments = parser.parse_args()
+    print(json.dumps(backup(arguments.workload), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (BackupError, subprocess.SubprocessError, OSError) as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
