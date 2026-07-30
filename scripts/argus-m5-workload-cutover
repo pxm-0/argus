@@ -26,6 +26,13 @@ RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
 # Sealed credential delivery: root-owned, sandbox-group-readable, never a
 # /home/oreo bind. Operators provision one directory per workload here.
 CREDENTIAL_ROOT = Path("/etc/argus/workload-credentials")
+# Egress is a declared protocol: every spec must carry an "egress" key, and
+# None means sealed on purpose. Rules are derived from the declaration only,
+# never hand-written, so an undeclared workload can never acquire a hole.
+# Verified on the host: RootlessKit slirp4netns gives each domain one uplink.
+UPLINK_INTERFACE = "tap0"
+EGRESS_PROTOCOLS = ("tcp", "udp")
+EGRESS_ACK = "--acknowledge-m5-egress-policy"
 LOCK_PATH = Path("/run/argus-m5-workload-cutover/lock")
 UNIX_SOCKET_PATH_LIMIT = 108
 APPLY_ACK = "--acknowledge-m5-workload-cutover"
@@ -51,6 +58,8 @@ SPECS = {
         "tail_port": 8445,
         "stateful": True,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        # Sealed until #267 grants a policy; the crawler needs 443 + DNS.
+        "egress": None,
         # Sealed replacement for the excluded /home/oreo/hastur/auth bind.
         "credentials": {"hastur": "/app/auth"},
         # Scraping schedules in-process; the host crontab entry is retired.
@@ -73,6 +82,8 @@ SPECS = {
         "tail_port": 8443,
         "stateful": True,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        # Sealed: no egress declared. See #267.
+        "egress": None,
     },
     "nodens": {
         "domain": "personal-sandbox",
@@ -86,6 +97,8 @@ SPECS = {
         "tail_port": 8444,
         "stateful": False,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        # Sealed: no egress declared. See #267.
+        "egress": None,
     },
     "locigraph": {
         "domain": "personal-sandbox",
@@ -99,6 +112,8 @@ SPECS = {
         "tail_port": 443,
         "stateful": True,
         "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        # Sealed: no egress declared. See #267.
+        "egress": None,
     },
     "intake-os": {
         "domain": "work-sandbox",
@@ -112,6 +127,8 @@ SPECS = {
         "tail_port": 8446,
         "stateful": True,
         "ingress_image": "sha256:cfeb0b281bc44a5a51fecde39e9e577c60d863c0b6196e6bbdf58fd00960887f",
+        # Sealed: no egress declared. See #267.
+        "egress": None,
     },
 }
 
@@ -510,8 +527,87 @@ def rootless_child_pid(spec: dict) -> str:
     return child
 
 
-def firewall_text(domain: str) -> str:
+def egress_bridge(workload: str) -> str:
+    """Deterministic bridge name so a declared rule can name one interface."""
+    return f"argus-{workload}"
+
+
+def validated_egress(workload: str, spec: dict) -> dict | None:
+    """Return the declared egress policy, or None for a sealed workload."""
+    if "egress" not in spec:
+        raise CutoverError(f"workload {workload} declares no egress policy")
+    policy = spec["egress"]
+    if policy is None:
+        return None
+    resolver = str(policy.get("resolver") or "")
+    allow = tuple(policy.get("allow") or ())
+    if not resolver or not allow:
+        raise CutoverError(
+            f"egress policy for {workload} needs a resolver and at least one allowance"
+        )
+    if not policy.get("reason"):
+        raise CutoverError(f"egress policy for {workload} needs a reason")
+    for protocol, port in allow:
+        if protocol not in EGRESS_PROTOCOLS or not 0 < int(port) < 65536:
+            raise CutoverError(
+                f"egress policy for {workload} has an invalid allowance: {protocol}/{port}"
+            )
+    return {"resolver": resolver, "allow": allow, "reason": str(policy["reason"])}
+
+
+def domain_egress(domain: str) -> dict[str, dict]:
+    """Declared policies for every workload sharing a domain's netns."""
+    return {
+        workload: policy
+        for workload, spec in sorted(SPECS.items())
+        if str(spec["domain"]) == domain
+        and (policy := validated_egress(workload, spec)) is not None
+    }
+
+
+def firewall_text(domain: str, policies: dict[str, dict] | None = None) -> str:
     table = domain.replace("-", "_")
+    policies = policies or {}
+    forward = ['    iifname "br-*" oifname "br-*" accept;\n']
+    for workload in sorted(policies):
+        policy = policies[workload]
+        bridge = egress_bridge(workload)
+        forward.append(
+            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
+            f"ip daddr {policy['resolver']} udp dport 53 "
+            "ct state new,established accept;\n"
+        )
+        forward.append(
+            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
+            f"ip daddr {policy['resolver']} tcp dport 53 "
+            "ct state new,established accept;\n"
+        )
+        for protocol, port in policy["allow"]:
+            forward.append(
+                f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
+                f"{protocol} dport {int(port)} "
+                "ct state new,established accept;\n"
+            )
+        forward.append(
+            f'    iifname "{UPLINK_INTERFACE}" oifname "{bridge}" '
+            "ct state established,related accept;\n"
+        )
+    nat = ""
+    if policies:
+        masquerade = "".join(
+            f'    iifname "{egress_bridge(workload)}" '
+            f'oifname "{UPLINK_INTERFACE}" masquerade;\n'
+            for workload in sorted(policies)
+        )
+        nat = (
+            f"destroy table inet argus_{table}_nat\n"
+            f"table inet argus_{table}_nat {{\n"
+            "  chain postrouting {\n"
+            "    type nat hook postrouting priority srcnat; policy accept;\n"
+            f"{masquerade}"
+            "  }\n"
+            "}\n"
+        )
     return (
         f"destroy table inet argus_{table}\n"
         f"table inet argus_{table} {{\n"
@@ -519,12 +615,12 @@ def firewall_text(domain: str) -> str:
         'iifname "lo" accept; }\n'
         "  chain forward {\n"
         "    type filter hook forward priority filter; policy drop;\n"
-        '    iifname "br-*" oifname "br-*" accept;\n'
+        f"{''.join(forward)}"
         "  }\n"
         "  chain output { type filter hook output priority filter; policy drop; "
         'oifname "lo" accept; }\n'
         "}\n"
-    )
+    ) + nat
 
 
 def rendered_firewall_rules(config: Path, table: str) -> str:
@@ -552,7 +648,7 @@ def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
     shutil.copy2(destination, backup)
     os.chmod(backup, 0o600)
     candidate = state_dir / f"argus-{domain}.nft.candidate"
-    candidate.write_text(firewall_text(domain))
+    candidate.write_text(firewall_text(domain, domain_egress(domain)))
     os.chmod(candidate, 0o600)
     child = rootless_child_pid(spec)
     list_command = [
@@ -768,6 +864,19 @@ def build_runtime(
     os.chown(runtime_dir, 0, 0)
     os.mkdir(ingress_dir, 0o700)
     os.chown(ingress_dir, identity.pw_uid, identity.pw_gid)
+
+    policy = validated_egress(workload, spec)
+    if policy is not None:
+        # A declared rule names one interface, so the bridge cannot be
+        # left to Docker's non-deterministic br-<id> naming.
+        networks = compose.setdefault("networks", {})
+        default = networks.get("default") or {}
+        if not isinstance(default, dict):
+            raise CutoverError("target default network definition is unsupported")
+        options = dict(default.get("driver_opts") or {})
+        options["com.docker.network.bridge.name"] = egress_bridge(workload)
+        default["driver_opts"] = options
+        networks["default"] = default
 
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
@@ -1816,8 +1925,76 @@ def reconcile(workload: str) -> dict:
         "tailnetRouteHealthy": True,
         "publishedPorts": False,
         "publicRoute": False,
+        "egressPolicyDrift": egress_policy_drift(spec),
         "reconciled": True,
     }
+
+
+def egress_policy_drift(spec: dict) -> bool:
+    """Report whether persisted policy matches the declarations.
+
+    Report-only on purpose. Enforcement belongs to an acknowledged
+    --apply-egress run until the verifier has mileage; flipping this to
+    converge is then a one-line change here.
+    """
+    domain = str(spec["domain"])
+    destination = Path(f"/etc/argus/argus-{domain}.nft")
+    try:
+        persisted = destination.read_text()
+    except FileNotFoundError:
+        return True
+    return persisted != firewall_text(domain, domain_egress(domain))
+
+
+def apply_egress(workload: str) -> dict:
+    """Install the declared egress policy for a workload's domain."""
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    domain = str(spec["domain"])
+    require_funnel_disabled()
+    state_dir = STATE_ROOT / workload
+    state_path = state_dir / "cutover.json"
+    metadata = os.lstat(state_path)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise CutoverError("accepted cutover evidence is required")
+    state = json.loads(state_path.read_text())
+    if state.get("workloadId") != workload or not state.get("cutoverComplete"):
+        raise CutoverError("accepted cutover evidence is required")
+    policies = domain_egress(domain)
+    # The nft table is per domain, so this run installs every declaration in
+    # the domain, not only this workload's.
+    firewall_backup = install_internal_firewall(spec, state_dir)
+    result = {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "trustDomain": domain,
+        "appliedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        "declaredEgress": {
+            name: {
+                "bridge": egress_bridge(name),
+                "resolver": policy["resolver"],
+                "allow": [[protocol, int(port)] for protocol, port in policy["allow"]],
+                "reason": policy["reason"],
+            }
+            for name, policy in policies.items()
+        },
+        "sealedWorkloads": sorted(
+            name
+            for name, candidate in SPECS.items()
+            if str(candidate["domain"]) == domain and name not in policies
+        ),
+        "firewallBackup": str(firewall_backup),
+        "publishedPorts": False,
+        "publicRoute": False,
+        "egressApplied": True,
+    }
+    write_state(state_dir / "egress.json", result)
+    return result
 
 
 def rollback(workload: str) -> dict:
@@ -1895,8 +2072,10 @@ def main() -> int:
     action.add_argument("--apply", action="store_true")
     action.add_argument("--rollback", action="store_true")
     action.add_argument("--reconcile", action="store_true")
+    action.add_argument("--apply-egress", action="store_true")
     parser.add_argument(APPLY_ACK, action="store_true")
     parser.add_argument(ROLLBACK_ACK, action="store_true")
+    parser.add_argument(EGRESS_ACK, action="store_true")
     arguments = parser.parse_args()
     if arguments.apply and not getattr(
         arguments, APPLY_ACK[2:].replace("-", "_")
@@ -1906,6 +2085,10 @@ def main() -> int:
         arguments, ROLLBACK_ACK[2:].replace("-", "_")
     ):
         raise CutoverError(f"refusing rollback: add {ROLLBACK_ACK}")
+    if arguments.apply_egress and not getattr(
+        arguments, EGRESS_ACK[2:].replace("-", "_")
+    ):
+        raise CutoverError(f"refusing egress policy change: add {EGRESS_ACK}")
 
     def interrupt(signum, _frame):
         raise InterruptedError(f"received signal {signum}")
@@ -1937,6 +2120,8 @@ def main() -> int:
             result = rollback(arguments.workload)
         elif arguments.reconcile:
             result = reconcile(arguments.workload)
+        elif arguments.apply_egress:
+            result = apply_egress(arguments.workload)
         else:
             result = preflight(arguments.workload)
     print(json.dumps(result, sort_keys=True))

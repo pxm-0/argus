@@ -1,0 +1,188 @@
+#!/usr/bin/env python3
+"""Prove each workload behaves exactly as its declared egress policy says."""
+from __future__ import annotations
+
+import argparse
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import sys
+
+
+ROOT = Path("/srv/argus")
+CUTOVER = ROOT / "scripts" / "argus-m5-workload-cutover"
+# A probe that hangs is a failure, not a pass: a silent timeout is exactly how
+# a dead policy passes for a live one.
+PROBE_TIMEOUT_SECONDS = 6
+PROBE_HOST = "1.1.1.1"
+UNDECLARED_PORT = 2222
+
+
+class VerifyError(RuntimeError):
+    pass
+
+
+def cutover_module():
+    loader = importlib.machinery.SourceFileLoader(
+        "argus_m5_cutover", str(CUTOVER)
+    )
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def probe_source(host: str, port: int, timeout: int) -> str:
+    return (
+        "const net=require('node:net');"
+        f"const s=net.connect({int(port)},'{host}');"
+        f"s.setTimeout({int(timeout)}*1000);"
+        "s.on('connect',()=>{console.log('reachable');process.exit(0)});"
+        "s.on('timeout',()=>{console.log('timeout');process.exit(0)});"
+        "s.on('error',e=>{console.log('blocked:'+e.code);process.exit(0)});"
+    )
+
+
+def probe(module, spec: dict, container: str, host: str, port: int) -> str:
+    """Return reachable, timeout, blocked:<code>, or probe-failed:<reason>."""
+    command = [
+        *module.target_command(
+            spec,
+            "exec",
+            container,
+            "node",
+            "-e",
+            probe_source(host, port, PROBE_TIMEOUT_SECONDS),
+        )
+    ]
+    try:
+        return module.text(command, timeout=PROBE_TIMEOUT_SECONDS * 3).strip()
+    except Exception as error:  # noqa: BLE001 - a failed probe is a result
+        return f"probe-failed:{type(error).__name__}"
+
+
+def probe_container(module, spec: dict) -> str:
+    project = str(spec["project"])
+    service = str(spec["endpoint_service"])
+    names = module.text(
+        [
+            *module.target_command(
+                spec,
+                "ps",
+                "--format",
+                "{{.Names}}",
+                "--filter",
+                f"label=com.docker.compose.project={project}",
+                "--filter",
+                f"label=com.docker.compose.service={service}",
+            )
+        ]
+    ).split()
+    if len(names) != 1:
+        raise VerifyError(
+            f"probe container for {project}/{service} is ambiguous or absent"
+        )
+    return names[0]
+
+
+def expectations_for(module, spec: dict, policy: dict | None, container: str) -> list:
+    if policy is None:
+        return [
+            {
+                "intent": "sealed",
+                "destination": f"{PROBE_HOST}:443",
+                "expected": "blocked",
+                "observed": probe(module, spec, container, PROBE_HOST, 443),
+            }
+        ]
+    checks = [
+        {
+            "intent": "declared",
+            "destination": f"{PROBE_HOST}:{int(port)}",
+            "expected": "reachable",
+            "observed": probe(module, spec, container, PROBE_HOST, int(port)),
+        }
+        for protocol, port in policy["allow"]
+        if protocol == "tcp"
+    ]
+    if not any(int(port) == UNDECLARED_PORT for _, port in policy["allow"]):
+        checks.append(
+            {
+                "intent": "undeclared",
+                "destination": f"{PROBE_HOST}:{UNDECLARED_PORT}",
+                "expected": "blocked",
+                "observed": probe(
+                    module, spec, container, PROBE_HOST, UNDECLARED_PORT
+                ),
+            }
+        )
+    return checks
+
+
+def scored(checks: list) -> list:
+    for check in checks:
+        observed = str(check["observed"])
+        check["pass"] = (
+            observed == "reachable"
+            if check["expected"] == "reachable"
+            else observed.startswith("blocked")
+        )
+    return checks
+
+
+def verify(domain: str, workloads: list[str] | None = None) -> dict:
+    if os.geteuid() != 0:
+        raise VerifyError("run with sudo")
+    module = cutover_module()
+    selected = sorted(
+        name
+        for name, spec in module.SPECS.items()
+        if str(spec["domain"]) == domain
+        and (not workloads or name in workloads)
+    )
+    if not selected:
+        raise VerifyError(f"no matching workloads in {domain}")
+    findings = []
+    for workload in selected:
+        spec = module.SPECS[workload]
+        policy = module.validated_egress(workload, spec)
+        container = probe_container(module, spec)
+        checks = scored(expectations_for(module, spec, policy, container))
+        findings.append(
+            {
+                "workloadId": workload,
+                "declared": policy is not None,
+                "bridge": module.egress_bridge(workload) if policy else None,
+                "probeContainer": container,
+                "expectations": checks,
+                "pass": all(check["pass"] for check in checks),
+            }
+        )
+    drift = module.egress_policy_drift(module.SPECS[selected[0]])
+    return {
+        "schemaVersion": 1,
+        "trustDomain": domain,
+        "persistedPolicyMatchesDeclarations": not drift,
+        "workloads": findings,
+        "pass": not drift and all(finding["pass"] for finding in findings),
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--domain", required=True)
+    parser.add_argument("--workload", action="append")
+    arguments = parser.parse_args()
+    result = verify(arguments.domain, arguments.workload)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result["pass"] else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (VerifyError, FileNotFoundError, KeyError) as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(2) from error
