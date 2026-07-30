@@ -192,10 +192,6 @@ rollback() {
     fi
   fi
 
-  if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]] &&
-     [[ "$daemon_was_active" != true ]]; then
-    user_systemctl stop "$DAEMON_UNIT" || failed=true
-  fi
   if [[ "$firewall_was_active" != true ]]; then
     systemctl stop "$FIREWALL_UNIT" 2>/dev/null || true
   fi
@@ -274,6 +270,18 @@ rollback() {
         remove_new_storage || failed=true
       fi
     fi
+  fi
+
+  # Stopping a daemon this apply attempt just started must wait until the
+  # firewall is done being restored: the firewall's own start script waits
+  # for a live rootlesskit child, so stopping the daemon first strands any
+  # firewall_was_active=true restore above (found live rebuilding
+  # personal-sandbox 2026-07-31 -- #286). This combination is not a misuse
+  # edge case: it's exactly what the documented rebuild runbook produces
+  # (stop and wipe the daemon by hand, leave the firewall running).
+  if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]] &&
+     [[ "$daemon_was_active" != true ]]; then
+    user_systemctl stop "$DAEMON_UNIT" || failed=true
   fi
 
   if [[ "$failed" == true ]]; then
