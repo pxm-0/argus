@@ -153,6 +153,44 @@ reachable, undeclared destinations must fail closed, and a hung probe counts as
 a failure rather than a pass. Exit status is non-zero when any expectation or
 the drift check fails.
 
+## Refreshing an accepted target
+
+A stateful cutover is one-way. `--apply` refuses while the target is present
+and the source is fenced, `--rollback` is gated for stateful workloads, and
+`--reconcile` deliberately reuses the accepted Compose byte for byte. So a
+declaration added to a spec *after* acceptance cannot reach the running
+workload.
+
+Hastur hit all three at once: sealed credentials, the `CRAWL_SCHEDULE_*`
+overlay, and a declared egress policy each landed after it was cut over, so
+the running project had no `/app/auth` mount, no schedule variables, and a
+non-deterministic `br-<id>` bridge that no declared rule could name.
+
+`--refresh` rewrites the accepted Compose in place and recreates the project:
+
+```bash
+sudo ./scripts/argus-m5-workload-cutover \
+  --workload hastur \
+  --refresh \
+  --acknowledge-m5-workload-refresh
+```
+
+It requires accepted cutover evidence and a still-fenced source, and it
+validates credentials before touching anything. The runtime directory, ingress
+binds, socket path, and Serve mapping are unchanged, so only container and
+network identity move — which is what renames the bridge. `down` never
+receives `-v`, so named volumes carrying workload state survive; for hastur
+that is `argus_stage_hastur__app_data` mounted at `/app/data`.
+
+The previous Compose is kept beside it as `docker-compose.json.before`. If any
+verification fails, that file is restored and the known-good project is brought
+back up. The source stays fenced either way: stale data is never started
+automatically.
+
+Refreshing with no spec drift is a no-op and reports `"refreshed": false`
+rather than bouncing a healthy workload. Each accepted refresh increments
+`refreshGeneration` in the cutover evidence.
+
 ## Commands
 
 ```bash
