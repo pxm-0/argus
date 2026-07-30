@@ -123,6 +123,24 @@ class M4BootstrapTest(unittest.TestCase):
             script,
         )
 
+    def test_rollback_restores_the_firewall_before_stopping_the_daemon(self) -> None:
+        """#286: rollback used to stop a just-started daemon before restoring
+        the firewall, stranding any firewall_was_active=true restore (the
+        firewall's own start script waits for a live rootlesskit child). This
+        is exactly the state the documented rebuild runbook produces -- stop
+        and wipe the daemon by hand, leave the firewall running -- not a
+        misuse edge case."""
+        script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
+        rollback_body = script.split("\nrollback() {\n", 1)[1].split("\nrollback_on_exit() {\n", 1)[0]
+        self.assertLess(
+            rollback_body.index('if [[ "$firewall_was_active" == true ]]'),
+            rollback_body.index('if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]]'),
+        )
+        self.assertLess(
+            rollback_body.index('if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]]'),
+            rollback_body.index('if [[ "$failed" == true ]]'),
+        )
+
     def test_work_sandbox_uses_an_independent_sealed_contract(self) -> None:
         contract = sandbox_contract(
             domain="work-sandbox",
