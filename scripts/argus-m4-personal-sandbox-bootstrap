@@ -761,6 +761,14 @@ if [[ "$daemon_was_active" != true ]]; then
 fi
 systemctl is-active --quiet "$NS_UNIT"
 user_systemctl is-active --quiet "$DAEMON_UNIT"
+# systemd reporting the daemon "active" only means the process is running; a
+# corrupted docker-data can still leave it unable to create a container
+# (EOVERFLOW on containerd-mount, seen 2026-07-30). Prove it actually works
+# before anything is cut over onto it.
+if ! timeout 60 runuser -u "$CELL_USER" -- docker --host "unix://$CELL_STORAGE/docker.sock" run --rm hello-world >/dev/null; then
+  echo "refusing success: sandbox docker daemon is active but cannot run a container" >&2
+  exit 1
+fi
 systemctl enable "$FIREWALL_UNIT"
 systemctl restart "$FIREWALL_UNIT"
 systemctl is-active --quiet "$FIREWALL_UNIT"
