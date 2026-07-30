@@ -325,5 +325,98 @@ class CredentialDeliveryTest(unittest.TestCase):
                 module.CREDENTIAL_ROOT = original_root
 
 
+class DeclaredEgressTest(unittest.TestCase):
+    SEALED_POLICY = (
+        "destroy table inet argus_personal_sandbox\n"
+        "table inet argus_personal_sandbox {\n"
+        "  chain input { type filter hook input priority filter; policy drop; "
+        'iifname "lo" accept; }\n'
+        "  chain forward {\n"
+        "    type filter hook forward priority filter; policy drop;\n"
+        '    iifname "br-*" oifname "br-*" accept;\n'
+        "  }\n"
+        "  chain output { type filter hook output priority filter; policy drop; "
+        'oifname "lo" accept; }\n'
+        "}\n"
+    )
+
+    def test_every_workload_declares_an_egress_policy(self) -> None:
+        for workload, spec in module.SPECS.items():
+            self.assertIn("egress", spec, workload)
+
+    def test_every_workload_is_sealed_today(self) -> None:
+        self.assertEqual({}, module.domain_egress("personal-sandbox"))
+        self.assertEqual({}, module.domain_egress("work-sandbox"))
+
+    def test_sealed_rendering_is_byte_identical_to_the_installed_policy(self) -> None:
+        self.assertEqual(
+            self.SEALED_POLICY, module.firewall_text("personal-sandbox")
+        )
+        self.assertEqual(
+            self.SEALED_POLICY,
+            module.firewall_text(
+                "personal-sandbox", module.domain_egress("personal-sandbox")
+            ),
+        )
+
+    def test_a_declared_policy_renders_scoped_rules_and_masquerade(self) -> None:
+        policies = {
+            "hastur": {
+                "resolver": "10.0.2.3",
+                "allow": (("tcp", 443),),
+                "reason": "threads.net crawl",
+            }
+        }
+        rendered = module.firewall_text("personal-sandbox", policies)
+        self.assertIn(
+            'iifname "argus-hastur" oifname "tap0" tcp dport 443 '
+            "ct state new,established accept;",
+            rendered,
+        )
+        self.assertIn(
+            'iifname "argus-hastur" oifname "tap0" ip daddr 10.0.2.3 '
+            "udp dport 53 ct state new,established accept;",
+            rendered,
+        )
+        self.assertIn(
+            'iifname "tap0" oifname "argus-hastur" '
+            "ct state established,related accept;",
+            rendered,
+        )
+        self.assertIn("table inet argus_personal_sandbox_nat {", rendered)
+        self.assertIn(
+            'iifname "argus-hastur" oifname "tap0" masquerade;', rendered
+        )
+        self.assertNotIn("argus-kadath", rendered)
+        self.assertNotIn("argus-nodens", rendered)
+
+    def test_sealed_domains_render_no_nat_table(self) -> None:
+        self.assertNotIn("_nat", module.firewall_text("personal-sandbox"))
+
+    def test_incomplete_policies_are_refused(self) -> None:
+        for policy in (
+            {"allow": (("tcp", 443),), "reason": "no resolver"},
+            {"resolver": "10.0.2.3", "reason": "no allowance"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 443),)},
+            {"resolver": "10.0.2.3", "allow": (("sctp", 443),), "reason": "bad proto"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 0),), "reason": "bad port"},
+        ):
+            with self.assertRaises(module.CutoverError):
+                module.validated_egress("hastur", {"egress": policy})
+
+    def test_a_missing_declaration_is_refused(self) -> None:
+        with self.assertRaises(module.CutoverError):
+            module.validated_egress("hastur", {})
+
+    def test_policy_changes_need_an_acknowledged_apply(self) -> None:
+        script = SCRIPT.read_text()
+        self.assertIn("--acknowledge-m5-egress-policy", script)
+        self.assertIn("refusing egress policy change", script)
+        # Reconcile reports drift; it must not install policy on a timer.
+        reconcile_body = script[script.index("def reconcile("):script.index("def egress_policy_drift(")]
+        self.assertNotIn("install_internal_firewall", reconcile_body)
+        self.assertIn("egressPolicyDrift", reconcile_body)
+
+
 if __name__ == "__main__":
     unittest.main()

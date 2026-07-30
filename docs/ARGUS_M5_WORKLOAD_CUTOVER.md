@@ -110,6 +110,49 @@ regular files. The mount target and any workload-specific runtime environment
 (hastur: `CRAWL_SCHEDULE_ENABLED=true`, `CRAWL_SCHEDULE_MECHANISM=internal`)
 live in that workload's cutover spec.
 
+## Declared egress
+
+Egress is a declared protocol, not an ad-hoc firewall edit. Every workload spec
+must carry an `egress` key; `None` means sealed on purpose and renders no rules.
+
+```python
+"egress": {
+    "resolver": "10.0.2.3",
+    "allow": (("tcp", 443),),
+    "reason": "threads.net crawl",
+}
+```
+
+Rules are derived from the declaration only: a forward allowance scoped to that
+workload's bridge, the matching return path, a resolver allowance on 53, and a
+nat masquerade for that bridge. A workload without a declaration cannot acquire
+a hole, and the bridge is pinned to `argus-<workload>` so a rule names one
+interface instead of Docker's non-deterministic `br-<id>`.
+
+The nft table is per trust domain, so applying policy installs every
+declaration in that domain:
+
+```bash
+sudo ./scripts/argus-m5-workload-cutover \
+  --workload hastur \
+  --apply-egress \
+  --acknowledge-m5-egress-policy
+```
+
+Reconcile reports `egressPolicyDrift` but never installs policy on a timer.
+Converging automatically is a deliberate later step, not a side effect.
+
+Verify after any policy change or cutover:
+
+```bash
+sudo ./scripts/argus-m5-egress-verify --domain personal-sandbox
+```
+
+Each workload is probed in both directions: declared destinations must be
+reachable, undeclared destinations must fail closed, and a hung probe counts as
+a failure rather than a pass. Exit status is non-zero when any expectation or
+the drift check fails.
+
 ## Commands
 
 ```bash
