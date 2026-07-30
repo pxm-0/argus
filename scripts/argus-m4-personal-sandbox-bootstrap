@@ -15,6 +15,11 @@ readonly USER_UNIT_DIR="$CELL_HOME/.config/systemd/user"
 readonly ARGUS_DIR="/etc/argus"
 readonly UNIT_DIR="/etc/systemd/system"
 readonly SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+# Declared egress (#267) needs a resolver the sandbox can actually reach. The
+# namespace inherits the host stub resolver at 127.0.0.53, where nothing is
+# listening inside the netns, so container DNS dead-ends even with a firewall
+# allowance. slirp4netns serves DNS on this address over the domain's uplink.
+readonly CELL_RESOLVER="${ARGUS_SANDBOX_RESOLVER:-10.0.2.3}"
 readonly NFT_TABLE="argus_${CELL_DOMAIN//-/_}"
 readonly NFT_FILE="${ARGUS_DIR}/argus-${CELL_DOMAIN}.nft"
 readonly HOST_GUARD_TABLE="${NFT_TABLE}_host_guard"
@@ -739,7 +744,7 @@ Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=$CELL_STORAGE/rootlesskit
 Delegate=yes
 TasksMax=infinity
-ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --exec-opt native.cgroupdriver=systemd --iptables=false --ip6tables=false
+ExecStart=/usr/bin/env dockerd-rootless.sh --data-root $CELL_STORAGE/docker-data --host unix://$CELL_STORAGE/docker.sock --exec-opt native.cgroupdriver=systemd --iptables=false --ip6tables=false --dns $CELL_RESOLVER
 Restart=on-failure
 RestartSec=5
 [Install]

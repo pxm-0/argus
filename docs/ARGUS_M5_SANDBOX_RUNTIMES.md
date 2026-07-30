@@ -65,3 +65,21 @@ Acceptance requires distinct subordinate-ID ranges and network namespaces,
 active rootless daemons/firewalls/domain agents, empty target namespaces before
 staging, rootful Docker-socket denial, a disabled Funnel, and online smoke with
 zero failures and warnings.
+
+## Resolver
+
+The sandbox netns inherits the host stub resolver at `127.0.0.53`, where nothing
+listens inside the namespace, so container DNS dead-ends regardless of firewall
+policy. The rootless daemon is therefore started with `--dns $CELL_RESOLVER`,
+defaulting to `10.0.2.3` — the address slirp4netns serves DNS on over the
+domain's uplink. Override with `ARGUS_SANDBOX_RESOLVER` when a domain needs a
+different resolver.
+
+The resolver grants nothing on its own: queries still traverse the sandbox
+firewall, which only allows port 53 to the resolver named in a declared egress
+policy. A sealed workload stays sealed. See `docs/ARGUS_M5_WORKLOAD_CUTOVER.md`
+for the declaration format.
+
+Changing this value takes effect when the daemon unit is reinstalled and the
+daemon restarts, which stops every workload in that domain. Treat it as a
+maintenance-window change, not a live edit.
