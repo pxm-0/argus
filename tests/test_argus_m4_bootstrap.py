@@ -80,6 +80,25 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("workloadsDeployed", script)
         self.assertNotIn("docker compose", script)
 
+    def test_apply_proves_the_daemon_can_actually_create_a_container(self) -> None:
+        """A 2026-07-30 outage left the daemon systemd-"active" but unable to
+        create a container (EOVERFLOW on containerd-mount). is-active alone
+        does not catch that; apply must run a real container before success."""
+        script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
+        self.assertIn("run --rm hello-world", script)
+        self.assertLess(
+            script.index('user_systemctl is-active --quiet "$DAEMON_UNIT"'),
+            script.index("run --rm hello-world"),
+        )
+        self.assertLess(
+            script.index("run --rm hello-world"),
+            script.index('systemctl enable "$FIREWALL_UNIT"'),
+        )
+        self.assertIn(
+            "refusing success: sandbox docker daemon is active but cannot run a container",
+            script,
+        )
+
     def test_work_sandbox_uses_an_independent_sealed_contract(self) -> None:
         contract = sandbox_contract(
             domain="work-sandbox",
