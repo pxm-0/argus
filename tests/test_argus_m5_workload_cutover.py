@@ -139,6 +139,21 @@ class WorkloadCutoverTests(unittest.TestCase):
             module.cron_source_resurrection_count(source, crontab),
         )
 
+    def test_plain_docker_exec_against_the_source_counts_as_resurrection(self) -> None:
+        """Pins the exact orphan class that hid for ~13h after M5 cutover:
+        a plain `docker exec` against the legacy container, no compose and
+        no up/start/restart keyword, so the old check never counted it."""
+        source = "/home/oreo/hastur"
+        crontab = """
+        0 */6 * * * cd /home/oreo/hastur && docker exec hastur pnpm run scrape
+        0 1 * * * cd /home/oreo/other && docker exec other pnpm run scrape
+        0 2 * * * cd /home/oreo/hastur && echo docker-exec-typo not a real command
+        """
+        self.assertEqual(
+            1,
+            module.cron_source_resurrection_count(source, crontab),
+        )
+
     def test_crontab_inspection_exit_one_fails_closed_unless_explicitly_empty(self) -> None:
         original_run = module.run
         with tempfile.TemporaryDirectory() as source:
