@@ -33,6 +33,7 @@ CREDENTIAL_ROOT = Path("/etc/argus/workload-credentials")
 UPLINK_INTERFACE = "tap0"
 EGRESS_PROTOCOLS = ("tcp", "udp")
 EGRESS_ACK = "--acknowledge-m5-egress-policy"
+REFRESH_ACK = "--acknowledge-m5-workload-refresh"
 LOCK_PATH = Path("/run/argus-m5-workload-cutover/lock")
 UNIX_SOCKET_PATH_LIMIT = 108
 APPLY_ACK = "--acknowledge-m5-workload-cutover"
@@ -1804,10 +1805,15 @@ def apply(workload: str) -> dict:
         raise
 
 
-def reconcile(workload: str) -> dict:
-    if os.geteuid() != 0:
-        raise CutoverError("run with sudo")
-    spec = SPECS[workload]
+def accepted_cutover_state(
+    workload: str, spec: dict
+) -> tuple[dict, Path, Path, Path]:
+    """Validate accepted-cutover evidence, the source fence, and runtime paths.
+
+    Shared by --reconcile and --refresh so the two cannot drift apart on the
+    checks that keep a stale source from running beside an authoritative
+    target.
+    """
     if scheduled_source_resurrections(spec):
         raise CutoverError(
             "legacy source has scheduled Compose resurrection; back up and disable it"
@@ -1869,6 +1875,204 @@ def reconcile(workload: str) -> dict:
             or not stat.S_ISDIR(directory_metadata.st_mode)
         ):
             raise CutoverError("accepted runtime anchor is unsafe")
+    return state, state_dir, runtime_compose, socket_path
+
+
+def refresh_overlay(
+    compose: dict, workload: str, spec: dict, credential_dir: Path | None
+) -> dict:
+    """Return the accepted Compose with current spec declarations applied.
+
+    Pure so the overlay can be tested without a sandbox. Replaces a bind at
+    the same target rather than appending, so refreshing twice is a no-op
+    instead of stacking duplicate mounts.
+    """
+    updated = json.loads(json.dumps(compose))
+    services = updated["services"]
+    credentials = dict(spec.get("credentials") or {})
+    extra_environment = dict(spec.get("extra_environment") or {})
+    unknown = (set(credentials) | set(extra_environment)).difference(services)
+    if unknown:
+        raise CutoverError(
+            f"credential or environment overlay names unknown services: {sorted(unknown)}"
+        )
+    if validated_egress(workload, spec) is not None:
+        # A declared rule names one interface, so the bridge cannot be left
+        # to Docker's non-deterministic br-<id> naming. Only a recreate can
+        # rename a live bridge, which is why --reconcile cannot do this.
+        networks = updated.setdefault("networks", {})
+        default = networks.get("default") or {}
+        if not isinstance(default, dict):
+            raise CutoverError("target default network definition is unsupported")
+        options = dict(default.get("driver_opts") or {})
+        options["com.docker.network.bridge.name"] = egress_bridge(workload)
+        default["driver_opts"] = options
+        networks["default"] = default
+    for service, definition in services.items():
+        definition["environment"] = {
+            **(definition.get("environment") or {}),
+            **extra_environment.get(service, {}),
+        }
+        definition["restart"] = "no"
+        target = credentials.get(service)
+        if target is None:
+            continue
+        volumes = [
+            volume
+            for volume in (definition.get("volumes") or [])
+            if not (
+                isinstance(volume, dict)
+                and str(volume.get("target")) == str(target)
+            )
+        ]
+        volumes.append(
+            {
+                "type": "bind",
+                "source": str(credential_dir),
+                "target": str(target),
+                "read_only": True,
+            }
+        )
+        definition["volumes"] = volumes
+    return updated
+
+
+def refresh(workload: str) -> dict:
+    """Re-apply the current spec to an already-accepted stateful target.
+
+    A cutover is one-way for a stateful workload, so declarations added after
+    acceptance cannot reach the running project: --apply refuses while the
+    target is present and the source is fenced, and --reconcile deliberately
+    reuses the accepted Compose byte for byte. Hastur hit this when sealed
+    credentials, a runtime environment overlay, and a declared egress policy
+    all landed after it was cut over.
+
+    Rewrites the accepted Compose in place and recreates the project. The
+    runtime directory, ingress binds, socket path, and Serve mapping are
+    unchanged, so only container and network identity move. `down` never
+    receives -v, so named volumes carrying workload state survive.
+    """
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    require_funnel_disabled()
+    state, state_dir, runtime_compose, socket_path = accepted_cutover_state(
+        workload, spec
+    )
+    identity = pwd.getpwnam(f"argus-{spec['domain']}")
+    credential_dir = (
+        credential_source(workload, spec, identity.pw_gid)
+        if spec.get("credentials")
+        else None
+    )
+    current = json.loads(runtime_compose.read_text())
+    updated = refresh_overlay(current, workload, spec, credential_dir)
+    if updated == current:
+        # Nothing declared has changed; do not bounce a healthy workload.
+        return {
+            "schemaVersion": 1,
+            "workloadId": workload,
+            "specDrift": False,
+            "refreshed": False,
+            "sourceStopped": True,
+            "targetRunning": True,
+            "publishedPorts": False,
+            "publicRoute": False,
+            "egressPolicyDrift": egress_policy_drift(spec),
+        }
+    before = runtime_compose.parent / "docker-compose.json.before"
+    candidate = runtime_compose.parent / "docker-compose.json.candidate"
+    for stale in (before, candidate):
+        stale.unlink(missing_ok=True)
+    atomic_write(
+        before, runtime_compose.read_bytes(), 0, identity.pw_gid, 0o640
+    )
+    atomic_write(
+        candidate,
+        json.dumps(updated, indent=2, sort_keys=True).encode() + b"\n",
+        0,
+        identity.pw_gid,
+        0o640,
+    )
+    journal_path = state_dir / "journal.json"
+    journal = json.loads(journal_path.read_text())
+    journal.update({"phase": "refreshing", "recoveryRequired": True})
+    write_state(journal_path, journal)
+    os.replace(candidate, runtime_compose)
+    try:
+        run(
+            target_compose(spec, runtime_compose, "down"),
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        require_target_absent(spec)
+        prepare_ingress_start(spec, socket_path)
+        run(
+            target_compose(spec, runtime_compose, "up", "-d"),
+            stdout=subprocess.DEVNULL,
+        )
+        container_ids = wait_target_ready(
+            workload, spec, runtime_compose, socket_path
+        )
+        lock_ingress_socket(socket_path)
+        require_funnel_disabled()
+        verify_tail_route(spec)
+    except BaseException:
+        # Restore the accepted Compose and bring the known-good project back.
+        # The source stays fenced either way: stale data is never started
+        # automatically, exactly as after the authority boundary in --apply.
+        os.replace(before, runtime_compose)
+        run(
+            target_compose(spec, runtime_compose, "down"),
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        prepare_ingress_start(spec, socket_path)
+        run(
+            target_compose(spec, runtime_compose, "up", "-d"),
+            check=False,
+            stdout=subprocess.DEVNULL,
+        )
+        raise
+    state.update(
+        {
+            "refreshGeneration": int(state.get("refreshGeneration") or 0) + 1,
+            "refreshedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        }
+    )
+    write_state(state_dir / "cutover.json", state)
+    journal.update(
+        {
+            "phase": "accepted",
+            "recoveryRequired": False,
+            "targetContainers": len(container_ids),
+            "targetAuthoritative": True,
+        }
+    )
+    write_state(journal_path, journal)
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "specDrift": True,
+        "refreshed": True,
+        "refreshGeneration": state["refreshGeneration"],
+        "sourceStopped": True,
+        "targetRunning": True,
+        "targetHealthy": True,
+        "tailnetRouteHealthy": True,
+        "publishedPorts": False,
+        "publicRoute": False,
+        "egressPolicyDrift": egress_policy_drift(spec),
+    }
+
+
+def reconcile(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise CutoverError("run with sudo")
+    spec = SPECS[workload]
+    _state, state_dir, runtime_compose, socket_path = accepted_cutover_state(
+        workload, spec
+    )
     container_ids = target_container_ids(spec)
     running = 0
     for identifier in container_ids:
@@ -2078,9 +2282,11 @@ def main() -> int:
     action.add_argument("--rollback", action="store_true")
     action.add_argument("--reconcile", action="store_true")
     action.add_argument("--apply-egress", action="store_true")
+    action.add_argument("--refresh", action="store_true")
     parser.add_argument(APPLY_ACK, action="store_true")
     parser.add_argument(ROLLBACK_ACK, action="store_true")
     parser.add_argument(EGRESS_ACK, action="store_true")
+    parser.add_argument(REFRESH_ACK, action="store_true")
     arguments = parser.parse_args()
     if arguments.apply and not getattr(
         arguments, APPLY_ACK[2:].replace("-", "_")
@@ -2094,6 +2300,10 @@ def main() -> int:
         arguments, EGRESS_ACK[2:].replace("-", "_")
     ):
         raise CutoverError(f"refusing egress policy change: add {EGRESS_ACK}")
+    if arguments.refresh and not getattr(
+        arguments, REFRESH_ACK[2:].replace("-", "_")
+    ):
+        raise CutoverError(f"refusing runtime refresh: add {REFRESH_ACK}")
 
     def interrupt(signum, _frame):
         raise InterruptedError(f"received signal {signum}")
@@ -2127,6 +2337,8 @@ def main() -> int:
             result = reconcile(arguments.workload)
         elif arguments.apply_egress:
             result = apply_egress(arguments.workload)
+        elif arguments.refresh:
+            result = refresh(arguments.workload)
         else:
             result = preflight(arguments.workload)
     print(json.dumps(result, sort_keys=True))

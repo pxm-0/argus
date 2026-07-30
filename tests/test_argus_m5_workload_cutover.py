@@ -1,5 +1,6 @@
 import importlib.machinery
 import importlib.util
+import json
 from pathlib import Path
 import subprocess
 import tempfile
@@ -438,6 +439,156 @@ class DeclaredEgressTest(unittest.TestCase):
         reconcile_body = script[script.index("def reconcile("):script.index("def egress_policy_drift(")]
         self.assertNotIn("install_internal_firewall", reconcile_body)
         self.assertIn("egressPolicyDrift", reconcile_body)
+
+
+class RuntimeRefreshTest(unittest.TestCase):
+    """A stateful cutover is one-way, so spec drift after acceptance needs a
+    fenced way in. Hastur proved the gap: sealed credentials, the schedule
+    overlay, and a declared egress policy all landed after it was cut over,
+    and no action could deliver any of them."""
+
+    CREDENTIAL_DIR = Path("/etc/argus/workload-credentials/hastur")
+    ACCEPTED = {
+        "services": {
+            "hastur": {
+                "image": "sha256:aaaa",
+                "environment": {"CRAWL_MAX_RUNTIME_MS": "10800000"},
+                "restart": "no",
+                "volumes": [
+                    {
+                        "type": "volume",
+                        "source": "argus_stage_hastur__app_data",
+                        "target": "/app/data",
+                    }
+                ],
+            },
+            "argus-ingress": {
+                "image": "sha256:bbbb",
+                "environment": {},
+                "restart": "no",
+                "volumes": [
+                    {
+                        "type": "bind",
+                        "source": "/var/lib/argus/x/ingress.json",
+                        "target": "/etc/caddy/ingress.json",
+                        "read_only": True,
+                    }
+                ],
+            },
+        }
+    }
+
+    def granted_spec(self) -> dict:
+        return {
+            **module.SPECS["hastur"],
+            "egress": {
+                "resolver": "10.0.2.3",
+                "allow": (("tcp", 443),),
+                "reason": "threads.net crawl",
+            },
+        }
+
+    def test_overlay_delivers_what_hastur_was_missing(self) -> None:
+        updated = module.refresh_overlay(
+            self.ACCEPTED, "hastur", self.granted_spec(), self.CREDENTIAL_DIR
+        )
+        service = updated["services"]["hastur"]
+        # The schedule overlay, absent from the running container.
+        self.assertEqual("true", service["environment"]["CRAWL_SCHEDULE_ENABLED"])
+        self.assertEqual(
+            "internal", service["environment"]["CRAWL_SCHEDULE_MECHANISM"]
+        )
+        # Captured runtime environment is preserved, not replaced.
+        self.assertEqual(
+            "10800000", service["environment"]["CRAWL_MAX_RUNTIME_MS"]
+        )
+        # The sealed credential bind, which had no mount at all.
+        self.assertIn(
+            {
+                "type": "bind",
+                "source": str(self.CREDENTIAL_DIR),
+                "target": "/app/auth",
+                "read_only": True,
+            },
+            service["volumes"],
+        )
+        # Workload state must survive the recreate.
+        self.assertIn(
+            {
+                "type": "volume",
+                "source": "argus_stage_hastur__app_data",
+                "target": "/app/data",
+            },
+            service["volumes"],
+        )
+        # The bridge a declared rule can name.
+        self.assertEqual(
+            "argus-hastur",
+            updated["networks"]["default"]["driver_opts"][
+                "com.docker.network.bridge.name"
+            ],
+        )
+
+    def test_overlay_is_idempotent(self) -> None:
+        spec = self.granted_spec()
+        once = module.refresh_overlay(
+            self.ACCEPTED, "hastur", spec, self.CREDENTIAL_DIR
+        )
+        twice = module.refresh_overlay(
+            once, "hastur", spec, self.CREDENTIAL_DIR
+        )
+        self.assertEqual(once, twice)
+        binds = [
+            volume
+            for volume in twice["services"]["hastur"]["volumes"]
+            if volume.get("target") == "/app/auth"
+        ]
+        self.assertEqual(1, len(binds), "credential bind must not stack")
+
+    def test_overlay_does_not_mutate_the_accepted_compose(self) -> None:
+        before = json.dumps(self.ACCEPTED, sort_keys=True)
+        module.refresh_overlay(
+            self.ACCEPTED, "hastur", self.granted_spec(), self.CREDENTIAL_DIR
+        )
+        self.assertEqual(before, json.dumps(self.ACCEPTED, sort_keys=True))
+
+    def test_a_sealed_workload_gets_no_bridge_pin(self) -> None:
+        # Renaming the bridge is only meaningful for a declared policy, so a
+        # sealed workload must not be recreated onto a pinned interface.
+        updated = module.refresh_overlay(
+            self.ACCEPTED, "hastur", module.SPECS["hastur"], self.CREDENTIAL_DIR
+        )
+        self.assertNotIn("networks", updated)
+
+    def test_overlay_refuses_to_name_unknown_services(self) -> None:
+        spec = {**module.SPECS["hastur"], "credentials": {"absent": "/app/auth"}}
+        with self.assertRaises(module.CutoverError):
+            module.refresh_overlay(
+                self.ACCEPTED, "hastur", spec, self.CREDENTIAL_DIR
+            )
+
+    def test_refresh_never_destroys_named_volumes(self) -> None:
+        script = SCRIPT.read_text()
+        body = script[script.index("def refresh(") : script.index("def reconcile(")]
+        self.assertIn('"down"', body)
+        # -v would delete argus_stage_<workload>__* and the workload's state.
+        self.assertNotIn('"-v"', body)
+        self.assertNotIn('"--volumes"', body)
+
+    def test_refresh_is_acknowledged_and_reuses_the_shared_validator(self) -> None:
+        script = SCRIPT.read_text()
+        self.assertIn("--acknowledge-m5-workload-refresh", script)
+        self.assertIn("refusing runtime refresh", script)
+        # reconcile and refresh must not drift apart on the fence checks.
+        self.assertEqual(2, script.count("= accepted_cutover_state("))
+
+    def test_refresh_keeps_the_source_fenced_on_failure(self) -> None:
+        script = SCRIPT.read_text()
+        body = script[script.index("def refresh(") : script.index("def reconcile(")]
+        # Recovery restores the accepted Compose; it never starts the source.
+        self.assertIn("os.replace(before, runtime_compose)", body)
+        self.assertNotIn("source_up(", body)
+        self.assertNotIn("restore_source_restart(", body)
 
 
 if __name__ == "__main__":
