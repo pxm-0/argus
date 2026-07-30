@@ -67,6 +67,59 @@ class DatabaseBackupTest(unittest.TestCase):
             self.assertTrue((root / names[4]).exists())
             self.assertTrue((root / "notes.txt").exists())
 
+    def test_exec_flags_match_plain_docker_and_pipe_the_dump_back_in(self) -> None:
+        """Pins both #266 follow-ups: -T is not a docker exec flag, and the
+        verify step gets /dev/null on stdin unless -i is passed."""
+        calls = []
+
+        def fake_run(command, **kwargs):
+            calls.append(command)
+            if "pg_dump" in command:
+                kwargs["stdout"].write(b"PGDMP-fake")
+            return None
+
+        with tempfile.TemporaryDirectory() as directory:
+            originals = (
+                module.BACKUP_ROOT,
+                module.subprocess.run,
+                module.os.geteuid,
+                module.ensure_root_directory,
+                module.container_name,
+                module.credentials,
+            )
+            module.BACKUP_ROOT = Path(directory)
+            module.subprocess.run = fake_run
+            module.os.geteuid = lambda: 0
+            module.ensure_root_directory = lambda path: path.mkdir(
+                parents=True, exist_ok=True
+            )
+            module.container_name = lambda _spec: "kadath-live-postgres-1"
+            module.credentials = lambda _spec, _container: ("kadath", "kadath")
+            try:
+                result = module.backup("kadath")
+            finally:
+                (
+                    module.BACKUP_ROOT,
+                    module.subprocess.run,
+                    module.os.geteuid,
+                    module.ensure_root_directory,
+                    module.container_name,
+                    module.credentials,
+                ) = originals
+
+        dump, verify = calls
+        # docker exec has no -T (that is docker compose exec); passing it made
+        # the dump exit 125 on the host's Docker 29.5.3.
+        self.assertNotIn("-T", dump)
+        self.assertNotIn("-T", verify)
+        # The dump writes to a file handle and needs no stdin.
+        self.assertNotIn("-i", dump)
+        # The verify reads the artifact on stdin, so -i is mandatory.
+        self.assertIn("-i", verify)
+        self.assertEqual("-i", verify[verify.index("exec") + 1])
+        self.assertTrue(result["verified"])
+        self.assertEqual(len(b"PGDMP-fake"), result["artifactBytes"])
+
     def test_units_are_root_and_instanced_per_workload(self) -> None:
         service = (ROOT / "templates" / "systemd" / "argus-workload-db-backup@.service").read_text()
         timer = (ROOT / "templates" / "systemd" / "argus-workload-db-backup@.timer").read_text()
