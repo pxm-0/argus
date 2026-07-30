@@ -94,6 +94,18 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("fixtures/argus-hello-world-amd64.tar", script)
         fixture = ROOT / "scripts" / "fixtures" / "argus-hello-world-amd64.tar"
         self.assertTrue(fixture.exists())
+        # is-active only proves the process started, not that the socket
+        # exists yet -- a fresh docker-data is slower to initialize than an
+        # existing one (confirmed live rebuilding personal-sandbox 2026-07-31).
+        self.assertIn("sandbox docker socket never appeared", script)
+        self.assertLess(
+            script.index('user_systemctl is-active --quiet "$DAEMON_UNIT"'),
+            script.index("sandbox docker socket never appeared"),
+        )
+        self.assertLess(
+            script.index("sandbox docker socket never appeared"),
+            script.index("load -i"),
+        )
         self.assertLess(
             script.index('user_systemctl is-active --quiet "$DAEMON_UNIT"'),
             script.index("load -i"),
