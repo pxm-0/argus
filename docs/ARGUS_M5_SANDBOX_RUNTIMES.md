@@ -40,9 +40,13 @@ it through the cell's own socket, refusing to report success if that fails —
 whether or not the daemon was just restarted. The image is vendored rather
 than pulled because a sandbox's default-deny egress has no route to Docker
 Hub; confirmed live on oreochiserver, where a bare `docker run hello-world`
-failed the gate on an otherwise-healthy daemon. This is the rebuild-and-verify
-gate: run apply against a rebuilt cell and trust the exit code, not just
-`daemonRestarted` in its output.
+failed the gate on an otherwise-healthy daemon. The apply also waits for the
+daemon's socket file to exist before touching it — `is-active` only proves
+the process started, and a freshly wiped `docker-data` takes noticeably
+longer to finish initializing than an existing one, confirmed live rebuilding
+personal-sandbox. This is the rebuild-and-verify gate: run apply against a
+rebuilt cell and trust the exit code, not just `daemonRestarted` in its
+output.
 
 The bootstrap backs up subordinate-ID files and every affected unit, helper,
 firewall file, and prior service state beneath
