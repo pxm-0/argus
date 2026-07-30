@@ -555,8 +555,10 @@ class RuntimeRefreshTest(unittest.TestCase):
     def test_a_sealed_workload_gets_no_bridge_pin(self) -> None:
         # Renaming the bridge is only meaningful for a declared policy, so a
         # sealed workload must not be recreated onto a pinned interface.
+        # kadath is the sealed case; hastur stopped being one when #272 landed.
+        self.assertIsNone(module.SPECS["kadath"]["egress"])
         updated = module.refresh_overlay(
-            self.ACCEPTED, "hastur", module.SPECS["hastur"], self.CREDENTIAL_DIR
+            self.ACCEPTED, "kadath", module.SPECS["kadath"], None
         )
         self.assertNotIn("networks", updated)
 
@@ -582,13 +584,85 @@ class RuntimeRefreshTest(unittest.TestCase):
         # reconcile and refresh must not drift apart on the fence checks.
         self.assertEqual(2, script.count("= accepted_cutover_state("))
 
-    def test_refresh_keeps_the_source_fenced_on_failure(self) -> None:
+    def test_recovery_restores_root_ownership_before_preparing(self) -> None:
+        """Regression: hastur stayed down because recovery called
+        prepare_ingress_start on an already-prepared directory. That raised
+        "locked ingress directory ownership is unsafe" and replaced the real
+        failure, so up -d never ran and the cause was lost."""
+        events = []
+        originals = (
+            module.run,
+            module.os.replace,
+            module.os.chown,
+            module.prepare_ingress_start,
+        )
+        module.run = lambda command, **_kwargs: events.append(command[-2:])
+        module.os.replace = lambda *_args: events.append(["replace"])
+        module.os.chown = lambda _path, uid, gid: events.append(
+            ["chown", uid, gid]
+        )
+
+        def prepare(_spec, _socket):
+            # Fails unless ownership was restored to root immediately before.
+            if ["chown", 0, 0] not in events:
+                raise module.CutoverError(
+                    "locked ingress directory ownership is unsafe"
+                )
+            events.append(["prepare"])
+
+        module.prepare_ingress_start = prepare
+        try:
+            module.restore_accepted_runtime(
+                module.SPECS["hastur"],
+                Path("/x/docker-compose.json"),
+                Path("/x/docker-compose.json.before"),
+                Path("/x/ingress/upstream.sock"),
+            )
+        finally:
+            (
+                module.run,
+                module.os.replace,
+                module.os.chown,
+                module.prepare_ingress_start,
+            ) = originals
+
+        self.assertEqual(["replace"], events[0])
+        self.assertLess(
+            events.index(["chown", 0, 0]),
+            events.index(["prepare"]),
+            "ownership must be restored before preparing",
+        )
+        # The known-good project must actually be started again.
+        self.assertEqual(["up", "-d"], events[-1])
+
+    def test_refresh_recovery_cannot_mask_the_original_failure(self) -> None:
         script = SCRIPT.read_text()
         body = script[script.index("def refresh(") : script.index("def reconcile(")]
-        # Recovery restores the accepted Compose; it never starts the source.
-        self.assertIn("os.replace(before, runtime_compose)", body)
-        self.assertNotIn("source_up(", body)
-        self.assertNotIn("restore_source_restart(", body)
+        recovery = body[
+            body.index("except BaseException:") : body.index("    state.update(")
+        ]
+        # Recovery is guarded, so a failure inside it cannot replace the error
+        # that triggered it.
+        self.assertIn("restore_accepted_runtime(", recovery)
+        self.assertIn("except Exception as recovery_error", recovery)
+        self.assertIn("recovery incomplete", recovery)
+        self.assertTrue(recovery.rstrip().endswith("raise"))
+        # The bug was calling this directly in the handler.
+        self.assertNotIn("prepare_ingress_start(", recovery)
+
+    def test_refresh_keeps_the_source_fenced_on_failure(self) -> None:
+        script = SCRIPT.read_text()
+        region = script[
+            script.index("def restore_accepted_runtime(") : script.index(
+                "def reconcile("
+            )
+        ]
+        # Recovery restores the accepted Compose...
+        self.assertIn("os.replace(before, runtime_compose)", region)
+        # ...and never starts the legacy source, whose data is now stale.
+        self.assertNotIn("source_up(", region)
+        self.assertNotIn("restore_source_restart(", region)
+        self.assertNotIn("fence_source_restart(", region)
 
 
 if __name__ == "__main__":

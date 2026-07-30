@@ -1937,6 +1937,33 @@ def refresh_overlay(
     return updated
 
 
+def restore_accepted_runtime(
+    spec: dict, runtime_compose: Path, before: Path, socket_path: Path
+) -> None:
+    """Put the previously accepted Compose back and restart that project.
+
+    prepare_ingress_start requires a root-owned ingress directory and leaves
+    it sandbox-owned, so recovery cannot assume its precondition still holds:
+    a refresh that failed after the first prepare would hit that same check
+    again. Restore the locked ownership before preparing, so recovery works
+    whether the attempt died before or after the ingress directory was handed
+    to the sandbox identity.
+    """
+    os.replace(before, runtime_compose)
+    run(
+        target_compose(spec, runtime_compose, "down"),
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+    os.chown(socket_path.parent, 0, 0)
+    prepare_ingress_start(spec, socket_path)
+    run(
+        target_compose(spec, runtime_compose, "up", "-d"),
+        check=False,
+        stdout=subprocess.DEVNULL,
+    )
+
+
 def refresh(workload: str) -> dict:
     """Re-apply the current spec to an already-accepted stateful target.
 
@@ -2018,21 +2045,16 @@ def refresh(workload: str) -> dict:
         require_funnel_disabled()
         verify_tail_route(spec)
     except BaseException:
-        # Restore the accepted Compose and bring the known-good project back.
+        # Recovery must never mask the original failure. An earlier revision
+        # called prepare_ingress_start directly here, which raised
+        # "locked ingress directory ownership is unsafe" and replaced the real
+        # error, so the workload stayed down with its cause hidden.
+        try:
+            restore_accepted_runtime(spec, runtime_compose, before, socket_path)
+        except Exception as recovery_error:
+            print(f"recovery incomplete: {recovery_error}", file=sys.stderr)
         # The source stays fenced either way: stale data is never started
         # automatically, exactly as after the authority boundary in --apply.
-        os.replace(before, runtime_compose)
-        run(
-            target_compose(spec, runtime_compose, "down"),
-            check=False,
-            stdout=subprocess.DEVNULL,
-        )
-        prepare_ingress_start(spec, socket_path)
-        run(
-            target_compose(spec, runtime_compose, "up", "-d"),
-            check=False,
-            stdout=subprocess.DEVNULL,
-        )
         raise
     state.update(
         {
