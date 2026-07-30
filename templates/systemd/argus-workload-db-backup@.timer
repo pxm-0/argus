@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Argus sandboxed database backup for %i
+
+[Timer]
+OnCalendar=*-*-* 02:35:00 UTC
+Persistent=true
+RandomizedDelaySec=10m
+Unit=argus-workload-db-backup@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus sandboxed database backup for %i
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/argus
+ExecStart=/srv/argus/scripts/argus-m5-workload-db-backup --workload %i
+User=root
+Group=root

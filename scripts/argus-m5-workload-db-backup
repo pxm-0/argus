@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""Dump a sandboxed workload's Postgres through its own rootless daemon.
+
+Host-side `docker compose exec` cannot reach a sealed sandbox, which is how
+kadath's nightly backup silently died at cutover (#266). This runs the dump
+inside the sandbox and verifies the artifact before keeping it.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import time
+
+
+BACKUP_ROOT = Path("/var/backups/argus-m5-workload-db")
+# Retained workloads that carry a database, mapped to their sandbox identity.
+SPECS = {
+    "kadath": {
+        "domain": "personal-sandbox",
+        "project": "kadath-live",
+        "service": "postgres",
+    },
+    "locigraph": {
+        "domain": "personal-sandbox",
+        "project": "locigraph",
+        "service": "postgres",
+    },
+    "intake-os": {
+        "domain": "work-sandbox",
+        "project": "intake-os",
+        "service": "postgres",
+    },
+}
+RETAINED_COPIES = 14
+DUMP_TIMEOUT_SECONDS = 900
+
+
+class BackupError(RuntimeError):
+    pass
+
+
+def target_command(domain: str, *arguments: str) -> list[str]:
+    user = f"argus-{domain}"
+    return [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        f"HOME=/home/{user}",
+        "docker",
+        "--host",
+        f"unix:///var/lib/argus/{domain}/docker.sock",
+        *arguments,
+    ]
+
+
+def text(command: list[str], timeout: float | None = None) -> str:
+    return subprocess.run(
+        command,
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        timeout=timeout,
+    ).stdout
+
+
+def container_name(spec: dict) -> str:
+    names = text(
+        [
+            *target_command(
+                str(spec["domain"]),
+                "ps",
+                "--format",
+                "{{.Names}}",
+                "--filter",
+                f"label=com.docker.compose.project={spec['project']}",
+                "--filter",
+                f"label=com.docker.compose.service={spec['service']}",
+            )
+        ]
+    ).split()
+    if len(names) != 1:
+        raise BackupError(
+            f"database container for {spec['project']} is ambiguous or absent"
+        )
+    return names[0]
+
+
+def credentials(spec: dict, container: str) -> tuple[str, str]:
+    """Read role and database from container env, never from a committed file."""
+    values = {}
+    for entry in text(
+        [*target_command(str(spec["domain"]), "exec", container, "printenv")]
+    ).splitlines():
+        key, separator, value = entry.partition("=")
+        if separator:
+            values[key] = value
+    role = values.get("POSTGRES_USER", "")
+    database = values.get("POSTGRES_DB", "")
+    if not role or not database:
+        raise BackupError(
+            f"{container} does not declare POSTGRES_USER and POSTGRES_DB"
+        )
+    return role, database
+
+
+def ensure_root_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError(f"unsafe backup directory: {path}")
+    os.chown(path, 0, 0)
+    os.chmod(path, 0o700)
+
+
+def prune(directory: Path, keep: int) -> list[str]:
+    dumps = sorted(
+        (item for item in directory.iterdir() if item.suffix == ".dump"),
+        reverse=True,
+    )
+    removed = []
+    for stale in dumps[keep:]:
+        stale.unlink()
+        removed.append(stale.name)
+    return removed
+
+
+def backup(workload: str) -> dict:
+    if os.geteuid() != 0:
+        raise BackupError("run with sudo")
+    spec = SPECS[workload]
+    directory = BACKUP_ROOT / workload
+    ensure_root_directory(BACKUP_ROOT)
+    ensure_root_directory(directory)
+    container = container_name(spec)
+    role, database = credentials(spec, container)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    artifact = directory / f"{workload}-{stamp}.dump"
+    partial = directory / f".{artifact.name}.partial"
+    descriptor = os.open(
+        partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            subprocess.run(
+                [
+                    *target_command(
+                        str(spec["domain"]),
+                        "exec",
+                        "-T",
+                        container,
+                        "pg_dump",
+                        "-U",
+                        role,
+                        "-d",
+                        database,
+                        "-Fc",
+                    )
+                ],
+                check=True,
+                stdout=handle,
+                timeout=DUMP_TIMEOUT_SECONDS,
+            )
+        # An unverified dump is not a backup: prove the artifact is readable
+        # before it is allowed to count as the night's copy.
+        with open(partial, "rb") as handle:
+            subprocess.run(
+                [
+                    *target_command(
+                        str(spec["domain"]),
+                        "exec",
+                        "-T",
+                        container,
+                        "pg_restore",
+                        "--list",
+                    )
+                ],
+                check=True,
+                stdin=handle,
+                stdout=subprocess.DEVNULL,
+                timeout=DUMP_TIMEOUT_SECONDS,
+            )
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    if partial.exists():
+        os.replace(partial, artifact)
+    size = artifact.stat().st_size
+    if size == 0:
+        artifact.unlink()
+        raise BackupError("dump verified but empty")
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "trustDomain": spec["domain"],
+        "container": container,
+        "artifactPath": str(artifact),
+        "artifactBytes": size,
+        "verified": True,
+        "prunedCopies": prune(directory, RETAINED_COPIES),
+        "retainedCopies": RETAINED_COPIES,
+        "completedAt": stamp,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--workload", required=True, choices=sorted(SPECS))
+    arguments = parser.parse_args()
+    print(json.dumps(backup(arguments.workload), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (BackupError, subprocess.SubprocessError, OSError) as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(1) from error
