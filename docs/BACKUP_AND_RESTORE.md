@@ -64,3 +64,41 @@ Restore remains manual in P1. Use `argus-restore-plan <workload-id>` to review:
 
 Do not restore over a running workload without first writing and reviewing a
 rollback plan.
+
+## Sandboxed database backups
+
+Host-side `docker compose exec` cannot reach a sealed sandbox daemon, so any
+pre-cutover database backup schedule stops working the moment a workload moves
+(#266). Sandboxed databases are dumped through the domain's own rootless socket:
+
+```bash
+sudo ./scripts/argus-m5-workload-db-backup --workload kadath
+```
+
+The dump runs inside the sandbox, credentials are read from the container
+environment rather than from anything committed, and the artifact is verified
+with `pg_restore --list` before it replaces the night's copy. A partial dump is
+removed rather than kept. Artifacts land in
+`/var/backups/argus-m5-workload-db/<workload>/`, root-owned `0600`, with the
+newest 14 retained.
+
+Install the schedule per workload:
+
+```bash
+sudo install -m 0644 templates/systemd/argus-workload-db-backup@.service \
+  templates/systemd/argus-workload-db-backup@.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now argus-workload-db-backup@kadath.timer
+```
+
+Retire any pre-cutover replacement, including user-level units, which do not
+appear in a root `systemctl list-timers` sweep:
+
+```bash
+sudo -u oreo XDG_RUNTIME_DIR=/run/user/1000 systemctl --user disable --now kadath-backup.timer
+```
+
+After a workload migration, audit user crontabs, `/etc/cron.d`, system timers,
+**and** every per-user `systemctl --user` timer for references to the old source
+path or legacy container name. Two schedules were missed at M5 cutover because a
+system-level sweep cannot see user-level units.
