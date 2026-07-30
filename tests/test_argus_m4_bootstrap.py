@@ -86,8 +86,20 @@ class M4BootstrapTest(unittest.TestCase):
         does not catch that; apply must run a real container before success."""
         script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
         self.assertIn("run --rm hello-world", script)
+        # A bare `docker run hello-world` pulls from Docker Hub, which the
+        # sandbox's default-deny egress cannot reach — confirmed live on
+        # oreochiserver as a false-positive rollback. The image must be
+        # vendored and loaded locally instead.
+        self.assertIn("load -i", script)
+        self.assertIn("fixtures/argus-hello-world-amd64.tar", script)
+        fixture = ROOT / "scripts" / "fixtures" / "argus-hello-world-amd64.tar"
+        self.assertTrue(fixture.exists())
         self.assertLess(
             script.index('user_systemctl is-active --quiet "$DAEMON_UNIT"'),
+            script.index("load -i"),
+        )
+        self.assertLess(
+            script.index("load -i"),
             script.index("run --rm hello-world"),
         )
         self.assertLess(
