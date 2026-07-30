@@ -45,6 +45,16 @@ HANDLED_SIGNALS = (signal.SIGHUP, signal.SIGINT, signal.SIGTERM)
 # serialization lock, so overlapping firings must queue instead of failing.
 # Stays under the oneshot TimeoutStartSec=90s default.
 RECONCILE_LOCK_WAIT_SECONDS = 60
+# ponytail: ingress_image is not provisioned by any script -- it exists only
+# because someone once ran, on the host (which has internet; the sandbox's
+# default-deny egress does not):
+#   docker pull caddy:2 && docker save caddy:2 -o /tmp/caddy2.tar
+#   runuser -u argus-personal-sandbox -- docker --host \
+#     unix:///var/lib/argus/personal-sandbox/docker.sock load -i /tmp/caddy2.tar
+# then pinned the resulting local image ID here. A personal-sandbox rebuild
+# (wiping docker-data) destroys it with no way to recover the exact ID --
+# confirmed live 2026-07-30, which is why this digest changed. Repeat the
+# steps above and update every "ingress_image" below whenever that happens.
 RECONCILE_LOCK_POLL_SECONDS = 0.5
 SPECS = {
     "hastur": {
@@ -58,7 +68,7 @@ SPECS = {
         "health_path": "/api/health",
         "tail_port": 8445,
         "stateful": True,
-        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
         # Declared egress: the crawler needs DNS and TLS, nothing else.
         # Effective at the next cutover, when the bridge is renamed. See #267.
         "egress": {
@@ -87,7 +97,7 @@ SPECS = {
         "health_path": "/",
         "tail_port": 8443,
         "stateful": True,
-        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
         # Sealed: no egress declared. See #267.
         "egress": None,
     },
@@ -102,7 +112,7 @@ SPECS = {
         "health_path": "/",
         "tail_port": 8444,
         "stateful": False,
-        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
         # Sealed: no egress declared. See #267.
         "egress": None,
     },
@@ -117,7 +127,7 @@ SPECS = {
         "health_path": "/",
         "tail_port": 443,
         "stateful": True,
-        "ingress_image": "sha256:5f5c8640aae01df9654968d946d8f1a56c497f1dd5c5cda4cf95ab7c14d58648",
+        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
         # Sealed: no egress declared. See #267.
         "egress": None,
     },
