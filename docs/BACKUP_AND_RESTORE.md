@@ -102,3 +102,29 @@ After a workload migration, audit user crontabs, `/etc/cron.d`, system timers,
 **and** every per-user `systemctl --user` timer for references to the old source
 path or legacy container name. Two schedules were missed at M5 cutover because a
 system-level sweep cannot see user-level units.
+
+## Hastur file backup
+
+Hastur runs rootful, outside the sandbox, so its data and login credentials are
+plain host directories rather than a database behind a sandboxed daemon
+(`/home/oreo/hastur/data`, `/home/oreo/hastur/auth`). Like kadath before #266,
+this had no backup. `argus-m5-hastur-backup` tars both paths directly — no
+docker or sandbox socket involved:
+
+```bash
+sudo ./scripts/argus-m5-hastur-backup --workload hastur
+```
+
+Each archive is verified as listable before it replaces the night's copy; a
+partial archive is removed rather than kept. Artifacts land in
+`/var/backups/argus-m5-workload-files/hastur/`, root-owned `0700`, with the
+newest 14 of each (`data-*.tar.gz`, `auth-*.tar.gz`) retained.
+
+Install the schedule:
+
+```bash
+sudo install -m 0644 templates/systemd/argus-hastur-backup.service \
+  templates/systemd/argus-hastur-backup.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now argus-hastur-backup.timer
+```

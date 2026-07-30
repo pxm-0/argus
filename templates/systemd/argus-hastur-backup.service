@@ -1,0 +1,11 @@
+[Unit]
+Description=Argus hastur data and auth backup
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/srv/argus
+ExecStart=/srv/argus/scripts/argus-m5-hastur-backup --workload hastur
+User=root
+Group=root
