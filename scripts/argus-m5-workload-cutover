@@ -184,7 +184,15 @@ def cron_source_resurrection_count(source: str, crontab: str) -> int:
         starts_runtime = any(
             f" {action} " in normalized for action in ("up", "start", "restart")
         )
-        if source_lower in normalized and compose_command and starts_runtime:
+        # `docker exec` against the legacy container is its own resurrection
+        # class: it needs no up/start/restart, and it isn't docker compose.
+        # Hastur's orphan (`docker exec hastur pnpm run scrape`) hid from this
+        # check for ~13h post-cutover because of exactly that gap.
+        plain_exec = re.search(
+            r"(?:^|[\s;&|])(?:\S*/)?docker\s+exec(?:\s|$)",
+            normalized,
+        )
+        if source_lower in normalized and ((compose_command and starts_runtime) or plain_exec):
             count += 1
     return count
 
