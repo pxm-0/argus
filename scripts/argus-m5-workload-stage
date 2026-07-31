@@ -46,6 +46,14 @@ SPECS = {
         "exclude": (".git", "node_modules", "auth", "data", ".env"),
         "blocked_mounts": ("/home/oreo/hastur/auth", "/home/oreo/.ssh"),
         "cutover_writers": ("hastur",),
+        # cutover's own SPECS declares an egress policy for hastur (DNS +
+        # tcp/443, for the threads.net crawl). network["internal"] = True
+        # below would silence that regardless of the nft/masquerade rules
+        # cutover installs -- an internal network gets no default route at
+        # all, so an allowed packet never leaves the container in the first
+        # place. Confirmed live 2026-07-31: bridge and nft rules were both
+        # correct, egress still failed with ENETUNREACH until this flag.
+        "has_egress": True,
         "offline_command_overrides": {
             "hastur": {
                 "packageScript": "start",
@@ -1225,7 +1233,7 @@ def sanitize_compose(
     for network in networks.values():
         if network.get("external"):
             raise StageError("external target networks are forbidden")
-        network["internal"] = True
+        network["internal"] = not spec.get("has_egress", False)
     rendered.pop("secrets", None)
     rendered.pop("configs", None)
     expected_stage_volumes = set(state_volume_map.values())

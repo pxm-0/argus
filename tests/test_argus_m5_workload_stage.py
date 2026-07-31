@@ -106,6 +106,32 @@ class WorkloadStageTests(unittest.TestCase):
         self.assertTrue(sanitized["networks"]["default"]["internal"])
         self.assertEqual(["service:web:runtime-environment"], blockers)
 
+    def test_declared_egress_workload_gets_a_routable_network(self) -> None:
+        """cutover declares an egress policy for hastur (DNS + tcp/443), but
+        marking the target network internal removes its default route
+        regardless of any nft/masquerade allow rule -- confirmed live
+        2026-07-31, where the bridge and nft rules were both correct and
+        egress still failed with ENETUNREACH. A workload with has_egress
+        must not get internal=True, or the allow rule is unreachable."""
+        rendered = {"services": {"hastur": {}}, "networks": {"default": {}}}
+        inventory = [{"composeService": "hastur", "imageId": "sha256:abc", "mounts": []}]
+        spec = {**module.SPECS["hastur"], "offline_command_overrides": {}}
+        sanitized, _blockers = module.sanitize_compose(
+            rendered, inventory,
+            Path("/var/lib/argus/migration-staging/personal-sandbox/hastur/id"),
+            spec,
+        )
+        self.assertFalse(sanitized["networks"]["default"]["internal"])
+
+    def test_sealed_workload_without_egress_stays_internal(self) -> None:
+        rendered = {"services": {"web": {}}, "networks": {"default": {}}}
+        inventory = [{"composeService": "web", "imageId": "sha256:abc", "mounts": []}]
+        sanitized, _blockers = module.sanitize_compose(
+            rendered, inventory, Path("/var/lib/argus/migration-staging/personal-sandbox/nodens/id"),
+            module.SPECS["nodens"],
+        )
+        self.assertTrue(sanitized["networks"]["default"]["internal"])
+
     def test_sanitized_compose_uses_verified_rootless_image_map(self) -> None:
         rendered = {"services": {"web": {}}, "networks": {"default": {}}}
         inventory = [
