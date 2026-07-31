@@ -1925,6 +1925,13 @@ def refresh_overlay(
         options = dict(default.get("driver_opts") or {})
         options["com.docker.network.bridge.name"] = egress_bridge(workload)
         default["driver_opts"] = options
+        # A target staged before #289 landed keeps internal=True forever
+        # through refresh, since nothing else here touches it -- an
+        # internal network has no default route at all, so the nft allow
+        # rules below are unreachable regardless of how correct they are.
+        # Confirmed live 2026-07-31: hastur's own refresh renamed the
+        # bridge but left the workload with EAI_AGAIN.
+        default["internal"] = False
         networks["default"] = default
     for service, definition in services.items():
         definition["environment"] = {

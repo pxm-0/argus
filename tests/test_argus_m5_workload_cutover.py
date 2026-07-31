@@ -543,6 +543,13 @@ class RuntimeRefreshTest(unittest.TestCase):
                 "com.docker.network.bridge.name"
             ],
         )
+        # #289: a target staged before that fix landed keeps internal=True
+        # forever unless refresh also clears it -- an internal network has
+        # no default route, so the nft allow rules are unreachable no
+        # matter how correct they are. Confirmed live 2026-07-31: hastur's
+        # own refresh renamed the bridge but left it with EAI_AGAIN until
+        # this assertion's fix landed.
+        self.assertFalse(updated["networks"]["default"]["internal"])
 
     def test_overlay_is_idempotent(self) -> None:
         spec = self.granted_spec()
