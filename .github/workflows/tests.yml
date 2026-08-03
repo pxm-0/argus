@@ -10,22 +10,22 @@ permissions:
 
 jobs:
   unittest:
-    runs-on: ubuntu-latest
+    name: argus-check (${{ matrix.os }}, Python ${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-15]
+        python: ["3.14"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
-      # caddy/dashboard.Caddyfile is a generated runtime file and stays
-      # gitignored, but test_argus_m5_session_boundary asserts on it.
-      - name: Generate the private dashboard Caddy route
-        run: ./scripts/argus-caddy-dashboard-plan --json
-
-      # tests/ has no __init__.py, so `unittest discover` cannot import it.
-      - name: Run the test suite
-        run: |
-          python3 -m unittest $(
-            cd tests && ls test_*.py | sed 's/\.py$//' | sed 's/^/tests./'
-          )
+      - name: Run the canonical repository check
+        run: ./scripts/argus-check

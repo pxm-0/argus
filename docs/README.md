@@ -19,17 +19,16 @@ or branch in them is not current guidance unless a current document repeats it.
 - [`ARGUS_ISSUE_REMEDIATION_PLAN.md`](ARGUS_ISSUE_REMEDIATION_PLAN.md) — approved implementation sequence and critique loop.
 - [`CODEX_TASKS.md`](CODEX_TASKS.md) — task prompts where still linked by a current issue.
 - [`ACCEPTANCE_SUMMARIES.md`](ACCEPTANCE_SUMMARIES.md) — redacted PR evidence contract.
+- [`CORE_BOUNDARY.md`](CORE_BOUNDARY.md) — deterministic, no-AI core and replay contract.
 
-Run the transitional local suite with:
+Use Python 3.14 and run the same complete, non-root check used by CI:
 
 ```bash
-python3 -m unittest discover -s tests -p 'test_*.py'
-python3 -m compileall -q control-plane scripts tests
-python3 scripts/validate-manifests
-python3 scripts/smoke-test --offline
+./scripts/argus-check
 ```
 
-PR 6A replaces this block with the single maintained `argus-check` command.
+Plain `python3 -m unittest discover` also collects the complete suite. Platform
+skips are explicit; local/macOS success never substitutes for server evidence.
 
 ## Architecture
 

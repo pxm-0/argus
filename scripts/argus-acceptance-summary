@@ -10,6 +10,7 @@ from argus_acceptance import AcceptanceError, render_markdown, validate
 
 
 MAX_INPUT_BYTES = 65536
+MAX_JSON_DEPTH = 128
 
 
 class InvocationError(ValueError):
@@ -30,12 +31,41 @@ def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
     return result
 
 
+def reject_excessive_json_depth(content: str) -> None:
+    depth = 0
+    in_string = False
+    escaped = False
+    for character in content:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character in "[{":
+            depth += 1
+            if depth > MAX_JSON_DEPTH:
+                raise ValueError("JSON nesting exceeds the deterministic depth limit")
+        elif character in "]}":
+            depth -= 1
+            if depth < 0:
+                raise ValueError("JSON delimiters are unbalanced")
+    if in_string or depth != 0:
+        raise ValueError("JSON structure is incomplete")
+
+
 def load_input(path: Path) -> object:
     with path.open("rb") as handle:
         content = handle.read(MAX_INPUT_BYTES + 1)
     if len(content) > MAX_INPUT_BYTES:
         raise AcceptanceError("acceptance-input-oversized", "input exceeds the 65536-byte summary limit")
-    return json.loads(content.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+    decoded = content.decode("utf-8")
+    reject_excessive_json_depth(decoded)
+    return json.loads(decoded, object_pairs_hook=reject_duplicate_keys)
 
 
 def wants_json(argv: list[str]) -> bool:

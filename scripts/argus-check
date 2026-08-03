@@ -1,0 +1,555 @@
+#!/usr/bin/env python3
+"""Canonical, deterministic local and CI validation for Argus."""
+
+from __future__ import annotations
+
+import argparse
+import ast
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import unicodedata
+from pathlib import Path
+from typing import Any
+
+
+NETWORK_IMPORTS = {"http", "socket", "socketserver", "urllib"}
+SHELL_NETWORK_COMMAND = re.compile(r"(?m)(?:^|[;&|]\s*|\s)(?:curl|wget|nc|socat)(?:\s|$)")
+DYNAMIC_IMPORTS = {"importlib"}
+GENERATED_PATHS = (
+    "caddy/dashboard.Caddyfile",
+    "cloudflare/planned-ingress.yml",
+    "control-plane/dashboard/public/app.js",
+    "control-plane/dashboard/public/index.html",
+    "control-plane/dashboard/public/metrics.json",
+    "control-plane/dashboard/public/style.css",
+)
+RESULT_ACTIONS = {
+    "replay-ok": "No replay action is required.",
+    "replay-mismatch": "Review the pure transform change and update the fixture only after approval.",
+    "replay-bundle-incomplete": "Add every required replay field and its deterministic digest.",
+    "replay-version-unsupported": "Use a supported transform or retain its verifier before replaying this bundle.",
+}
+REQUIRED_BUNDLE_FIELDS = {
+    "schemaVersion",
+    "transformVersion",
+    "argusRevision",
+    "supportedRuntime",
+    "explicitClock",
+    "inputs",
+    "inputDigests",
+    "result",
+    "expected",
+    "evidenceId",
+}
+
+
+def repo_root() -> Path:
+    return Path(__file__).resolve().parents[1]
+
+
+def canonical_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        normalized: dict[str, Any] = {}
+        for key, item in value.items():
+            normalized_key = unicodedata.normalize("NFC", str(key))
+            if normalized_key in normalized:
+                raise TypeError(f"duplicate canonical key: {normalized_key}")
+            normalized[normalized_key] = canonical_value(item)
+        return {key: normalized[key] for key in sorted(normalized)}
+    if isinstance(value, list):
+        return [canonical_value(item) for item in value]
+    if isinstance(value, str):
+        return unicodedata.normalize("NFC", value)
+    if value is None or isinstance(value, (bool, int)):
+        return value
+    raise TypeError(f"unsupported canonical value: {type(value).__name__}")
+
+
+def canonical_bytes(value: Any) -> bytes:
+    return (
+        json.dumps(
+            canonical_value(value),
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def digest(value: Any) -> str:
+    return "sha256:" + hashlib.sha256(canonical_bytes(value)).hexdigest()
+
+
+def replay_output(bundle: dict[str, Any]) -> dict[str, Any]:
+    inputs = bundle["inputs"]
+    pages = sorted(
+        (canonical_value(page) for page in inputs["sourcePages"]),
+        key=canonical_bytes,
+    )
+    return {
+        "schemaVersion": 1,
+        "transformVersion": bundle["transformVersion"],
+        "explicitClock": bundle["explicitClock"],
+        "canonical": canonical_value(inputs["canonical"]),
+        "config": canonical_value(inputs["config"]),
+        "sourcePages": pages,
+    }
+
+
+def replay_bundle(bundle: dict[str, Any], supported_versions: set[str]) -> dict[str, Any]:
+    missing = sorted(REQUIRED_BUNDLE_FIELDS - set(bundle))
+    if missing:
+        return {"ok": False, "code": "replay-bundle-incomplete", "missing": missing}
+    version = str(bundle.get("transformVersion", ""))
+    if version not in supported_versions:
+        return {"ok": False, "code": "replay-version-unsupported", "version": version}
+    nested_required = {
+        "inputs": {"canonical", "config", "sourcePages"},
+        "inputDigests": {"canonical", "config", "sourcePages"},
+        "result": {"reason"},
+        "expected": {
+            "canonicalOutputDigest",
+            "reasonDigest",
+            "permittedActionDigest",
+            "previewDigest",
+        },
+        "supportedRuntime": {"operatingSystems", "pythonVersions"},
+    }
+    nested_missing: list[str] = []
+    for parent, required in nested_required.items():
+        value = bundle.get(parent)
+        if not isinstance(value, dict):
+            nested_missing.append(parent)
+            continue
+        nested_missing.extend(f"{parent}.{key}" for key in sorted(required - set(value)))
+    if nested_missing or bundle.get("schemaVersion") != 1 or not bundle.get("argusRevision"):
+        if bundle.get("schemaVersion") != 1:
+            nested_missing.append("schemaVersion=1")
+        if not bundle.get("argusRevision"):
+            nested_missing.append("argusRevision")
+        return {"ok": False, "code": "replay-bundle-incomplete", "missing": nested_missing}
+    try:
+        inputs = bundle["inputs"]
+        expected_input = {
+            "canonical": digest(inputs["canonical"]),
+            "config": digest(inputs["config"]),
+            "sourcePages": sorted(digest(page) for page in inputs["sourcePages"]),
+        }
+        actions = sorted(
+            {
+                unicodedata.normalize("NFC", str(item))
+                for item in inputs["config"].get("permittedActions", [])
+            }
+        )
+        output = replay_output(bundle)
+        actual = {
+            "canonicalOutputDigest": digest(output),
+            "reasonDigest": digest(bundle["result"]["reason"]),
+            "permittedActionDigest": digest(actions),
+        }
+        actual["previewDigest"] = digest(
+            {
+                "canonicalOutputDigest": actual["canonicalOutputDigest"],
+                "explicitClock": bundle["explicitClock"],
+                "permittedActions": actions,
+                "reason": bundle["result"]["reason"],
+            }
+        )
+    except (KeyError, TypeError, AttributeError) as exc:
+        return {
+            "ok": False,
+            "code": "replay-bundle-incomplete",
+            "missing": [str(exc)],
+        }
+    mismatches: dict[str, dict[str, Any]] = {}
+    if expected_input != bundle["inputDigests"]:
+        mismatches["inputDigests"] = {
+            "expected": bundle["inputDigests"],
+            "actual": expected_input,
+        }
+    for key, value in actual.items():
+        if bundle["expected"].get(key) != value:
+            mismatches[key] = {"expected": bundle["expected"].get(key), "actual": value}
+    evidence_payload = {
+        "argusRevision": bundle["argusRevision"],
+        "expected": bundle["expected"],
+        "inputDigests": bundle["inputDigests"],
+        "transformVersion": version,
+    }
+    evidence_id = digest(evidence_payload)
+    if evidence_id != bundle["evidenceId"]:
+        mismatches["evidenceId"] = {
+            "expected": bundle["evidenceId"],
+            "actual": evidence_id,
+        }
+    if mismatches:
+        return {"ok": False, "code": "replay-mismatch", "mismatches": mismatches}
+    return {"ok": True, "code": "replay-ok", "actual": actual, "evidenceId": evidence_id}
+
+
+def python_sources(root: Path, core_paths: list[str]) -> list[Path]:
+    result: list[Path] = []
+    for relative in core_paths:
+        for path in (root / relative).rglob("*"):
+            if not path.is_file():
+                continue
+            if path.suffix == ".py":
+                result.append(path)
+                continue
+            try:
+                with path.open("rb") as handle:
+                    if handle.readline().strip() == b"#!/usr/bin/env python3":
+                        result.append(path)
+            except OSError:
+                continue
+    return sorted(set(result))
+
+
+def core_source_files(root: Path, core_paths: list[str]) -> list[Path]:
+    files: list[Path] = []
+    for relative in core_paths:
+        for path in (root / relative).rglob("*"):
+            if path.is_file() and "public" not in path.parts and "__pycache__" not in path.parts:
+                files.append(path)
+    return sorted(set(files))
+
+
+def source_imports(source: str) -> set[str]:
+    tree = ast.parse(source)
+    imports: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imports.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imports.add(node.module.split(".")[0])
+    return imports
+
+
+def boundary_audit(root: Path, policy: dict[str, Any]) -> dict[str, Any]:
+    sources = python_sources(root, list(policy["corePaths"]))
+    core_files = core_source_files(root, list(policy["corePaths"]))
+    internal = {
+        path.stem.replace("-", "_")
+        for path in sources
+        if path.suffix == ".py"
+    }
+    internal.add("m5_style")
+    third_party = set(policy["dependencyPolicy"]["allowedThirdPartyImports"])
+    forbidden = {
+        item.split(".")[0] for item in policy["modelPolicy"]["forbiddenImports"]
+    }
+    dynamic_allowed = set(policy["dynamicLoadPolicy"]["allowedPaths"])
+    network_declared = {
+        item["path"] for item in policy["networkPolicy"]["declaredEntrypoints"]
+    }
+    violations: list[dict[str, str]] = []
+    inventory: dict[str, list[str]] = {}
+    network_observed: set[str] = set()
+    required_companion_boundary = {
+        "authorizedInCore": False,
+        "inputAuthority": "sanitized-read-only-snapshots",
+        "mutationCapability": False,
+        "networkRouteFromCore": False,
+        "sharedWritableState": False,
+    }
+    if policy.get("futureCompanionPolicy") != required_companion_boundary:
+        violations.append(
+            {
+                "path": "config/core-boundary-policy.json",
+                "reason": "companion-boundary-weakened",
+            }
+        )
+    forbidden_markers = [
+        str(item).lower() for item in policy["modelPolicy"]["forbiddenTextMarkers"]
+    ]
+    for path in core_files:
+        relative = path.relative_to(root).as_posix()
+        try:
+            source = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        lowered = source.lower()
+        for marker in forbidden_markers:
+            if marker in lowered:
+                violations.append({"path": relative, "reason": f"model-endpoint-marker:{marker}"})
+        if SHELL_NETWORK_COMMAND.search(source):
+            network_observed.add(relative)
+            if relative not in network_declared:
+                violations.append({"path": relative, "reason": "undeclared-network-command"})
+    for path in sources:
+        relative = path.relative_to(root).as_posix()
+        source = path.read_text(encoding="utf-8")
+        try:
+            imports = source_imports(source)
+            tree = ast.parse(source)
+        except SyntaxError as exc:
+            violations.append({"path": relative, "reason": f"syntax-error:{exc.lineno}"})
+            continue
+        inventory[relative] = sorted(imports)
+        unknown = sorted(imports - set(sys.stdlib_module_names) - internal - third_party)
+        for name in unknown:
+            violations.append({"path": relative, "reason": f"unlocked-dependency:{name}"})
+        for name in sorted(imports & forbidden):
+            violations.append({"path": relative, "reason": f"model-sdk-import:{name}"})
+        if imports & DYNAMIC_IMPORTS:
+            if relative not in dynamic_allowed:
+                violations.append({"path": relative, "reason": "undeclared-dynamic-load"})
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
+                if node.func.id in {"__import__", "eval", "exec"} and relative not in dynamic_allowed:
+                    violations.append({"path": relative, "reason": f"dynamic-call:{node.func.id}"})
+        if imports & NETWORK_IMPORTS:
+            network_observed.add(relative)
+            if relative not in network_declared:
+                violations.append({"path": relative, "reason": "undeclared-network-importer"})
+    for missing in sorted(network_declared - network_observed):
+        violations.append({"path": missing, "reason": "stale-network-declaration"})
+    sbom_digest = digest(inventory)
+    endpoint_digest = digest(policy["networkPolicy"]["declaredEntrypoints"])
+    if sbom_digest != policy["dependencyPolicy"]["expectedSbomDigest"]:
+        violations.append({"path": "config/core-boundary-policy.json", "reason": "sbom-digest-mismatch"})
+    if endpoint_digest != policy["networkPolicy"]["expectedEndpointDigest"]:
+        violations.append({"path": "config/core-boundary-policy.json", "reason": "endpoint-digest-mismatch"})
+    return {
+        "ok": not violations,
+        "code": "boundary-ok" if not violations else "core-boundary-violation",
+        "policyVersion": policy["policyVersion"],
+        "auditVersion": policy["auditVersion"],
+        "auditResult": "pass" if not violations else "fail",
+        "sbomDigest": sbom_digest,
+        "endpointDigest": endpoint_digest,
+        "violations": violations,
+    }
+
+
+def run(command: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        check=False,
+    )
+
+
+def run_stream(command: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        cwd=root,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        bufsize=1,
+    )
+    lines: list[str] = []
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        lines.append(line)
+    return subprocess.CompletedProcess(command, process.wait(), "".join(lines), None)
+
+
+def check_command(name: str, command: list[str], root: Path) -> bool:
+    result = run(command, root)
+    if result.returncode:
+        print(f"FAIL {name}")
+        print(result.stdout.rstrip())
+        return False
+    print(f"PASS {name}")
+    return True
+
+
+def json_check(root: Path) -> bool:
+    result = run(["git", "ls-files", "*.json"], root)
+    failures: list[str] = []
+    for name in result.stdout.splitlines():
+        try:
+            json.loads((root / name).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            failures.append(f"{name}:{exc.__class__.__name__}")
+    if failures:
+        print("FAIL tracked JSON " + ", ".join(failures))
+        return False
+    print(f"PASS tracked JSON files={len(result.stdout.splitlines())}")
+    return True
+
+
+def docs_parity_check(root: Path) -> bool:
+    documents = [root / "README.md", root / "docs" / "README.md", root / "docs" / "OPERATIONS.md"]
+    referenced: set[str] = set()
+    for path in documents:
+        referenced.update(re.findall(r"(?:\./)?scripts/([A-Za-z0-9_.-]+)", path.read_text()))
+    failures = sorted(
+        name
+        for name in referenced
+        if not (root / "scripts" / name).is_file()
+        or not os.access(root / "scripts" / name, os.X_OK)
+    )
+    if failures:
+        print("FAIL docs/command parity missing-or-non-executable=" + ",".join(failures))
+        return False
+    print(f"PASS docs/command parity commands={len(referenced)}")
+    return True
+
+
+def generated_check(root: Path) -> bool:
+    failures: list[str] = []
+    for relative in GENERATED_PATHS:
+        ignored = run(["git", "check-ignore", "-q", relative], root).returncode == 0
+        tracked = run(["git", "ls-files", "--error-unmatch", relative], root).returncode == 0
+        if not ignored or tracked:
+            failures.append(relative)
+    tracked = set(run(["git", "ls-files"], root).stdout.splitlines())
+    prohibited = sorted(
+        item
+        for item in tracked
+        if (item.startswith("runtime/") and Path(item).name != ".gitkeep")
+        or re.search(r"(^|/)(\.env(?:\..*)?|.*(?:secret|credential).*)$", item, re.IGNORECASE)
+    )
+    failures.extend(prohibited)
+    if failures:
+        print("FAIL generated/secret-safe diff paths=" + ",".join(sorted(set(failures))))
+        return False
+    print("PASS generated/secret-safe diff")
+    return True
+
+
+def root_contract(euid: int | None = None) -> tuple[bool, str]:
+    effective = os.geteuid() if euid is None and hasattr(os, "geteuid") else euid
+    if effective == 0:
+        return (
+            False,
+            "Argus checks require a non-root user. Leave the checkout and fixtures user-owned, then run ./scripts/argus-check.",
+        )
+    return True, ""
+
+
+def configure_portable_tools() -> None:
+    if sys.platform != "darwin":
+        return
+    for directory in (
+        Path("/opt/homebrew/opt/openssl@3/bin"),
+        Path("/usr/local/opt/openssl@3/bin"),
+    ):
+        executable = directory / "openssl"
+        if executable.is_file() and os.access(executable, os.X_OK):
+            os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+            print(f"PASS portable OpenSSL 3 path={directory}")
+            return
+
+
+def git_revision(root: Path) -> str:
+    result = run(["git", "rev-parse", "HEAD"], root)
+    return result.stdout.strip() if result.returncode == 0 else "unavailable"
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run the canonical deterministic Argus validation suite.")
+    parser.add_argument("--boundary-only", action="store_true")
+    parser.add_argument("--boundary-json", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--replay-only", action="store_true")
+    parser.add_argument("--replay-bundle", action="append", type=Path, default=[])
+    args = parser.parse_args()
+    root = repo_root()
+    allowed, message = root_contract()
+    if not allowed:
+        print(f"FAIL non-root-contract: {message}", file=sys.stderr)
+        return 3
+    policy = json.loads((root / "config" / "core-boundary-policy.json").read_text())
+    boundary = boundary_audit(root, policy)
+    if not boundary["ok"]:
+        print(json.dumps(boundary, sort_keys=True))
+        if not args.boundary_json:
+            print("NEXT ACTION: Declare or remove the dependency, dynamic load, model SDK, or network authority change.")
+        return 1
+    if args.boundary_json:
+        print(json.dumps(boundary, sort_keys=True))
+        return 0
+    print(
+        "PASS core-boundary "
+        f"policy={boundary['policyVersion']} sbom={boundary['sbomDigest']} endpoints={boundary['endpointDigest']}"
+    )
+    if args.boundary_only:
+        return 0
+    configure_portable_tools()
+    bundle_paths = args.replay_bundle or sorted(root.glob(policy["replayPolicy"]["bundleGlob"]))
+    if not bundle_paths:
+        print("FAIL replay-bundle-incomplete: no replay bundles found")
+        print("NEXT ACTION: Add a versioned bundle under tests/fixtures/replay/.")
+        return 1
+    supported = set(policy["replayPolicy"]["supportedTransformVersions"])
+    replay_evidence: list[dict[str, Any]] = []
+    for path in bundle_paths:
+        try:
+            bundle = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            result = {"ok": False, "code": "replay-bundle-incomplete", "error": exc.__class__.__name__}
+        else:
+            result = replay_bundle(bundle, supported)
+        print(json.dumps({"bundle": path.name, **result}, sort_keys=True))
+        if not result["ok"]:
+            print(f"NEXT ACTION: {RESULT_ACTIONS[result['code']]}")
+            return 1
+        replay_evidence.append(
+            {
+                "argusRevision": bundle["argusRevision"],
+                "bundle": path.name,
+                "evidenceId": result["evidenceId"],
+                "inputDigestSummary": digest(bundle["inputDigests"]),
+                "outputDigests": result["actual"],
+                "transformVersion": bundle["transformVersion"],
+            }
+        )
+    print(
+        json.dumps(
+            {
+                "schemaVersion": 1,
+                "argusRevision": git_revision(root),
+                "coreBoundaryAuditResult": boundary["auditResult"],
+                "coreBoundaryAuditVersion": boundary["auditVersion"],
+                "coreBoundaryPolicyVersion": boundary["policyVersion"],
+                "dependencySbomDigest": boundary["sbomDigest"],
+                "endpointNetworkPolicyDigest": boundary["endpointDigest"],
+                "replays": replay_evidence,
+            },
+            sort_keys=True,
+        )
+    )
+    if args.replay_only:
+        return 0
+    checks: list[bool] = []
+    checks.append(check_command("dashboard Caddy generation", [str(root / "scripts" / "argus-caddy-dashboard-plan"), "--json"], root))
+    print("RUN  unittest discovery (live progress)")
+    unit = run_stream([sys.executable, "-m", "unittest", "discover", "-v"], root)
+    if unit.returncode:
+        print("FAIL unittest discovery")
+        checks.append(False)
+    else:
+        match = re.search(r"Ran (\d+) tests?", unit.stdout)
+        skipped = re.findall(r"skipped '([^']+)'", unit.stdout)
+        count = match.group(1) if match else "unknown"
+        reasons = ";".join(sorted(set(skipped))) or "none"
+        print(f"PASS unittest discovery tests={count} skipped={len(skipped)} reasons={reasons}")
+        checks.append(True)
+    checks.append(check_command("compileall", [sys.executable, "-m", "compileall", "-q", "control-plane", "scripts", "tests"], root))
+    checks.append(json_check(root))
+    checks.append(check_command("workload manifests", [sys.executable, "scripts/validate-manifests"], root))
+    checks.append(check_command("offline smoke", [sys.executable, "scripts/smoke-test", "--offline"], root))
+    checks.append(docs_parity_check(root))
+    checks.append(generated_check(root))
+    if all(checks):
+        runtime = f"{sys.platform}/python-{sys.version_info.major}.{sys.version_info.minor}"
+        print(f"ARGUS_CHECK_PASS runtime={runtime} next=review-the-sanitized-diff")
+        return 0
+    print("ARGUS_CHECK_FAIL next=fix-the-first-failing-check-and-rerun-./scripts/argus-check")
+    return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

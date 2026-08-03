@@ -3,14 +3,17 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -137,25 +140,29 @@ def request_json(
     url: str, *, method: str = "GET", token: str = "",
     payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any], str]:
-    body = json.dumps(payload or {}).encode()
-    request = urllib.request.Request(url, data=body if method != "GET" else None, method=method)
+    body = json.dumps(payload or {}).encode() if method != "GET" else None
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port is None:
+        raise ValueError("smoke JSON requests require an explicit loopback HTTP port")
+    request_headers: dict[str, str] = {}
     if method != "GET":
-        request.add_header("Content-Type", "application/json")
+        request_headers["Content-Type"] = "application/json"
     if token:
-        request.add_header("Authorization", f"Bearer {token}")
+        request_headers["Authorization"] = f"Bearer {token}"
     for key, value in (headers or {}).items():
-        request.add_header(key, value)
+        request_headers[key] = value
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=4)
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
-            text = response.read().decode()
-            return response.status, json.loads(text), text
-    except urllib.error.HTTPError as exc:
-        text = exc.read().decode()
+        connection.request(method, parsed.path, body=body, headers=request_headers)
+        response = connection.getresponse()
+        text = response.read().decode()
         try:
-            data = json.loads(text)
+            data = json.loads(text) if text else {}
         except json.JSONDecodeError:
             data = {}
-        return exc.code, data, text
+        return response.status, data, text
+    finally:
+        connection.close()
 
 
 def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
@@ -172,37 +179,61 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             '{"schemaVersion":1,"operators":[{"tailnetLogin":"smoke@example.invalid","role":"owner","enabled":true}]}'
         )
         proxy_token_file.write_text(proxy_token)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            probe_socket.bind(("127.0.0.1", 0))
+            api_port = int(probe_socket.getsockname()[1])
+        base_url = f"http://127.0.0.1:{api_port}"
         env = os.environ.copy()
-        env["ARGUS_API_PORT"] = "18104"
+        env["ARGUS_API_PORT"] = str(api_port)
         env["ARGUS_TOKEN_FILE"] = str(token_file)
         env["ARGUS_OPERATORS_FILE"] = str(identity_file)
         env["ARGUS_PROXY_TOKEN_FILE"] = str(proxy_token_file)
         env["ARGUS_OPERATOR_ORIGIN"] = operator_origin
         env["ARGUS_RUNTIME"] = str(runtime)
+        env["ARGUS_DIAGNOSTIC_TRACEBACK_SECONDS"] = "3"
+        diagnostic = (Path(tempdir) / "control-api-stderr.log").open("w+")
         process = subprocess.Popen(
             ["python3", str(repo / "control-plane" / "api" / "server.py")],
             cwd=repo,
             env=env,
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=diagnostic,
             text=True,
         )
         try:
             deadline = time.time() + 5
             ready = False
+            last_probe = "not-attempted"
             while time.time() < deadline:
                 try:
-                    status, _, _ = request_json("http://127.0.0.1:18104/api/dashboard-state")
-                except OSError:
+                    status, _, _ = request_json(f"{base_url}/api/session")
+                except OSError as exc:
+                    reason = getattr(exc, "reason", None)
+                    reason_name = reason.__class__.__name__ if reason is not None else "none"
+                    last_probe = f"{exc.__class__.__name__}-{reason_name}"
                     time.sleep(0.2)
                     continue
-                ready = status == 200
+                last_probe = f"http-{status}"
+                ready = status in {200, 401}
                 if ready:
                     break
             if not ready:
-                smoke.fail("control API action endpoints available")
+                exit_code = process.poll()
+                detail = "still-running" if exit_code is None else f"exit-{exit_code}"
+                smoke.fail(
+                    f"control API action endpoints available ({detail}; probe-{last_probe})"
+                )
+                diagnostic.flush()
+                diagnostic.seek(0)
+                diagnostic_lines, _ = sanitize_log_text(
+                    diagnostic.read(),
+                    max_lines=30,
+                    max_bytes=3000,
+                )
+                for line in diagnostic_lines:
+                    smoke.warn(f"control API diagnostic: {line}")
                 return
-            endpoint = "http://127.0.0.1:18104/api/session/exchange"
+            endpoint = f"{base_url}/api/session/exchange"
             request = urllib.request.Request(
                 endpoint,
                 data=json.dumps({"bootstrapToken": token}).encode(),
@@ -236,14 +267,14 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(spoofed_status == 401, "direct identity headers require trusted proxy marker")
             unauth_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={"Origin": operator_origin},
             )
             smoke.check(unauth_status == 401, "operation endpoints require both identities")
             csrf_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST", payload={"operationType": "backup.create", "parameters": {}},
                 headers={
                     "Cookie": cookie,
@@ -254,7 +285,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(csrf_status == 403, "state-changing requests reject missing CSRF")
             mismatch_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
@@ -267,7 +298,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(mismatch_status == 403, "CSRF cookie and header must match")
             origin_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
@@ -280,7 +311,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(origin_status == 403, "cross-origin mutations are denied")
             status, preview, text = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
@@ -300,6 +331,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=4)
+            diagnostic.close()
 
 
 def check_api_bind(repo: Path, smoke: Smoke, offline: bool) -> None:

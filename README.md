@@ -20,6 +20,15 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 Start with [`docs/README.md`](docs/README.md), which separates current operator,
 contributor, and architecture guidance from the historical milestone record.
 
+Contributors use supported Python 3.14 and one non-root validation command:
+
+```bash
+./scripts/argus-check
+```
+
+The same command runs on Ubuntu and macOS CI. It enforces the deterministic,
+no-AI core boundary described in [`docs/CORE_BOUNDARY.md`](docs/CORE_BOUNDARY.md).
+
 | File | Purpose |
 |---|---|
 | `ARGUS_V1_BRIDGE.md` | Accepted bridge from Argus into the Argus V1 trust-domain and portfolio architecture |
