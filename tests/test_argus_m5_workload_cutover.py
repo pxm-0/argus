@@ -391,7 +391,7 @@ class DeclaredEgressTest(unittest.TestCase):
             "personal-sandbox", module.domain_egress("personal-sandbox"), self.NETWORKS
         )
         for workload in ("kadath", "nodens", "locigraph"):
-            self.assertNotIn(module.egress_bridge(workload), rendered)
+            self.assertNotIn(module.sandbox_bridge(workload), rendered)
 
     def test_sealed_rendering_is_byte_identical_to_the_installed_policy(self) -> None:
         self.assertEqual(
@@ -583,15 +583,19 @@ class RuntimeRefreshTest(unittest.TestCase):
         )
         self.assertEqual(before, json.dumps(self.ACCEPTED, sort_keys=True))
 
-    def test_a_sealed_workload_gets_no_bridge_pin(self) -> None:
-        # Renaming the bridge is only meaningful for a declared policy, so a
-        # sealed workload must not be recreated onto a pinned interface.
-        # kadath is the sealed case; hastur stopped being one when #272 landed.
+    def test_a_sealed_workload_gets_a_stable_bridge_pin(self) -> None:
+        # Exact project isolation must remain stable even when Docker recreates
+        # a sealed workload's network with a different immutable NetworkID.
         self.assertIsNone(module.SPECS["kadath"]["egress"])
         updated = module.refresh_overlay(
             self.ACCEPTED, "kadath", module.SPECS["kadath"], None
         )
-        self.assertNotIn("networks", updated)
+        self.assertEqual(
+            "argus-kadath",
+            updated["networks"]["default"]["driver_opts"][
+                "com.docker.network.bridge.name"
+            ],
+        )
 
     def test_overlay_refuses_to_name_unknown_services(self) -> None:
         spec = {**module.SPECS["hastur"], "credentials": {"absent": "/app/auth"}}

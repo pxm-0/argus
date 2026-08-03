@@ -560,9 +560,12 @@ def rootless_child_pid(spec: dict) -> str:
     return child
 
 
-def egress_bridge(workload: str) -> str:
-    """Deterministic bridge name so a declared rule can name one interface."""
-    return f"argus-{workload}"
+def sandbox_bridge(workload: str) -> str:
+    """Return the stable, project-unique Linux bridge interface name."""
+    name = f"argus-{workload}"
+    if len(os.fsencode(name)) > 15:
+        raise CutoverError("sandbox bridge interface name exceeds the Linux limit")
+    return name
 
 
 def validated_egress(workload: str, spec: dict) -> dict | None:
@@ -888,18 +891,18 @@ def build_runtime(
     os.mkdir(ingress_dir, 0o700)
     os.chown(ingress_dir, identity.pw_uid, identity.pw_gid)
 
-    policy = validated_egress(workload, spec)
-    if policy is not None:
-        # A declared rule names one interface, so the bridge cannot be
-        # left to Docker's non-deterministic br-<id> naming.
-        networks = compose.setdefault("networks", {})
-        default = networks.get("default") or {}
-        if not isinstance(default, dict):
-            raise CutoverError("target default network definition is unsupported")
-        options = dict(default.get("driver_opts") or {})
-        options["com.docker.network.bridge.name"] = egress_bridge(workload)
-        default["driver_opts"] = options
-        networks["default"] = default
+    validated_egress(workload, spec)
+    # Exact firewall rules must survive Docker network recreation. Docker's
+    # default br-<NetworkID> interface does not, so every project receives a
+    # stable, workload-unique bridge name whether it has egress or is sealed.
+    networks = compose.setdefault("networks", {})
+    default = networks.get("default") or {}
+    if not isinstance(default, dict):
+        raise CutoverError("target default network definition is unsupported")
+    options = dict(default.get("driver_opts") or {})
+    options["com.docker.network.bridge.name"] = sandbox_bridge(workload)
+    default["driver_opts"] = options
+    networks["default"] = default
 
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
@@ -1913,17 +1916,18 @@ def refresh_overlay(
         raise CutoverError(
             f"credential or environment overlay names unknown services: {sorted(unknown)}"
         )
-    if validated_egress(workload, spec) is not None:
-        # A declared rule names one interface, so the bridge cannot be left
-        # to Docker's non-deterministic br-<id> naming. Only a recreate can
-        # rename a live bridge, which is why --reconcile cannot do this.
-        networks = updated.setdefault("networks", {})
-        default = networks.get("default") or {}
-        if not isinstance(default, dict):
-            raise CutoverError("target default network definition is unsupported")
-        options = dict(default.get("driver_opts") or {})
-        options["com.docker.network.bridge.name"] = egress_bridge(workload)
-        default["driver_opts"] = options
+    policy = validated_egress(workload, spec)
+    # Only a recreate can replace Docker's NetworkID-derived bridge name.
+    # Pin every sandbox project so exact firewall rules remain stable across
+    # daemon and workload recovery, including projects with no egress policy.
+    networks = updated.setdefault("networks", {})
+    default = networks.get("default") or {}
+    if not isinstance(default, dict):
+        raise CutoverError("target default network definition is unsupported")
+    options = dict(default.get("driver_opts") or {})
+    options["com.docker.network.bridge.name"] = sandbox_bridge(workload)
+    default["driver_opts"] = options
+    if policy is not None:
         # A target staged before #289 landed keeps internal=True forever
         # through refresh, since nothing else here touches it -- an
         # internal network has no default route at all, so the nft allow
@@ -1931,7 +1935,7 @@ def refresh_overlay(
         # Confirmed live 2026-07-31: hastur's own refresh renamed the
         # bridge but left the workload with EAI_AGAIN.
         default["internal"] = False
-        networks["default"] = default
+    networks["default"] = default
     for service, definition in services.items():
         definition["environment"] = {
             **(definition.get("environment") or {}),
@@ -2232,7 +2236,7 @@ def apply_egress(workload: str) -> dict:
         "appliedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         "declaredEgress": {
             name: {
-                "bridge": egress_bridge(name),
+                "bridge": sandbox_bridge(name),
                 "resolver": policy["resolver"],
                 "allow": [[protocol, int(port)] for protocol, port in policy["allow"]],
                 "reason": policy["reason"],

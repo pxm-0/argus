@@ -9,6 +9,9 @@ planning, apply, verification, or rollback.
 
 - Every configured Compose project and logical network resolves to exactly one
   live bridge during preflight.
+- Every project's default bridge is pinned to its unique
+  `argus-<workload>` Linux interface name. Exact rules therefore remain stable
+  when Docker safely recreates a network with a new immutable NetworkID.
 - Same-project networks receive exact interface-to-interface rules.
 - Cross-project traffic is denied unless a reviewed entry exists in
   `config/sandbox-connectivity.json`.

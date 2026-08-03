@@ -154,7 +154,7 @@ def verify(domain: str, workloads: list[str] | None = None) -> dict:
             {
                 "workloadId": workload,
                 "declared": policy is not None,
-                "bridge": module.egress_bridge(workload) if policy else None,
+                "bridge": module.sandbox_bridge(workload) if policy else None,
                 "probeContainer": container,
                 "expectations": checks,
                 "pass": all(check["pass"] for check in checks),
