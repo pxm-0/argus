@@ -98,6 +98,7 @@ class OperatorSessionUiTests(unittest.TestCase):
         for state in ("authenticated", "expired", "unavailable"):
             self.assertIn(f'.session-control[data-state="{state}"]', self.css)
         self.assertIn(".session-control{grid-column:1/-1", self.css)
+        self.assertIn(".session-control button{min-height:44px}", self.css)
 
 
 if __name__ == "__main__":
