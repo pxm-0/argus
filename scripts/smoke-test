@@ -200,7 +200,9 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 if ready:
                     break
             if not ready:
-                smoke.fail("control API action endpoints available")
+                exit_code = process.poll()
+                detail = "still-running" if exit_code is None else f"exit-{exit_code}"
+                smoke.fail(f"control API action endpoints available ({detail})")
                 return
             endpoint = "http://127.0.0.1:18104/api/session/exchange"
             request = urllib.request.Request(

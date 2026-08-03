@@ -430,6 +430,20 @@ def root_contract(euid: int | None = None) -> tuple[bool, str]:
     return True, ""
 
 
+def configure_portable_tools() -> None:
+    if sys.platform != "darwin":
+        return
+    for directory in (
+        Path("/opt/homebrew/opt/openssl@3/bin"),
+        Path("/usr/local/opt/openssl@3/bin"),
+    ):
+        executable = directory / "openssl"
+        if executable.is_file() and os.access(executable, os.X_OK):
+            os.environ["PATH"] = str(directory) + os.pathsep + os.environ.get("PATH", "")
+            print(f"PASS portable OpenSSL 3 path={directory}")
+            return
+
+
 def git_revision(root: Path) -> str:
     result = run(["git", "rev-parse", "HEAD"], root)
     return result.stdout.strip() if result.returncode == 0 else "unavailable"
@@ -447,6 +461,7 @@ def main() -> int:
     if not allowed:
         print(f"FAIL non-root-contract: {message}", file=sys.stderr)
         return 3
+    configure_portable_tools()
     policy = json.loads((root / "config" / "core-boundary-policy.json").read_text())
     boundary = boundary_audit(root, policy)
     if not boundary["ok"]:
