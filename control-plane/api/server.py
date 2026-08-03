@@ -62,7 +62,13 @@ from argus_operations import (  # noqa: E402
     parse_timestamp,
     validate_typed_parameters,
 )
-from argus_sessions import Session, SessionStore, parse_cookie, public_session  # noqa: E402
+from argus_sessions import (  # noqa: E402
+    Session,
+    SessionRestoration,
+    SessionStore,
+    parse_cookie,
+    public_session,
+)
 
 
 SESSIONS = SessionStore(SESSION_DB)
@@ -99,23 +105,38 @@ def operator_origin() -> str:
         return ""
 
 
-def enabled_operator(identity: str) -> dict[str, str] | None:
+def operator_status(identity: str) -> tuple[dict[str, str] | None, str]:
     try:
         payload = json.loads(OPERATORS_FILE.read_text())
-    except (OSError, json.JSONDecodeError):
-        return None
-    operators = payload.get("operators", [])
-    if payload.get("schemaVersion") != 1 or not isinstance(operators, list):
-        return None
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None, "session-store-unavailable"
+    if (
+        not isinstance(payload, dict)
+        or set(payload) != {"schemaVersion", "operators"}
+        or payload.get("schemaVersion") != 1
+        or not isinstance(payload.get("operators"), list)
+    ):
+        return None, "session-store-unavailable"
+    operators = payload["operators"]
     normalized = identity.strip().lower()
     for item in operators:
-        if not isinstance(item, dict):
-            continue
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"tailnetLogin", "role", "enabled"}
+            or not isinstance(item["tailnetLogin"], str)
+            or not isinstance(item["role"], str)
+            or not isinstance(item["enabled"], bool)
+        ):
+            return None, "session-store-unavailable"
         login = str(item.get("tailnetLogin", "")).strip().lower()
         role = str(item.get("role", ""))
         if login == normalized and role == "owner" and item.get("enabled") is True:
-            return {"identity": login, "role": role}
-    return None
+            return {"identity": login, "role": role}, ""
+    return None, "operator-disabled"
+
+
+def enabled_operator(identity: str) -> dict[str, str] | None:
+    return operator_status(identity)[0]
 
 
 def trusted_login(headers: Any, peer_host: str) -> str:
@@ -375,14 +396,19 @@ class Handler(BaseHTTPRequestHandler):
         return bool(expected) and secrets.compare_digest(supplied, expected)
 
     def current_session(self) -> Session | None:
-        operator = self.operator()
+        return self.session_restoration().session
+
+    def session_restoration(self) -> SessionRestoration:
+        identity = trusted_login(self.headers, self.peer_host())
+        if not identity:
+            return SessionRestoration(None, "identity-missing")
+        operator, reason = operator_status(identity)
         if operator is None:
-            identity = trusted_login(self.headers, self.peer_host())
-            if identity:
+            if reason == "operator-disabled":
                 SESSIONS.revoke_identity(identity)
-            return None
+            return SessionRestoration(None, reason)
         session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
-        return SESSIONS.get(session_id, operator["identity"], role=operator["role"])
+        return SESSIONS.restore(session_id, operator["identity"], role=operator["role"])
 
     def require_session(self, *, csrf: bool = False, step_up: bool = False) -> Session | None:
         session = self.current_session()
@@ -418,11 +444,14 @@ class Handler(BaseHTTPRequestHandler):
         operation_match = re.fullmatch(r"/api/operations/([0-9a-f-]+)", path)
         workload_operations_match = re.fullmatch(r"/api/workloads/([^/]+)/operations", path)
         if path == "/api/session":
-            session = self.current_session()
-            if session:
-                self.send_json(200, public_session(session))
+            restoration = self.session_restoration()
+            if restoration.session:
+                self.send_json(200, public_session(restoration.session))
             else:
-                self.send_json(401, {"authenticated": False})
+                self.send_json(
+                    401,
+                    {"authenticated": False, "reason": restoration.reason},
+                )
         elif operation_match:
             if not self.require_session():
                 return
