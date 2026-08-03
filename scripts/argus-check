@@ -461,7 +461,6 @@ def main() -> int:
     if not allowed:
         print(f"FAIL non-root-contract: {message}", file=sys.stderr)
         return 3
-    configure_portable_tools()
     policy = json.loads((root / "config" / "core-boundary-policy.json").read_text())
     boundary = boundary_audit(root, policy)
     if not boundary["ok"]:
@@ -478,6 +477,7 @@ def main() -> int:
     )
     if args.boundary_only:
         return 0
+    configure_portable_tools()
     bundle_paths = args.replay_bundle or sorted(root.glob(policy["replayPolicy"]["bundleGlob"]))
     if not bundle_paths:
         print("FAIL replay-bundle-incomplete: no replay bundles found")

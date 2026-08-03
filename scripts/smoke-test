@@ -145,8 +145,9 @@ def request_json(
         request.add_header("Authorization", f"Bearer {token}")
     for key, value in (headers or {}).items():
         request.add_header(key, value)
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
-        with urllib.request.urlopen(request, timeout=4) as response:
+        with opener.open(request, timeout=4) as response:
             text = response.read().decode()
             return response.status, json.loads(text), text
     except urllib.error.HTTPError as exc:
