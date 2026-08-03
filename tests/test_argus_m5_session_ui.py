@@ -77,6 +77,8 @@ class OperatorSessionUiTests(unittest.TestCase):
             "Mutation protection missing",
             "Sign in again before making changes.",
             'operatorSessionReason !== "csrf-missing"',
+            'if (!cookieCsrf && endpoint !== "/api/session/exchange")',
+            "Authentication completed without mutation protection. Sign in again.",
         ):
             self.assertIn(marker, self.javascript)
         self.assertIn('credentials: "same-origin"', self.javascript)

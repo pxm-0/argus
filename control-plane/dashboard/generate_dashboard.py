@@ -906,6 +906,14 @@ async function apiPost(endpoint, body, extraHeaders = {}) {
     ...extraHeaders
   };
   const cookieCsrf = cookieValue("argus_csrf");
+  if (!cookieCsrf && endpoint !== "/api/session/exchange") {
+    setOperatorSessionState("unavailable", { reason: "csrf-missing" });
+    return {
+      ok: false,
+      status: 403,
+      payload: { error: "Mutation protection is unavailable. Sign in again before making changes." }
+    };
+  }
   if (cookieCsrf && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = cookieCsrf;
   if (/\/api\/workloads\/[^/]+\/operations$/.test(endpoint)) headers["Idempotency-Key"] = crypto.randomUUID();
   const response = await fetch(endpoint, {
@@ -933,6 +941,10 @@ async function authenticateOperator() {
   );
   adminTokenInput.value = "";
   if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
+  if (!cookieValue("argus_csrf")) {
+    setOperatorSessionState("unavailable", { reason: "csrf-missing" });
+    throw new Error("Authentication completed without mutation protection. Sign in again.");
+  }
   setOperatorSessionState("authenticated", { session: result.payload });
   return result.payload;
 }
