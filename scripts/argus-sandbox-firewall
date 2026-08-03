@@ -16,7 +16,7 @@ from argus_sandbox_firewall import (
     Runner,
     apply_plan,
     build_plan,
-    probe_runtime,
+    probe_connectivity,
     rollback,
     verify_plan,
 )
@@ -63,7 +63,7 @@ def main(argv: list[str] | None = None) -> int:
     elif arguments.verify:
         result = verify_plan(root, arguments.domain, runner)
     elif arguments.probe:
-        result = probe_runtime(root, build_plan(root, arguments.domain, runner), runner)
+        result = probe_connectivity(root, build_plan(root, arguments.domain, runner), runner)
     else:
         plan = build_plan(root, arguments.domain, runner)
         result = {

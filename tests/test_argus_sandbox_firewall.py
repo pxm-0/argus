@@ -83,19 +83,6 @@ class ProbeRunner(module.Runner):
         return subprocess.CompletedProcess(command, 0 if reachable else 1, "", "")
 
 
-class EgressRunner(module.Runner):
-    def __init__(self, answer: str = "203.0.113.10") -> None:
-        self.answer = answer
-
-    def run(self, command: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
-        if "dig" in command:
-            return subprocess.CompletedProcess(command, 0, self.answer + "\n", "")
-        return subprocess.CompletedProcess(command, 0, "", "")
-
-    def text(self, command: list[str]) -> str:
-        return self.run(command).stdout.strip()
-
-
 class SandboxFirewallTests(unittest.TestCase):
     def test_configured_projects_uses_active_canonical_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -197,27 +184,6 @@ class SandboxFirewallTests(unittest.TestCase):
         self.assertEqual(4, result["passedChecks"])
         self.assertEqual("fail", failed["result"])
         self.assertEqual(2, failed["unexpectedReachability"])
-
-    def test_egress_probe_checks_udp_tcp_dns_and_declared_tcp_port(self) -> None:
-        plan = {
-            "containers": [
-                {"project": "alpha", "service": "web", "pid": 101, "networks": ["default"]}
-            ],
-            "egress": {
-                "alpha": {
-                    "project": "alpha",
-                    "resolver": "10.0.2.3",
-                    "allow": (("tcp", 443),),
-                    "reason": "reviewed",
-                    "probeHost": "example.com",
-                }
-            },
-        }
-        result = module.probe_egress(plan, EgressRunner("93.184.216.34"))
-        self.assertEqual("pass", result["result"])
-        self.assertEqual(3, result["passedChecks"])
-        with self.assertRaises(module.FirewallOperationError):
-            module.probe_egress(plan, EgressRunner("10.0.0.2"))
 
     def test_public_command_help_and_apply_acknowledgement(self) -> None:
         executable = ROOT / "scripts" / "argus-sandbox-firewall"

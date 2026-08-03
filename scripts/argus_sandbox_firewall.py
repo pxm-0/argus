@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import hashlib
-import ipaddress
 import importlib.machinery
 import importlib.util
 import json
@@ -310,7 +309,6 @@ def declared_egress(root: Path, domain: str) -> dict[str, dict[str, Any]]:
             "resolver": str(policy["resolver"]),
             "allow": tuple((str(protocol), int(port)) for protocol, port in policy["allow"]),
             "reason": str(policy["reason"]),
-            "probeHost": str(policy["probeHost"]),
         }
     return result
 
@@ -464,85 +462,6 @@ def probe_connectivity(root: Path, plan: dict[str, Any], runner: Runner) -> dict
     }
 
 
-def probe_egress(plan: dict[str, Any], runner: Runner) -> dict[str, Any]:
-    """Prove declared DNS and TCP egress from the owning project only."""
-    containers = plan["containers"]
-    checks: list[dict[str, Any]] = []
-    for workload, policy in sorted(plan["egress"].items()):
-        project = policy["project"]
-        sources = [item for item in containers if item["project"] == project]
-        if not sources:
-            raise FirewallOperationError("egress probe source is missing")
-        source = sorted(sources, key=lambda item: item["service"])[0]
-        resolver = policy["resolver"]
-        host = policy["probeHost"]
-        answers: set[str] = set()
-        for transport in ("udp", "tcp"):
-            command = [
-                "nsenter",
-                "-t",
-                str(source["pid"]),
-                "-n",
-                "dig",
-                f"@{resolver}",
-                "+short",
-                "+time=2",
-                "+tries=1",
-            ]
-            if transport == "tcp":
-                command.append("+tcp")
-            command.extend(["A", host])
-            output = runner.text(command)
-            valid_answers: set[str] = set()
-            for line in output.splitlines():
-                try:
-                    address = ipaddress.ip_address(line.strip())
-                except ValueError:
-                    continue
-                if address.version == 4 and not address.is_private:
-                    valid_answers.add(str(address))
-            if not valid_answers:
-                raise FirewallOperationError("declared egress DNS probe returned no public IPv4 answer")
-            answers.update(valid_answers)
-            checks.append({"workloadId": workload, "kind": f"dns-{transport}", "passed": True})
-        target = sorted(answers)[0]
-        for protocol, port in policy["allow"]:
-            if protocol != "tcp":
-                raise FirewallOperationError("live egress verification supports declared TCP allowances only")
-            program = (
-                "import socket,sys; s=socket.socket(); s.settimeout(3); "
-                f"rc=s.connect_ex(({target!r},{int(port)})); s.close(); sys.exit(0 if rc == 0 else 1)"
-            )
-            result = runner.run(
-                ["nsenter", "-t", str(source["pid"]), "-n", "python3", "-c", program],
-                check=False,
-            )
-            if result.returncode != 0:
-                raise FirewallOperationError("declared egress TCP probe failed")
-            checks.append({"workloadId": workload, "kind": f"tcp-{int(port)}", "passed": True})
-    return {
-        "schemaVersion": 1,
-        "result": "pass",
-        "declaredWorkloads": len(plan["egress"]),
-        "passedChecks": len(checks),
-        "totalChecks": len(checks),
-        "checks": checks,
-    }
-
-
-def probe_runtime(root: Path, plan: dict[str, Any], runner: Runner) -> dict[str, Any]:
-    connectivity = probe_connectivity(root, plan, runner)
-    egress = probe_egress(plan, runner)
-    result = "pass" if connectivity["result"] == egress["result"] == "pass" else "fail"
-    return {
-        "schemaVersion": 1,
-        "domain": plan["domain"],
-        "result": result,
-        "connectivity": connectivity,
-        "egress": egress,
-    }
-
-
 def _table_names(domain: str) -> tuple[str, str]:
     suffix = domain.replace("-", "_")
     return f"argus_{suffix}", f"argus_{suffix}_nat"
@@ -583,7 +502,7 @@ def verify_plan(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
         raise FirewallOperationError("live firewall differs from persisted deterministic policy")
     if 'iifname "br-*"' in live or 'oifname "br-*"' in live:
         raise FirewallOperationError("wildcard bridge forwarding remains installed")
-    probes = probe_runtime(root, plan, runner)
+    probes = probe_connectivity(root, plan, runner)
     if probes["result"] != "pass":
         raise FirewallOperationError("sandbox connectivity probe matrix failed")
     return {
@@ -596,7 +515,9 @@ def verify_plan(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
         "persistedDigest": _sha256_text(persisted),
         "liveRulesDigest": _sha256_text(live),
         "wildcardBridgeRule": False,
-        "runtimeProbes": probes,
+        "connectivityProbes": {
+            key: value for key, value in probes.items() if key != "checks"
+        },
     }
 
 

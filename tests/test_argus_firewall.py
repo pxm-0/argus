@@ -166,7 +166,7 @@ class FirewallPolicyTests(unittest.TestCase):
             render_firewall(
                 "personal-sandbox",
                 NETWORKS,
-                egress={"alpha": {"project": "alpha", "resolver": [], "allow": (("tcp", 443),), "reason": "x", "probeHost": "example.com"}},
+                egress={"alpha": {"project": "alpha", "resolver": [], "allow": (("tcp", 443),), "reason": "x"}},
             )
 
     def test_egress_uses_the_resolved_project_interface_without_pivot_rule(self) -> None:
@@ -179,7 +179,6 @@ class FirewallPolicyTests(unittest.TestCase):
                     "resolver": "10.0.2.3",
                     "allow": (("tcp", 443),),
                     "reason": "reviewed crawl",
-                    "probeHost": "example.com",
                 }
             },
         )

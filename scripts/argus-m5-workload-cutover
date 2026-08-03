@@ -84,7 +84,6 @@ SPECS = {
             "resolver": "10.0.2.3",
             "allow": (("tcp", 443),),
             "reason": "threads.net crawl for the archive",
-            "probe_host": "threads.net",
         },
         # Sealed replacement for the excluded /home/oreo/hastur/auth bind.
         "credentials": {"hastur": "/app/auth"},
@@ -581,9 +580,6 @@ def validated_egress(workload: str, spec: dict) -> dict | None:
         )
     if not policy.get("reason"):
         raise CutoverError(f"egress policy for {workload} needs a reason")
-    probe_host = str(policy.get("probe_host") or "")
-    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", probe_host):
-        raise CutoverError(f"egress policy for {workload} needs a valid probe host")
     for protocol, port in allow:
         if protocol not in EGRESS_PROTOCOLS or not 0 < int(port) < 65536:
             raise CutoverError(
@@ -593,7 +589,6 @@ def validated_egress(workload: str, spec: dict) -> dict | None:
         "resolver": resolver,
         "allow": allow,
         "reason": str(policy["reason"]),
-        "probeHost": probe_host,
     }
 
 

@@ -278,7 +278,7 @@ def render_firewall(
         policy = egress_policies[workload]
         if not isinstance(workload, str) or not isinstance(policy, dict):
             raise FirewallPolicyError("egress policy identity is invalid")
-        if set(policy) != {"project", "resolver", "allow", "reason", "probeHost"}:
+        if set(policy) != {"project", "resolver", "allow", "reason"}:
             raise FirewallPolicyError("egress policy fields do not match the reviewed contract")
         project = _name(policy.get("project"), "egress project")
         if project in egress_projects:
@@ -291,8 +291,6 @@ def render_firewall(
         resolver = _private_ipv4(policy["resolver"], "egress resolver")
         if not isinstance(policy["reason"], str) or not policy["reason"].strip():
             raise FirewallPolicyError("egress reason is required")
-        if not isinstance(policy["probeHost"], str) or not policy["probeHost"]:
-            raise FirewallPolicyError("egress probe host is required")
         allowances = policy["allow"]
         if not isinstance(allowances, (list, tuple)) or not allowances:
             raise FirewallPolicyError("egress allowance is required")

@@ -385,7 +385,6 @@ class DeclaredEgressTest(unittest.TestCase):
         policy = module.validated_egress("hastur", module.SPECS["hastur"])
         self.assertEqual((("tcp", 443),), policy["allow"])
         self.assertEqual("10.0.2.3", policy["resolver"])
-        self.assertEqual("threads.net", policy["probeHost"])
 
     def test_granted_domain_still_seals_every_other_workload(self) -> None:
         rendered = module.firewall_text(
@@ -411,7 +410,6 @@ class DeclaredEgressTest(unittest.TestCase):
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
                 "reason": "threads.net crawl",
-                "probeHost": "threads.net",
             }
         }
         rendered = module.firewall_text("personal-sandbox", policies, self.NETWORKS)
@@ -444,12 +442,11 @@ class DeclaredEgressTest(unittest.TestCase):
 
     def test_incomplete_policies_are_refused(self) -> None:
         for policy in (
-            {"allow": (("tcp", 443),), "reason": "no resolver", "probe_host": "threads.net"},
-            {"resolver": "10.0.2.3", "reason": "no allowance", "probe_host": "threads.net"},
-            {"resolver": "10.0.2.3", "allow": (("tcp", 443),), "probe_host": "threads.net"},
-            {"resolver": "10.0.2.3", "allow": (("tcp", 443),), "reason": "missing probe host"},
-            {"resolver": "10.0.2.3", "allow": (("sctp", 443),), "reason": "bad proto", "probe_host": "threads.net"},
-            {"resolver": "10.0.2.3", "allow": (("tcp", 0),), "reason": "bad port", "probe_host": "threads.net"},
+            {"allow": (("tcp", 443),), "reason": "no resolver"},
+            {"resolver": "10.0.2.3", "reason": "no allowance"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 443),)},
+            {"resolver": "10.0.2.3", "allow": (("sctp", 443),), "reason": "bad proto"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 0),), "reason": "bad port"},
         ):
             with self.assertRaises(module.CutoverError):
                 module.validated_egress("hastur", {"egress": policy})
@@ -512,7 +509,6 @@ class RuntimeRefreshTest(unittest.TestCase):
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
                 "reason": "threads.net crawl",
-                "probe_host": "threads.net",
             },
         }
 

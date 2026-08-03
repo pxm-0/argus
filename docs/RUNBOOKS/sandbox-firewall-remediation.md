@@ -17,8 +17,10 @@ planning, apply, verification, or rollback.
   are resolution inputs bound into the plan digest; observations alone never
   grant access.
 - Unknown, duplicated, missing, or changed identities refuse plan/apply.
-- Hastur's existing DNS/TLS egress uses Hastur's resolved bridge. No other
-  project can pivot through that rule.
+- Hastur's declared inner DNS/TLS rules use Hastur's resolved bridge. No other
+  project can pivot through those rules. Live outbound TCP remains blocked by
+  the pre-existing host UID guard tracked in `#267`; changing that boundary is
+  outside this phase.
 
 ## Privilege and side effects
 
