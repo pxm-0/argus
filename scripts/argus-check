@@ -391,10 +391,31 @@ def docs_parity_check(root: Path) -> bool:
         if not (root / "scripts" / name).is_file()
         or not os.access(root / "scripts" / name, os.X_OK)
     )
+    try:
+        public_cli = json.loads((root / "config" / "public-cli.json").read_text())
+        public_commands = {
+            str(item["command"]): str(item["privilege"])
+            for item in public_cli["commands"]
+        }
+        installed_links = dict(public_cli["executableLinks"])
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        print("FAIL docs/command parity invalid config/public-cli.json")
+        return False
+    operations = (root / "docs" / "OPERATIONS.md").read_text()
+    for command, privilege in public_commands.items():
+        if command not in operations or privilege not in operations:
+            failures.append(command)
+    for link_name, target_name in installed_links.items():
+        target = root / "scripts" / str(target_name)
+        if link_name != "argus" or not target.is_file() or not os.access(target, os.X_OK):
+            failures.append(f"installed-link:{link_name}")
+    stale_route = re.search(r"https://[a-z0-9.-]+\.ts\.net:[0-9]+", operations)
+    if stale_route:
+        failures.append("current-doc-stale-route-literal")
     if failures:
         print("FAIL docs/command parity missing-or-non-executable=" + ",".join(failures))
         return False
-    print(f"PASS docs/command parity commands={len(referenced)}")
+    print(f"PASS docs/command parity scripts={len(referenced)} publicCommands={len(public_commands)}")
     return True
 
 

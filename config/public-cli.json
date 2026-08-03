@@ -1,0 +1,36 @@
+{
+  "schemaVersion": 1,
+  "executableLinks": {
+    "argus": "argus"
+  },
+  "commands": [
+    {"command": "argus dashboard url", "privilege": "local-read-only"},
+    {"command": "argus estate status", "privilege": "local-read-only"},
+    {"command": "argus estate refresh", "privilege": "server-read-only"},
+    {"command": "argus estate coverage", "privilege": "local-read-only"},
+    {"command": "argus workload list", "privilege": "local-read-only"},
+    {"command": "argus workload show <id>", "privilege": "local-read-only"},
+    {"command": "argus workload move preview <id>", "privilege": "local-read-only"},
+    {"command": "argus workload move preflight <id>", "privilege": "server-read-only"},
+    {"command": "argus workload move apply <id>", "privilege": "server-mutation"},
+    {"command": "argus workload move status <id>", "privilege": "server-read-only"},
+    {"command": "argus workload move rollback <id>", "privilege": "server-mutation"},
+    {"command": "argus operation show <operation-id>", "privilege": "server-read-only"},
+    {"command": "argus operation recover <operation-id>", "privilege": "server-mutation"},
+    {"command": "argus doctor", "privilege": "local-read-only"},
+    {"command": "argus check", "privilege": "local-read-only"}
+  ],
+  "compatibility": {
+    "argus health": "argus estate status",
+    "argus migration-plan <id>": "argus workload move preview <id>",
+    "argus workloads": "argus workload list"
+  },
+  "exitClasses": {
+    "0": "success",
+    "1": "internal-or-check-failure",
+    "2": "invalid-invocation",
+    "3": "safe-refusal-or-precondition",
+    "4": "unavailable-or-transient",
+    "5": "indeterminate-recovery-required"
+  }
+}

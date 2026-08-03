@@ -5,7 +5,7 @@ import argparse
 import os
 from pathlib import Path
 
-from argus_common import APPROVED_OPERATOR_LINKS
+from argus_common import APPROVED_OPERATOR_LINKS, RETIRED_OPERATOR_LINKS
 
 
 def repo_root() -> Path:
@@ -52,10 +52,39 @@ def main() -> int:
                 failures.append(f"{link_name}: target missing or not executable: {target}")
             elif (link.exists() or link.is_symlink()) and not link.is_symlink() and not args.force:
                 failures.append(f"{link_name}: refusing to overwrite non-symlink file: {link}")
+        for link_name, target_name in RETIRED_OPERATOR_LINKS.items():
+            target = scripts_dir / target_name
+            link = prefix / link_name
+            if (link.exists() or link.is_symlink()) and (
+                not link.is_symlink() or link.resolve(strict=False) != target
+            ):
+                failures.append(
+                    f"{link_name}: refusing to retire an unowned or changed path: {link}"
+                )
         if failures:
             for failure in failures:
                 print(f"FAIL {failure}")
             return 1
+
+    for link_name, target_name in RETIRED_OPERATOR_LINKS.items():
+        target = scripts_dir / target_name
+        link = prefix / link_name
+        if not (link.exists() or link.is_symlink()):
+            continue
+        if not link.is_symlink() or link.resolve(strict=False) != target:
+            failures.append(
+                f"{link_name}: refusing to retire an unowned or changed path: {link}"
+            )
+            continue
+        if args.check:
+            failures.append(
+                f"{link_name}: retired public link remains; use argus or a documented dispatcher alias"
+            )
+        elif args.dry_run:
+            print(f"DRY  retire {link} -> {target}")
+        else:
+            link.unlink()
+            print(f"UNLINK {link} (retired compatibility command)")
 
     for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
         target = scripts_dir / target_name
