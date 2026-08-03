@@ -6,12 +6,19 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_sessions import Session, SessionStore, parse_cookie  # noqa: E402
+from argus_sessions import (  # noqa: E402
+    SESSION_RESTORATION_FAILURES,
+    Session,
+    SessionRestoration,
+    SessionStore,
+    parse_cookie,
+)
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -112,6 +119,72 @@ class SessionStoreTests(unittest.TestCase):
             second = store.create("operator@example.com")
             self.assertEqual(store.revoke_identity(second.identity), 1)
             self.assertIsNone(store.get(second.session_id, second.identity))
+
+    def test_restoration_returns_safe_reasons_without_destructive_reads(self) -> None:
+        current = [1_000_000]
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.sqlite3"
+            store = SessionStore(database, ttl_seconds=10, clock=lambda: current[0])
+            self.assertEqual("cookie-missing", store.restore("", "operator@example.com").reason)
+            self.assertEqual("session-not-found", store.restore("absent", "operator@example.com").reason)
+
+            expired = store.create("operator@example.com")
+            current[0] += 11
+            self.assertEqual("session-expired", store.restore(expired.session_id, expired.identity).reason)
+            with sqlite3.connect(database) as connection:
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT revoked_at FROM sessions WHERE session_hash = ?",
+                        (store._hash(expired.session_id),),
+                    ).fetchone()[0]
+                )
+
+            active = store.create("operator@example.com")
+            store.revoke(active.session_id)
+            self.assertEqual("session-revoked", store.restore(active.session_id, active.identity).reason)
+            with patch.object(store, "_connect", side_effect=sqlite3.OperationalError("unavailable")):
+                self.assertEqual(
+                    "session-store-unavailable",
+                    store.restore(active.session_id, active.identity).reason,
+                )
+
+    def test_restoration_reason_contract_is_closed(self) -> None:
+        self.assertEqual(
+            {
+                "identity-missing",
+                "operator-disabled",
+                "cookie-missing",
+                "session-not-found",
+                "session-expired",
+                "session-revoked",
+                "session-store-unavailable",
+            },
+            SESSION_RESTORATION_FAILURES,
+        )
+        with self.assertRaisesRegex(ValueError, "not allowlisted"):
+            SessionRestoration(None, "raw-diagnostic-detail")
+
+    def test_repeated_restoration_changes_only_last_seen_and_idle_expiry(self) -> None:
+        current = [1_000_000]
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.sqlite3"
+            store = SessionStore(database, ttl_seconds=100, clock=lambda: current[0])
+            session = store.create("operator@example.com")
+            with sqlite3.connect(database) as connection:
+                before = connection.execute("SELECT * FROM sessions").fetchone()
+                columns = [item[0] for item in connection.execute("SELECT * FROM sessions").description]
+            current[0] += 10
+            self.assertIsNotNone(store.restore(session.session_id, session.identity).session)
+            current[0] += 10
+            self.assertIsNotNone(store.restore(session.session_id, session.identity).session)
+            with sqlite3.connect(database) as connection:
+                after = connection.execute("SELECT * FROM sessions").fetchone()
+            changed = {
+                name
+                for name, old, new in zip(columns, before, after, strict=True)
+                if old != new
+            }
+            self.assertEqual({"last_seen_at", "expires_at"}, changed)
 
     def test_create_rotates_existing_identity_and_absolute_expiry_does_not_slide(self) -> None:
         current = [1_000_000]

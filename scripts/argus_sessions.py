@@ -17,6 +17,17 @@ SESSION_ABSOLUTE_TTL_SECONDS = 8 * 60 * 60
 STEP_UP_TTL_SECONDS = 5 * 60
 SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
 SCHEMA_VERSION = 3
+SESSION_RESTORATION_FAILURES = frozenset(
+    {
+        "identity-missing",
+        "operator-disabled",
+        "cookie-missing",
+        "session-not-found",
+        "session-expired",
+        "session-revoked",
+        "session-store-unavailable",
+    }
+)
 
 
 def _format_timestamp(value: int) -> str:
@@ -45,6 +56,18 @@ class Session:
     def step_up_valid(self) -> bool:
         age = int(time.time()) - self.step_up_at
         return self.step_up_at > 0 and 0 <= age <= STEP_UP_TTL_SECONDS
+
+
+@dataclass(frozen=True)
+class SessionRestoration:
+    session: Session | None
+    reason: str
+
+    def __post_init__(self) -> None:
+        if self.session is not None and self.reason:
+            raise ValueError("successful session restoration cannot have a reason")
+        if self.session is None and self.reason not in SESSION_RESTORATION_FAILURES:
+            raise ValueError("session restoration reason is not allowlisted")
 
 
 class SessionStore:
@@ -261,59 +284,77 @@ class SessionStore:
             connection.commit()
         return session
 
-    def get(self, session_id: str, identity: str, *, role: str = "owner") -> Session | None:
-        if not session_id or not identity or role != "owner":
-            return None
+    def restore(
+        self,
+        session_id: str,
+        identity: str,
+        *,
+        role: str = "owner",
+    ) -> SessionRestoration:
+        if not session_id:
+            return SessionRestoration(None, "cookie-missing")
+        if not identity or role != "owner":
+            return SessionRestoration(None, "session-not-found")
         current = self._now()
-        with self._connect() as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            row = connection.execute(
-                """
-                SELECT tailnet_login, role, created_at, last_seen_at, expires_at,
-                       absolute_expires_at, step_up_at
-                FROM sessions
-                WHERE session_hash = ? AND tailnet_login = ? AND role = ?
-                  AND revoked_at IS NULL
-                """,
-                (self._hash(session_id), identity, role),
-            ).fetchone()
-            if row is None:
-                connection.rollback()
-                return None
-            expires_at = _parse_timestamp(str(row["expires_at"]))
-            absolute_expires_at = _parse_timestamp(str(row["absolute_expires_at"]))
-            if expires_at <= current or absolute_expires_at <= current:
+        try:
+            with self._connect() as connection:
+                connection.execute("BEGIN IMMEDIATE")
+                row = connection.execute(
+                    """
+                    SELECT tailnet_login, role, created_at, last_seen_at, expires_at,
+                           absolute_expires_at, step_up_at, revoked_at
+                    FROM sessions
+                    WHERE session_hash = ?
+                    """,
+                    (self._hash(session_id),),
+                ).fetchone()
+                if row is None:
+                    connection.rollback()
+                    return SessionRestoration(None, "session-not-found")
+                if str(row["tailnet_login"]) != identity or str(row["role"]) != role:
+                    connection.rollback()
+                    return SessionRestoration(None, "session-not-found")
+                if row["revoked_at"] is not None:
+                    connection.rollback()
+                    return SessionRestoration(None, "session-revoked")
+                expires_at = _parse_timestamp(str(row["expires_at"]))
+                absolute_expires_at = _parse_timestamp(str(row["absolute_expires_at"]))
+                if expires_at <= current or absolute_expires_at <= current:
+                    connection.rollback()
+                    return SessionRestoration(None, "session-expired")
+                refreshed_expiry = min(current + self.ttl_seconds, absolute_expires_at)
                 connection.execute(
-                    "UPDATE sessions SET revoked_at = ? WHERE session_hash = ?",
-                    (_format_timestamp(current), self._hash(session_id)),
+                    """
+                    UPDATE sessions
+                    SET last_seen_at = ?, expires_at = ?
+                    WHERE session_hash = ? AND revoked_at IS NULL
+                    """,
+                    (
+                        _format_timestamp(current),
+                        _format_timestamp(refreshed_expiry),
+                        self._hash(session_id),
+                    ),
                 )
                 connection.commit()
-                return None
-            refreshed_expiry = min(current + self.ttl_seconds, absolute_expires_at)
-            connection.execute(
-                """
-                UPDATE sessions
-                SET last_seen_at = ?, expires_at = ?
-                WHERE session_hash = ? AND revoked_at IS NULL
-                """,
-                (
-                    _format_timestamp(current),
-                    _format_timestamp(refreshed_expiry),
-                    self._hash(session_id),
-                ),
-            )
-            connection.commit()
-        return Session(
-            session_id=session_id,
-            identity=str(row["tailnet_login"]),
-            role=str(row["role"]),
-            csrf_token="",
-            created_at=_parse_timestamp(str(row["created_at"])),
-            last_seen_at=current,
-            expires_at=refreshed_expiry,
-            absolute_expires_at=absolute_expires_at,
-            step_up_at=_parse_timestamp(row["step_up_at"]),
+        except sqlite3.Error:
+            return SessionRestoration(None, "session-store-unavailable")
+        return SessionRestoration(
+            Session(
+                session_id=session_id,
+                identity=str(row["tailnet_login"]),
+                role=str(row["role"]),
+                csrf_token="",
+                created_at=_parse_timestamp(str(row["created_at"])),
+                last_seen_at=current,
+                expires_at=refreshed_expiry,
+                absolute_expires_at=absolute_expires_at,
+                step_up_at=_parse_timestamp(row["step_up_at"]),
+            ),
+            "",
         )
+
+    def get(self, session_id: str, identity: str, *, role: str = "owner") -> Session | None:
+        return self.restore(session_id, identity, role=role).session
 
     def csrf_valid(self, session_id: str, csrf_token: str) -> bool:
         if not session_id or not csrf_token:

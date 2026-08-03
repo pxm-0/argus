@@ -6,7 +6,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -117,6 +117,112 @@ class SessionBoundaryTests(unittest.TestCase):
             record["enabled"] = True
             operators.write_text(json.dumps({"schemaVersion": 1, "operators": [record]}))
             self.assertIsNone(handler.current_session())
+
+    def test_transient_operator_store_failure_does_not_revoke_session(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            operators = base / "operators.json"
+            marker = base / "operator-proxy-token"
+            token = base / "control-token"
+            operators.write_text(
+                json.dumps(
+                    {
+                        "schemaVersion": 1,
+                        "operators": [
+                            {
+                                "tailnetLogin": "owner@example.invalid",
+                                "role": "owner",
+                                "enabled": True,
+                            }
+                        ],
+                    }
+                )
+            )
+            marker.write_text("ARGUS_OPERATOR_PROXY_TOKEN=proxy-marker\n")
+            token.write_text("bootstrap-value\n")
+            server = load_server(
+                {
+                    "ARGUS_RUNTIME": str(base / "runtime"),
+                    "ARGUS_OPERATORS_FILE": str(operators),
+                    "ARGUS_PROXY_TOKEN_FILE": str(marker),
+                    "ARGUS_TOKEN_FILE": str(token),
+                }
+            )
+            session = server.SESSIONS.create("owner@example.invalid")
+            handler = object.__new__(server.Handler)
+            handler.client_address = ("127.0.0.1", 12345)
+            handler.headers = {
+                "Cookie": f"argus_session={session.session_id}",
+                "X-Argus-Tailnet-Login": "owner@example.invalid",
+                "X-Argus-Proxy-Token": "proxy-marker",
+            }
+            self.assertIsNotNone(handler.current_session())
+
+            trusted_headers = dict(handler.headers)
+            handler.headers.pop("X-Argus-Tailnet-Login")
+            self.assertEqual("identity-missing", handler.session_restoration().reason)
+            handler.headers = dict(trusted_headers)
+            self.assertIsNotNone(handler.current_session())
+
+            handler.headers.pop("X-Argus-Proxy-Token")
+            self.assertEqual("identity-missing", handler.session_restoration().reason)
+            handler.headers = dict(trusted_headers)
+            self.assertIsNotNone(handler.current_session())
+
+            original = operators.read_bytes()
+            operators.unlink()
+            unavailable = handler.session_restoration()
+            self.assertIsNone(unavailable.session)
+            self.assertEqual("session-store-unavailable", unavailable.reason)
+
+            operators.write_text("[]")
+            malformed = handler.session_restoration()
+            self.assertIsNone(malformed.session)
+            self.assertEqual("session-store-unavailable", malformed.reason)
+
+            operators.write_text('{"schemaVersion":1}')
+            incomplete = handler.session_restoration()
+            self.assertIsNone(incomplete.session)
+            self.assertEqual("session-store-unavailable", incomplete.reason)
+
+            operators.write_bytes(original)
+            self.assertIsNotNone(handler.current_session())
+
+    def test_session_restoration_reason_codes_are_stable_and_safe(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            base = Path(directory)
+            operators = base / "operators.json"
+            marker = base / "operator-proxy-token"
+            token = base / "control-token"
+            operators.write_text(json.dumps({"schemaVersion": 1, "operators": []}))
+            marker.write_text("ARGUS_OPERATOR_PROXY_TOKEN=proxy-marker\n")
+            token.write_text("bootstrap-value\n")
+            server = load_server(
+                {
+                    "ARGUS_RUNTIME": str(base / "runtime"),
+                    "ARGUS_OPERATORS_FILE": str(operators),
+                    "ARGUS_PROXY_TOKEN_FILE": str(marker),
+                    "ARGUS_TOKEN_FILE": str(token),
+                }
+            )
+            handler = object.__new__(server.Handler)
+            handler.client_address = ("127.0.0.1", 12345)
+            handler.headers = {}
+            self.assertEqual("identity-missing", handler.session_restoration().reason)
+            handler.headers = {
+                "X-Argus-Tailnet-Login": "owner@example.invalid",
+                "X-Argus-Proxy-Token": "proxy-marker",
+            }
+            self.assertEqual("operator-disabled", handler.session_restoration().reason)
+
+            handler.path = "/api/session"
+            handler.send_json = Mock()
+            handler.headers = {}
+            handler.handle_get()
+            handler.send_json.assert_called_once_with(
+                401,
+                {"authenticated": False, "reason": "identity-missing"},
+            )
 
     def test_caddy_and_api_units_preserve_the_trusted_proxy_boundary(self) -> None:
         caddy = (ROOT / "caddy" / "dashboard.Caddyfile").read_text()
