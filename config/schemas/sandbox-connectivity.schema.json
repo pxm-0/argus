@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://argus.local/schemas/sandbox-connectivity.schema.json",
+  "title": "Argus sandbox cross-project connectivity policy",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "policies"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "policies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "id",
+          "sourceProject",
+          "sourceNetwork",
+          "targetProject",
+          "targetNetwork",
+          "targetService",
+          "direction",
+          "protocol",
+          "destinationPort",
+          "owner",
+          "reason",
+          "expiresAt"
+        ],
+        "properties": {
+          "id": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+          "sourceProject": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9_.-]*[a-z0-9])?$"},
+          "sourceNetwork": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9_.-]*[a-z0-9])?$"},
+          "targetProject": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9_.-]*[a-z0-9])?$"},
+          "targetNetwork": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9_.-]*[a-z0-9])?$"},
+          "targetService": {"type": "string", "pattern": "^[a-z0-9]+(?:[a-z0-9_.-]*[a-z0-9])?$"},
+          "direction": {"const": "source-to-target"},
+          "protocol": {"enum": ["tcp", "udp"]},
+          "destinationPort": {"type": "integer", "minimum": 1, "maximum": 65535},
+          "owner": {"type": "string", "pattern": ".*\\S.*"},
+          "reason": {"type": "string", "pattern": ".*\\S.*"},
+          "expiresAt": {
+            "oneOf": [
+              {"type": "null"},
+              {"type": "string", "format": "date-time"}
+            ]
+          }
+        }
+      }
+    }
+  }
+}

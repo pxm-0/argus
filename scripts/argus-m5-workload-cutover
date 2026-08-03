@@ -18,6 +18,15 @@ import stat
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from argus_firewall import FirewallPolicyError, render_firewall
+from argus_sandbox_firewall import Runner as FirewallRunner
+from argus_sandbox_firewall import FirewallOperationError, active_connectivity, discover_runtime
 
 
 ROOT = Path("/srv/argus")
@@ -551,9 +560,12 @@ def rootless_child_pid(spec: dict) -> str:
     return child
 
 
-def egress_bridge(workload: str) -> str:
-    """Deterministic bridge name so a declared rule can name one interface."""
-    return f"argus-{workload}"
+def sandbox_bridge(workload: str) -> str:
+    """Return the stable, project-unique Linux bridge interface name."""
+    name = f"argus-{workload}"
+    if len(os.fsencode(name)) > 15:
+        raise CutoverError("sandbox bridge interface name exceeds the Linux limit")
+    return name
 
 
 def validated_egress(workload: str, spec: dict) -> dict | None:
@@ -576,7 +588,11 @@ def validated_egress(workload: str, spec: dict) -> dict | None:
             raise CutoverError(
                 f"egress policy for {workload} has an invalid allowance: {protocol}/{port}"
             )
-    return {"resolver": resolver, "allow": allow, "reason": str(policy["reason"])}
+    return {
+        "resolver": resolver,
+        "allow": allow,
+        "reason": str(policy["reason"]),
+    }
 
 
 def domain_egress(domain: str) -> dict[str, dict]:
@@ -589,62 +605,44 @@ def domain_egress(domain: str) -> dict[str, dict]:
     }
 
 
-def firewall_text(domain: str, policies: dict[str, dict] | None = None) -> str:
-    table = domain.replace("-", "_")
-    policies = policies or {}
-    forward = ['    iifname "br-*" oifname "br-*" accept;\n']
-    for workload in sorted(policies):
-        policy = policies[workload]
-        bridge = egress_bridge(workload)
-        forward.append(
-            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-            f"ip daddr {policy['resolver']} udp dport 53 "
-            "ct state new,established accept;\n"
-        )
-        forward.append(
-            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-            f"ip daddr {policy['resolver']} tcp dport 53 "
-            "ct state new,established accept;\n"
-        )
-        for protocol, port in policy["allow"]:
-            forward.append(
-                f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-                f"{protocol} dport {int(port)} "
-                "ct state new,established accept;\n"
-            )
-        forward.append(
-            f'    iifname "{UPLINK_INTERFACE}" oifname "{bridge}" '
-            "ct state established,related accept;\n"
-        )
-    nat = ""
-    if policies:
-        masquerade = "".join(
-            f'    iifname "{egress_bridge(workload)}" '
-            f'oifname "{UPLINK_INTERFACE}" masquerade;\n'
-            for workload in sorted(policies)
-        )
-        nat = (
-            f"destroy table inet argus_{table}_nat\n"
-            f"table inet argus_{table}_nat {{\n"
-            "  chain postrouting {\n"
-            "    type nat hook postrouting priority srcnat; policy accept;\n"
-            f"{masquerade}"
-            "  }\n"
-            "}\n"
-        )
-    return (
-        f"destroy table inet argus_{table}\n"
-        f"table inet argus_{table} {{\n"
-        "  chain input { type filter hook input priority filter; policy drop; "
-        'iifname "lo" accept; }\n'
-        "  chain forward {\n"
-        "    type filter hook forward priority filter; policy drop;\n"
-        f"{''.join(forward)}"
-        "  }\n"
-        "  chain output { type filter hook output priority filter; policy drop; "
-        'oifname "lo" accept; }\n'
-        "}\n"
-    ) + nat
+def renderer_egress(policies: dict[str, dict]) -> dict[str, dict]:
+    return {
+        workload: {"project": str(SPECS[workload]["project"]), **policy}
+        for workload, policy in policies.items()
+    }
+
+
+def firewall_text(
+    domain: str,
+    policies: dict[str, dict] | None = None,
+    networks: list[dict] | None = None,
+    connectivity: list[dict] | None = None,
+    endpoints: list[dict] | None = None,
+) -> str:
+    """Compatibility adapter around the shared pure firewall renderer."""
+    return render_firewall(
+        domain,
+        networks or [],
+        egress=renderer_egress(policies or {}),
+        connectivity=connectivity or [],
+        endpoints=endpoints or [],
+        uplink=UPLINK_INTERFACE,
+    )
+
+
+def resolved_firewall_policy(domain: str) -> tuple[str, str, list[dict]]:
+    runner = FirewallRunner()
+    observed = discover_runtime(ROOT, domain, runner)
+    projects = set(observed["configuredProjects"].values())
+    connectivity = active_connectivity(ROOT, projects, datetime.now(timezone.utc))
+    rendered = firewall_text(
+        domain,
+        domain_egress(domain),
+        observed["networks"],
+        connectivity,
+        observed["endpoints"],
+    )
+    return rendered, str(observed["childPid"]), observed["networks"]
 
 
 def rendered_firewall_rules(config: Path, table: str) -> str:
@@ -672,9 +670,9 @@ def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
     shutil.copy2(destination, backup)
     os.chmod(backup, 0o600)
     candidate = state_dir / f"argus-{domain}.nft.candidate"
-    candidate.write_text(firewall_text(domain, domain_egress(domain)))
+    rendered, child, networks = resolved_firewall_policy(domain)
+    candidate.write_text(rendered)
     os.chmod(candidate, 0o600)
-    child = rootless_child_pid(spec)
     list_command = [
         "nsenter",
         "-t",
@@ -701,8 +699,12 @@ def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
         os.chmod(destination, 0o644)
         run(["nsenter", "-t", child, "-n", "nft", "-f", str(destination)])
         rules = text(list_command)
-        if 'iifname "br-*"' not in rules or 'oifname "br-*"' not in rules:
-            raise CutoverError("sandbox east-west firewall rule is not effective")
+        if 'iifname "br-*"' in rules or 'oifname "br-*"' in rules:
+            raise CutoverError("sandbox wildcard east-west rule remains effective")
+        for network in networks:
+            interface = str(network["interface"])
+            if f'iifname "{interface}" oifname "{interface}"' not in rules:
+                raise CutoverError("sandbox same-project firewall rule is not effective")
     except BaseException:
         shutil.copyfile(backup, destination)
         os.chown(destination, 0, 0)
@@ -889,18 +891,18 @@ def build_runtime(
     os.mkdir(ingress_dir, 0o700)
     os.chown(ingress_dir, identity.pw_uid, identity.pw_gid)
 
-    policy = validated_egress(workload, spec)
-    if policy is not None:
-        # A declared rule names one interface, so the bridge cannot be
-        # left to Docker's non-deterministic br-<id> naming.
-        networks = compose.setdefault("networks", {})
-        default = networks.get("default") or {}
-        if not isinstance(default, dict):
-            raise CutoverError("target default network definition is unsupported")
-        options = dict(default.get("driver_opts") or {})
-        options["com.docker.network.bridge.name"] = egress_bridge(workload)
-        default["driver_opts"] = options
-        networks["default"] = default
+    validated_egress(workload, spec)
+    # Exact firewall rules must survive Docker network recreation. Docker's
+    # default br-<NetworkID> interface does not, so every project receives a
+    # stable, workload-unique bridge name whether it has egress or is sealed.
+    networks = compose.setdefault("networks", {})
+    default = networks.get("default") or {}
+    if not isinstance(default, dict):
+        raise CutoverError("target default network definition is unsupported")
+    options = dict(default.get("driver_opts") or {})
+    options["com.docker.network.bridge.name"] = sandbox_bridge(workload)
+    default["driver_opts"] = options
+    networks["default"] = default
 
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
@@ -1914,17 +1916,18 @@ def refresh_overlay(
         raise CutoverError(
             f"credential or environment overlay names unknown services: {sorted(unknown)}"
         )
-    if validated_egress(workload, spec) is not None:
-        # A declared rule names one interface, so the bridge cannot be left
-        # to Docker's non-deterministic br-<id> naming. Only a recreate can
-        # rename a live bridge, which is why --reconcile cannot do this.
-        networks = updated.setdefault("networks", {})
-        default = networks.get("default") or {}
-        if not isinstance(default, dict):
-            raise CutoverError("target default network definition is unsupported")
-        options = dict(default.get("driver_opts") or {})
-        options["com.docker.network.bridge.name"] = egress_bridge(workload)
-        default["driver_opts"] = options
+    policy = validated_egress(workload, spec)
+    # Only a recreate can replace Docker's NetworkID-derived bridge name.
+    # Pin every sandbox project so exact firewall rules remain stable across
+    # daemon and workload recovery, including projects with no egress policy.
+    networks = updated.setdefault("networks", {})
+    default = networks.get("default") or {}
+    if not isinstance(default, dict):
+        raise CutoverError("target default network definition is unsupported")
+    options = dict(default.get("driver_opts") or {})
+    options["com.docker.network.bridge.name"] = sandbox_bridge(workload)
+    default["driver_opts"] = options
+    if policy is not None:
         # A target staged before #289 landed keeps internal=True forever
         # through refresh, since nothing else here touches it -- an
         # internal network has no default route at all, so the nft allow
@@ -1932,7 +1935,7 @@ def refresh_overlay(
         # Confirmed live 2026-07-31: hastur's own refresh renamed the
         # bridge but left the workload with EAI_AGAIN.
         default["internal"] = False
-        networks["default"] = default
+    networks["default"] = default
     for service, definition in services.items():
         definition["environment"] = {
             **(definition.get("environment") or {}),
@@ -2197,9 +2200,10 @@ def egress_policy_drift(spec: dict) -> bool:
     destination = Path(f"/etc/argus/argus-{domain}.nft")
     try:
         persisted = destination.read_text()
-    except FileNotFoundError:
+        expected, _child, _networks = resolved_firewall_policy(domain)
+    except (FileNotFoundError, FirewallPolicyError, FirewallOperationError):
         return True
-    return persisted != firewall_text(domain, domain_egress(domain))
+    return persisted != expected
 
 
 def apply_egress(workload: str) -> dict:
@@ -2232,7 +2236,7 @@ def apply_egress(workload: str) -> dict:
         "appliedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
         "declaredEgress": {
             name: {
-                "bridge": egress_bridge(name),
+                "bridge": sandbox_bridge(name),
                 "resolver": policy["resolver"],
                 "allow": [[protocol, int(port)] for protocol, port in policy["allow"]],
                 "reason": policy["reason"],

@@ -1289,8 +1289,10 @@ Acceptance:
   bridges match exactly; unknown bridges fail acceptance and remain denied.
 - Negative tests cover wrong direction, other ports/protocols, unrelated target
   services, expiry, and connectivity-policy removal.
-- Hastur's declared DNS/TLS egress still works; non-egress workloads remain
-  denied.
+- Hastur's declared inner DNS/TLS rules remain byte-for-byte scoped to its
+  resolved bridge, and no other project can pivot through them. The 2026-08-03
+  baseline confirmed outbound TCP was already blocked by the host UID guard;
+  live egress remains issue `#267` and is not silently broadened in PR 1.
 - Persisted rules equal live rules after apply and after reboot.
 - Full server smoke reports zero failures and zero warnings.
 

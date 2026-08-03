@@ -1,0 +1,91 @@
+#!/usr/bin/env python3
+"""Deterministic firewall-only remediation for Argus sandbox domains."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
+
+from argus_firewall import FirewallPolicyError
+from argus_sandbox_firewall import (
+    DOMAINS,
+    FirewallOperationError,
+    Runner,
+    apply_plan,
+    build_plan,
+    probe_connectivity,
+    rollback,
+    verify_plan,
+)
+
+
+APPLY_ACK = "--acknowledge-sandbox-firewall-apply"
+ROLLBACK_ACK = "--acknowledge-sandbox-firewall-rollback"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        description=(
+            "Plan, apply, verify, or roll back exact sandbox nftables policy.\n\n"
+            "Privilege: root; plan and verify are read-only, apply and rollback mutate only the selected firewall.\n"
+            "Prerequisites: reviewed Argus checkout on oreochiserver and active rootless sandbox runtime.\n"
+            "Source: configured workload identities plus fresh Docker/network namespace observations.\n"
+            "Safety: unknown, duplicated, or changed runtime mappings are refused; no service restart occurs.\n"
+            "Example: sudo scripts/argus-sandbox-firewall --domain personal-sandbox --plan\n"
+            "Recovery: use the emitted root-owned backup with --rollback and the rollback acknowledgement."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--domain", required=True, choices=sorted(DOMAINS))
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--plan", action="store_true")
+    action.add_argument("--verify", action="store_true")
+    action.add_argument("--probe", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--rollback", type=Path)
+    parser.add_argument("--plan-digest")
+    parser.add_argument(APPLY_ACK, action="store_true")
+    parser.add_argument(ROLLBACK_ACK, action="store_true")
+    arguments = parser.parse_args(argv)
+    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus")).resolve()
+    runner = Runner()
+    if arguments.apply:
+        if not getattr(arguments, APPLY_ACK[2:].replace("-", "_")) or not arguments.plan_digest:
+            raise FirewallOperationError(f"apply requires --plan-digest and {APPLY_ACK}")
+        result = apply_plan(root, arguments.domain, arguments.plan_digest, runner)
+    elif arguments.rollback:
+        if not getattr(arguments, ROLLBACK_ACK[2:].replace("-", "_")):
+            raise FirewallOperationError(f"rollback requires {ROLLBACK_ACK}")
+        result = rollback(root, arguments.domain, arguments.rollback, runner)
+    elif arguments.verify:
+        result = verify_plan(root, arguments.domain, runner)
+    elif arguments.probe:
+        result = probe_connectivity(root, build_plan(root, arguments.domain, runner), runner)
+    else:
+        plan = build_plan(root, arguments.domain, runner)
+        result = {
+            key: value
+            for key, value in plan.items()
+            if key not in {"rendered", "childPid", "containers", "endpoints"}
+        }
+        result.update({"readOnly": True, "applyAcknowledgement": APPLY_ACK})
+    print(json.dumps(result, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (
+        FirewallOperationError,
+        FirewallPolicyError,
+        FileNotFoundError,
+        OSError,
+        ValueError,
+        json.JSONDecodeError,
+    ) as error:
+        print(f"refusing sandbox firewall operation: {error}", file=sys.stderr)
+        raise SystemExit(3)

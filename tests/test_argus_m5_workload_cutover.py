@@ -29,8 +29,12 @@ class WorkloadCutoverTests(unittest.TestCase):
         self.assertEqual(8446, module.SPECS["intake-os"]["tail_port"])
 
     def test_firewall_allows_only_sandbox_bridge_forwarding(self) -> None:
-        rules = module.firewall_text("personal-sandbox")
-        self.assertIn('iifname "br-*" oifname "br-*" accept', rules)
+        networks = [
+            {"project": "nodens", "network": "default", "networkId": "a" * 64, "interface": "br-aaaaaaaaaaaa"}
+        ]
+        rules = module.firewall_text("personal-sandbox", networks=networks)
+        self.assertIn('iifname "br-aaaaaaaaaaaa" oifname "br-aaaaaaaaaaaa" accept', rules)
+        self.assertNotIn("br-*", rules)
         self.assertIn("chain input", rules)
         self.assertIn("chain output", rules)
         self.assertGreaterEqual(rules.count("policy drop"), 3)
@@ -349,12 +353,18 @@ class DeclaredEgressTest(unittest.TestCase):
         'iifname "lo" accept; }\n'
         "  chain forward {\n"
         "    type filter hook forward priority filter; policy drop;\n"
-        '    iifname "br-*" oifname "br-*" accept;\n'
         "  }\n"
         "  chain output { type filter hook output priority filter; policy drop; "
         'oifname "lo" accept; }\n'
         "}\n"
+        "destroy table inet argus_personal_sandbox_nat\n"
     )
+    NETWORKS = [
+        {"project": "hastur", "network": "default", "networkId": "a" * 64, "interface": "argus-hastur"},
+        {"project": "kadath-live", "network": "default", "networkId": "b" * 64, "interface": "br-bbbbbbbbbbbb"},
+        {"project": "locigraph", "network": "default", "networkId": "c" * 64, "interface": "br-cccccccccccc"},
+        {"project": "nodens", "network": "default", "networkId": "d" * 64, "interface": "br-dddddddddddd"},
+    ]
 
     def test_every_workload_declares_an_egress_policy(self) -> None:
         for workload, spec in module.SPECS.items():
@@ -378,10 +388,10 @@ class DeclaredEgressTest(unittest.TestCase):
 
     def test_granted_domain_still_seals_every_other_workload(self) -> None:
         rendered = module.firewall_text(
-            "personal-sandbox", module.domain_egress("personal-sandbox")
+            "personal-sandbox", module.domain_egress("personal-sandbox"), self.NETWORKS
         )
         for workload in ("kadath", "nodens", "locigraph"):
-            self.assertNotIn(module.egress_bridge(workload), rendered)
+            self.assertNotIn(module.sandbox_bridge(workload), rendered)
 
     def test_sealed_rendering_is_byte_identical_to_the_installed_policy(self) -> None:
         self.assertEqual(
@@ -402,7 +412,7 @@ class DeclaredEgressTest(unittest.TestCase):
                 "reason": "threads.net crawl",
             }
         }
-        rendered = module.firewall_text("personal-sandbox", policies)
+        rendered = module.firewall_text("personal-sandbox", policies, self.NETWORKS)
         self.assertIn(
             'iifname "argus-hastur" oifname "tap0" tcp dport 443 '
             "ct state new,established accept;",
@@ -426,10 +436,9 @@ class DeclaredEgressTest(unittest.TestCase):
         self.assertNotIn("argus-nodens", rendered)
 
     def test_sealed_domains_render_no_nat_table(self) -> None:
-        self.assertNotIn(
-            "_nat",
-            module.firewall_text("work-sandbox", module.domain_egress("work-sandbox")),
-        )
+        rendered = module.firewall_text("work-sandbox", module.domain_egress("work-sandbox"))
+        self.assertIn("destroy table inet argus_work_sandbox_nat", rendered)
+        self.assertNotIn("table inet argus_work_sandbox_nat {", rendered)
 
     def test_incomplete_policies_are_refused(self) -> None:
         for policy in (
@@ -574,15 +583,19 @@ class RuntimeRefreshTest(unittest.TestCase):
         )
         self.assertEqual(before, json.dumps(self.ACCEPTED, sort_keys=True))
 
-    def test_a_sealed_workload_gets_no_bridge_pin(self) -> None:
-        # Renaming the bridge is only meaningful for a declared policy, so a
-        # sealed workload must not be recreated onto a pinned interface.
-        # kadath is the sealed case; hastur stopped being one when #272 landed.
+    def test_a_sealed_workload_gets_a_stable_bridge_pin(self) -> None:
+        # Exact project isolation must remain stable even when Docker recreates
+        # a sealed workload's network with a different immutable NetworkID.
         self.assertIsNone(module.SPECS["kadath"]["egress"])
         updated = module.refresh_overlay(
             self.ACCEPTED, "kadath", module.SPECS["kadath"], None
         )
-        self.assertNotIn("networks", updated)
+        self.assertEqual(
+            "argus-kadath",
+            updated["networks"]["default"]["driver_opts"][
+                "com.docker.network.bridge.name"
+            ],
+        )
 
     def test_overlay_refuses_to_name_unknown_services(self) -> None:
         spec = {**module.SPECS["hastur"], "credentials": {"absent": "/app/auth"}}
