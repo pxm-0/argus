@@ -57,7 +57,14 @@ def render_html() -> str:
         <button id="workload-discover" type="button">Refresh Workloads</button>
         <button id="monitor-toggle" type="button">Show Monitor</button>
         <button id="theme-toggle" type="button" aria-pressed="false">Light Mode</button>
-        <button id="admin-toggle" type="button">Admin Mode</button>
+        <div class="session-control" id="session-control" data-state="checking">
+          <i class="session-signal" aria-hidden="true"></i>
+          <span class="session-copy" role="status" aria-live="polite" aria-atomic="true">
+            <strong id="session-status">Checking session</strong>
+            <small id="session-detail">Confirming private operator session.</small>
+          </span>
+          <button id="admin-toggle" type="button" disabled>Checking</button>
+        </div>
       </div>
     </header>
     <main id="overview">
@@ -624,6 +631,9 @@ const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
 const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
+const sessionControl = document.getElementById("session-control");
+const sessionStatus = document.getElementById("session-status");
+const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
@@ -645,6 +655,9 @@ let monitorTimer = null;
 let adminEnabled = false;
 let csrfToken = "";
 let operatorIdentity = "";
+let operatorSessionState = "checking";
+let operatorSessionReason = "";
+let operatorSession = null;
 let selectedTopologyId = null;
 let lastCommandTrigger = null;
 const activeOperationPolls = new Set();
@@ -664,6 +677,81 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+const SESSION_REASON_STATES = Object.freeze({
+  "identity-missing": "unauthenticated",
+  "operator-disabled": "unauthenticated",
+  "cookie-missing": "unauthenticated",
+  "session-not-found": "unauthenticated",
+  "session-expired": "expired",
+  "session-revoked": "expired",
+  "session-store-unavailable": "unavailable"
+});
+
+function sessionPresentation(stateName, reason, session) {
+  if (stateName === "checking") {
+    return { status: "Checking session", detail: "Confirming private operator session.", action: "Checking" };
+  }
+  if (stateName === "authenticated") {
+    const detail = session?.expiresAt ? `Session active until ${session.expiresAt}.` : "Operator session active.";
+    return { status: "Signed in", detail, action: "Log out" };
+  }
+  if (stateName === "expired") {
+    const revoked = reason === "session-revoked";
+    return {
+      status: revoked ? "Session revoked" : "Session expired",
+      detail: revoked ? "This session was revoked. Sign in again." : "The session reached its declared expiry. Sign in again.",
+      action: "Sign in"
+    };
+  }
+  if (stateName === "unavailable") {
+    if (reason === "csrf-missing") {
+      return {
+        status: "Mutation protection missing",
+        detail: "The session is readable, but its CSRF cookie is missing. Sign in again before making changes.",
+        action: "Sign in"
+      };
+    }
+    return {
+      status: "Session unavailable",
+      detail: "Argus could not verify the existing session. It was not treated as a logout.",
+      action: "Retry"
+    };
+  }
+  if (reason === "identity-missing") {
+    return { status: "Tailnet identity missing", detail: "Open Argus through the private Tailscale route.", action: "Retry" };
+  }
+  if (reason === "operator-disabled") {
+    return { status: "Operator access disabled", detail: "This Tailnet identity is not enabled for Argus.", action: "Retry" };
+  }
+  return {
+    status: "Sign in required",
+    detail: reason === "session-not-found" ? "The browser session is no longer recognized." : "No active Argus session was found.",
+    action: "Sign in"
+  };
+}
+
+function setOperatorSessionState(nextState, { reason = "", session = null } = {}) {
+  const allowed = ["checking", "authenticated", "unauthenticated", "expired", "unavailable"];
+  operatorSessionState = allowed.includes(nextState) ? nextState : "unavailable";
+  operatorSessionReason = reason;
+  operatorSession = operatorSessionState === "authenticated" ? session : null;
+  const presentation = sessionPresentation(operatorSessionState, operatorSessionReason, operatorSession);
+  sessionControl.dataset.state = operatorSessionState;
+  sessionStatus.textContent = presentation.status;
+  sessionDetail.textContent = presentation.detail;
+  adminToggle.textContent = presentation.action;
+  adminToggle.disabled = operatorSessionState === "checking";
+  if (operatorSessionState === "authenticated") {
+    csrfToken = cookieValue("argus_csrf");
+    operatorIdentity = operatorSession?.identity || "";
+    setAdmin(true);
+  } else {
+    csrfToken = "";
+    operatorIdentity = "";
+    setAdmin(false);
+  }
 }
 
 function statusClass(value) {
@@ -845,8 +933,7 @@ async function authenticateOperator() {
   );
   adminTokenInput.value = "";
   if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
-  csrfToken = cookieValue("argus_csrf");
-  operatorIdentity = result.payload.identity || "";
+  setOperatorSessionState("authenticated", { session: result.payload });
   return result.payload;
 }
 
@@ -1362,11 +1449,10 @@ function fillAdminControls() {
 
 function setAdmin(open) {
   adminEnabled = open;
-  adminToggle.textContent = open ? (csrfToken ? "Logout" : "Authenticate") : "Admin Mode";
   adminTokenInput.hidden = !open;
-  if (open) fillAdminControls();
+  if (open && operatorSessionState === "authenticated") fillAdminControls();
   document.querySelectorAll(".admin-row").forEach((row) => {
-    row.hidden = !open;
+    row.hidden = !(open && operatorSessionState === "authenticated");
   });
 }
 
@@ -1396,30 +1482,36 @@ themeToggle.addEventListener("click", () => {
   setTheme(theme);
 });
 adminToggle.addEventListener("click", async () => {
+  if (operatorSessionState === "checking") return;
+  if ((operatorSessionState === "unavailable" && operatorSessionReason !== "csrf-missing") || ["identity-missing", "operator-disabled"].includes(operatorSessionReason)) {
+    await restoreOperatorSession();
+    return;
+  }
+  if (operatorSessionState === "authenticated") {
+    const result = await apiPost("/api/session/logout", {});
+    if (!result.ok) {
+      showCommandResult("Logout failed", result.payload);
+      return;
+    }
+    adminTokenInput.value = "";
+    operationCache.clear();
+    activeOperationPolls.clear();
+    setOperatorSessionState("unauthenticated", { reason: "cookie-missing" });
+    renderDashboard();
+    showCommandResult("Operator session", "Logged out.");
+    return;
+  }
   if (!adminEnabled) {
     setAdmin(true);
     adminTokenInput.focus({ preventScroll: true });
     return;
   }
-  if (!csrfToken) {
-    try {
-      const session = await authenticateOperator();
-      setAdmin(true);
-      showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
-      await loadOperationHistory();
-    } catch (error) {
-      showCommandResult("Authentication failed", error.message);
-    }
-  } else {
-    await apiPost("/api/session/logout", {});
-    csrfToken = "";
-    operatorIdentity = "";
-    adminTokenInput.value = "";
-    operationCache.clear();
-    activeOperationPolls.clear();
-    setAdmin(false);
-    renderDashboard();
-    showCommandResult("Operator session", "Logged out.");
+  try {
+    const session = await authenticateOperator();
+    showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
+    await loadOperationHistory();
+  } catch (error) {
+    showCommandResult("Authentication failed", error.message);
   }
 });
 
@@ -1636,14 +1728,32 @@ document.addEventListener("keydown", (event) => {
 
 setTheme(document.documentElement.dataset.theme);
 async function restoreOperatorSession() {
-  const response = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
-  if (response.ok) {
-    const session = await response.json();
-    csrfToken = cookieValue("argus_csrf");
-    operatorIdentity = session.identity || "";
-    setAdmin(true);
+  setOperatorSessionState("checking");
+  try {
+    const response = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" });
+    let payload;
+    try {
+      payload = await response.json();
+    } catch (error) {
+      setOperatorSessionState("unavailable", { reason: "session-store-unavailable" });
+      return;
+    }
+    if (response.ok && payload.authenticated === true) {
+      if (cookieValue("argus_csrf")) {
+        setOperatorSessionState("authenticated", { session: payload });
+      } else {
+        setOperatorSessionState("unavailable", { reason: "csrf-missing" });
+      }
+    } else if (response.status === 401 && SESSION_REASON_STATES[payload.reason]) {
+      setOperatorSessionState(SESSION_REASON_STATES[payload.reason], { reason: payload.reason });
+    } else {
+      setOperatorSessionState("unavailable", { reason: "session-store-unavailable" });
+    }
+  } catch (error) {
+    setOperatorSessionState("unavailable", { reason: "session-store-unavailable" });
+  } finally {
+    await loadDashboardState();
   }
-  await loadDashboardState();
 }
 restoreOperatorSession();
 """
