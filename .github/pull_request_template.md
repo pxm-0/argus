@@ -23,6 +23,15 @@ Results:
 
 ```
 
+Acceptance summaries (use `argus-acceptance-summary`; never paste raw server evidence):
+
+| Check ID | Phase | Target | Runs | Result | Evidence ID | Summary digest |
+| --- | --- | --- | ---: | --- | --- | --- |
+| n/a | n/a | n/a | 0 | n/a | n/a | n/a |
+
+- [ ] Acceptance summary attached above.
+- [ ] Acceptance summary N/A (docs-only or no server evidence required); reason documented in Notes.
+
 ## Safety Checklist
 
 - [ ] This PR is phase-scoped and does not bundle unrelated P0 tasks.

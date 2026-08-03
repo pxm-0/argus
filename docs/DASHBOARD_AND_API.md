@@ -1,4 +1,8 @@
-# Dashboard and Control API
+# Historical P0 Dashboard and Control API
+
+> Historical record. The direct HTTP route and browser bearer-token model below
+> are superseded by the M5 private HTTPS route and operator-session contract.
+> Use `docs/README.md` for current guidance.
 
 ## Dashboard Purpose
 

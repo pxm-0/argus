@@ -9,15 +9,19 @@ Every Argus P0 plan, phase, and task lands through a pull request.
 - Use branch names like `p0/01-discovery`, `p0/02-base-layout`, or `p0/07-dashboard-generator`.
 - Do not commit phase work directly to `main`.
 
-## Argus integration line
+## Current remediation integration line
 
-- `argus` is the protected integration branch for Argus M0 through M4.
-- Create each Argus milestone branch from `argus` and target its PR back to
-  `argus`; never merge partial Argus milestones into `main`.
-- Tag each accepted checkpoint `argus-m<N>-complete` after its PR merges.
-- Sync `main` into `argus` only through a reviewed sync PR.
-- After M4, promote the complete integration line through one reviewed
-  `argus` → `main` merge PR that preserves checkpoint history.
+- Base every current remediation branch on the latest reviewed `main` and target
+  its PR to `main`.
+- The P0 PR guard rejects `p0/*` remediation PRs targeting another branch.
+- Rebase or merge the latest `main` only after the preceding remediation PR
+  lands; do not use stale milestone branches as current evidence.
+
+### Historical M0-M4 workflow
+
+The former protected `argus` integration line and `argus-m<N>-complete` tags are
+historical M0-M4 delivery records. They remain available for audit archaeology,
+but no new remediation branch or PR targets `argus`.
 
 ## Issues
 
@@ -43,6 +47,8 @@ Every PR body must state:
 - commands used for verification
 - safety confirmation that no public exposure was enabled
 - secrets confirmation that no sensitive material was printed or committed
+- exactly one acceptance-summary disposition: attach the emitted three-run row,
+  or mark it N/A and explain why in Notes for docs/local-only work
 
 For server-required tasks, verification must come from `oreochiserver` unless the PR is only changing documentation or templates.
 

@@ -1,4 +1,7 @@
-# Implementation Plan: Argus P0
+# Historical Implementation Plan: Argus P0
+
+> Historical record. Current work follows `ARGUS_ISSUE_REMEDIATION_PLAN.md` and
+> targets `main` through `docs/PR_WORKFLOW.md`.
 
 ## Phase 0: Discovery Only
 

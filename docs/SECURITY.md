@@ -25,7 +25,9 @@ P0 must not expose:
 
 ## Dashboard Exposure
 
-Dashboard must be served by Caddy on port `8088`, bound to the Tailscale IP only.
+The dashboard backend remains loopback-only behind the reviewed Tailscale Serve
+HTTPS route. Discover the operator URL with `argus dashboard url`; do not publish
+the backend port or bind it to a public interface.
 
 Do not bind dashboard to `0.0.0.0`.
 

@@ -1,4 +1,8 @@
-# Architecture: Argus P0
+# Historical Architecture: Argus P0
+
+> Historical record. Use `docs/README.md` and the current M5 architecture for
+> operator routes and implementation decisions. Addresses below are retained as
+> milestone evidence, not current instructions.
 
 ## High-Level Architecture
 

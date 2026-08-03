@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://argus.invalid/schemas/acceptance-summary-v1.json",
+  "title": "Argus public-safe acceptance summary input",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "issueId",
+    "phase",
+    "target",
+    "checkId",
+    "expectedRuns",
+    "sourceRevision",
+    "capturedAt",
+    "evidenceId",
+    "runs"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "issueId": {"type": "integer", "minimum": 1},
+    "phase": {"enum": ["baseline", "pre", "post", "rollback"]},
+    "target": {"enum": ["oreochiserver", "local-ci", "browser-private-origin"]},
+    "checkId": {"type": "string", "pattern": "^[a-z0-9]+(?:-[a-z0-9]+)*$"},
+    "expectedRuns": {"const": 3},
+    "sourceRevision": {"type": "string", "pattern": "^[0-9a-f]{7,40}$"},
+    "capturedAt": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "evidenceId": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+    "runs": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "allOf": [
+        {
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ordinal", "result", "durationMs", "reasonCode"],
+            "properties": {
+              "ordinal": {"type": "integer", "minimum": 1},
+              "result": {"enum": ["pass", "fail", "blocked"]},
+              "durationMs": {"type": "integer", "minimum": 0},
+              "reasonCode": {"enum": ["", "check-failed", "check-refused", "check-timeout", "evidence-incomplete", "rollback-failed", "server-access-unavailable", "unexpected-reachability"]}
+            },
+            "allOf": [
+              {"if": {"properties": {"result": {"const": "pass"}}}, "then": {"properties": {"reasonCode": {"const": ""}}}},
+              {"if": {"properties": {"result": {"const": "fail"}}}, "then": {"properties": {"reasonCode": {"enum": ["check-failed", "check-timeout", "rollback-failed", "unexpected-reachability"]}}}},
+              {"if": {"properties": {"result": {"const": "blocked"}}}, "then": {"properties": {"reasonCode": {"enum": ["check-refused", "evidence-incomplete", "server-access-unavailable"]}}}}
+            ]
+          }
+        },
+        {
+          "prefixItems": [
+            {"properties": {"ordinal": {"const": 1}}},
+            {"properties": {"ordinal": {"const": 2}}},
+            {"properties": {"ordinal": {"const": 3}}}
+          ],
+          "items": false
+        }
+      ]
+    }
+  }
+}

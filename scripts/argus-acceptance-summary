@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+
+from argus_acceptance import AcceptanceError, render_markdown, validate
+
+
+MAX_INPUT_BYTES = 65536
+
+
+class InvocationError(ValueError):
+    pass
+
+
+class AcceptanceArgumentParser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise InvocationError(message)
+
+
+def reject_duplicate_keys(pairs: list[tuple[str, object]]) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for key, value in pairs:
+        if key in result:
+            raise AcceptanceError("acceptance-json-duplicate", "input contains duplicate JSON fields")
+        result[key] = value
+    return result
+
+
+def load_input(path: Path) -> object:
+    with path.open("rb") as handle:
+        content = handle.read(MAX_INPUT_BYTES + 1)
+    if len(content) > MAX_INPUT_BYTES:
+        raise AcceptanceError("acceptance-input-oversized", "input exceeds the 65536-byte summary limit")
+    return json.loads(content.decode("utf-8"), object_pairs_hook=reject_duplicate_keys)
+
+
+def wants_json(argv: list[str]) -> bool:
+    for index, value in enumerate(argv):
+        if value == "--format" and index + 1 < len(argv):
+            return argv[index + 1] == "json"
+        if value.startswith("--format="):
+            return value.split("=", 1)[1] == "json"
+    return True
+
+
+def emit_error(code: str, message: str, next_action: str, exit_code: int, *, json_output: bool) -> int:
+    if json_output:
+        payload = {
+            "error": {
+                "authority": "none",
+                "code": code,
+                "message": message,
+                "nextAction": next_action,
+                "retrySafe": False,
+            },
+            "ok": False,
+            "schemaVersion": 1,
+        }
+        print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
+    else:
+        print(f"ERROR {code}: {message}", file=sys.stderr)
+        print(f"NEXT {next_action}", file=sys.stderr)
+    return exit_code
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    parser = AcceptanceArgumentParser(
+        description=(
+            "Validate and emit one public-safe, three-run acceptance summary.\n\n"
+            "Privilege: unprivileged, read-only.\n"
+            "Prerequisites: a <=65,536-byte JSON input conforming to acceptance-summary.schema.json.\n"
+            "Side effects: none; raw evidence is never read or written.\n"
+            "Output: canonical JSON envelope or one Markdown PR-table row on stdout.\n"
+            "Example: argus-acceptance-summary --input runtime/acceptance/check.json --format markdown\n"
+            "Recovery: correct the stable error code in the local summary input; never paste raw evidence."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--input", type=Path, required=True, help="allowlisted summary input JSON; never raw evidence")
+    parser.add_argument("--format", choices=("json", "markdown"), default="json")
+    json_output = wants_json(arguments)
+    try:
+        args = parser.parse_args(arguments)
+    except InvocationError:
+        return emit_error(
+            "invalid-invocation",
+            "The command arguments are invalid.",
+            "Run argus-acceptance-summary --help.",
+            2,
+            json_output=json_output,
+        )
+    try:
+        payload = load_input(args.input)
+        summary = validate(payload)
+    except FileNotFoundError:
+        return emit_error("acceptance-input-missing", "input file does not exist", "Create the allowlisted local summary input.", 4, json_output=json_output)
+    except (IsADirectoryError, PermissionError, UnicodeError, OSError):
+        return emit_error("acceptance-input-unreadable", "input file cannot be read safely", "Use a readable UTF-8 summary file, not raw evidence.", 4, json_output=json_output)
+    except AcceptanceError as exc:
+        return emit_error(exc.code, str(exc), "Correct the allowlisted summary fields and retry.", 3, json_output=json_output)
+    except (json.JSONDecodeError, RecursionError, ValueError):
+        return emit_error("acceptance-json-invalid", "input is not valid bounded JSON", "Correct the local summary JSON.", 3, json_output=json_output)
+    if args.format == "markdown":
+        print(render_markdown(summary), end="")
+    else:
+        print(json.dumps({"data": summary, "ok": True, "schemaVersion": 1}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
