@@ -10,6 +10,7 @@ import os
 import pwd
 import re
 import secrets
+import socketserver
 import stat
 import subprocess
 import sys
@@ -846,8 +847,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json(200, operation)
 
 
+class LoopbackHTTPServer(ThreadingHTTPServer):
+    """HTTP server that never performs DNS/FQDN resolution during bind."""
+
+    def server_bind(self) -> None:
+        socketserver.TCPServer.server_bind(self)
+        self.server_name = str(self.server_address[0])
+        self.server_port = int(self.server_address[1])
+
+
 def main() -> int:
-    server = ThreadingHTTPServer((HOST, PORT), Handler)
+    server = LoopbackHTTPServer((HOST, PORT), Handler)
     print(f"Argus control API listening on {HOST}:{PORT}")
     server.serve_forever()
     return 0
