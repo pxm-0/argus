@@ -58,7 +58,12 @@ class FakeRunner(module.Runner):
                         },
                         "State": {"Pid": 456},
                         "NetworkSettings": {
-                            "Networks": {"alpha_default": {"IPAddress": "172.18.0.2"}}
+                            "Networks": {
+                                "preserved-name": {
+                                    "IPAddress": "172.18.0.2",
+                                    "NetworkID": "a" * 64,
+                                }
+                            }
                         },
                     }
                 ]

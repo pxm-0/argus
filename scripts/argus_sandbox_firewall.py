@@ -263,8 +263,13 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
         if not isinstance(network_settings, dict) or not network_settings:
             raise FirewallOperationError("running container network identity is missing")
         container_networks: list[str] = []
-        for network_name, attachment in network_settings.items():
-            matching = [item for item in mappings if item["project"] == project and f"{project}_{item['network']}" == network_name]
+        for _network_name, attachment in network_settings.items():
+            attachment_network_id = attachment.get("NetworkID") if isinstance(attachment, dict) else None
+            matching = [
+                item
+                for item in mappings
+                if item["project"] == project and item["networkId"] == attachment_network_id
+            ]
             if len(matching) != 1:
                 raise FirewallOperationError("container network does not resolve canonically")
             logical_network = matching[0]["network"]
