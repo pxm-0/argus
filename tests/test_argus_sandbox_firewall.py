@@ -84,6 +84,17 @@ class ProbeRunner(module.Runner):
 
 
 class SandboxFirewallTests(unittest.TestCase):
+    def test_rootless_child_rejects_host_network_namespace(self) -> None:
+        runner = mock.Mock(spec=module.Runner)
+        runner.text.side_effect = ["123\n", "456\n"]
+        with (
+            mock.patch.object(module.pwd, "getpwnam", return_value=mock.Mock()),
+            mock.patch.object(module.Path, "read_bytes", return_value=b"--state-dir=/var/lib/argus/personal-sandbox/rootlesskit"),
+            mock.patch.object(module.os, "readlink", return_value="net:[1]"),
+        ):
+            with self.assertRaisesRegex(module.FirewallOperationError, "host network namespace"):
+                module.rootless_child_pid("personal-sandbox", runner)
+
     def test_configured_projects_uses_active_canonical_inventory(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

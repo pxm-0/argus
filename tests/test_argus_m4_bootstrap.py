@@ -32,6 +32,7 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertNotIn("flush ruleset", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
+        self.assertIn("ExecStartPre=/usr/bin/rm -rf -- $CELL_STORAGE/rootlesskit", script)
         self.assertIn('FIREWALL_UNIT="argus-${CELL_DOMAIN}-firewall.service"', script)
         self.assertIn("WantedBy=multi-user.target", script)
         self.assertIn('nsenter -t "\\$rootless_child_pid" -n nft -f', script)

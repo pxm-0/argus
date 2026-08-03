@@ -84,6 +84,13 @@ rendering, no wildcard bridge rule, successful own-project probes, denial of
 every directed cross-project probe, and full server smoke with zero failures
 and zero warnings.
 
+The generated rootless Docker unit removes only its explicit ephemeral
+`/var/lib/argus/<domain>/rootlesskit` state directory before each start. Docker
+data is outside that path. This prevents a detached namespace mount target left
+by an unclean shutdown from being reused as the host network namespace. The
+firewall verifier independently rejects a RootlessKit child whose network
+namespace equals PID 1's namespace.
+
 Repeat both verifiers three times for post-apply evidence. Before issue close,
 an operator-approved reboot must be followed by both verifiers and full smoke
 to prove persisted/live equality.

@@ -156,6 +156,13 @@ def rootless_child_pid(domain: str, runner: Runner) -> int:
     expected = f"--state-dir=/var/lib/argus/{domain}/rootlesskit".encode()
     if expected not in command_line:
         raise FirewallOperationError("sandbox RootlessKit namespace identity does not match")
+    try:
+        child_namespace = os.readlink(f"/proc/{parent}/ns/net")
+        host_namespace = os.readlink("/proc/1/ns/net")
+    except OSError as error:
+        raise FirewallOperationError("sandbox RootlessKit network namespace is unavailable") from error
+    if child_namespace == host_namespace:
+        raise FirewallOperationError("sandbox RootlessKit child is in the host network namespace")
     return int(parent)
 
 
