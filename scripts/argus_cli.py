@@ -125,6 +125,7 @@ def _error(
     authority: str = "none",
     retry_safe: bool = False,
     evidence_id: str = "",
+    data: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     error: dict[str, Any] = {
         "authority": authority,
@@ -135,12 +136,15 @@ def _error(
     }
     if evidence_id:
         error["evidenceId"] = evidence_id
-    return {
+    result = {
         "error": error,
         "exitCode": exit_code,
         "ok": False,
         "schemaVersion": 1,
     }
+    if data is not None:
+        result["data"] = data
+    return result
 
 
 def _success(command: str, **data: Any) -> dict[str, Any]:
@@ -383,12 +387,32 @@ def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
     return _success(
         "workload.move.preview",
         workloadId=workload_id,
+        migrationId=None,
+        phase="not-started",
         currentAuthority=workload.get("trustDomain") or "unknown",
+        eligibleTargets=[],
         eligible=False,
         blockers=["configured-source-coverage-incomplete", "migration-kernel-unavailable"],
         retrySafe=True,
+        statusCommand=f"argus workload move status {workload_id} --json",
+        recoveryCommand=f"argus workload move preview {workload_id} --json",
         nextAction="Run argus estate coverage and wait for the approved D5/M2 gates.",
     )
+
+
+def migration_context(action: str, workload_id: str, preview: dict[str, Any], *, retry_safe: bool) -> dict[str, Any]:
+    return {
+        "blockers": list(preview["data"]["blockers"]),
+        "command": f"workload.move.{action}",
+        "currentAuthority": preview["data"]["currentAuthority"],
+        "eligibleTargets": list(preview["data"]["eligibleTargets"]),
+        "migrationId": None,
+        "phase": "not-started",
+        "recoveryCommand": f"argus workload move preview {workload_id} --json",
+        "retrySafe": retry_safe,
+        "statusCommand": f"argus workload move status {workload_id} --json",
+        "workloadId": workload_id,
+    }
 
 
 def move_command(repo: Path, action: str, workload_id: str, confirmation: str = "") -> dict[str, Any]:
@@ -398,14 +422,7 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
     if action == "preview":
         return preview
     if action == "status":
-        return _success(
-            "workload.move.status",
-            workloadId=workload_id,
-            phase="not-started",
-            currentAuthority=preview["data"]["currentAuthority"],
-            retrySafe=True,
-            blockers=preview["data"]["blockers"],
-        )
+        return {"data": migration_context(action, workload_id, preview, retry_safe=True), "ok": True, "schemaVersion": 1}
     if action == "preflight":
         return _error(
             "workload-move-preflight-blocked",
@@ -414,6 +431,7 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
             exit_code=EXIT_REFUSAL,
             authority=str(preview["data"]["currentAuthority"]),
             retry_safe=True,
+            data=migration_context(action, workload_id, preview, retry_safe=True),
         )
     if confirmation != workload_id:
         return _error(
@@ -422,6 +440,7 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
             f"Review the preview, then pass --confirm {workload_id} only when an approved kernel is available.",
             exit_code=EXIT_REFUSAL,
             authority=str(preview["data"]["currentAuthority"]),
+            data=migration_context(action, workload_id, preview, retry_safe=False),
         )
     return _error(
         "workload-move-kernel-unavailable",
@@ -430,6 +449,7 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
         exit_code=EXIT_UNAVAILABLE,
         authority=str(preview["data"]["currentAuthority"]),
         retry_safe=False,
+        data=migration_context(action, workload_id, preview, retry_safe=False),
     )
 
 
@@ -805,6 +825,14 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
         error = result["error"]
         print(f"ERROR {error['code']}: {error['message']}", file=stderr)
         print(f"AUTHORITY {error['authority']} RETRY_SAFE {str(error['retrySafe']).lower()}", file=stderr)
+        data = result.get("data")
+        if isinstance(data, dict) and str(data.get("command", "")).startswith("workload.move."):
+            print(
+                f"MIGRATION_ID {data.get('migrationId') or 'none'} PHASE {data.get('phase', 'unknown')}",
+                file=stderr,
+            )
+            print(f"STATUS {data.get('statusCommand', 'unavailable')}", file=stderr)
+            print(f"RECOVERY {data.get('recoveryCommand', 'unavailable')}", file=stderr)
         print(f"NEXT {error['nextAction']}", file=stderr)
         return
     data = result["data"]
@@ -845,12 +873,14 @@ def run(
     json_output = args.json or getattr(args, "command_json", False)
     try:
         result, deprecation = dispatch(args, repo, command_runner)
-    except Exception:
+    except Exception as exc:
+        evidence_id = "sha256:" + hashlib.sha256(type(exc).__name__.encode("utf-8")).hexdigest()
         result = _error(
             "internal-error",
             "The command failed without a safe typed result.",
             "Run argus doctor --json and report the command plus repository revision; do not include private payloads.",
             exit_code=EXIT_INTERNAL,
+            evidence_id=evidence_id,
         )
         deprecation = ""
     if json_output:

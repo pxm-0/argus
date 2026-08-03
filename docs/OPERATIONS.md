@@ -79,10 +79,12 @@ argus workload show nodens --json
 `server-mutation` — `argus workload move rollback <id>`
 
 Preview and status always name current authority, phase, blockers, and retry
-safety. The current CLI refuses preflight and mutation because fresh configured-
-source coverage and the approved parent/child migration kernel do not exist yet.
-After those gates land, apply/rollback will additionally require an exact
-`--confirm <id>` at the final reviewed boundary.
+safety, plus the migration ID (or explicit `null` before creation), derived
+eligible-target list, and exact status/recovery commands. The current CLI
+returns no eligible targets and refuses preflight and mutation because fresh
+configured-source coverage and the approved parent/child migration kernel do
+not exist yet. After those gates land, apply/rollback will additionally require
+an exact `--confirm <id>` at the final reviewed boundary.
 
 ```bash
 argus workload move preview nodens --json

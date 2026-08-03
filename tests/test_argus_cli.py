@@ -314,25 +314,45 @@ class StableCliContractTests(unittest.TestCase):
     def test_move_preview_status_refusal_and_unavailable_are_distinct(self) -> None:
         code, output, _ = self.invoke(["workload", "move", "preview", "demo", "--json"])
         self.assertEqual(0, code)
-        self.assertFalse(json.loads(output)["data"]["eligible"])
+        preview = json.loads(output)["data"]
+        self.assertFalse(preview["eligible"])
+        self.assertEqual([], preview["eligibleTargets"])
+        self.assertIsNone(preview["migrationId"])
+        self.assertEqual("not-started", preview["phase"])
+        self.assertEqual("personal-sandbox", preview["currentAuthority"])
+        self.assertTrue(preview["retrySafe"])
+        self.assertEqual("argus workload move status demo --json", preview["statusCommand"])
+        self.assertEqual("argus workload move preview demo --json", preview["recoveryCommand"])
 
         code, output, _ = self.invoke(["workload", "move", "preflight", "demo", "--json"])
         self.assertEqual(3, code)
-        self.assertEqual("workload-move-preflight-blocked", json.loads(output)["error"]["code"])
+        preflight = json.loads(output)
+        self.assertEqual("workload-move-preflight-blocked", preflight["error"]["code"])
+        self.assertEqual("workload.move.preflight", preflight["data"]["command"])
+        self.assertTrue(preflight["data"]["retrySafe"])
 
         code, output, _ = self.invoke(["workload", "move", "apply", "demo", "--json"])
         self.assertEqual(3, code)
-        self.assertEqual("workload-move-confirmation-required", json.loads(output)["error"]["code"])
+        unconfirmed = json.loads(output)
+        self.assertEqual("workload-move-confirmation-required", unconfirmed["error"]["code"])
+        self.assertEqual("not-started", unconfirmed["data"]["phase"])
+        self.assertFalse(unconfirmed["data"]["retrySafe"])
 
         code, output, _ = self.invoke(
             ["workload", "move", "apply", "demo", "--confirm", "demo", "--json"]
         )
         self.assertEqual(4, code)
-        self.assertEqual("workload-move-kernel-unavailable", json.loads(output)["error"]["code"])
+        unavailable = json.loads(output)
+        self.assertEqual("workload-move-kernel-unavailable", unavailable["error"]["code"])
+        self.assertIsNone(unavailable["data"]["migrationId"])
+        self.assertEqual("personal-sandbox", unavailable["data"]["currentAuthority"])
 
         code, output, _ = self.invoke(["workload", "move", "status", "demo", "--json"])
         self.assertEqual(0, code)
-        self.assertEqual("not-started", json.loads(output)["data"]["phase"])
+        status = json.loads(output)["data"]
+        self.assertEqual("not-started", status["phase"])
+        self.assertEqual("workload.move.status", status["command"])
+        self.assertEqual("argus workload move preview demo --json", status["recoveryCommand"])
 
     def test_operation_show_is_read_only_and_recovery_is_typed(self) -> None:
         ledger = self.root / "operations.sqlite3"
@@ -424,11 +444,32 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(5, code)
         self.assertEqual("repository-check-interrupted", json.loads(output)["error"]["code"])
 
+        def crashes(_command, _repo):
+            raise RuntimeError("private-looking internal detail")
+
+        code, output, error = self.invoke(["check", "--json"], runner=crashes)
+        self.assertEqual(1, code)
+        payload = json.loads(output)
+        self.assertEqual("internal-error", payload["error"]["code"])
+        self.assertRegex(payload["error"]["evidenceId"], r"^sha256:[0-9a-f]{64}$")
+        self.assertNotIn("private-looking", output)
+        self.assertEqual("", error)
+
     def test_human_failure_is_stderr_only_and_actionable(self) -> None:
         code, output, error = self.invoke(["estate", "refresh"])
         self.assertEqual(3, code)
         self.assertEqual("", output)
         for marker in ("ERROR estate-refresh-contract-incomplete", "AUTHORITY", "RETRY_SAFE", "NEXT"):
+            self.assertIn(marker, error)
+
+        code, output, error = self.invoke(["workload", "move", "preflight", "demo"])
+        self.assertEqual(3, code)
+        self.assertEqual("", output)
+        for marker in (
+            "MIGRATION_ID none PHASE not-started",
+            "STATUS argus workload move status demo --json",
+            "RECOVERY argus workload move preview demo --json",
+        ):
             self.assertIn(marker, error)
 
     def test_compatibility_aliases_emit_exact_replacements(self) -> None:
@@ -447,11 +488,9 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(contract["executableLinks"], APPROVED_OPERATOR_LINKS)
         self.assertEqual({"argus": "argus"}, contract["executableLinks"])
         for item in contract["commands"]:
-            self.assertIn(item["command"], operations)
-            self.assertIn(item["privilege"], operations)
+            self.assertIn(f"`{item['privilege']}` — `{item['command']}`", operations)
         for legacy, replacement in contract["compatibility"].items():
-            self.assertIn(legacy, operations)
-            self.assertIn(replacement, operations)
+            self.assertIn(f"`{legacy}` → `{replacement}`", operations)
 
     def test_every_public_leaf_help_has_complete_contract(self) -> None:
         commands = (
