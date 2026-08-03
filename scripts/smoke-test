@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import tarfile
 import tempfile
@@ -173,8 +174,12 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             '{"schemaVersion":1,"operators":[{"tailnetLogin":"smoke@example.invalid","role":"owner","enabled":true}]}'
         )
         proxy_token_file.write_text(proxy_token)
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe_socket:
+            probe_socket.bind(("127.0.0.1", 0))
+            api_port = int(probe_socket.getsockname()[1])
+        base_url = f"http://127.0.0.1:{api_port}"
         env = os.environ.copy()
-        env["ARGUS_API_PORT"] = "18104"
+        env["ARGUS_API_PORT"] = str(api_port)
         env["ARGUS_TOKEN_FILE"] = str(token_file)
         env["ARGUS_OPERATORS_FILE"] = str(identity_file)
         env["ARGUS_PROXY_TOKEN_FILE"] = str(proxy_token_file)
@@ -194,7 +199,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             last_probe = "not-attempted"
             while time.time() < deadline:
                 try:
-                    status, _, _ = request_json("http://127.0.0.1:18104/api/session")
+                    status, _, _ = request_json(f"{base_url}/api/session")
                 except OSError as exc:
                     reason = getattr(exc, "reason", None)
                     reason_name = reason.__class__.__name__ if reason is not None else "none"
@@ -212,7 +217,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                     f"control API action endpoints available ({detail}; probe-{last_probe})"
                 )
                 return
-            endpoint = "http://127.0.0.1:18104/api/session/exchange"
+            endpoint = f"{base_url}/api/session/exchange"
             request = urllib.request.Request(
                 endpoint,
                 data=json.dumps({"bootstrapToken": token}).encode(),
@@ -246,14 +251,14 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(spoofed_status == 401, "direct identity headers require trusted proxy marker")
             unauth_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={"Origin": operator_origin},
             )
             smoke.check(unauth_status == 401, "operation endpoints require both identities")
             csrf_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST", payload={"operationType": "backup.create", "parameters": {}},
                 headers={
                     "Cookie": cookie,
@@ -264,7 +269,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(csrf_status == 403, "state-changing requests reject missing CSRF")
             mismatch_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
@@ -277,7 +282,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(mismatch_status == 403, "CSRF cookie and header must match")
             origin_status, _, _ = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
@@ -290,7 +295,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
             )
             smoke.check(origin_status == 403, "cross-origin mutations are denied")
             status, preview, text = request_json(
-                "http://127.0.0.1:18104/api/workloads/hello-nginx/operations/preview",
+                f"{base_url}/api/workloads/hello-nginx/operations/preview",
                 method="POST",
                 payload={"operationType": "backup.create", "parameters": {}},
                 headers={
