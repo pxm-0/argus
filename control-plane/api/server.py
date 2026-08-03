@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import faulthandler
 import grp
 import json
 import os
@@ -842,6 +843,9 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    diagnostic_delay = os.environ.get("ARGUS_DIAGNOSTIC_TRACEBACK_SECONDS", "")
+    if diagnostic_delay:
+        faulthandler.dump_traceback_later(float(diagnostic_delay), repeat=False)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Argus control API listening on {HOST}:{PORT}")
     server.serve_forever()
