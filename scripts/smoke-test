@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import shutil
@@ -12,6 +13,7 @@ import tarfile
 import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any
@@ -138,26 +140,29 @@ def request_json(
     url: str, *, method: str = "GET", token: str = "",
     payload: dict[str, Any] | None = None, headers: dict[str, str] | None = None,
 ) -> tuple[int, dict[str, Any], str]:
-    body = json.dumps(payload or {}).encode()
-    request = urllib.request.Request(url, data=body if method != "GET" else None, method=method)
+    body = json.dumps(payload or {}).encode() if method != "GET" else None
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != "http" or parsed.hostname != "127.0.0.1" or parsed.port is None:
+        raise ValueError("smoke JSON requests require an explicit loopback HTTP port")
+    request_headers: dict[str, str] = {}
     if method != "GET":
-        request.add_header("Content-Type", "application/json")
+        request_headers["Content-Type"] = "application/json"
     if token:
-        request.add_header("Authorization", f"Bearer {token}")
+        request_headers["Authorization"] = f"Bearer {token}"
     for key, value in (headers or {}).items():
-        request.add_header(key, value)
-    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        request_headers[key] = value
+    connection = http.client.HTTPConnection(parsed.hostname, parsed.port, timeout=4)
     try:
-        with opener.open(request, timeout=4) as response:
-            text = response.read().decode()
-            return response.status, json.loads(text), text
-    except urllib.error.HTTPError as exc:
-        text = exc.read().decode()
+        connection.request(method, parsed.path, body=body, headers=request_headers)
+        response = connection.getresponse()
+        text = response.read().decode()
         try:
-            data = json.loads(text)
+            data = json.loads(text) if text else {}
         except json.JSONDecodeError:
             data = {}
-        return exc.code, data, text
+        return response.status, data, text
+    finally:
+        connection.close()
 
 
 def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
