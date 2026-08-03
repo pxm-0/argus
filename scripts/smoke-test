@@ -228,7 +228,7 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 diagnostic_lines, _ = sanitize_log_text(
                     diagnostic.read(),
                     max_lines=30,
-                    max_chars=3000,
+                    max_bytes=3000,
                 )
                 for line in diagnostic_lines:
                     smoke.warn(f"control API diagnostic: {line}")
