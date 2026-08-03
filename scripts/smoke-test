@@ -191,19 +191,24 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
         try:
             deadline = time.time() + 5
             ready = False
+            last_probe = "not-attempted"
             while time.time() < deadline:
                 try:
                     status, _, _ = request_json("http://127.0.0.1:18104/api/dashboard-state")
-                except OSError:
+                except OSError as exc:
+                    last_probe = exc.__class__.__name__
                     time.sleep(0.2)
                     continue
+                last_probe = f"http-{status}"
                 ready = status == 200
                 if ready:
                     break
             if not ready:
                 exit_code = process.poll()
                 detail = "still-running" if exit_code is None else f"exit-{exit_code}"
-                smoke.fail(f"control API action endpoints available ({detail})")
+                smoke.fail(
+                    f"control API action endpoints available ({detail}; probe-{last_probe})"
+                )
                 return
             endpoint = "http://127.0.0.1:18104/api/session/exchange"
             request = urllib.request.Request(
