@@ -196,7 +196,9 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                 try:
                     status, _, _ = request_json("http://127.0.0.1:18104/api/dashboard-state")
                 except OSError as exc:
-                    last_probe = exc.__class__.__name__
+                    reason = getattr(exc, "reason", None)
+                    reason_name = reason.__class__.__name__ if reason is not None else "none"
+                    last_probe = f"{exc.__class__.__name__}-{reason_name}"
                     time.sleep(0.2)
                     continue
                 last_probe = f"http-{status}"
