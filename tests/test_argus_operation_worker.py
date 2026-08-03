@@ -99,6 +99,10 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertTrue(ready.wait(2))
         return thread, received
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "requires Linux Unix-socket path, mode, and identity semantics",
+    )
     def test_worker_claims_and_dispatches_only_an_operation_id(self) -> None:
         operation = self.create_health()
         thread, received = self.fake_agent({"accepted": True, "ok": True})
@@ -151,6 +155,10 @@ class OperationWorkerTests(unittest.TestCase):
             self.ledger.get(str(operation["operation_id"]))["state"],
         )
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "requires Linux Unix-socket path, mode, and identity semantics",
+    )
     def test_unconfirmed_dispatch_becomes_indeterminate_without_retry(self) -> None:
         operation = self.create_health()
         thread, received = self.fake_agent({"accepted": False, "ok": False})
@@ -171,6 +179,10 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertEqual("agent-dispatch-unconfirmed", persisted["error_class"])
         self.assertEqual((0, 0, 0), worker.run_once())
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "requires Linux Unix-socket path, mode, and identity semantics",
+    )
     def test_agent_acknowledges_then_persists_outcome_asynchronously(self) -> None:
         operation = self.create_health("agent-integration")
         socket_path = self.socket_dir / "personal-sandbox" / "agent.sock"

@@ -3,6 +3,7 @@ import importlib.util
 import os
 from pathlib import Path
 import signal
+import sys
 import tarfile
 import tempfile
 import time
@@ -347,6 +348,10 @@ class WorkloadStageTests(unittest.TestCase):
         self.assertIn("docker\", \"export\", source_container", script)
         self.assertIn("--acknowledge-m5-workload-stage-rollback", script)
 
+    @unittest.skipUnless(
+        sys.platform.startswith("linux"),
+        "requires Linux fork and pthread signal semantics",
+    )
     def test_parent_only_signal_interrupts_archive_child(self) -> None:
         pid = os.fork()
         if pid == 0:

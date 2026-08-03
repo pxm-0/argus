@@ -1,0 +1,149 @@
+{
+  "schemaVersion": 1,
+  "policyVersion": "argus-core-boundary-v1",
+  "auditVersion": "argus-core-boundary-audit-v1",
+  "supportedRuntime": {
+    "operatingSystems": [
+      "linux",
+      "darwin"
+    ],
+    "pythonVersions": [
+      "3.14"
+    ]
+  },
+  "corePaths": [
+    "control-plane",
+    "scripts"
+  ],
+  "dependencyPolicy": {
+    "mode": "python-standard-library-only",
+    "allowedThirdPartyImports": [],
+    "expectedSbomDigest": "sha256:ed2aced53434dd537b53d3a6542bc1adc6a728495c470f3ecd9885b4a010b693"
+  },
+  "dynamicLoadPolicy": {
+    "default": "deny",
+    "allowedPaths": [
+      "scripts/argus-m5-egress-verify",
+      "scripts/argus-m5-workload-cutover",
+      "scripts/argus_common.py",
+      "scripts/argus_sandbox_firewall.py"
+    ]
+  },
+  "modelPolicy": {
+    "mode": "absent",
+    "forbiddenImports": [
+      "anthropic",
+      "google.generativeai",
+      "langchain",
+      "llama_cpp",
+      "ollama",
+      "openai",
+      "tensorflow",
+      "torch",
+      "transformers"
+    ],
+    "forbiddenTextMarkers": [
+      "anthropic",
+      "api.anthropic.com",
+      "api.openai.com",
+      "generativelanguage.googleapis.com",
+      "langchain",
+      "localhost:11434",
+      "model_sdk_client",
+      "ollama",
+      "openai"
+    ]
+  },
+  "futureCompanionPolicy": {
+    "authorizedInCore": false,
+    "inputAuthority": "sanitized-read-only-snapshots",
+    "mutationCapability": false,
+    "networkRouteFromCore": false,
+    "sharedWritableState": false
+  },
+  "networkPolicy": {
+    "default": "deny-undeclared-importer",
+    "expectedEndpointDigest": "sha256:b45ed479ac786d673f834850a8b7705dfc9f92124fc13a84487189acb30b4046",
+    "declaredEntrypoints": [
+      {
+        "path": "control-plane/api/server.py",
+        "authority": "localhost-http-and-domain-unix-sockets"
+      },
+      {
+        "path": "control-plane/monitoring/collect_metrics.py",
+        "authority": "read-only-host-socket-observation"
+      },
+      {
+        "path": "scripts/argus-cloudflare-activate",
+        "authority": "explicit-disabled-by-default-provider-activation"
+      },
+      {
+        "path": "scripts/argus-control-plane-reconcile",
+        "authority": "configured-local-control-api"
+      },
+      {
+        "path": "scripts/argus-locigraph-production-cutover",
+        "authority": "explicit-local-workload-cutover-health-read"
+      },
+      {
+        "path": "scripts/argus-m4-hello-nginx-preflight",
+        "authority": "configured-workload-health-read"
+      },
+      {
+        "path": "scripts/argus-m5-workload-stage",
+        "authority": "explicit-migration-preflight-health-read"
+      },
+      {
+        "path": "scripts/argus-m5-capability-issuer",
+        "authority": "configured-local-control-api-readiness"
+      },
+      {
+        "path": "scripts/argus-m5-ledger-worker",
+        "authority": "configured-local-control-api-readiness"
+      },
+      {
+        "path": "scripts/argus-m5-session-boundary",
+        "authority": "configured-local-control-api-readiness"
+      },
+      {
+        "path": "scripts/argus_access_runtime.py",
+        "authority": "configured-local-control-api"
+      },
+      {
+        "path": "scripts/argus_capability_issuer.py",
+        "authority": "local-unix-socket-only"
+      },
+      {
+        "path": "scripts/argus_cli.py",
+        "authority": "configured-workload-health-read"
+      },
+      {
+        "path": "scripts/argus_common.py",
+        "authority": "configured-workload-health-read"
+      },
+      {
+        "path": "scripts/argus_domain_agent.py",
+        "authority": "domain-local-unix-socket-only"
+      },
+      {
+        "path": "scripts/argus_ipc.py",
+        "authority": "local-unix-socket-framing"
+      },
+      {
+        "path": "scripts/argus_legacy.py",
+        "authority": "read-only-host-socket-observation"
+      },
+      {
+        "path": "scripts/smoke-test",
+        "authority": "configured-health-and-local-api-read"
+      }
+    ]
+  },
+  "replayPolicy": {
+    "supportedTransformVersions": [
+      "canonical-json-v1"
+    ],
+    "bundleGlob": "tests/fixtures/replay/*.json",
+    "retention": "raw-local-sanitized-digests-only"
+  }
+}

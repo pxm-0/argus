@@ -219,6 +219,25 @@ def reconcile_check(checks: list[dict[str, Any]]) -> None:
     add(checks, result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean", failures=payload.get("failures"))
 
 
+def core_boundary_check(checks: list[dict[str, Any]]) -> None:
+    result = run([str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"])
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        add(checks, False, "deterministic core boundary audit available")
+        return
+    add(
+        checks,
+        result.returncode == 0 and payload.get("auditResult") == "pass",
+        "deterministic core boundary clean",
+        coreBoundaryPolicyVersion=payload.get("policyVersion"),
+        coreBoundaryAuditVersion=payload.get("auditVersion"),
+        coreBoundaryAuditResult=payload.get("auditResult"),
+        dependencySbomDigest=payload.get("sbomDigest"),
+        endpointNetworkPolicyDigest=payload.get("endpointDigest"),
+    )
+
+
 def audit() -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     config_valid(checks)
@@ -227,6 +246,7 @@ def audit() -> dict[str, Any]:
     exposure_checks(checks)
     cloudflare_ingress_checks(checks)
     reconcile_check(checks)
+    core_boundary_check(checks)
     failures = [check for check in checks if not check["ok"]]
     return {"ok": not failures, "failures": len(failures), "checks": checks}
 

@@ -1,0 +1,68 @@
+{
+  "schemaVersion": 1,
+  "transformVersion": "canonical-json-v1",
+  "argusRevision": "b5cd56d6dbe0e18db75c1eeb9a5bd44b6f8d316e",
+  "supportedRuntime": {
+    "operatingSystems": [
+      "linux",
+      "darwin"
+    ],
+    "pythonVersions": [
+      "3.14"
+    ]
+  },
+  "explicitClock": "2026-08-04T00:00:00Z",
+  "inputs": {
+    "canonical": {
+      "workloadId": "café",
+      "observedState": "running",
+      "nativeId": "container/demo"
+    },
+    "config": {
+      "permittedActions": [
+        "health.refresh",
+        "logs.preview",
+        "health.refresh"
+      ],
+      "policyVersion": "1"
+    },
+    "sourcePages": [
+      {
+        "sourceId": "rootless-docker",
+        "records": [
+          {
+            "nativeId": "b",
+            "state": "stopped"
+          }
+        ]
+      },
+      {
+        "sourceId": "rootful-docker",
+        "records": [
+          {
+            "nativeId": "a",
+            "state": "running"
+          }
+        ]
+      }
+    ]
+  },
+  "result": {
+    "reason": "configured-source-observation-complete"
+  },
+  "inputDigests": {
+    "canonical": "sha256:9855c6204aa3e5e54a20875a7c394efd70aedf758be332d0e6d161b54cfea387",
+    "config": "sha256:1be603649e8b6f63b6776cc452398824f4ebe4eb3c7dd71df70f3b67b60aa23c",
+    "sourcePages": [
+      "sha256:96b7cc9b128da29655c120cf94de13fba58e48865969af8dce3ead2aa91ed069",
+      "sha256:f5163238d188fa7d7d88065904b96feb9524220b254fb2b11a50d9d96ec9dca1"
+    ]
+  },
+  "expected": {
+    "canonicalOutputDigest": "sha256:ad1c7ecbd1fc08c240cfb3f4349bcdd37d6377b41aa8812a40b4e0f0653421ba",
+    "reasonDigest": "sha256:88386fb2b86a2360c100dde21272e92850be393f7ad7536dfceecabd94887a96",
+    "permittedActionDigest": "sha256:98b124e23279bb58fcc3aaa6a08d2067d612e4410c7d953c36a2c8c00e714a2d",
+    "previewDigest": "sha256:51eadcfc1569645db940d5c75e9e114a86b509e1036a1f19da5e7c92419b0f81"
+  },
+  "evidenceId": "sha256:7aaa8746c3a0d454146e31412cee5850b7b8687c682b0a1c1bd197ec9e898c20"
+}
