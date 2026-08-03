@@ -632,17 +632,13 @@ PY
 install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 \
   "$CELL_HOME" "$CELL_STORAGE" "$CELL_HOME/.config" "$USER_UNIT_DIR"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
-tee "$NFT_FILE" >/dev/null <<EOF
-destroy table inet $NFT_TABLE
-table inet $NFT_TABLE {
-  chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
-  chain forward {
-    type filter hook forward priority filter; policy drop;
-    iifname "br-*" oifname "br-*" accept;
-  }
-  chain output { type filter hook output priority filter; policy drop; oifname "lo" accept; }
-}
-EOF
+PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" >"$NFT_FILE" <<'PY'
+import sys
+
+from argus_firewall import render_firewall
+
+print(render_firewall(sys.argv[1], []), end="")
+PY
 tee "$HOST_GUARD_FILE" >/dev/null <<EOF
 destroy table inet $HOST_GUARD_TABLE
 table inet $HOST_GUARD_TABLE {

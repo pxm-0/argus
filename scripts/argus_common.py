@@ -22,6 +22,7 @@ from argus_m5_topology import build_topology
 APPROVED_OPERATOR_LINKS = {
     "argus": "argus",
     "argus-acceptance-summary": "argus-acceptance-summary",
+    "argus-sandbox-firewall": "argus-sandbox-firewall",
     "argus-legacy-inventory": "argus-legacy-inventory",
     "argus-m0-remediation-plan": "argus-m0-remediation-plan",
     "argus-m0-evidence": "argus-m0-evidence",
@@ -46,6 +47,7 @@ APPROVED_OPERATOR_LINKS = {
 OPERATION_SCRIPTS = [
     "argus",
     "argus-acceptance-summary",
+    "argus-sandbox-firewall",
     "argus-legacy-inventory",
     "argus-m0-remediation-plan",
     "argus-m0-evidence",

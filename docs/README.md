@@ -11,6 +11,7 @@ or branch in them is not current guidance unless a current document repeats it.
 - [`DASHBOARD_RUNTIME.md`](DASHBOARD_RUNTIME.md) — generated assets and runtime-state boundaries.
 - [`TAILSCALE_ACCESS_STANDARD.md`](TAILSCALE_ACCESS_STANDARD.md) — private tailnet route safety contract.
 - [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md) — current backup and restore entry point.
+- [`RUNBOOKS/sandbox-firewall-remediation.md`](RUNBOOKS/sandbox-firewall-remediation.md) — exact sandbox network policy plan/apply/verify/rollback.
 
 ## Contributor
 

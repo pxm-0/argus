@@ -6,6 +6,13 @@
 private first, public never by accident
 ```
 
+Sandbox forwarding is rendered from configured Compose identity plus a fresh,
+digest-bound runtime mapping. Exact same-project interfaces are allowed and
+cross-project forwarding defaults to deny. Reviewed exceptions live in
+`config/sandbox-connectivity.json` and are L3/L4 scoped. See
+`docs/RUNBOOKS/sandbox-firewall-remediation.md` for the server-only
+plan/apply/verify/rollback procedure.
+
 ## Hard Blocks in P0
 
 P0 must not expose:

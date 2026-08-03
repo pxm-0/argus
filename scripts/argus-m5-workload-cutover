@@ -18,6 +18,15 @@ import stat
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from argus_firewall import FirewallPolicyError, render_firewall
+from argus_sandbox_firewall import Runner as FirewallRunner
+from argus_sandbox_firewall import FirewallOperationError, active_connectivity, discover_runtime
 
 
 ROOT = Path("/srv/argus")
@@ -75,6 +84,7 @@ SPECS = {
             "resolver": "10.0.2.3",
             "allow": (("tcp", 443),),
             "reason": "threads.net crawl for the archive",
+            "probe_host": "threads.net",
         },
         # Sealed replacement for the excluded /home/oreo/hastur/auth bind.
         "credentials": {"hastur": "/app/auth"},
@@ -571,12 +581,20 @@ def validated_egress(workload: str, spec: dict) -> dict | None:
         )
     if not policy.get("reason"):
         raise CutoverError(f"egress policy for {workload} needs a reason")
+    probe_host = str(policy.get("probe_host") or "")
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?", probe_host):
+        raise CutoverError(f"egress policy for {workload} needs a valid probe host")
     for protocol, port in allow:
         if protocol not in EGRESS_PROTOCOLS or not 0 < int(port) < 65536:
             raise CutoverError(
                 f"egress policy for {workload} has an invalid allowance: {protocol}/{port}"
             )
-    return {"resolver": resolver, "allow": allow, "reason": str(policy["reason"])}
+    return {
+        "resolver": resolver,
+        "allow": allow,
+        "reason": str(policy["reason"]),
+        "probeHost": probe_host,
+    }
 
 
 def domain_egress(domain: str) -> dict[str, dict]:
@@ -589,62 +607,44 @@ def domain_egress(domain: str) -> dict[str, dict]:
     }
 
 
-def firewall_text(domain: str, policies: dict[str, dict] | None = None) -> str:
-    table = domain.replace("-", "_")
-    policies = policies or {}
-    forward = ['    iifname "br-*" oifname "br-*" accept;\n']
-    for workload in sorted(policies):
-        policy = policies[workload]
-        bridge = egress_bridge(workload)
-        forward.append(
-            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-            f"ip daddr {policy['resolver']} udp dport 53 "
-            "ct state new,established accept;\n"
-        )
-        forward.append(
-            f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-            f"ip daddr {policy['resolver']} tcp dport 53 "
-            "ct state new,established accept;\n"
-        )
-        for protocol, port in policy["allow"]:
-            forward.append(
-                f'    iifname "{bridge}" oifname "{UPLINK_INTERFACE}" '
-                f"{protocol} dport {int(port)} "
-                "ct state new,established accept;\n"
-            )
-        forward.append(
-            f'    iifname "{UPLINK_INTERFACE}" oifname "{bridge}" '
-            "ct state established,related accept;\n"
-        )
-    nat = ""
-    if policies:
-        masquerade = "".join(
-            f'    iifname "{egress_bridge(workload)}" '
-            f'oifname "{UPLINK_INTERFACE}" masquerade;\n'
-            for workload in sorted(policies)
-        )
-        nat = (
-            f"destroy table inet argus_{table}_nat\n"
-            f"table inet argus_{table}_nat {{\n"
-            "  chain postrouting {\n"
-            "    type nat hook postrouting priority srcnat; policy accept;\n"
-            f"{masquerade}"
-            "  }\n"
-            "}\n"
-        )
-    return (
-        f"destroy table inet argus_{table}\n"
-        f"table inet argus_{table} {{\n"
-        "  chain input { type filter hook input priority filter; policy drop; "
-        'iifname "lo" accept; }\n'
-        "  chain forward {\n"
-        "    type filter hook forward priority filter; policy drop;\n"
-        f"{''.join(forward)}"
-        "  }\n"
-        "  chain output { type filter hook output priority filter; policy drop; "
-        'oifname "lo" accept; }\n'
-        "}\n"
-    ) + nat
+def renderer_egress(policies: dict[str, dict]) -> dict[str, dict]:
+    return {
+        workload: {"project": str(SPECS[workload]["project"]), **policy}
+        for workload, policy in policies.items()
+    }
+
+
+def firewall_text(
+    domain: str,
+    policies: dict[str, dict] | None = None,
+    networks: list[dict] | None = None,
+    connectivity: list[dict] | None = None,
+    endpoints: list[dict] | None = None,
+) -> str:
+    """Compatibility adapter around the shared pure firewall renderer."""
+    return render_firewall(
+        domain,
+        networks or [],
+        egress=renderer_egress(policies or {}),
+        connectivity=connectivity or [],
+        endpoints=endpoints or [],
+        uplink=UPLINK_INTERFACE,
+    )
+
+
+def resolved_firewall_policy(domain: str) -> tuple[str, str, list[dict]]:
+    runner = FirewallRunner()
+    observed = discover_runtime(ROOT, domain, runner)
+    projects = set(observed["configuredProjects"].values())
+    connectivity = active_connectivity(ROOT, projects, datetime.now(timezone.utc))
+    rendered = firewall_text(
+        domain,
+        domain_egress(domain),
+        observed["networks"],
+        connectivity,
+        observed["endpoints"],
+    )
+    return rendered, str(observed["childPid"]), observed["networks"]
 
 
 def rendered_firewall_rules(config: Path, table: str) -> str:
@@ -672,9 +672,9 @@ def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
     shutil.copy2(destination, backup)
     os.chmod(backup, 0o600)
     candidate = state_dir / f"argus-{domain}.nft.candidate"
-    candidate.write_text(firewall_text(domain, domain_egress(domain)))
+    rendered, child, networks = resolved_firewall_policy(domain)
+    candidate.write_text(rendered)
     os.chmod(candidate, 0o600)
-    child = rootless_child_pid(spec)
     list_command = [
         "nsenter",
         "-t",
@@ -701,8 +701,12 @@ def install_internal_firewall(spec: dict, state_dir: Path) -> Path:
         os.chmod(destination, 0o644)
         run(["nsenter", "-t", child, "-n", "nft", "-f", str(destination)])
         rules = text(list_command)
-        if 'iifname "br-*"' not in rules or 'oifname "br-*"' not in rules:
-            raise CutoverError("sandbox east-west firewall rule is not effective")
+        if 'iifname "br-*"' in rules or 'oifname "br-*"' in rules:
+            raise CutoverError("sandbox wildcard east-west rule remains effective")
+        for network in networks:
+            interface = str(network["interface"])
+            if f'iifname "{interface}" oifname "{interface}"' not in rules:
+                raise CutoverError("sandbox same-project firewall rule is not effective")
     except BaseException:
         shutil.copyfile(backup, destination)
         os.chown(destination, 0, 0)
@@ -2197,9 +2201,10 @@ def egress_policy_drift(spec: dict) -> bool:
     destination = Path(f"/etc/argus/argus-{domain}.nft")
     try:
         persisted = destination.read_text()
-    except FileNotFoundError:
+        expected, _child, _networks = resolved_firewall_policy(domain)
+    except (FileNotFoundError, FirewallPolicyError, FirewallOperationError):
         return True
-    return persisted != firewall_text(domain, domain_egress(domain))
+    return persisted != expected
 
 
 def apply_egress(workload: str) -> dict:

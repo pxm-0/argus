@@ -26,9 +26,10 @@ class M4BootstrapTest(unittest.TestCase):
     def test_bootstrap_never_deploys_a_workload_or_opens_a_route(self) -> None:
         script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text(encoding="utf-8")
         self.assertIn("--acknowledge-personal-sandbox-cell", script)
-        self.assertIn("policy drop", script)
+        self.assertIn("from argus_firewall import render_firewall", script)
+        self.assertIn("print(render_firewall(sys.argv[1], []), end=\"\")", script)
+        self.assertNotIn('iifname "br-*" oifname "br-*" accept', script)
         self.assertNotIn("flush ruleset", script)
-        self.assertIn("destroy table inet $NFT_TABLE", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns", script)
         self.assertIn("DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none", script)
         self.assertIn('FIREWALL_UNIT="argus-${CELL_DOMAIN}-firewall.service"', script)

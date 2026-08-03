@@ -29,8 +29,12 @@ class WorkloadCutoverTests(unittest.TestCase):
         self.assertEqual(8446, module.SPECS["intake-os"]["tail_port"])
 
     def test_firewall_allows_only_sandbox_bridge_forwarding(self) -> None:
-        rules = module.firewall_text("personal-sandbox")
-        self.assertIn('iifname "br-*" oifname "br-*" accept', rules)
+        networks = [
+            {"project": "nodens", "network": "default", "networkId": "a" * 64, "interface": "br-aaaaaaaaaaaa"}
+        ]
+        rules = module.firewall_text("personal-sandbox", networks=networks)
+        self.assertIn('iifname "br-aaaaaaaaaaaa" oifname "br-aaaaaaaaaaaa" accept', rules)
+        self.assertNotIn("br-*", rules)
         self.assertIn("chain input", rules)
         self.assertIn("chain output", rules)
         self.assertGreaterEqual(rules.count("policy drop"), 3)
@@ -349,12 +353,18 @@ class DeclaredEgressTest(unittest.TestCase):
         'iifname "lo" accept; }\n'
         "  chain forward {\n"
         "    type filter hook forward priority filter; policy drop;\n"
-        '    iifname "br-*" oifname "br-*" accept;\n'
         "  }\n"
         "  chain output { type filter hook output priority filter; policy drop; "
         'oifname "lo" accept; }\n'
         "}\n"
+        "destroy table inet argus_personal_sandbox_nat\n"
     )
+    NETWORKS = [
+        {"project": "hastur", "network": "default", "networkId": "a" * 64, "interface": "argus-hastur"},
+        {"project": "kadath-live", "network": "default", "networkId": "b" * 64, "interface": "br-bbbbbbbbbbbb"},
+        {"project": "locigraph", "network": "default", "networkId": "c" * 64, "interface": "br-cccccccccccc"},
+        {"project": "nodens", "network": "default", "networkId": "d" * 64, "interface": "br-dddddddddddd"},
+    ]
 
     def test_every_workload_declares_an_egress_policy(self) -> None:
         for workload, spec in module.SPECS.items():
@@ -375,10 +385,11 @@ class DeclaredEgressTest(unittest.TestCase):
         policy = module.validated_egress("hastur", module.SPECS["hastur"])
         self.assertEqual((("tcp", 443),), policy["allow"])
         self.assertEqual("10.0.2.3", policy["resolver"])
+        self.assertEqual("threads.net", policy["probeHost"])
 
     def test_granted_domain_still_seals_every_other_workload(self) -> None:
         rendered = module.firewall_text(
-            "personal-sandbox", module.domain_egress("personal-sandbox")
+            "personal-sandbox", module.domain_egress("personal-sandbox"), self.NETWORKS
         )
         for workload in ("kadath", "nodens", "locigraph"):
             self.assertNotIn(module.egress_bridge(workload), rendered)
@@ -400,9 +411,10 @@ class DeclaredEgressTest(unittest.TestCase):
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
                 "reason": "threads.net crawl",
+                "probeHost": "threads.net",
             }
         }
-        rendered = module.firewall_text("personal-sandbox", policies)
+        rendered = module.firewall_text("personal-sandbox", policies, self.NETWORKS)
         self.assertIn(
             'iifname "argus-hastur" oifname "tap0" tcp dport 443 '
             "ct state new,established accept;",
@@ -426,18 +438,18 @@ class DeclaredEgressTest(unittest.TestCase):
         self.assertNotIn("argus-nodens", rendered)
 
     def test_sealed_domains_render_no_nat_table(self) -> None:
-        self.assertNotIn(
-            "_nat",
-            module.firewall_text("work-sandbox", module.domain_egress("work-sandbox")),
-        )
+        rendered = module.firewall_text("work-sandbox", module.domain_egress("work-sandbox"))
+        self.assertIn("destroy table inet argus_work_sandbox_nat", rendered)
+        self.assertNotIn("table inet argus_work_sandbox_nat {", rendered)
 
     def test_incomplete_policies_are_refused(self) -> None:
         for policy in (
-            {"allow": (("tcp", 443),), "reason": "no resolver"},
-            {"resolver": "10.0.2.3", "reason": "no allowance"},
-            {"resolver": "10.0.2.3", "allow": (("tcp", 443),)},
-            {"resolver": "10.0.2.3", "allow": (("sctp", 443),), "reason": "bad proto"},
-            {"resolver": "10.0.2.3", "allow": (("tcp", 0),), "reason": "bad port"},
+            {"allow": (("tcp", 443),), "reason": "no resolver", "probe_host": "threads.net"},
+            {"resolver": "10.0.2.3", "reason": "no allowance", "probe_host": "threads.net"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 443),), "probe_host": "threads.net"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 443),), "reason": "missing probe host"},
+            {"resolver": "10.0.2.3", "allow": (("sctp", 443),), "reason": "bad proto", "probe_host": "threads.net"},
+            {"resolver": "10.0.2.3", "allow": (("tcp", 0),), "reason": "bad port", "probe_host": "threads.net"},
         ):
             with self.assertRaises(module.CutoverError):
                 module.validated_egress("hastur", {"egress": policy})
@@ -500,6 +512,7 @@ class RuntimeRefreshTest(unittest.TestCase):
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
                 "reason": "threads.net crawl",
+                "probe_host": "threads.net",
             },
         }
 
