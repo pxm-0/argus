@@ -1,4 +1,8 @@
-# Acceptance Criteria and Smoke Tests
+# Historical Acceptance Criteria and Smoke Tests
+
+> Historical record. Use `docs/README.md` and the acceptance contract linked by
+> the current issue. Commands and addresses below are not current operator
+> guidance.
 
 ## P0 Definition of Done
 

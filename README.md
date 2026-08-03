@@ -17,6 +17,9 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 
 ## Document Map
 
+Start with [`docs/README.md`](docs/README.md), which separates current operator,
+contributor, and architecture guidance from the historical milestone record.
+
 | File | Purpose |
 |---|---|
 | `ARGUS_V1_BRIDGE.md` | Accepted bridge from Argus into the Argus V1 trust-domain and portfolio architecture |
@@ -26,7 +29,7 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 | `docs/ARCHITECTURE.md` | System architecture and trust boundaries |
 | `docs/IMPLEMENTATION_PLAN.md` | Step-by-step build plan |
 | `docs/CONFIG_MODEL.md` | Workload/access/privacy/policy schema model |
-| `docs/DASHBOARD_AND_API.md` | Dashboard behavior and local control API spec |
+| `docs/DASHBOARD_AND_API.md` | Historical P0 dashboard and local control API spec |
 | `docs/MONITORING.md` | btop-style metrics collector and UI spec |
 | `docs/MIGRATION.md` | Safe workload move plan |
 | `docs/CLOUDFLARE.md` | Cloudflare provisioning model, disabled by default |
@@ -43,10 +46,10 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 
 ## P0 North Star
 
-From a phone on Tailscale, open:
+From a Tailscale-connected device, discover the reviewed private dashboard URL:
 
-```text
-http://oreochiserver:8088
+```bash
+argus dashboard url
 ```
 
 See all workloads, health, routes, privacy state, desired access state, effective access state, and a toggleable monitor panel.

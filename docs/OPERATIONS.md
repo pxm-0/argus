@@ -4,53 +4,66 @@
 
 From a Tailscale-connected device:
 
-```text
-http://oreochiserver:8088
+```bash
+argus dashboard url
 ```
 
-Fallback:
+From a repository checkout before operator links are installed:
+
+```bash
+scripts/argus dashboard url
+```
+
+This prints the reviewed configured private HTTPS route from
+`config/routes.json`. It does not claim fresh runtime evidence. Before a server
+mutation, inspect `tailscale serve status --json` and Funnel status on
+`oreochiserver`; do not guess a host port or enable Funnel.
+
+Human output labels both facts explicitly:
 
 ```text
-http://<tailscale-ip>:8088
+CONFIGURED_URL https://oreochiserver.<tailnet>.ts.net:8448
+EFFECTIVE_STATE unverified
 ```
+
+Until PR 6B moves each legacy command behind the dispatcher, commands that are
+not in the approved operator-link set are shown with their repository-relative
+`scripts/` path. Do not assume an undocumented bare command is installed.
 
 ## List Workloads
 
 ```bash
-argus-workloads
+scripts/argus-workloads
 ```
 
 ## Open a Workload
 
 ```bash
-argus-open intake-os
+scripts/argus-open intake-os --mode tailnet
 ```
 
 Expected output:
 
 ```text
-Intake OS
-Desired: tailnet
-Effective: tailnet
-URL: http://oreochiserver:8080
+https://oreochiserver.<tailnet>.ts.net:8446
 ```
 
 ## Check Health
 
 ```bash
-argus-health
+scripts/argus-health
 ```
 
 ## Run Inventory
 
 ```bash
-argus-inventory
+scripts/argus-inventory
 ```
 
 ## Run Doctor
 
 ```bash
-argus-doctor
+scripts/argus-doctor
 ```
 
 ## Run Smoke Test
@@ -118,7 +131,7 @@ Only approved backup destinations under
 Run collector once:
 
 ```bash
-argus-monitor
+scripts/argus-monitor
 ```
 
 Install timer after testing:
@@ -185,7 +198,7 @@ For P0, Cloudflare-related states should generally update desired state and gene
 ## Set Privacy
 
 ```bash
-argus-privacy-set intake-os sensitive --reason "Operator classification"
+scripts/argus-privacy-set intake-os sensitive --reason "Operator classification"
 ```
 
 ## Cloudflare Plan
@@ -206,7 +219,7 @@ not tracked by Git.
 ## Git Checkpoint
 
 ```bash
-argus-git-checkpoint "Add dashboard monitoring"
+scripts/argus-git-checkpoint "Add dashboard monitoring"
 ```
 
 This should not push.
@@ -214,27 +227,28 @@ This should not push.
 ## Workload Migration Plan
 
 ```bash
-argus-migrate-workload-plan intake-os
+scripts/argus-migrate-workload-plan intake-os
 ```
 
 Review before doing any move.
 
-## Caddy Route
+## Dashboard Route Backend
 
 Generate the planned private route:
 
 ```bash
-argus-caddy-dashboard-plan
+scripts/argus-caddy-dashboard-plan
 ```
 
 The generated `caddy/dashboard.Caddyfile` is local review material and is not
-tracked by Git.
+tracked by Git. It keeps Caddy on loopback; Tailscale Serve owns the private
+HTTPS operator route.
 
-Dashboard route should look like:
+The backend safety properties must include:
 
 ```caddyfile
-http://oreochiserver:8088, http://100.x.y.z:8088 {
-    bind 100.x.y.z
+http://:8088 {
+    bind 127.0.0.1
     root * /srv/argus/control-plane/dashboard/public
     handle /api/* {
         reverse_proxy 127.0.0.1:8099
@@ -243,9 +257,10 @@ http://oreochiserver:8088, http://100.x.y.z:8088 {
 }
 ```
 
-Replace `100.x.y.z` with the actual Tailscale IP.
+Do not add a Tailscale IP, wildcard bind, or public listener to this backend.
+Use `argus dashboard url` for the operator route and confirm Funnel remains off.
 
-Install only after review:
+Install only after review and after backing up the current Caddy configuration:
 
 ```bash
 sudo cp /etc/caddy/Caddyfile "/etc/caddy/Caddyfile.backup.$(date +%Y%m%d-%H%M%S)"

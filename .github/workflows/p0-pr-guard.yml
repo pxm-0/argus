@@ -17,17 +17,21 @@ jobs:
     steps:
       - name: Validate P0 PR body
         env:
+          PR_BASE: ${{ github.base_ref }}
           PR_BODY: ${{ github.event.pull_request.body }}
         run: |
           python3 - <<'PY'
           import os
+          import re
           import sys
 
           body = os.environ.get("PR_BODY", "")
+          base = os.environ.get("PR_BASE", "")
           required = [
               "## P0 Scope",
               "## Verification",
               "## Safety Checklist",
+              "Acceptance summaries",
               "- [x] This PR is phase-scoped",
               "- [x] No secrets",
               "- [x] No Tailscale Funnel was enabled.",
@@ -43,6 +47,36 @@ jobs:
               for item in missing:
                   print(f"- {item}")
               sys.exit(1)
+
+          if base != "main":
+              print("P0 remediation PRs must target main.")
+              sys.exit(1)
+
+          evidence_choices = (
+              "- [x] Acceptance summary attached above.",
+              "- [x] Acceptance summary N/A (docs-only or no server evidence required); reason documented in Notes.",
+          )
+          selected_evidence = [choice for choice in evidence_choices if choice in body]
+          if len(selected_evidence) != 1:
+              print("P0 PR body must choose exactly one acceptance-summary disposition.")
+              sys.exit(1)
+          acceptance_section = body.split("Acceptance summaries", 1)[1].split("## Safety Checklist", 1)[0]
+          if selected_evidence[0] == evidence_choices[0]:
+              row = re.compile(
+                  r"^\| [a-z0-9]+(?:-[a-z0-9]+)* \| (?:baseline|pre|post|rollback) "
+                  r"\| (?:oreochiserver|local-ci|browser-private-origin) \| 3/3 "
+                  r"\| (?:pass|fail|blocked) \| `sha256:[0-9a-f]{64}` "
+                  r"\| `sha256:[0-9a-f]{64}` \|$",
+                  re.MULTILINE,
+              )
+              if not row.search(acceptance_section):
+                  print("Attached acceptance summary must contain one valid emitted Markdown row.")
+                  sys.exit(1)
+          if selected_evidence[0] == evidence_choices[1]:
+              notes = body.split("## Notes", 1)[1].strip() if "## Notes" in body else ""
+              if not notes or notes == "-":
+                  print("Acceptance-summary N/A requires a reason in Notes.")
+                  sys.exit(1)
 
           print("P0 PR contract ok")
           PY
