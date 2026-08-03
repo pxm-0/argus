@@ -72,6 +72,10 @@ from argus_sessions import (  # noqa: E402
 )
 
 
+DIAGNOSTIC_DELAY = os.environ.get("ARGUS_DIAGNOSTIC_TRACEBACK_SECONDS", "")
+if DIAGNOSTIC_DELAY:
+    faulthandler.dump_traceback_later(float(DIAGNOSTIC_DELAY), repeat=False)
+
 SESSIONS = SessionStore(SESSION_DB)
 LEDGER = OperationLedger(
     OPERATIONS_DB,
@@ -843,9 +847,6 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    diagnostic_delay = os.environ.get("ARGUS_DIAGNOSTIC_TRACEBACK_SECONDS", "")
-    if diagnostic_delay:
-        faulthandler.dump_traceback_later(float(diagnostic_delay), repeat=False)
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(f"Argus control API listening on {HOST}:{PORT}")
     server.serve_forever()
