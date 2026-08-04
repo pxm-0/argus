@@ -12,6 +12,8 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from m5_style import M5_CSS
+from dashboard_assets import write_assets
+from dashboard_prototypes import render_prototypes
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -25,38 +27,48 @@ def write(path: Path, content: str) -> None:
 
 def render_html() -> str:
     return f"""<!doctype html>
-<html lang="en">
+<html lang="en" class="no-js">
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Argus</title>
-    <link rel="icon" href="data:,">
-    <script>const requestedTheme = new URLSearchParams(location.search).get("theme"); document.documentElement.dataset.theme = ["light", "dark"].includes(requestedTheme) ? requestedTheme : (localStorage.getItem("argus-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
+    <meta name="theme-color" content="#0d1324">
+    <link rel="icon" href="./favicon.svg" type="image/svg+xml">
+    <link rel="icon" href="./favicon-32.png" sizes="32x32" type="image/png">
+    <link rel="icon" href="./favicon-16.png" sizes="16x16" type="image/png">
+    <link rel="apple-touch-icon" href="./apple-touch-icon.png">
+    <link rel="manifest" href="./manifest.webmanifest">
+    <script>document.documentElement.classList.remove("no-js"); const requestedTheme = new URLSearchParams(location.search).get("theme"); document.documentElement.dataset.theme = ["light", "dark"].includes(requestedTheme) ? requestedTheme : (localStorage.getItem("argus-theme") || (matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark"));</script>
     <link rel="stylesheet" href="./style.css">
   </head>
   <body>
+    <noscript>
+      <section class="no-js-state" aria-labelledby="no-js-title">
+        <img src="./favicon.svg" alt="" width="48" height="48">
+        <div><h1>Argus</h1><h2 id="no-js-title">JavaScript required</h2><p>Argus fails closed and shows no estate data or controls without JavaScript.</p></div>
+      </section>
+    </noscript>
     <div class="app-shell">
       <aside class="nav-rail" aria-label="Primary navigation">
-        <a class="brand" href="#overview" aria-label="Argus overview">A</a>
+        <a class="brand" href="#overview" aria-label="Argus overview"><img src="./favicon.svg" alt="" width="40" height="40"></a>
         <nav>
-          <a href="#overview" aria-current="page"><span>01</span>Topology</a>
-          <a href="#workloads-heading"><span>02</span>Workloads</a>
-          <a href="#evidence"><span>03</span>Evidence</a>
+          <a href="#overview" aria-current="page">Overview</a>
+          <a href="#workloads-heading">Workloads</a>
+          <a href="#estate-coverage">Coverage</a>
         </nav>
         <div class="private-state"><i aria-hidden="true"></i><span>Private<br>control plane</span></div>
       </aside>
       <div class="app-main">
     <header class="topbar">
       <div class="title-lockup">
-        <p class="eyebrow">PRIVATE CONTROL PLANE</p>
         <h1>Argus</h1>
-        <p id="route-summary">loading dashboard state</p>
+        <p id="route-summary">Loading estate evidence</p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
-        <button id="workload-discover" type="button">Refresh Workloads</button>
-        <button id="monitor-toggle" type="button">Show Monitor</button>
-        <button id="theme-toggle" type="button" aria-pressed="false">Light Mode</button>
+        <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
+        <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
+        <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
         <div class="session-control" id="session-control" data-state="checking">
           <i class="session-signal" aria-hidden="true"></i>
           <span class="session-copy" role="status" aria-live="polite" aria-atomic="true">
@@ -73,11 +85,6 @@ def render_html() -> str:
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
-      <section class="instrument-head">
-        <div><p class="eyebrow">LIVE ESTATE MODEL</p><h2>Estate matrix</h2></div>
-        <p>Compare containment, placement, and access state across every trust domain. Select a workload to inspect its evidence.</p>
-      </section>
-      <section class="topology" id="topology" aria-label="Whole-estate topology"></section>
       <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
           <div class="command-heading">
@@ -108,9 +115,14 @@ def render_html() -> str:
       </section>
       <section class="section-head" id="workloads-heading">
         <h2>Workloads</h2>
-        <span>Migration, backup, access, and operations</span>
+        <span>Placement, health, access, and evidence freshness</span>
       </section>
       <section class="workloads" id="workloads"></section>
+      <section class="instrument-head" id="estate-coverage">
+        <div><h2>Estate coverage</h2></div>
+        <p>Compare trust-domain placement and access evidence. This view remains read-only.</p>
+      </section>
+      <section class="topology" id="topology" aria-label="Estate coverage by trust domain"></section>
       <section class="plan-grid" id="evidence">
         <article id="access-plan">
           <h2>Access Plan</h2>
@@ -143,481 +155,6 @@ def render_html() -> str:
     <script src="./app.js"></script>
   </body>
 </html>
-"""
-
-
-CSS = r"""
-:root {
-  color-scheme: dark;
-  --bg: oklch(0.145 0.018 215);
-  --bg-2: oklch(0.18 0.019 215);
-  --panel: oklch(0.205 0.018 215);
-  --panel-2: oklch(0.245 0.018 215);
-  --panel-3: oklch(0.285 0.018 215);
-  --ink: oklch(0.9 0.018 215);
-  --muted: oklch(0.71 0.024 205);
-  --faint: oklch(0.56 0.023 205);
-  --line: oklch(0.36 0.026 205);
-  --line-strong: oklch(0.47 0.044 195);
-  --cyan: oklch(0.82 0.16 195);
-  --cyan-dim: oklch(0.45 0.11 195);
-  --cyan-panel: oklch(0.235 0.04 195);
-  --blue: oklch(0.73 0.15 245);
-  --blue-panel: oklch(0.235 0.045 245);
-  --green: oklch(0.75 0.15 155);
-  --green-panel: oklch(0.225 0.045 155);
-  --amber: oklch(0.82 0.14 75);
-  --amber-panel: oklch(0.245 0.052 75);
-  --red: oklch(0.72 0.18 28);
-  --red-panel: oklch(0.235 0.06 28);
-  --focus: 0 0 0 3px oklch(0.82 0.16 195 / 34%);
-}
-* { box-sizing: border-box; }
-html { min-width: 320px; background: var(--bg); }
-[hidden] { display: none !important; }
-body {
-  margin: 0;
-  min-height: 100vh;
-  background: var(--bg);
-  color: var(--ink);
-  font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 14px;
-  line-height: 1.45;
-}
-button, select, input { font: inherit; }
-button, .action {
-  min-height: 32px;
-  padding: 6px 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--panel-2);
-  color: var(--ink);
-  cursor: pointer;
-  text-decoration: none;
-  font-weight: 750;
-  font-size: 12px;
-}
-button:hover, .action:hover {
-  border-color: var(--cyan);
-  background: var(--cyan-panel);
-  color: var(--cyan);
-}
-button:focus-visible, .action:focus-visible, select:focus-visible { outline: 0; box-shadow: var(--focus); }
-select {
-  min-height: 32px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--ink);
-  padding: 6px 8px;
-}
-input {
-  min-height: 32px;
-  min-width: 190px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--bg);
-  color: var(--ink);
-  padding: 6px 8px;
-}
-.action.disabled {
-  color: var(--faint);
-  cursor: default;
-  background: var(--panel);
-}
-.action.disabled:hover { border-color: var(--line); color: var(--faint); background: var(--panel); }
-#monitor-toggle { border-color: var(--blue); color: var(--blue); background: var(--blue-panel); }
-#admin-toggle { border-color: var(--amber); color: var(--amber); background: var(--amber-panel); }
-#admin-token {
-  min-height: 32px;
-  padding: 6px 10px;
-  border: 1px solid var(--line);
-  border-radius: 4px;
-  background: var(--panel-2);
-  color: var(--ink);
-  width: 200px;
-}
-.topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  align-items: center;
-  padding: 12px 18px;
-  border-bottom: 1px solid var(--line);
-  background: oklch(0.16 0.018 215 / 96%);
-  backdrop-filter: blur(12px);
-}
-h1, h2, p { margin: 0; }
-h1 {
-  color: var(--cyan);
-  font-size: 18px;
-  line-height: 1.05;
-  letter-spacing: 0.01em;
-  text-transform: uppercase;
-}
-h2 {
-  font-size: 13px;
-  line-height: 1.2;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-.topbar p, .section-head span, .muted {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-.top-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-main {
-  width: min(1560px, 100%);
-  margin: 0 auto;
-  padding: 12px 14px 28px;
-}
-.summary {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(170px, 1fr));
-  gap: 1px;
-  margin-bottom: 12px;
-  overflow: auto hidden;
-  border: 1px solid var(--line);
-  background: var(--line);
-}
-.summary div, .alert, .monitor, .workload, .plan-grid article {
-  background: var(--panel);
-  border: 1px solid var(--line);
-}
-.summary div {
-  min-width: 0;
-  padding: 12px 14px;
-  border: 0;
-  background: var(--panel);
-}
-.summary div:nth-child(1) { background: var(--green-panel); }
-.summary div:nth-child(2) { background: var(--blue-panel); }
-.summary div:nth-child(3) { background: var(--amber-panel); }
-.summary div:nth-child(4) { background: var(--cyan-panel); }
-.summary div:nth-child(5) { background: oklch(0.225 0.045 130); }
-.summary strong {
-  display: block;
-  color: var(--ink);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 24px;
-  line-height: 1;
-  letter-spacing: 0;
-}
-.summary div:nth-child(1) strong { color: var(--green); }
-.summary div:nth-child(2) strong { color: var(--blue); }
-.summary div:nth-child(3) strong { color: var(--amber); }
-.summary div:nth-child(4) strong { color: var(--cyan); }
-.summary div:nth-child(5) strong { color: oklch(0.79 0.13 130); }
-.summary span, dt {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  font-weight: 750;
-}
-.alert {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 14px;
-  margin-bottom: 12px;
-  background: var(--amber-panel);
-  border-color: var(--amber);
-  color: var(--amber);
-}
-.alert strong {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-.alert span { color: oklch(0.91 0.09 75); }
-.section-head {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 10px 12px;
-  margin: 12px 0 0;
-  border: 1px solid var(--line);
-  border-bottom: 0;
-  background: var(--panel-2);
-}
-.section-head h2 {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  color: var(--cyan);
-}
-.section-head h2::before {
-  content: "";
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--cyan);
-  box-shadow: 0 0 10px oklch(0.82 0.16 195 / 70%);
-}
-.workloads {
-  display: grid;
-  grid-template-columns: 1fr;
-  border: 1px solid var(--line);
-  background: var(--line);
-  gap: 1px;
-}
-.workload {
-  position: relative;
-  border: 0;
-  border-radius: 0;
-  padding: 12px;
-  background: var(--panel);
-}
-.workload:hover { background: var(--panel-2); }
-.workload[data-privacy="unclassified"] { box-shadow: inset 0 0 0 1px oklch(0.75 0.15 155 / 34%); }
-.workload[data-privacy="internal"] { box-shadow: inset 0 0 0 1px oklch(0.82 0.16 195 / 34%); }
-.workload[data-privacy="sensitive"] { box-shadow: inset 0 0 0 1px oklch(0.82 0.14 75 / 42%); }
-.workload[data-privacy="restricted"] { box-shadow: inset 0 0 0 1px oklch(0.72 0.18 28 / 46%); }
-.workload::before {
-  content: "";
-  position: absolute;
-  top: 17px;
-  right: 14px;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--blue);
-  box-shadow: 0 0 9px oklch(0.73 0.15 245 / 65%);
-}
-.workload[data-access="local"]::before,
-.workload[data-access="tailnet"]::before {
-  background: var(--cyan);
-  box-shadow: 0 0 9px oklch(0.82 0.16 195 / 65%);
-}
-.workload[data-privacy="sensitive"]::before { background: var(--amber); box-shadow: 0 0 9px oklch(0.82 0.14 75 / 65%); }
-.workload[data-privacy="restricted"]::before { background: var(--red); box-shadow: 0 0 9px oklch(0.72 0.18 28 / 65%); }
-.workload-head {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px;
-  align-items: start;
-  padding: 0 18px 10px 0;
-  border-bottom: 1px solid var(--line);
-}
-.workload-head h2 {
-  color: var(--ink);
-  letter-spacing: 0;
-  text-transform: none;
-  font-size: 16px;
-}
-.workload[data-migration="migrated"] .workload-head h2 { color: var(--green); }
-.workload-head p {
-  color: var(--muted);
-  margin-top: 4px;
-  max-width: 78ch;
-  text-wrap: pretty;
-}
-code {
-  padding: 3px 6px;
-  border: 1px solid var(--line);
-  border-radius: 3px;
-  background: var(--bg);
-  color: var(--cyan);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-  word-break: break-word;
-}
-.pills {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin: 10px 0;
-}
-.pill {
-  display: inline-flex;
-  gap: 6px;
-  align-items: center;
-  border-radius: 999px;
-  padding: 3px 8px;
-  border: 1px solid var(--line);
-  background: var(--panel-2);
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  font-weight: 750;
-}
-.pill span { color: currentColor; opacity: 0.68; }
-.pill.good { border-color: var(--green); background: var(--green-panel); color: var(--green); }
-.pill.info { border-color: var(--blue); background: var(--blue-panel); color: var(--blue); }
-.pill.warn { border-color: var(--amber); background: var(--amber-panel); color: var(--amber); }
-.pill.bad { border-color: var(--red); background: var(--red-panel); color: var(--red); }
-.facts {
-  display: grid;
-  grid-template-columns: repeat(6, minmax(118px, 1fr));
-  gap: 1px;
-  margin: 0;
-  border: 1px solid var(--line);
-  background: var(--line);
-  overflow: hidden;
-}
-.facts div {
-  min-width: 0;
-  padding: 8px 10px;
-  background: oklch(0.18 0.018 215);
-}
-dt { color: var(--faint); }
-dd {
-  margin: 2px 0 0;
-  overflow-wrap: anywhere;
-  color: var(--ink);
-  font-weight: 700;
-}
-.warning {
-  margin-top: 10px;
-  padding: 9px 10px;
-  border: 1px solid var(--amber);
-  background: var(--amber-panel);
-  color: oklch(0.92 0.09 75);
-}
-.actions, .admin-row {
-  display: flex;
-  gap: 8px;
-  flex-wrap: wrap;
-  margin-top: 10px;
-}
-.admin-row {
-  padding-top: 10px;
-  border-top: 1px dashed var(--line-strong);
-}
-.admin-row label {
-  display: grid;
-  gap: 4px;
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  text-transform: uppercase;
-}
-.monitor {
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--blue-panel);
-  border-color: var(--blue);
-}
-.command-panel {
-  padding: 12px;
-  margin-bottom: 12px;
-  background: var(--panel);
-  border: 1px solid var(--line-strong);
-}
-.command-panel .section-head {
-  padding: 0 0 10px;
-  margin: 0 0 10px;
-  border: 0;
-  background: transparent;
-}
-.monitor .section-head {
-  padding: 0 0 10px;
-  margin: 0 0 10px;
-  border: 0;
-  background: transparent;
-}
-.metrics-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 8px;
-}
-.metric {
-  padding: 10px;
-  border: 1px solid var(--line);
-  background: var(--bg);
-}
-.metric strong {
-  color: var(--muted);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 11px;
-  text-transform: uppercase;
-}
-.metric p {
-  margin-top: 4px;
-  color: var(--blue);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-weight: 800;
-}
-.bar {
-  height: 6px;
-  margin-top: 8px;
-  background: var(--panel-3);
-  overflow: hidden;
-}
-.bar span {
-  display: block;
-  height: 100%;
-  background: var(--blue);
-}
-.plan-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 10px;
-  margin-top: 12px;
-}
-.plan-grid article {
-  min-width: 0;
-  padding: 12px;
-  background: var(--panel);
-}
-.plan-grid article:nth-child(1) { border-color: var(--blue); background: var(--blue-panel); }
-.plan-grid article:nth-child(2) { border-color: var(--green); background: var(--green-panel); }
-.plan-grid article:nth-child(3) { border-color: var(--amber); background: var(--amber-panel); }
-.plan-grid article:nth-child(4) { border-color: var(--cyan); background: var(--cyan-panel); }
-.plan-grid article h2 { color: var(--ink); }
-.plan-grid article p {
-  color: var(--muted);
-  margin: 8px 0 10px;
-  text-wrap: pretty;
-}
-pre {
-  white-space: pre-wrap;
-  margin: 10px 0 0;
-  color: var(--muted);
-  max-height: 180px;
-  overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 12px;
-}
-::-webkit-scrollbar { width: 8px; height: 8px; }
-::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 999px; }
-::-webkit-scrollbar-thumb:hover { background: var(--cyan-dim); }
-@media (max-width: 980px) {
-  .facts { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .metrics-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-}
-@media (max-width: 720px) {
-  .topbar { align-items: flex-start; flex-direction: column; }
-  main { padding: 10px; }
-  .summary { grid-template-columns: 1fr; overflow: visible; }
-  .alert { align-items: flex-start; flex-direction: column; }
-  .workload-head { grid-template-columns: 1fr; }
-  .facts, .metrics-grid { grid-template-columns: 1fr; }
-  input { width: 100%; }
-}
-@media (max-width: 520px) {
-  .top-actions { width: 100%; }
-  .top-actions button { flex: 1 1 auto; }
-  h1 { font-size: 16px; }
-}
-@media (prefers-reduced-motion: no-preference) {
-  button, .action, .workload, .plan-grid article {
-    transition: background-color 160ms ease, border-color 160ms ease, color 160ms ease;
-  }
-}
 """
 
 
@@ -1015,17 +552,18 @@ function setMonitor(open) {
 function renderSummary() {
   const workloads = state?.workloads || [];
   const exposure = state?.exposure?.providers || {};
+  const topology = state?.topology || {};
+  const topologySummary = topology.summary || {};
   const funnel = exposure?.tailscale?.funnel || {};
   const cloudflareState = exposure?.cloudflare?.enabled ? "Enabled" : "Disabled";
-  const funnelState = funnel.observedEnabled ? "Observed" : "Clear";
-  const migrated = workloads.filter((item) => item.migration?.status === "migrated").length;
-  const backupPlans = workloads.filter((item) => item.backup?.status).length;
+  const exceptions = Number(topologySummary.accessDrift || 0) + Number(topologySummary.unresolvedClassifications || 0);
+  const privateExposure = !funnel.observedEnabled && !exposure?.cloudflare?.enabled;
   summaryEl.innerHTML = [
+    ["Exceptions", exceptions],
     ["Workloads", workloads.length],
-    ["Cloudflare", cloudflareState],
-    ["Funnel", funnelState],
-    ["Migrated", migrated],
-    ["Backup plans", backupPlans]
+    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length],
+    ["Agents available", Number(topologySummary.domainAgentsAvailable || 0)],
+    ["Exposure", privateExposure ? "Private" : "Review"]
   ].map(([label, value]) => `<div><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
 }
@@ -1194,12 +732,21 @@ function renderWorkload(workload) {
       data-access="${escapeHtml(access.effective || "")}"
       data-migration="${escapeHtml(migration.status || "")}"
     >
+      <div class="workload-overview">
+        <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
+        <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
+        <span data-label="Health"><strong>${health.enabled ? "Configured" : "Unknown"}</strong></span>
+        <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
+        <span data-label="Evidence"><strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+        <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
+      </div>
+      <div class="workload-detail" data-workload-detail="${escapeHtml(id)}" hidden>
       <div class="workload-head">
         <div>
           <h2>${escapeHtml(workload.name || id)}</h2>
           <p>${escapeHtml(workload.description || "")}</p>
         </div>
-        <code>${escapeHtml(id)}</code>
+        <div class="detail-heading-actions"><code>${escapeHtml(id)}</code><a class="detail-close" href="#workloads-heading" aria-label="Close ${escapeHtml(workload.name || id)} details">Close</a></div>
       </div>
       <div class="workload-status">
         <div class="pills" aria-label="Primary workload state">
@@ -1259,10 +806,15 @@ function renderWorkload(workload) {
           <span class="control-label">Inspect</span>
           <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${healthAllowed && agentAvailable ? "" : "disabled"}>Refresh health</button>
           <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
-          <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
-          <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
-          <button type="button" data-operation="migration-preflight" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate && agentAvailable ? "" : "disabled"}>Run migration preflight</button>
         </div>
+        <details class="more-operations">
+          <summary>More operations</summary>
+          <div class="operation-row">
+            <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
+            <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
+            <button type="button" data-operation="migration-preflight" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate && agentAvailable ? "" : "disabled"}>Run migration preflight</button>
+          </div>
+        </details>
         ${blockers.length ? `<details class="operation-blockers"><summary>${blockers.length} blocking ${blockers.length === 1 ? "condition" : "conditions"}</summary><ul aria-label="Disabled operation reasons">${blockers.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}
         <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">
           <div class="history-head"><strong>Durable history</strong><span>Loading</span></div>
@@ -1277,6 +829,7 @@ function renderWorkload(workload) {
         <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
         <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
       </div>
+      </div>
     </article>
   `;
 }
@@ -1286,8 +839,10 @@ function renderPlans() {
   const api = state?.routes?.api || {};
   const exposure = state?.exposure?.providers || {};
   const monitoring = state?.monitoring || {};
-  const backupPlans = (state?.workloads || []).filter((item) => item.backup?.status).length;
-  routeSummary.textContent = `${route.url || "dashboard"} · API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
+  const workloads = state?.workloads || [];
+  const backupPlans = workloads.filter((item) => item.backup?.status).length;
+  const healthEvidence = workloads.map((item) => item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
+  routeSummary.textContent = `${workloads.length} workloads · oldest evidence ${evidenceFreshness(healthEvidence[0] || "")}`;
   document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
   document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
   document.querySelector("#backup-plan p").textContent = `${backupPlans} workloads have manifest-backed backup metadata. Backup runs remain blocked unless the workload manifest allows them.`;
@@ -1308,8 +863,34 @@ function renderDashboard() {
   workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
   renderPlans();
   renderEvents();
+  syncWorkloadRoute();
   if (adminEnabled) fillAdminControls();
 }
+
+function syncWorkloadRoute() {
+  const match = location.hash.match(/^#\/workloads\/([^?]+)/);
+  let workloadId = "";
+  try {
+    workloadId = match ? decodeURIComponent(match[1]) : "";
+  } catch {
+    routeSummary.textContent = "Invalid workload route";
+  }
+  document.querySelectorAll("[data-workload-detail]").forEach((detail) => {
+    const open = detail.dataset.workloadDetail === workloadId;
+    detail.hidden = !open;
+    detail.closest(".workload")?.classList.toggle("detail-open", open);
+  });
+  if (!workloadId) return;
+  const detail = document.querySelector(`[data-workload-detail="${CSS.escape(workloadId)}"]`);
+  if (!detail) {
+    routeSummary.textContent = `Workload ${workloadId} not found`;
+    return;
+  }
+  routeSummary.textContent = `Inspecting ${workloadId}`;
+  detail.querySelector(".detail-close")?.focus({ preventScroll: true });
+}
+
+window.addEventListener("hashchange", syncWorkloadRoute);
 
 async function loadDashboardState() {
   try {
@@ -1483,7 +1064,7 @@ workloadDiscoverButton.addEventListener("click", async () => {
     showCommandResult("Refresh failed", error.message);
   } finally {
     workloadDiscoverButton.disabled = false;
-    workloadDiscoverButton.textContent = "Refresh Workloads";
+    workloadDiscoverButton.textContent = "Refresh estate";
   }
 });
 
@@ -1772,7 +1353,9 @@ restoreOperatorSession();
 
 
 def main() -> int:
+    write_assets(PUBLIC)
     write(PUBLIC / "index.html", render_html())
+    write(PUBLIC / "state-prototypes.html", render_prototypes())
     write(PUBLIC / "style.css", M5_CSS.strip() + "\n")
     write(PUBLIC / "app.js", JS.strip() + "\n")
     print(f"Generated {PUBLIC}")
