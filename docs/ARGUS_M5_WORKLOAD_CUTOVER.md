@@ -184,6 +184,20 @@ and the source is fenced, `--rollback` is gated for stateful workloads, and
 declaration added to a spec *after* acceptance cannot reach the running
 workload.
 
+An accepted workload image may be replaced only when its service, immutable
+image ID, source repository, revision, and offline syntax checks are declared in
+the workload spec. `--refresh` verifies the target daemon has that exact image,
+checks its OCI provenance labels, verifies the declared source-file digests, and
+runs every syntax check with `--network none` before stopping the accepted container. The previous Compose is
+retained for automatic recovery, and named volumes are never removed.
+
+For Hastur, revision `03ebe98a2a04874deb5f79128caef6fc53df1fb2`
+introduces the in-process scheduler. The replacement is a flat-rootfs image
+because the accepted layered image cannot be instantiated again by the current
+rootless storage driver. SSH export remains retired in the sandbox: no private
+key is delivered, and `AUTO_EXPORT_ON_STORAGE_THRESHOLD=false` prevents a
+scheduled crawl from triggering a knowingly unusable export path.
+
 Hastur hit all three at once: sealed credentials, the `CRAWL_SCHEDULE_*`
 overlay, and a declared egress policy each landed after it was cut over, so
 the running project had no `/app/auth` mount, no schedule variables, and a

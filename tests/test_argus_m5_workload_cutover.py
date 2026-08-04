@@ -306,6 +306,7 @@ class CredentialDeliveryTest(unittest.TestCase):
         self.assertEqual({"hastur": "/app/auth"}, spec["credentials"])
         self.assertEqual(
             {
+                "AUTO_EXPORT_ON_STORAGE_THRESHOLD": "false",
                 "CRAWL_SCHEDULE_ENABLED": "true",
                 "CRAWL_SCHEDULE_MECHANISM": "internal",
             },
@@ -522,6 +523,13 @@ class RuntimeRefreshTest(unittest.TestCase):
         self.assertEqual(
             "internal", service["environment"]["CRAWL_SCHEDULE_MECHANISM"]
         )
+        self.assertEqual(
+            "false", service["environment"]["AUTO_EXPORT_ON_STORAGE_THRESHOLD"]
+        )
+        self.assertEqual(
+            module.SPECS["hastur"]["image_refresh"]["hastur"]["image"],
+            service["image"],
+        )
         # Captured runtime environment is preserved, not replaced.
         self.assertEqual(
             "10800000", service["environment"]["CRAWL_MAX_RUNTIME_MS"]
@@ -603,6 +611,45 @@ class RuntimeRefreshTest(unittest.TestCase):
             module.refresh_overlay(
                 self.ACCEPTED, "hastur", spec, self.CREDENTIAL_DIR
             )
+
+    def test_image_refresh_declaration_is_closed_and_immutable(self) -> None:
+        declaration = module.declared_image_refresh(module.SPECS["hastur"])
+        self.assertEqual(["hastur"], sorted(declaration))
+        self.assertRegex(declaration["hastur"]["image"], r"^sha256:[0-9a-f]{64}$")
+        self.assertEqual(
+            "03ebe98a2a04874deb5f79128caef6fc53df1fb2",
+            declaration["hastur"]["revision"],
+        )
+        self.assertEqual(
+            {
+                "src/schedule.mjs": "sha256:aedd906c338dd800a27427d679420e17330edabeb45c2e67325d09d7f8747b67",
+                "src/server.mjs": "sha256:3694928fa515bb97ed44216c28bc2d91bd3f42ec4fd4a527ee57f789999e9cca",
+            },
+            declaration["hastur"]["checks"],
+        )
+        for invalid in (
+            {"image_refresh": []},
+            {"image_refresh": {"hastur": {"image": "latest"}}},
+            {
+                "image_refresh": {
+                    "hastur": {
+                        **module.SPECS["hastur"]["image_refresh"]["hastur"],
+                        "unexpected": True,
+                    }
+                }
+            },
+        ):
+            with self.subTest(invalid=invalid):
+                with self.assertRaises(module.CutoverError):
+                    module.declared_image_refresh(invalid)
+
+    def test_refresh_validates_replacement_before_stopping_target(self) -> None:
+        script = SCRIPT.read_text()
+        body = script[script.index("def refresh(") : script.index("def reconcile(")]
+        self.assertLess(
+            body.index("validate_target_image_refresh(spec)"),
+            body.index('target_compose(spec, runtime_compose, "down")'),
+        )
 
     def test_refresh_never_destroys_named_volumes(self) -> None:
         script = SCRIPT.read_text()

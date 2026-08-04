@@ -90,8 +90,27 @@ SPECS = {
         # Scraping schedules in-process; the host crontab entry is retired.
         "extra_environment": {
             "hastur": {
+                # SSH export stays retired inside the sealed sandbox: no private
+                # key crosses the boundary, so threshold-triggered export must
+                # not masquerade as a working post-crawl action.
+                "AUTO_EXPORT_ON_STORAGE_THRESHOLD": "false",
                 "CRAWL_SCHEDULE_ENABLED": "true",
                 "CRAWL_SCHEDULE_MECHANISM": "internal",
+            }
+        },
+        # Exact reviewed replacement for the pre-scheduler accepted image.
+        # The image is a flat-rootfs import because this rootless storage stack
+        # cannot unpack the legacy layered image (EOVERFLOW). Refresh validates
+        # both this immutable ID and its OCI provenance before stopping Hastur.
+        "image_refresh": {
+            "hastur": {
+                "image": "sha256:f43fccbe2714fdd9fb3bcc2bf23e6ad96a2624bfbd6168b82e9434dd71e4113b",
+                "source": "https://github.com/pxm-0/hastur",
+                "revision": "03ebe98a2a04874deb5f79128caef6fc53df1fb2",
+                "checks": {
+                    "src/server.mjs": "sha256:3694928fa515bb97ed44216c28bc2d91bd3f42ec4fd4a527ee57f789999e9cca",
+                    "src/schedule.mjs": "sha256:aedd906c338dd800a27427d679420e17330edabeb45c2e67325d09d7f8747b67",
+                },
             }
         },
     },
@@ -1911,10 +1930,13 @@ def refresh_overlay(
     services = updated["services"]
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
-    unknown = (set(credentials) | set(extra_environment)).difference(services)
+    image_refresh = declared_image_refresh(spec)
+    unknown = (set(credentials) | set(extra_environment) | set(image_refresh)).difference(
+        services
+    )
     if unknown:
         raise CutoverError(
-            f"credential or environment overlay names unknown services: {sorted(unknown)}"
+            f"runtime overlay names unknown services: {sorted(unknown)}"
         )
     policy = validated_egress(workload, spec)
     # Only a recreate can replace Docker's NetworkID-derived bridge name.
@@ -1937,6 +1959,9 @@ def refresh_overlay(
         default["internal"] = False
     networks["default"] = default
     for service, definition in services.items():
+        replacement = image_refresh.get(service)
+        if replacement is not None:
+            definition["image"] = replacement["image"]
         definition["environment"] = {
             **(definition.get("environment") or {}),
             **extra_environment.get(service, {}),
@@ -1963,6 +1988,112 @@ def refresh_overlay(
         )
         definition["volumes"] = volumes
     return updated
+
+
+def declared_image_refresh(spec: dict) -> dict[str, dict[str, object]]:
+    """Return the closed, immutable image replacement declaration."""
+    raw = spec.get("image_refresh", {})
+    if raw is None:
+        raw = {}
+    if not isinstance(raw, dict):
+        raise CutoverError("image refresh declaration must be an object")
+    result: dict[str, dict[str, object]] = {}
+    for service, declaration in raw.items():
+        if not isinstance(service, str) or not isinstance(declaration, dict):
+            raise CutoverError("image refresh declaration is invalid")
+        if set(declaration) != {"image", "source", "revision", "checks"}:
+            raise CutoverError("image refresh declaration has unknown or missing fields")
+        image = declaration["image"]
+        source = declaration["source"]
+        revision = declaration["revision"]
+        checks = declaration["checks"]
+        if not isinstance(image, str) or re.fullmatch(r"sha256:[0-9a-f]{64}", image) is None:
+            raise CutoverError("image refresh needs an immutable image ID")
+        if not isinstance(source, str) or not source.startswith("https://github.com/"):
+            raise CutoverError("image refresh source is invalid")
+        if not isinstance(revision, str) or re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+            raise CutoverError("image refresh revision is invalid")
+        if (
+            not isinstance(checks, dict)
+            or not checks
+            or any(
+                not isinstance(path, str)
+                or not path.startswith("src/")
+                or ".." in Path(path).parts
+                or not isinstance(digest, str)
+                or re.fullmatch(r"sha256:[0-9a-f]{64}", digest) is None
+                for path, digest in checks.items()
+            )
+        ):
+            raise CutoverError("image refresh checks are invalid")
+        result[service] = {
+            "image": image,
+            "source": source,
+            "revision": revision,
+            "checks": dict(sorted(checks.items())),
+        }
+    return result
+
+
+def validate_target_image_refresh(spec: dict) -> dict[str, dict[str, object]]:
+    """Prove every declared replacement exists, matches provenance, and runs offline."""
+    declarations = declared_image_refresh(spec)
+    for service, declaration in declarations.items():
+        image = str(declaration["image"])
+        payload = json.loads(
+            text(
+                target_command(
+                    spec,
+                    "image",
+                    "inspect",
+                    "--format",
+                    "{{json .}}",
+                    image,
+                )
+            )
+        )
+        labels = (payload.get("Config") or {}).get("Labels") or {}
+        if payload.get("Id") != image:
+            raise CutoverError(f"replacement image ID does not match: {service}")
+        if (
+            labels.get("org.opencontainers.image.source") != declaration["source"]
+            or labels.get("org.opencontainers.image.revision")
+            != declaration["revision"]
+            or labels.get("com.argus.workload") != service
+        ):
+            raise CutoverError(f"replacement image provenance does not match: {service}")
+        for path, expected_digest in declaration["checks"].items():
+            observed_digest = text(
+                target_command(
+                    spec,
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    image,
+                    "sha256sum",
+                    str(path),
+                )
+            ).split()[0]
+            if f"sha256:{observed_digest}" != expected_digest:
+                raise CutoverError(
+                    f"replacement image content digest does not match: {service}:{path}"
+                )
+            run(
+                target_command(
+                    spec,
+                    "run",
+                    "--rm",
+                    "--network",
+                    "none",
+                    image,
+                    "node",
+                    "--check",
+                    str(path),
+                ),
+                stdout=subprocess.DEVNULL,
+            )
+    return declarations
 
 
 def restore_accepted_runtime(
@@ -2021,6 +2152,7 @@ def refresh(workload: str) -> dict:
         else None
     )
     current = json.loads(runtime_compose.read_text())
+    image_refresh = validate_target_image_refresh(spec)
     updated = refresh_overlay(current, workload, spec, credential_dir)
     if updated == current:
         # Nothing declared has changed; do not bounce a healthy workload.
@@ -2088,6 +2220,14 @@ def refresh(workload: str) -> dict:
         {
             "refreshGeneration": int(state.get("refreshGeneration") or 0) + 1,
             "refreshedAt": time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+            "imageRefresh": {
+                service: {
+                    "image": declaration["image"],
+                    "source": declaration["source"],
+                    "revision": declaration["revision"],
+                }
+                for service, declaration in sorted(image_refresh.items())
+            },
         }
     )
     write_state(state_dir / "cutover.json", state)
@@ -2113,6 +2253,7 @@ def refresh(workload: str) -> dict:
         "publishedPorts": False,
         "publicRoute": False,
         "egressPolicyDrift": egress_policy_drift(spec),
+        "imageRefresh": state["imageRefresh"],
     }
 
 
