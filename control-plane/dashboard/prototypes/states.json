@@ -1,0 +1,19 @@
+{
+  "notice": "Illustrative PR 5A fixtures only. These fields are not an API or repository schema.",
+  "prototypeVersion": 1,
+  "states": [
+    {"id": "loading", "label": "Loading", "tone": "info", "headline": "Loading estate evidence", "detail": "The safe shell remains visible while the latest completed observation is requested.", "action": "No action yet"},
+    {"id": "empty", "label": "Empty", "tone": "neutral", "headline": "No configured sources", "detail": "No workloads are inferred from an empty source registry.", "action": "Open coverage"},
+    {"id": "error", "label": "Error", "tone": "danger", "headline": "Estate refresh failed", "detail": "Last-known-good evidence stays visible and mutations remain fenced.", "action": "Retry failed sources"},
+    {"id": "partial", "label": "Partial", "tone": "warning", "headline": "2 of 3 sources observed", "detail": "Filesystem inventory is missing; container and service evidence is retained.", "action": "Review coverage"},
+    {"id": "stale", "label": "Stale", "tone": "warning", "headline": "Evidence is 27 minutes old", "detail": "Placement is visible, but authority-changing operations are blocked until refresh.", "action": "Refresh estate"},
+    {"id": "conflict", "label": "Conflict", "tone": "danger", "headline": "Access evidence conflicts", "detail": "Declared tailnet access disagrees with observed local-only reachability.", "action": "Inspect evidence"},
+    {"id": "success", "label": "Success", "tone": "success", "headline": "Estate complete and fresh", "detail": "All configured sources completed within their freshness windows.", "action": "Open workload"}
+  ],
+  "surfaces": [
+    {"id": "overview", "label": "Overview", "fields": ["exceptions", "host health", "exposure", "domain health", "workload count"]},
+    {"id": "workload-detail", "label": "Workload detail", "fields": ["identity", "placement", "health", "access drift", "evidence age", "blocked decisions"]},
+    {"id": "estate-coverage", "label": "Estate coverage", "fields": ["configured sources", "freshness", "gaps", "exclusions", "refresh progress"]}
+  ],
+  "viewports": [320, 375, 768, 1024, 1440]
+}
