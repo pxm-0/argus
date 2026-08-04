@@ -9,6 +9,7 @@ usage() {
 Usage:
   sudo ./scripts/argus-m5-sandbox-bootstrap --domain personal-sandbox --plan
   sudo ./scripts/argus-m5-sandbox-bootstrap --domain work-sandbox --apply --acknowledge-sandbox-cell
+  sudo ./scripts/argus-m5-sandbox-bootstrap --domain personal-sandbox --apply-host-guard --acknowledge-host-egress
   sudo ./scripts/argus-m5-sandbox-bootstrap --domain work-sandbox --rollback BACKUP --acknowledge-sandbox-rollback
 EOF
 }
@@ -27,7 +28,7 @@ while (($#)); do
       args+=("$1" "$2")
       shift
       ;;
-    --plan|--apply|--acknowledge-sandbox-cell|--acknowledge-sandbox-rollback)
+    --plan|--apply|--apply-host-guard|--acknowledge-sandbox-cell|--acknowledge-host-egress|--acknowledge-sandbox-rollback)
       args+=("$1")
       ;;
     -h|--help)
