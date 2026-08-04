@@ -138,6 +138,20 @@ allowance and stays fully sealed. Applying the sandbox bootstrap backs up the
 installed guard before replacing it and validates that workload and volume
 inventory did not change.
 
+On an accepted sandbox, update that outer guard through the host-only path:
+
+```bash
+sudo ./scripts/argus-m5-sandbox-bootstrap \
+  --domain personal-sandbox \
+  --apply-host-guard \
+  --acknowledge-host-egress
+```
+
+This path backs up and validates the guard, proves the inner policy and workload
+inventory did not change, and does not restart the sandbox daemon. A full
+bootstrap refuses to overwrite a workload-managed inner policy; changing the
+inner policy still requires the separately acknowledged `--apply-egress` flow.
+
 The nft table is per trust domain, so applying policy installs every
 declaration in that domain:
 

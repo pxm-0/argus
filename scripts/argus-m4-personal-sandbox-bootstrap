@@ -433,6 +433,7 @@ usage() {
 Usage:
   sudo ./scripts/argus-m4-personal-sandbox-bootstrap --plan
   sudo ./scripts/argus-m4-personal-sandbox-bootstrap --apply --acknowledge-sandbox-cell
+  sudo ./scripts/argus-m4-personal-sandbox-bootstrap --apply-host-guard --acknowledge-host-egress
   sudo ./scripts/argus-m4-personal-sandbox-bootstrap --rollback BACKUP --acknowledge-sandbox-rollback
 
 Creates only an empty sealed rootless Docker cell. It never imports,
@@ -442,12 +443,14 @@ EOF
 
 mode=plan
 ack=false
+host_egress_ack=false
 rollback_ack=false
 rollback_path=""
 while (($#)); do
   case "$1" in
     --plan) mode=plan ;;
     --apply) mode=apply ;;
+    --apply-host-guard) mode=apply-host-guard ;;
     --rollback)
       [[ $# -ge 2 ]] || { usage >&2; exit 2; }
       mode=rollback
@@ -462,6 +465,7 @@ while (($#)); do
       ack=true
       ;;
     --acknowledge-sandbox-cell) ack=true ;;
+    --acknowledge-host-egress) host_egress_ack=true ;;
     --acknowledge-sandbox-rollback) rollback_ack=true ;;
     -h|--help) usage; exit 0 ;;
     *) usage >&2; exit 2 ;;
@@ -481,6 +485,11 @@ EOF
 fi
 if [[ "$mode" == apply ]]; then
   [[ "$ack" == true ]] || { echo "refusing apply: add --acknowledge-sandbox-cell" >&2; exit 2; }
+elif [[ "$mode" == apply-host-guard ]]; then
+  [[ "$host_egress_ack" == true ]] || {
+    echo "refusing host guard apply: add --acknowledge-host-egress" >&2
+    exit 2
+  }
 else
   [[ "$mode" == rollback && "$rollback_ack" == true ]] || {
     echo "refusing rollback: explicit acknowledgement is required" >&2
@@ -488,9 +497,71 @@ else
   }
 fi
 [[ "$(id -u)" == 0 ]] || { echo "refusing apply: run as root with sudo" >&2; exit 2; }
-for command in useradd userdel usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp tee chmod pgrep ps readlink stat tr ss mktemp rm docker awk grep date find sort sha256sum; do
+for command in useradd userdel usermod loginctl systemctl runuser ip nft nsenter dockerd-rootless.sh fuse-overlayfs rootlesskit slirp4netns python3 install cp cmp tee chmod pgrep ps readlink stat tr ss mktemp rm docker awk grep date find sort sha256sum; do
   command -v "$command" >/dev/null || { echo "refusing apply: missing required command $command" >&2; exit 2; }
 done
+if [[ "$mode" == apply-host-guard ]]; then
+  id "$CELL_USER" >/dev/null 2>&1 || {
+    echo "refusing host guard apply: sandbox identity does not exist" >&2
+    exit 2
+  }
+  [[ -f "$HOST_GUARD_FILE" && ! -L "$HOST_GUARD_FILE" ]] || {
+    echo "refusing host guard apply: installed guard must be a regular file" >&2
+    exit 2
+  }
+  [[ "$(stat -c '%U:%G:%a' "$HOST_GUARD_FILE")" == root:root:644 ]] || {
+    echo "refusing host guard apply: installed guard ownership or mode is unsafe" >&2
+    exit 2
+  }
+  nft list table inet "$HOST_GUARD_TABLE" >/dev/null || {
+    echo "refusing host guard apply: live guard table is missing" >&2
+    exit 2
+  }
+  inventory_digest_before="$(capture_inventory_digest)"
+  inner_digest_before="$(sha256sum "$NFT_FILE" | awk '{print $1}')"
+  install -d -m 0700 /var/lib/argus/bootstrap-backups
+  backup_dir="$(mktemp -d "/var/lib/argus/bootstrap-backups/${CELL_DOMAIN}-host-guard-$(date -u +%Y%m%dT%H%M%SZ)-XXXXXX")"
+  chmod 0700 "$backup_dir"
+  backup_file "$HOST_GUARD_FILE" "$backup_dir$HOST_GUARD_FILE"
+  candidate="$backup_dir/host-guard.next.nft"
+  PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" "$(id -u "$CELL_USER")" \
+    >"$candidate" <<'PY'
+import sys
+
+from argus_host_guard import render_host_guard
+
+print(render_host_guard(sys.argv[1], int(sys.argv[2])), end="")
+PY
+  chmod 0600 "$candidate"
+  nft -c -f "$candidate"
+  host_guard_applied=false
+  rollback_host_guard() {
+    local status=$?
+    trap - EXIT
+    if [[ "$host_guard_applied" == true ]]; then
+      install -o root -g root -m 0644 "$backup_dir$HOST_GUARD_FILE" "$HOST_GUARD_FILE"
+      nft -f "$HOST_GUARD_FILE" || status=1
+    fi
+    exit "$status"
+  }
+  trap rollback_host_guard EXIT
+  install -o root -g root -m 0644 "$candidate" "$HOST_GUARD_FILE"
+  host_guard_applied=true
+  nft -f "$HOST_GUARD_FILE"
+  nft list table inet "$HOST_GUARD_TABLE" >/dev/null
+  [[ "$(sha256sum "$NFT_FILE" | awk '{print $1}')" == "$inner_digest_before" ]] || {
+    echo "refusing success: inner firewall policy changed" >&2
+    exit 1
+  }
+  [[ "$(capture_inventory_digest)" == "$inventory_digest_before" ]] || {
+    echo "refusing success: sandbox workload or volume inventory changed" >&2
+    exit 1
+  }
+  host_guard_applied=false
+  trap - EXIT
+  printf 'SANDBOX_HOST_GUARD_APPLIED backup=%s daemonRestarted=false innerFirewallChanged=false\n' "$backup_dir"
+  exit 0
+fi
 for subid_file in /etc/subuid /etc/subgid; do
   if [[ ! -f "$subid_file" || -L "$subid_file" || ! -r "$subid_file" ]] ||
      [[ "$(stat -c %U "$subid_file")" != root ]]; then
@@ -632,13 +703,21 @@ PY
 install -d -o "$CELL_USER" -g "$CELL_USER" -m 0700 \
   "$CELL_HOME" "$CELL_STORAGE" "$CELL_HOME/.config" "$USER_UNIT_DIR"
 install -d -m 0755 "$ARGUS_DIR" /usr/local/lib/argus
-PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" >"$NFT_FILE" <<'PY'
+default_firewall="$(mktemp)"
+PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" >"$default_firewall" <<'PY'
 import sys
 
 from argus_firewall import render_firewall
 
 print(render_firewall(sys.argv[1], []), end="")
 PY
+if [[ -f "$NFT_FILE" ]] && ! cmp -s "$default_firewall" "$NFT_FILE"; then
+  rm -f -- "$default_firewall"
+  echo "refusing full bootstrap: installed inner policy is workload-managed; use --apply-host-guard for host-only changes" >&2
+  exit 2
+fi
+install -o root -g root -m 0644 "$default_firewall" "$NFT_FILE"
+rm -f -- "$default_firewall"
 PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" "$(id -u "$CELL_USER")" \
   >"$HOST_GUARD_FILE" <<'PY'
 import sys
@@ -647,7 +726,7 @@ from argus_host_guard import render_host_guard
 
 print(render_host_guard(sys.argv[1], int(sys.argv[2])), end="")
 PY
-chmod 0644 "$NFT_FILE" "$HOST_GUARD_FILE"
+chmod 0644 "$HOST_GUARD_FILE"
 tee "$HELPER" >/dev/null <<EOF
 #!/usr/bin/env bash
 set -euo pipefail

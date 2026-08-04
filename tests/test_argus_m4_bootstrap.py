@@ -62,6 +62,11 @@ class M4BootstrapTest(unittest.TestCase):
         )
         self.assertIn("HOST_GUARD_TABLE", script)
         self.assertIn("from argus_host_guard import render_host_guard", script)
+        self.assertIn("--apply-host-guard", script)
+        self.assertIn("--acknowledge-host-egress", script)
+        self.assertIn("innerFirewallChanged=false", script)
+        self.assertIn("installed inner policy is workload-managed", script)
+        self.assertIn('cmp -s "$default_firewall" "$NFT_FILE"', script)
         self.assertIn('Before=user@$(id -u "$CELL_USER").service', script)
         guard_module = (ROOT / "scripts" / "argus_host_guard.py").read_text()
         self.assertIn("meta skuid", guard_module)
@@ -83,6 +88,20 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("--exec-opt native.cgroupdriver=systemd", script)
         self.assertIn("workloadsDeployed", script)
         self.assertNotIn("docker compose", script)
+
+    def test_host_guard_update_exits_before_inner_firewall_or_daemon_mutation(self) -> None:
+        script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
+        guarded_update = script.rsplit(
+            'if [[ "$mode" == apply-host-guard ]]; then', 1
+        )[1].split("\nfi\nfor subid_file", 1)[0]
+
+        self.assertIn('nft -c -f "$candidate"', guarded_update)
+        self.assertIn('backup_file "$HOST_GUARD_FILE"', guarded_update)
+        self.assertIn('sha256sum "$NFT_FILE"', guarded_update)
+        self.assertIn('exit 0', guarded_update)
+        self.assertNotIn('>"$NFT_FILE"', guarded_update)
+        self.assertNotIn("systemctl restart", guarded_update)
+        self.assertNotIn("user_systemctl", guarded_update)
 
     def test_apply_proves_the_daemon_can_actually_create_a_container(self) -> None:
         """A 2026-07-30 outage left the daemon systemd-"active" but unable to
@@ -162,3 +181,5 @@ class M4BootstrapTest(unittest.TestCase):
         self.assertIn("personal-sandbox", wrapper)
         self.assertIn("work-sandbox", wrapper)
         self.assertIn("--acknowledge-sandbox-cell", wrapper)
+        self.assertIn("--apply-host-guard", wrapper)
+        self.assertIn("--acknowledge-host-egress", wrapper)
