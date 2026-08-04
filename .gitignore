@@ -16,6 +16,12 @@ control-plane/dashboard/public/index.html
 control-plane/dashboard/public/style.css
 control-plane/dashboard/public/app.js
 control-plane/dashboard/public/metrics.json
+control-plane/dashboard/public/favicon.svg
+control-plane/dashboard/public/favicon-*.png
+control-plane/dashboard/public/apple-touch-icon.png
+control-plane/dashboard/public/icon-*.png
+control-plane/dashboard/public/manifest.webmanifest
+control-plane/dashboard/public/state-prototypes.html
 caddy/dashboard.Caddyfile
 cloudflare/planned-ingress.yml
 

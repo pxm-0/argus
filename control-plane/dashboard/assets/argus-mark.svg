@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title description" data-eye-horizontal="0.37" data-eye-vertical="0.22" data-inner-scale-x="0.70" data-inner-scale-y="0.58" data-pupil-inner="0.075" data-pupil-outer="0.145" data-maskable-scale="0.76">
+  <title id="title">Argus</title>
+  <desc id="description">A watchful eye formed by two protected arcs.</desc>
+  <rect width="64" height="64" rx="14" fill="#0d1324"/>
+  <path d="M9 32c6-11 14-17 23-17s17 6 23 17c-6 11-14 17-23 17S15 43 9 32Z" fill="none" stroke="#f5c85b" stroke-width="6" stroke-linejoin="round"/>
+  <circle cx="32" cy="32" r="8" fill="#68a7ff"/>
+  <circle cx="32" cy="32" r="3" fill="#0d1324"/>
+</svg>
