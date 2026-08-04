@@ -639,16 +639,14 @@ from argus_firewall import render_firewall
 
 print(render_firewall(sys.argv[1], []), end="")
 PY
-tee "$HOST_GUARD_FILE" >/dev/null <<EOF
-destroy table inet $HOST_GUARD_TABLE
-table inet $HOST_GUARD_TABLE {
-  chain output {
-    type filter hook output priority -10; policy accept;
-    meta skuid $(id -u "$CELL_USER") oifname "lo" accept
-    meta skuid $(id -u "$CELL_USER") drop
-  }
-}
-EOF
+PYTHONPATH="$SCRIPT_DIR" python3 - "$CELL_DOMAIN" "$(id -u "$CELL_USER")" \
+  >"$HOST_GUARD_FILE" <<'PY'
+import sys
+
+from argus_host_guard import render_host_guard
+
+print(render_host_guard(sys.argv[1], int(sys.argv[2])), end="")
+PY
 chmod 0644 "$NFT_FILE" "$HOST_GUARD_FILE"
 tee "$HELPER" >/dev/null <<EOF
 #!/usr/bin/env bash

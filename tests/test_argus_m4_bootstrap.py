@@ -61,8 +61,10 @@ class M4BootstrapTest(unittest.TestCase):
             script.index('useradd --create-home --shell /usr/sbin/nologin "$CELL_USER"'),
         )
         self.assertIn("HOST_GUARD_TABLE", script)
+        self.assertIn("from argus_host_guard import render_host_guard", script)
         self.assertIn('Before=user@$(id -u "$CELL_USER").service', script)
-        self.assertIn("meta skuid", script)
+        guard_module = (ROOT / "scripts" / "argus_host_guard.py").read_text()
+        self.assertIn("meta skuid", guard_module)
         self.assertNotIn('systemctl disable --now "$DAEMON_UNIT"', script)
         apply_section = script.rsplit("write_rollback_state\n", 1)[1]
         self.assertLess(
