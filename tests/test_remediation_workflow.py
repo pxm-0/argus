@@ -76,7 +76,9 @@ Acceptance summaries
             self.assertIn(heading, index)
         operations = (ROOT / "docs" / "OPERATIONS.md").read_text()
         self.assertIn("argus dashboard url", operations)
-        self.assertIn("scripts/argus-open intake-os --mode tailnet", operations)
+        self.assertIn("argus workload show <id>", operations)
+        self.assertIn("argus workload move preview <id>", operations)
+        self.assertNotIn("scripts/argus-open intake-os --mode tailnet", operations)
         self.assertNotIn("http://<tailscale-ip>:8088", operations)
 
 

@@ -47,6 +47,22 @@ REQUIRED_BUNDLE_FIELDS = {
 }
 
 
+class DuplicateJsonField(ValueError):
+    pass
+
+
+def strict_json_loads(content: str) -> Any:
+    def reject_duplicates(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                raise DuplicateJsonField(key)
+            result[key] = value
+        return result
+
+    return json.loads(content, object_pairs_hook=reject_duplicates)
+
+
 def repo_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -370,8 +386,8 @@ def json_check(root: Path) -> bool:
     failures: list[str] = []
     for name in result.stdout.splitlines():
         try:
-            json.loads((root / name).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
+            strict_json_loads((root / name).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, DuplicateJsonField) as exc:
             failures.append(f"{name}:{exc.__class__.__name__}")
     if failures:
         print("FAIL tracked JSON " + ", ".join(failures))
@@ -391,10 +407,57 @@ def docs_parity_check(root: Path) -> bool:
         if not (root / "scripts" / name).is_file()
         or not os.access(root / "scripts" / name, os.X_OK)
     )
+    try:
+        public_cli = strict_json_loads((root / "config" / "public-cli.json").read_text())
+        if not isinstance(public_cli, dict) or set(public_cli) != {
+            "schemaVersion", "executableLinks", "commands", "compatibility", "exitClasses"
+        } or public_cli["schemaVersion"] != 1:
+            raise ValueError("public CLI root contract")
+        command_rows = public_cli["commands"]
+        if not isinstance(command_rows, list) or not command_rows:
+            raise ValueError("public command rows")
+        if any(not isinstance(item, dict) or set(item) != {"command", "privilege"} for item in command_rows):
+            raise ValueError("public command row contract")
+        public_commands = {str(item["command"]): str(item["privilege"]) for item in command_rows}
+        if len(public_commands) != len(command_rows) or any(
+            privilege not in {"local-read-only", "server-read-only", "server-mutation"}
+            for privilege in public_commands.values()
+        ):
+            raise ValueError("duplicate command or privilege")
+        installed_links = dict(public_cli["executableLinks"])
+        compatibility = dict(public_cli["compatibility"])
+        if installed_links != {"argus": "argus"}:
+            raise ValueError("installed link contract")
+        if public_cli["exitClasses"] != {
+            "0": "success",
+            "1": "internal-or-check-failure",
+            "2": "invalid-invocation",
+            "3": "safe-refusal-or-precondition",
+            "4": "unavailable-or-transient",
+            "5": "indeterminate-recovery-required",
+        }:
+            raise ValueError("exit class contract")
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, DuplicateJsonField):
+        print("FAIL docs/command parity invalid config/public-cli.json")
+        return False
+    operations = (root / "docs" / "OPERATIONS.md").read_text()
+    for command, privilege in public_commands.items():
+        if f"`{privilege}` — `{command}`" not in operations:
+            failures.append(command)
+    for legacy, replacement in compatibility.items():
+        if f"`{legacy}` → `{replacement}`" not in operations:
+            failures.append(f"compatibility:{legacy}")
+    for link_name, target_name in installed_links.items():
+        target = root / "scripts" / str(target_name)
+        if link_name != "argus" or not target.is_file() or not os.access(target, os.X_OK):
+            failures.append(f"installed-link:{link_name}")
+    stale_route = re.search(r"https://[a-z0-9.-]+\.ts\.net:[0-9]+", operations)
+    if stale_route:
+        failures.append("current-doc-stale-route-literal")
     if failures:
         print("FAIL docs/command parity missing-or-non-executable=" + ",".join(failures))
         return False
-    print(f"PASS docs/command parity commands={len(referenced)}")
+    print(f"PASS docs/command parity scripts={len(referenced)} publicCommands={len(public_commands)}")
     return True
 
 
