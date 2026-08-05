@@ -77,7 +77,9 @@ SPECS = {
         "health_path": "/api/health",
         "tail_port": 8445,
         "stateful": True,
-        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
+        # Flat-rootfs import of caddy:2.11.4. The accepted layered image can no
+        # longer be instantiated by this rootless storage driver (EOVERFLOW).
+        "ingress_image": "sha256:d084570965521d2af5b7f3636241f6a8e9cbe55c644e608b701dc6255d827733",
         # Declared egress: the crawler needs DNS and TLS, nothing else.
         # Effective at the next cutover, when the bridge is renamed. See #267.
         "egress": {
@@ -1938,6 +1940,10 @@ def refresh_overlay(
         raise CutoverError(
             f"runtime overlay names unknown services: {sorted(unknown)}"
         )
+    ingress = services.get("argus-ingress")
+    if not isinstance(ingress, dict):
+        raise CutoverError("accepted runtime is missing the ingress service")
+    ingress["image"] = str(spec["ingress_image"])
     policy = validated_egress(workload, spec)
     # Only a recreate can replace Docker's NetworkID-derived bridge name.
     # Pin every sandbox project so exact firewall rules remain stable across
@@ -2153,6 +2159,10 @@ def refresh(workload: str) -> dict:
     )
     current = json.loads(runtime_compose.read_text())
     image_refresh = validate_target_image_refresh(spec)
+    # Refresh recreates the ingress sidecar too. Prove its pinned image can be
+    # instantiated before removing the accepted project; otherwise recovery
+    # could be impossible on a storage driver that no longer unpacks it.
+    validate_ingress_image_unpack(spec, workload)
     updated = refresh_overlay(current, workload, spec, credential_dir)
     if updated == current:
         # Nothing declared has changed; do not bounce a healthy workload.

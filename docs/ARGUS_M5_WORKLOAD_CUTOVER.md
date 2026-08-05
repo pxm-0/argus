@@ -192,11 +192,13 @@ runs every syntax check with `--network none` before stopping the accepted conta
 retained for automatic recovery, and named volumes are never removed.
 
 For Hastur, revision `03ebe98a2a04874deb5f79128caef6fc53df1fb2`
-introduces the in-process scheduler. The replacement is a flat-rootfs image
-because the accepted layered image cannot be instantiated again by the current
-rootless storage driver. SSH export remains retired in the sandbox: no private
-key is delivered, and `AUTO_EXPORT_ON_STORAGE_THRESHOLD=false` prevents a
-scheduled crawl from triggering a knowingly unusable export path.
+introduces the in-process scheduler. Both the workload replacement and its
+Caddy 2.11.4 ingress sidecar are flat-rootfs images because their accepted
+layered images cannot be instantiated again by the current rootless storage
+driver. Refresh proves both pinned images can unpack before stopping the
+accepted project. SSH export remains retired in the sandbox: no private key is
+delivered, and `AUTO_EXPORT_ON_STORAGE_THRESHOLD=false` prevents a scheduled
+crawl from triggering a knowingly unusable export path.
 
 Hastur hit all three at once: sealed credentials, the `CRAWL_SCHEDULE_*`
 overlay, and a declared egress policy each landed after it was cut over, so
