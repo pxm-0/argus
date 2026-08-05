@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Run sanitized D1a migration/rollback acceptance three times."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import platform
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+from argus_fixture_adapter import adapt_fixture
+from argus_observations import (
+    DEFAULT_DATABASE_CEILING_BYTES,
+    ObservationError,
+    ObservationRepository,
+    SourceRegistry,
+    digest,
+)
+
+
+def run_once(root: Path, ordinal: int, *, enforce_private_mode: bool) -> tuple[int, dict[str, object]]:
+    registry_payload = json.loads(
+        (root / "tests" / "fixtures" / "observation" / "reference-registry.json").read_text(encoding="utf-8")
+    )
+    registry = SourceRegistry(registry_payload, ["personal-sandbox"])
+    source_id = "oreochiserver.reference-compose"
+    records = adapt_fixture(
+        root / "tests" / "fixtures" / "observation" / "reference-compose.json",
+        registry.sources[source_id],
+    )
+    started = time.monotonic_ns()
+    with tempfile.TemporaryDirectory(prefix="argus-d1a-") as directory:
+        work = Path(directory)
+        database = work / "observations.sqlite3"
+        v1_backup = work / "observations-v1.backup"
+        ObservationRepository.create_version(database, 1)
+        with ObservationRepository(database) as repository:
+            repository.backup(v1_backup)
+            if enforce_private_mode:
+                database_mode = stat.S_IMODE(database.stat().st_mode)
+                backup_mode = stat.S_IMODE(v1_backup.stat().st_mode)
+                if database_mode != 0o600 or backup_mode != 0o600:
+                    raise ObservationError("repository and backup must use mode 0600")
+            repository.migrate()
+            repository.sync_registry(registry, explicit_clock="2026-08-05T00:00:00Z")
+            result = repository.ingest(
+                registry,
+                run_id=f"acceptance-{ordinal}",
+                source_id=source_id,
+                sequence=1,
+                state="completed",
+                started_at="2026-08-05T00:00:00Z",
+                terminal_at="2026-08-05T00:00:01Z",
+                records=records,
+            )
+            if repository.current_snapshot(source_id) != records:
+                raise ObservationError("current snapshot does not match the normalized fixture")
+            page_count = int(repository.connection.execute("PRAGMA page_count").fetchone()[0])
+            page_size = int(repository.connection.execute("PRAGMA page_size").fetchone()[0])
+            database_bytes = page_count * page_size
+            if database_bytes > DEFAULT_DATABASE_CEILING_BYTES:
+                raise ObservationError("measured repository exceeds the configured ceiling")
+        ObservationRepository.restore_backup(v1_backup, database)
+        with ObservationRepository(database, read_only=True) as rolled_back:
+            if rolled_back.version != 1:
+                raise ObservationError("repository rollback did not restore the previous version")
+    duration_ms = (time.monotonic_ns() - started) // 1_000_000
+    return duration_ms, {
+        "databaseBytes": database_bytes,
+        "repositoryVersionAfterMigration": 2,
+        "repositoryVersionAfterRollback": 1,
+        "snapshotDigest": result["snapshotDigest"],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D1a SQLite migration/rollback acceptance on oreochiserver")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("oreochiserver", "local-ci"), required=True)
+    args = parser.parse_args()
+    try:
+        if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
+            raise ObservationError("source revision must be a Git hexadecimal revision")
+        if args.target == "oreochiserver" and platform.node().split(".", 1)[0] != "oreochiserver":
+            raise ObservationError("oreochiserver acceptance must run on oreochiserver")
+        if args.target == "oreochiserver":
+            revision = subprocess.run(
+                ["git", "-C", str(args.root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            tracked_clean = subprocess.run(
+                ["git", "-C", str(args.root), "diff", "--quiet"],
+                check=False,
+            ).returncode == 0 and subprocess.run(
+                ["git", "-C", str(args.root), "diff", "--cached", "--quiet"],
+                check=False,
+            ).returncode == 0
+            if not revision.startswith(args.source_revision) or not tracked_clean:
+                raise ObservationError("server acceptance checkout must match the clean source revision")
+        runs = []
+        measurements = []
+        for ordinal in range(1, 4):
+            duration, measurement = run_once(
+                args.root,
+                ordinal,
+                enforce_private_mode=args.target == "oreochiserver",
+            )
+            runs.append({"ordinal": ordinal, "result": "pass", "durationMs": duration, "reasonCode": ""})
+            measurements.append(measurement)
+        if len({item["snapshotDigest"] for item in measurements}) != 1:
+            raise ObservationError("repeated normalized fixture digests differ")
+        evidence_id = digest({
+            "checkId": "d1a-repository-migration",
+            "ceilingBytes": DEFAULT_DATABASE_CEILING_BYTES,
+            "measurements": measurements,
+            "sourceRevision": args.source_revision,
+        })
+        print(
+            "MEASUREMENT "
+            + json.dumps(
+                {
+                    "ceilingBytes": DEFAULT_DATABASE_CEILING_BYTES,
+                    "databaseBytes": [item["databaseBytes"] for item in measurements],
+                    "snapshotDigest": measurements[0]["snapshotDigest"],
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            file=sys.stderr,
+        )
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 301,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d1a-repository-migration",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D1A_ACCEPTANCE_FAIL reason=repository-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

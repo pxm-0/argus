@@ -1,0 +1,22 @@
+{
+  "fixtureVersion": 1,
+  "collector": "reference-compose",
+  "records": [
+    {
+      "object_type": "container",
+      "object_id": "sha256:2222",
+      "captured_at": "2026-08-05T00:00:00Z",
+      "name": "stopped-worker",
+      "lifecycle": "stopped",
+      "project": "fixture-project"
+    },
+    {
+      "object_type": "container",
+      "object_id": "sha256:1111",
+      "captured_at": "2026-08-05T00:00:00Z",
+      "name": "running-web",
+      "lifecycle": "running",
+      "project": "fixture-project"
+    }
+  ]
+}

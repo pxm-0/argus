@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "hostSources": [
+    "oreochiserver.reference-compose"
+  ],
+  "sources": [
+    {
+      "sourceId": "oreochiserver.reference-compose",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "personal-sandbox",
+      "scope": "fixture-only compose resource evidence",
+      "privilege": "unprivileged",
+      "freshnessSloSeconds": 900,
+      "schemaVersion": 1,
+      "protocolVersion": 1,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 1000
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "fixture:reference-compose:v1"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 65536,
+        "maxRecords": 100,
+        "maxRecordBytes": 4096
+      },
+      "minimization": {
+        "resourceKinds": [
+          "container"
+        ],
+        "attributeAllowlist": {
+          "container": [
+            "lifecycle",
+            "name",
+            "project"
+          ]
+        }
+      },
+      "bootstrap": "Install no runtime component; use only the pinned conformance fixture.",
+      "removal": "Remove the fixture source from the reviewed registry; retained runs remain inactive.",
+      "exclusion": null
+    }
+  ]
+}
