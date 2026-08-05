@@ -530,6 +530,10 @@ class RuntimeRefreshTest(unittest.TestCase):
             module.SPECS["hastur"]["image_refresh"]["hastur"]["image"],
             service["image"],
         )
+        self.assertEqual(
+            module.SPECS["hastur"]["ingress_image"],
+            updated["services"]["argus-ingress"]["image"],
+        )
         # Captured runtime environment is preserved, not replaced.
         self.assertEqual(
             "10800000", service["environment"]["CRAWL_MAX_RUNTIME_MS"]
@@ -648,6 +652,10 @@ class RuntimeRefreshTest(unittest.TestCase):
         body = script[script.index("def refresh(") : script.index("def reconcile(")]
         self.assertLess(
             body.index("validate_target_image_refresh(spec)"),
+            body.index('target_compose(spec, runtime_compose, "down")'),
+        )
+        self.assertLess(
+            body.index("validate_ingress_image_unpack(spec, workload)"),
             body.index('target_compose(spec, runtime_compose, "down")'),
         )
 
