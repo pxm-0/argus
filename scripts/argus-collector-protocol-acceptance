@@ -97,7 +97,7 @@ def run_once(repo_root: Path) -> tuple[int, dict[str, object]]:
     fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
     started = time.monotonic_ns()
     with tempfile.TemporaryDirectory(prefix="argus-d1b-", dir="/tmp") as directory:
-        work = Path(directory)
+        work = Path(directory).resolve()
         registry = configured_registry(work, fixture)
         collectors = []
         try:

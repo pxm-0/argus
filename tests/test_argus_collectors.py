@@ -140,7 +140,7 @@ class UnixPageServer:
 class CollectorPageProtocolTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.registry = configured_registry(self.root)
         self.source = next(iter(self.registry.sources.values()))
         self.request = collection_request(
@@ -307,7 +307,7 @@ class CollectorPageProtocolTests(unittest.TestCase):
 class CollectorSocketTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.registry = configured_registry(self.root)
         self.source = next(iter(self.registry.sources.values()))
         self.request = collection_request(
@@ -492,7 +492,7 @@ class CollectorSocketTests(unittest.TestCase):
 class CollectorSchedulerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(dir="/tmp")
-        self.root = Path(self.temporary.name)
+        self.root = Path(self.temporary.name).resolve()
         self.registry = configured_registry(self.root, count=3)
         self.repository = ObservationRepository(self.root / "observations.sqlite3")
 
