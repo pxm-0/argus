@@ -18,13 +18,14 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:9798a95c63d5135bd93d1b7eb17177326e5112aecce29d68e97ddebf508cae16"
+    "expectedSbomDigest": "sha256:8b2e96878c8d9ba1b360ddf7b6ac5fb244a01dd46e92bbb586f571861406e86a"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
     "allowedPaths": [
       "scripts/argus-m5-egress-verify",
       "scripts/argus-m5-workload-cutover",
+      "scripts/argus_collectors.py",
       "scripts/argus_common.py",
       "scripts/argus_sandbox_firewall.py"
     ]
@@ -63,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:b45ed479ac786d673f834850a8b7705dfc9f92124fc13a84487189acb30b4046",
+    "expectedEndpointDigest": "sha256:db74f90824887aa7702e58e8ed21ea083a5148aba838f7a9ad42b55cfe12a205",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -76,6 +77,10 @@
       {
         "path": "scripts/argus-cloudflare-activate",
         "authority": "explicit-disabled-by-default-provider-activation"
+      },
+      {
+        "path": "scripts/argus-collector-protocol-acceptance",
+        "authority": "temporary-local-unix-socket-conformance-only"
       },
       {
         "path": "scripts/argus-control-plane-reconcile",
@@ -120,6 +125,10 @@
       {
         "path": "scripts/argus_common.py",
         "authority": "configured-workload-health-read"
+      },
+      {
+        "path": "scripts/argus_collectors.py",
+        "authority": "authenticated-read-only-local-collector-unix-sockets"
       },
       {
         "path": "scripts/argus_domain_agent.py",

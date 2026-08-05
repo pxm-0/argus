@@ -18,7 +18,7 @@ from typing import Any
 
 NETWORK_IMPORTS = {"http", "socket", "socketserver", "urllib"}
 SHELL_NETWORK_COMMAND = re.compile(r"(?m)(?:^|[;&|]\s*|\s)(?:curl|wget|nc|socat)(?:\s|$)")
-DYNAMIC_IMPORTS = {"importlib"}
+DYNAMIC_IMPORTS = {"ctypes", "importlib"}
 GENERATED_PATHS = (
     "caddy/dashboard.Caddyfile",
     "cloudflare/planned-ingress.yml",
