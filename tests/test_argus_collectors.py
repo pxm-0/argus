@@ -47,12 +47,13 @@ def registry_payload(root: Path, *, count: int = 1, protocols: list[int] | None 
         runtime = root / f"source-{index}"
         runtime.mkdir(mode=0o750)
         runtime.chmod(0o750)
+        runtime_identity = os.lstat(runtime)
         source["transport"] = {
             "kind": "unix-stream",
             "socketPath": str(runtime / "collector.sock"),
             "parentPath": str(runtime),
-            "parentUid": os.getuid(),
-            "parentGid": os.getgid(),
+            "parentUid": runtime_identity.st_uid,
+            "parentGid": runtime_identity.st_gid,
             "parentMode": "0750",
             "socketUid": os.getuid(),
             "socketGid": os.getgid(),
@@ -97,6 +98,11 @@ class UnixPageServer:
         self.errors: list[Exception] = []
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         self.server.bind(source.transport["socketPath"])
+        os.chown(
+            source.transport["socketPath"],
+            source.transport["socketUid"],
+            source.transport["socketGid"],
+        )
         os.chmod(source.transport["socketPath"], 0o660)
         self.server.listen(1)
         self.server.settimeout(0.1)
