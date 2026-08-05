@@ -365,6 +365,9 @@ class DockerCollectorTests(unittest.TestCase):
             apply_body.index("systemd-analyze verify \"$INSTALLED_UNIT\""),
             apply_body.index("systemctl daemon-reload"),
         )
+        self.assertIn("socket:0:0:0", installer)
+        self.assertIn("control-api-docker-socket-connectable", installer)
+        self.assertIn("for docker_path in /run/docker.sock /var/run/docker.sock", installer)
         for forbidden in ("docker stop", "docker restart", "docker rm", "caddy", "tailscale", "cloudflared"):
             self.assertNotIn(forbidden, installer.casefold())
 

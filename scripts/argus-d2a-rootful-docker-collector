@@ -227,9 +227,19 @@ status() {
   local api_pid
   api_pid="$(systemctl show argus-control-api.service -p MainPID --value)"
   [[ "$api_pid" =~ ^[1-9][0-9]*$ ]] || fail "control-api-not-running"
-  if nsenter --mount="/proc/$api_pid/ns/mnt" -- stat /var/run/docker.sock >/dev/null 2>&1; then
-    fail "control-api-docker-socket-visible"
-  fi
+  local docker_path masked_binding
+  for docker_path in /run/docker.sock /var/run/docker.sock; do
+    masked_binding="$(
+      nsenter --mount="/proc/$api_pid/ns/mnt" -- \
+        stat -Lc '%F:%u:%g:%a' "$docker_path" 2>/dev/null
+    )" || fail "control-api-docker-socket-mask-missing"
+    [[ "$masked_binding" == "socket:0:0:0" ]] || fail "control-api-docker-socket-mask-mismatch"
+    if nsenter --mount="/proc/$api_pid/ns/mnt" -- \
+      python3 -c 'import socket, sys; peer = socket.socket(socket.AF_UNIX); peer.connect(sys.argv[1])' \
+      "$docker_path" >/dev/null 2>&1; then
+      fail "control-api-docker-socket-connectable"
+    fi
+  done
   printf 'D2A_COLLECTOR_STATUS_OK service=active socket=authenticated apiDockerSocket=blocked\n'
 }
 

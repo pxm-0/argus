@@ -88,7 +88,8 @@ sudo scripts/argus-d2a-rootful-docker-collector --status
 Preflight validates exact host identities, Docker socket binding, JSON, and the
 systemd unit before reload. Apply backs up any prior unit, creates only the
 dedicated identity when absent, installs the reviewed unit, and verifies that
-the API mount namespace cannot see the Docker socket. It does not restart or
+both Docker socket aliases in the API mount namespace are inert `root:root 000`
+masks that reject even a root connection. It does not restart or
 alter Docker, Caddy, the API, or any workload.
 
 Removal/rollback stops only the collector, removes its socket/unit and exact
