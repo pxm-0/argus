@@ -465,6 +465,11 @@ class CollectorSocketTests(unittest.TestCase):
             def replace() -> None:
                 Path(self.source.transport["socketPath"]).unlink()
                 replacement.bind(self.source.transport["socketPath"])
+                os.chown(
+                    self.source.transport["socketPath"],
+                    self.source.transport["socketUid"],
+                    self.source.transport["socketGid"],
+                )
                 os.chmod(self.source.transport["socketPath"], 0o660)
                 replacement.listen(1)
 
@@ -482,8 +487,18 @@ class CollectorSocketTests(unittest.TestCase):
             def replace_parent() -> None:
                 parent.rename(moved)
                 parent.mkdir(mode=0o750)
+                os.chown(
+                    parent,
+                    self.source.transport["parentUid"],
+                    self.source.transport["parentGid"],
+                )
                 parent.chmod(0o750)
                 replacement.bind(self.source.transport["socketPath"])
+                os.chown(
+                    self.source.transport["socketPath"],
+                    self.source.transport["socketUid"],
+                    self.source.transport["socketGid"],
+                )
                 os.chmod(self.source.transport["socketPath"], 0o660)
                 replacement.listen(1)
 
