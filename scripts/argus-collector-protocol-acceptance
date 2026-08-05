@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Run D1b authenticated collector and scheduler acceptance three times."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import platform
+import re
+import socket
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+from pathlib import Path
+
+from argus_collectors import CollectorScheduler, PageBuilder
+from argus_fixture_adapter import adapt_fixture
+from argus_ipc import receive_frame, send_frame
+from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest
+
+
+class ReferenceCollector:
+    def __init__(self, source: object, records: list[dict[str, object]]):
+        self.source = source
+        self.records = records
+        self.request: dict[str, object] | None = None
+        self.error: Exception | None = None
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        self.server.bind(source.transport["socketPath"])
+        os.chmod(source.transport["socketPath"], 0o660)
+        self.server.listen(1)
+        self.thread = threading.Thread(target=self._serve, daemon=True)
+        self.thread.start()
+
+    def _serve(self) -> None:
+        try:
+            connection, _address = self.server.accept()
+            with connection:
+                self.request = receive_frame(connection)
+                page = PageBuilder(self.source, self.request).build(
+                    [] if self.request["protocolVersion"] == 1 else list(reversed(self.records)),
+                    terminal=True,
+                    terminal_state="completed",
+                    gap_code=None,
+                )
+                send_frame(connection, page)
+        except (OSError, ValueError, ObservationError) as exc:
+            self.error = exc
+
+    def close(self) -> None:
+        self.server.close()
+        self.thread.join(timeout=2)
+        Path(self.source.transport["socketPath"]).unlink(missing_ok=True)
+
+
+def configured_registry(root: Path, fixture: dict[str, object]) -> SourceRegistry:
+    template = fixture["sources"][0]
+    sources = []
+    for index, versions in enumerate(([1, 2], [1])):
+        source = copy.deepcopy(template)
+        source["sourceId"] = f"oreochiserver.acceptance-{index}"
+        runtime = root / f"source-{index}"
+        runtime.mkdir(mode=0o750)
+        runtime.chmod(0o750)
+        source["transport"] = {
+            "kind": "unix-stream",
+            "socketPath": str(runtime / "collector.sock"),
+            "parentPath": str(runtime),
+            "parentUid": os.getuid(),
+            "parentGid": os.getgid(),
+            "parentMode": "0750",
+            "socketUid": os.getuid(),
+            "socketGid": os.getgid(),
+            "socketMode": "0660",
+            "peerUid": os.getuid(),
+            "peerGid": os.getgid(),
+            "protocolVersions": versions,
+        }
+        sources.append(source)
+    return SourceRegistry(
+        {
+            "schemaVersion": 2,
+            "hostSources": [source["sourceId"] for source in sources],
+            "sources": sources,
+        },
+        ["personal-sandbox"],
+    )
+
+
+def run_once(repo_root: Path) -> tuple[int, dict[str, object]]:
+    fixture_path = repo_root / "tests" / "fixtures" / "observation" / "reference-registry.json"
+    record_path = repo_root / "tests" / "fixtures" / "observation" / "reference-compose.json"
+    fixture = json.loads(fixture_path.read_text(encoding="utf-8"))
+    started = time.monotonic_ns()
+    with tempfile.TemporaryDirectory(prefix="argus-d1b-", dir="/tmp") as directory:
+        work = Path(directory)
+        registry = configured_registry(work, fixture)
+        collectors = []
+        try:
+            for source_id in sorted(registry.sources):
+                source = registry.sources[source_id]
+                collectors.append(ReferenceCollector(source, adapt_fixture(record_path, source)))
+            with ObservationRepository(work / "observations.sqlite3") as repository:
+                result = CollectorScheduler(
+                    repository,
+                    registry,
+                    max_workers=2,
+                    global_timeout_milliseconds=5_000,
+                ).refresh(
+                    refresh_id="d1b-acceptance",
+                    explicit_clock="2026-08-05T00:00:00Z",
+                )
+                if result["status"] != "completed" or any(
+                    item["state"] != "completed" for item in result["sources"]
+                ):
+                    raise ObservationError("collector scheduler did not complete")
+                persisted = {
+                    source_id: repository.current_snapshot(source_id)
+                    for source_id in sorted(registry.sources)
+                }
+                stored_protocols = [row[0] for row in repository.connection.execute(
+                    "SELECT protocol_version FROM collection_runs ORDER BY source_id"
+                )]
+        finally:
+            for collector in collectors:
+                collector.close()
+        if any(collector.error is not None or collector.request is None for collector in collectors):
+            raise ObservationError("reference collector failed")
+        protocols = sorted(int(collector.request["protocolVersion"]) for collector in collectors)
+        if protocols != [1, 2]:
+            raise ObservationError("current/previous protocol negotiation failed")
+        if stored_protocols != [2, 1] or persisted["oreochiserver.acceptance-1"] != []:
+            raise ObservationError("persisted protocol/snapshot evidence differs")
+    duration_ms = (time.monotonic_ns() - started) // 1_000_000
+    return duration_ms, {
+        "protocolVersions": protocols,
+        "resultDigest": digest(result),
+        "snapshotDigests": [item["snapshotDigest"] for item in result["sources"]],
+        "persistedDigest": digest(persisted),
+    }
+
+
+def validate_repeated_measurements(measurements: list[dict[str, object]]) -> None:
+    if len({digest(measurement) for measurement in measurements}) != 1:
+        raise ObservationError("repeated collector evidence differs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D1b protocol acceptance on oreochiserver")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("oreochiserver", "local-ci"), required=True)
+    args = parser.parse_args()
+    try:
+        if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
+            raise ObservationError("source revision must be a Git hexadecimal revision")
+        if args.target == "oreochiserver" and platform.node().split(".", 1)[0] != "oreochiserver":
+            raise ObservationError("oreochiserver acceptance must run on oreochiserver")
+        if args.target == "oreochiserver":
+            revision = subprocess.run(
+                ["git", "-C", str(args.root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            clean = subprocess.run(
+                ["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout == ""
+            if not revision.startswith(args.source_revision) or not clean:
+                raise ObservationError("server acceptance checkout must match the clean source revision")
+        runs = []
+        measurements = []
+        for ordinal in range(1, 4):
+            duration, measurement = run_once(args.root)
+            runs.append({"ordinal": ordinal, "result": "pass", "durationMs": duration, "reasonCode": ""})
+            measurements.append(measurement)
+        validate_repeated_measurements(measurements)
+        evidence_id = digest({
+            "checkId": "d1b-collector-protocol",
+            "measurements": measurements,
+            "sourceRevision": args.source_revision,
+        })
+        print("MEASUREMENT " + json.dumps({
+            "protocolVersions": measurements[0]["protocolVersions"],
+            "resultDigest": measurements[0]["resultDigest"],
+            "snapshotDigests": measurements[0]["snapshotDigests"],
+        }, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 307,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d1b-collector-protocol",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D1B_ACCEPTANCE_FAIL reason=collector-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

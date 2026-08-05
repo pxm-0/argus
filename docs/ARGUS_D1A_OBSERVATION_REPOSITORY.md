@@ -22,8 +22,9 @@ source IDs. A missing domain or expected host source is a visible
 
 ## Source registry
 
-`config/argus/observation-sources.json` is schema version `1`. Every configured
-source declares:
+Registry version `1` remains readable by D1a. D1b promotes
+`config/argus/observation-sources.json` to version `2` by adding an exact local
+transport binding. Every configured source declares:
 
 - stable source, host, owner, trust-domain, scope, and privilege identity;
 - freshness SLO plus source schema and collector protocol versions;
@@ -103,11 +104,11 @@ per-source limits or raise the ceiling only through review.
 | --- | --- | --- |
 | SQLite repository, migration, atomic pointer | Build with Python stdlib | D1a |
 | Native fixture normalization | Build one conformance adapter | D1a |
-| Collector socket, paging, peer identity | Not present | D1b |
+| Collector socket, paging, peer identity | Implemented above D1a | D1b |
 | Docker/systemd/cron collectors | Not present | D2-D4 |
 | Reconciliation to canonical workloads | Evidence table only; no admission | D5 |
 | Completeness API and UI | Stable repository/coverage contract only | D5/D6 |
-| Scheduling and concurrent refresh | Not present | D1b |
+| Scheduling and concurrent refresh | Implemented above D1a | D1b |
 | Migration or workload mutation | Forbidden | Epic M |
 | AI or advisory analysis | Forbidden and absent | Separate future read-only boundary/ADR |
 

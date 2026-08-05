@@ -22,7 +22,8 @@ from typing import Any, Iterable
 
 REPOSITORY_VERSION = 2
 PREVIOUS_REPOSITORY_VERSION = 1
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
+PREVIOUS_REGISTRY_VERSION = 1
 NORMALIZED_RECORD_VERSION = 2
 PREVIOUS_NORMALIZED_RECORD_VERSION = 1
 DEFAULT_DATABASE_CEILING_BYTES = 8 * 1024 * 1024
@@ -133,9 +134,10 @@ class SourceSpec:
     bootstrap: str
     removal: str
     exclusion: dict[str, str] | None
+    transport: dict[str, Any] | None
 
     def as_registry_record(self) -> dict[str, Any]:
-        return {
+        record = {
             "sourceId": self.source_id,
             "hostId": self.host_id,
             "owner": self.owner,
@@ -153,6 +155,9 @@ class SourceSpec:
             "removal": self.removal,
             "exclusion": self.exclusion,
         }
+        if self.transport is not None:
+            record["transport"] = self.transport
+        return record
 
     def as_repository_record(self) -> dict[str, Any]:
         """Return source metadata safe to persist centrally (no command/API surface)."""
@@ -173,6 +178,7 @@ class SourceSpec:
             "bootstrapDigest": digest(self.bootstrap),
             "removalDigest": digest(self.removal),
             "exclusion": self.exclusion,
+            "transportDigest": digest(self.transport) if self.transport is not None else None,
         }
 
 
@@ -180,7 +186,10 @@ class SourceRegistry:
     """Validated configured sources plus canonical-domain denominator."""
 
     def __init__(self, payload: dict[str, Any], canonical_domains: Iterable[str]):
-        if not isinstance(payload, dict) or payload.get("schemaVersion") != REGISTRY_VERSION:
+        if not isinstance(payload, dict) or payload.get("schemaVersion") not in {
+            PREVIOUS_REGISTRY_VERSION,
+            REGISTRY_VERSION,
+        }:
             raise ObservationError("unsupported source registry version")
         if set(payload) != {"schemaVersion", "hostSources", "sources"}:
             raise ObservationError("source registry has unknown or missing fields")
@@ -188,6 +197,7 @@ class SourceRegistry:
             isinstance(item, str) and item for item in payload["hostSources"]
         ):
             raise ObservationError("hostSources must be a list of stable source IDs")
+        self.schema_version = int(payload["schemaVersion"])
         normalized_hosts = [_nfc(item) for item in payload["hostSources"]]
         if len(normalized_hosts) != len(set(normalized_hosts)):
             raise ObservationError("hostSources cannot contain duplicates")
@@ -202,19 +212,21 @@ class SourceRegistry:
             raise ObservationError("sources must be a list")
         parsed: dict[str, SourceSpec] = {}
         for raw in raw_sources:
-            source = self._parse_source(raw)
+            source = self._parse_source(raw, registry_version=self.schema_version)
             if source.source_id in parsed:
                 raise ObservationError(f"duplicate source: {source.source_id}")
             parsed[source.source_id] = source
         self.sources = parsed
 
     @staticmethod
-    def _parse_source(raw: Any) -> SourceSpec:
+    def _parse_source(raw: Any, *, registry_version: int) -> SourceSpec:
         required = {
             "sourceId", "hostId", "owner", "trustDomain", "scope", "privilege",
             "freshnessSloSeconds", "schemaVersion", "protocolVersion", "executionIdentity",
             "allowlist", "bounds", "minimization", "bootstrap", "removal", "exclusion",
         }
+        if registry_version == REGISTRY_VERSION:
+            required.add("transport")
         if not isinstance(raw, dict) or set(raw) != required:
             raise ObservationError("source has unknown or missing fields")
         identity = raw["executionIdentity"]
@@ -271,6 +283,9 @@ class SourceRegistry:
         privilege = _required_text(raw, "privilege")
         if privilege not in {"unprivileged", "domain-read-only", "host-read-only"}:
             raise ObservationError("source privilege is unsupported")
+        transport = None
+        if registry_version == REGISTRY_VERSION:
+            transport = SourceRegistry._parse_transport(raw["transport"])
         return SourceSpec(
             source_id=_required_text(raw, "sourceId"),
             host_id=_required_text(raw, "hostId"),
@@ -288,7 +303,37 @@ class SourceRegistry:
             bootstrap=_required_text(raw, "bootstrap", maximum=2048),
             removal=_required_text(raw, "removal", maximum=2048),
             exclusion=exclusion,
+            transport=transport,
         )
+
+    @staticmethod
+    def _parse_transport(raw: Any) -> dict[str, Any]:
+        required = {
+            "kind", "socketPath", "parentPath", "parentUid", "parentGid", "parentMode",
+            "socketUid", "socketGid", "socketMode", "peerUid", "peerGid", "protocolVersions",
+        }
+        if not isinstance(raw, dict) or set(raw) != required or raw.get("kind") != "unix-stream":
+            raise ObservationError("transport must be one exact Unix-stream binding")
+        socket_path = Path(_required_text(raw, "socketPath", maximum=103))
+        parent_path = Path(_required_text(raw, "parentPath", maximum=96))
+        if not socket_path.is_absolute() or not parent_path.is_absolute() or socket_path.parent != parent_path:
+            raise ObservationError("transport socket and parent paths must be exact absolute paths")
+        numeric_fields = ("parentUid", "parentGid", "socketUid", "socketGid", "peerUid", "peerGid")
+        if not all(isinstance(raw[field], int) and not isinstance(raw[field], bool) and raw[field] >= 0 for field in numeric_fields):
+            raise ObservationError("transport identities must be non-negative integers")
+        for field in ("parentMode", "socketMode"):
+            if not isinstance(raw[field], str) or len(raw[field]) != 4 or raw[field][0] != "0" or any(
+                character not in "01234567" for character in raw[field]
+            ):
+                raise ObservationError("transport modes must use four-digit octal text")
+        versions = raw["protocolVersions"]
+        if not isinstance(versions, list) or not versions or any(
+            not isinstance(version, int) or isinstance(version, bool) for version in versions
+        ):
+            raise ObservationError("transport protocolVersions must be an integer list")
+        if versions != sorted(set(versions)) or not set(versions).issubset({1, 2}):
+            raise ObservationError("transport supports only ordered current/previous protocol versions")
+        return canonical_value(raw)
 
     def configuration_gaps(self) -> list[dict[str, str]]:
         represented = {source.trust_domain for source in self.sources.values()}
@@ -307,7 +352,7 @@ class SourceRegistry:
     @property
     def registry_digest(self) -> str:
         return digest({
-            "schemaVersion": REGISTRY_VERSION,
+            "schemaVersion": self.schema_version,
             "canonicalDomains": list(self.canonical_domains),
             "hostSources": list(self.host_sources),
             "sources": [self.sources[key].as_registry_record() for key in sorted(self.sources)],
@@ -659,27 +704,30 @@ class ObservationRepository:
             raise ObservationError("current writable repository required")
         explicit_clock, _clock_epoch = _utc_timestamp({"explicitClock": explicit_clock}, "explicitClock")
         with self.connection:
-            active_ids = set(registry.sources)
-            existing = {
-                row["source_id"] for row in self.connection.execute("SELECT source_id FROM sources")
-            }
-            for source_id in sorted(active_ids):
-                source = registry.sources[source_id]
-                persisted = source.as_repository_record()
-                record_json = canonical_bytes(persisted).decode("utf-8").strip()
-                self.connection.execute(
-                    """INSERT INTO sources(source_id,registry_json,registry_digest,active,current_run_id,removed_at)
-                       VALUES(?,?,?,?,NULL,NULL)
-                       ON CONFLICT(source_id) DO UPDATE SET registry_json=excluded.registry_json,
-                         registry_digest=excluded.registry_digest,active=1,removed_at=NULL""",
-                    (source_id, record_json, digest(persisted), 1),
-                )
-            for removed in sorted(existing - active_ids):
-                self.connection.execute(
-                    "UPDATE sources SET active=0, removed_at=? WHERE source_id=? AND active=1",
-                    (explicit_clock, removed),
-                )
+            self._sync_registry_rows(registry, explicit_clock=explicit_clock)
         self._enforce_size()
+
+    def _sync_registry_rows(self, registry: SourceRegistry, *, explicit_clock: str) -> None:
+        active_ids = set(registry.sources)
+        existing = {
+            row["source_id"] for row in self.connection.execute("SELECT source_id FROM sources")
+        }
+        for source_id in sorted(active_ids):
+            source = registry.sources[source_id]
+            persisted = source.as_repository_record()
+            record_json = canonical_bytes(persisted).decode("utf-8").strip()
+            self.connection.execute(
+                """INSERT INTO sources(source_id,registry_json,registry_digest,active,current_run_id,removed_at)
+                   VALUES(?,?,?,?,NULL,NULL)
+                   ON CONFLICT(source_id) DO UPDATE SET registry_json=excluded.registry_json,
+                     registry_digest=excluded.registry_digest,active=1,removed_at=NULL""",
+                (source_id, record_json, digest(persisted), 1),
+            )
+        for removed in sorted(existing - active_ids):
+            self.connection.execute(
+                "UPDATE sources SET active=0, removed_at=? WHERE source_id=? AND active=1",
+                (explicit_clock, removed),
+            )
 
     def ingest(
         self,
@@ -687,12 +735,14 @@ class ObservationRepository:
         *,
         run_id: str,
         source_id: str,
-        sequence: int,
+        sequence: int | None,
         state: str,
         started_at: str,
         terminal_at: str,
         records: Iterable[dict[str, Any]],
         gap_code: str | None = None,
+        protocol_version: int | None = None,
+        reserved: bool = False,
     ) -> dict[str, Any]:
         if self.read_only or self.version != REPOSITORY_VERSION:
             raise ObservationError("current writable repository required")
@@ -700,7 +750,9 @@ class ObservationRepository:
             raise ObservationError("run state must be completed, partial, or failed")
         if source_id not in registry.sources:
             raise ObservationError("source is not in the active registry")
-        if not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1:
+        if sequence is not None and (
+            not isinstance(sequence, int) or isinstance(sequence, bool) or sequence < 1
+        ):
             raise ObservationError("sequence must be a positive integer")
         run_id = _required_text({"runId": run_id}, "runId")
         started_at, started_epoch = _utc_timestamp({"startedAt": started_at}, "startedAt")
@@ -711,36 +763,75 @@ class ObservationRepository:
             raise ObservationError("completed runs cannot carry a gap")
         if state != "completed" and not gap_code:
             raise ObservationError("partial and failed runs require a gap code")
-        normalized, byte_count, snapshot_digest = normalize_records(registry.sources[source_id], records)
+        source_spec = registry.sources[source_id]
+        effective_protocol_version = source_spec.protocol_version if protocol_version is None else protocol_version
+        if (
+            not isinstance(effective_protocol_version, int)
+            or isinstance(effective_protocol_version, bool)
+            or effective_protocol_version < 1
+            or effective_protocol_version > 2
+            or (
+                source_spec.transport is not None
+                and effective_protocol_version not in source_spec.transport["protocolVersions"]
+            )
+        ):
+            raise ObservationError("collection protocol version is unsupported by the source")
+        normalized, byte_count, snapshot_digest = normalize_records(source_spec, records)
         if state == "failed" and normalized:
             raise ObservationError("failed runs cannot contain observations")
         self.connection.execute("BEGIN IMMEDIATE")
         try:
-            duplicate = self.connection.execute(
-                "SELECT 1 FROM collection_runs WHERE run_id=? OR (source_id=? AND sequence=?)",
-                (run_id, source_id, sequence),
-            ).fetchone()
-            if duplicate is not None:
-                raise ObservationError("run ID and source sequence must be unique")
+            if reserved:
+                reservation = self.connection.execute(
+                    """SELECT source_id,sequence,state,started_at,protocol_version,registry_digest
+                       FROM collection_runs WHERE run_id=?""",
+                    (run_id,),
+                ).fetchone()
+                expected_digest = digest(source_spec.as_registry_record())
+                if (
+                    reservation is None
+                    or reservation["source_id"] != source_id
+                    or reservation["state"] != "collecting"
+                    or reservation["started_at"] != started_at
+                    or reservation["protocol_version"] != effective_protocol_version
+                    or reservation["registry_digest"] != expected_digest
+                ):
+                    raise ObservationError("collection run reservation does not match")
+                if sequence is not None and sequence != reservation["sequence"]:
+                    raise ObservationError("collection run reservation sequence does not match")
+                sequence = int(reservation["sequence"])
+            elif sequence is None:
+                sequence = int(self.connection.execute(
+                    "SELECT COALESCE(MAX(sequence),0)+1 FROM collection_runs WHERE source_id=?",
+                    (source_id,),
+                ).fetchone()[0])
+            if not reserved:
+                duplicate = self.connection.execute(
+                    "SELECT 1 FROM collection_runs WHERE run_id=? OR (source_id=? AND sequence=?)",
+                    (run_id, source_id, sequence),
+                ).fetchone()
+                if duplicate is not None:
+                    raise ObservationError("run ID and source sequence must be unique")
             source_row = self.connection.execute(
                 "SELECT active,current_run_id FROM sources WHERE source_id=?", (source_id,)
             ).fetchone()
             if source_row is None or not source_row["active"]:
                 raise ObservationError("source registry has not been synchronized")
-            self.connection.execute(
-                """INSERT INTO collection_runs(
-                       run_id,source_id,sequence,repository_version,source_schema_version,protocol_version,
-                       registry_digest,state,started_at,terminal_at,record_count,byte_count,
-                       snapshot_digest,gap_code,superseded_by)
-                   VALUES(?,?,?,?,?,?,?,'collecting',?,NULL,0,0,NULL,NULL,NULL)""",
-                (
-                    run_id, source_id, sequence, REPOSITORY_VERSION,
-                    registry.sources[source_id].schema_version,
-                    registry.sources[source_id].protocol_version,
-                    digest(registry.sources[source_id].as_registry_record()),
-                    started_at,
-                ),
-            )
+            if not reserved:
+                self.connection.execute(
+                    """INSERT INTO collection_runs(
+                           run_id,source_id,sequence,repository_version,source_schema_version,protocol_version,
+                           registry_digest,state,started_at,terminal_at,record_count,byte_count,
+                           snapshot_digest,gap_code,superseded_by)
+                       VALUES(?,?,?,?,?,?,?,'collecting',?,NULL,0,0,NULL,NULL,NULL)""",
+                    (
+                        run_id, source_id, sequence, REPOSITORY_VERSION,
+                        source_spec.schema_version,
+                        effective_protocol_version,
+                        digest(source_spec.as_registry_record()),
+                        started_at,
+                    ),
+                )
             for record in normalized:
                 self.connection.execute(
                     """INSERT INTO observations(
@@ -794,6 +885,181 @@ class ObservationRepository:
             "byteCount": byte_count,
             "snapshotDigest": snapshot_digest,
             "becameCurrent": became_current,
+        }
+
+    def reserve_collection_runs(
+        self,
+        registry: SourceRegistry,
+        reservations: Iterable[dict[str, Any]],
+        *,
+        started_at: str,
+    ) -> dict[str, str]:
+        """Atomically reserve every missing source run before collectors start."""
+        if self.read_only or self.version != REPOSITORY_VERSION:
+            raise ObservationError("current writable repository required")
+        started_at, _started_epoch = _utc_timestamp({"startedAt": started_at}, "startedAt")
+        prepared = []
+        seen_runs: set[str] = set()
+        seen_sources: set[str] = set()
+        for reservation in reservations:
+            if not isinstance(reservation, dict) or set(reservation) != {
+                "runId", "sourceId", "protocolVersion"
+            }:
+                raise ObservationError("collection reservation shape is invalid")
+            run_id = _required_text(reservation, "runId")
+            source_id = _required_text(reservation, "sourceId")
+            if run_id in seen_runs or source_id in seen_sources or source_id not in registry.sources:
+                raise ObservationError("collection reservations must be unique active sources")
+            seen_runs.add(run_id)
+            seen_sources.add(source_id)
+            source = registry.sources[source_id]
+            protocol_version = reservation["protocolVersion"]
+            if (
+                not isinstance(protocol_version, int)
+                or isinstance(protocol_version, bool)
+                or protocol_version < 1
+                or protocol_version > 2
+                or (
+                    source.transport is not None
+                    and protocol_version not in source.transport["protocolVersions"]
+                )
+            ):
+                raise ObservationError("collection protocol version is unsupported by the source")
+            prepared.append((run_id, source_id, protocol_version, source))
+        statuses: dict[str, str] = {}
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            for run_id, source_id, protocol_version, source in prepared:
+                row = self.connection.execute(
+                    """SELECT source_id,state,started_at,protocol_version,registry_digest
+                       FROM collection_runs WHERE run_id=?""",
+                    (run_id,),
+                ).fetchone()
+                if row is None:
+                    statuses[run_id] = "missing"
+                    continue
+                if (
+                    row["source_id"] != source_id
+                    or row["started_at"] != started_at
+                    or row["protocol_version"] != protocol_version
+                    or row["registry_digest"] != digest(source.as_registry_record())
+                ):
+                    raise ObservationError("collection refresh ID conflicts with persisted evidence")
+                statuses[run_id] = "active" if row["state"] == "collecting" else "existing"
+            if "active" in statuses.values():
+                self.connection.rollback()
+                return statuses
+            self._sync_registry_rows(registry, explicit_clock=started_at)
+            for run_id, source_id, protocol_version, source in prepared:
+                if statuses[run_id] != "missing":
+                    continue
+                source_row = self.connection.execute(
+                    "SELECT active FROM sources WHERE source_id=?", (source_id,)
+                ).fetchone()
+                if source_row is None or not source_row["active"]:
+                    raise ObservationError("source registry has not been synchronized")
+                sequence = int(self.connection.execute(
+                    "SELECT COALESCE(MAX(sequence),0)+1 FROM collection_runs WHERE source_id=?",
+                    (source_id,),
+                ).fetchone()[0])
+                self.connection.execute(
+                    """INSERT INTO collection_runs(
+                           run_id,source_id,sequence,repository_version,source_schema_version,protocol_version,
+                           registry_digest,state,started_at,terminal_at,record_count,byte_count,
+                           snapshot_digest,gap_code,superseded_by)
+                       VALUES(?,?,?,?,?,?,?,'collecting',?,NULL,0,0,NULL,NULL,NULL)""",
+                    (
+                        run_id, source_id, sequence, REPOSITORY_VERSION, source.schema_version,
+                        protocol_version, digest(source.as_registry_record()), started_at,
+                    ),
+                )
+                statuses[run_id] = "reserved"
+            self._enforce_size()
+            self.connection.commit()
+        except ObservationError:
+            self.connection.rollback()
+            raise
+        except sqlite3.DatabaseError as exc:
+            self.connection.rollback()
+            raise ObservationError("collection reservation transaction failed") from exc
+        return statuses
+
+    def fail_reserved_run(
+        self,
+        registry: SourceRegistry,
+        *,
+        run_id: str,
+        source_id: str,
+        started_at: str,
+        terminal_at: str,
+        protocol_version: int,
+        gap_code: str,
+    ) -> dict[str, Any]:
+        """Terminalize one reservation owned by the caller without moving its current pointer."""
+        if self.read_only or self.version != REPOSITORY_VERSION:
+            raise ObservationError("current writable repository required")
+        if source_id not in registry.sources:
+            raise ObservationError("source is not in the active registry")
+        run_id = _required_text({"runId": run_id}, "runId")
+        started_at, started_epoch = _utc_timestamp({"startedAt": started_at}, "startedAt")
+        terminal_at, terminal_epoch = _utc_timestamp({"terminalAt": terminal_at}, "terminalAt")
+        if terminal_epoch < started_epoch:
+            raise ObservationError("terminalAt cannot precede startedAt")
+        if not isinstance(gap_code, str) or not gap_code:
+            raise ObservationError("failed reservations require a gap code")
+        source = registry.sources[source_id]
+        if (
+            not isinstance(protocol_version, int)
+            or isinstance(protocol_version, bool)
+            or protocol_version < 1
+            or protocol_version > 2
+            or (
+                source.transport is not None
+                and protocol_version not in source.transport["protocolVersions"]
+            )
+        ):
+            raise ObservationError("collection protocol version is unsupported by the source")
+        _records, byte_count, snapshot_digest = normalize_records(source, [])
+        self.connection.execute("BEGIN IMMEDIATE")
+        try:
+            reservation = self.connection.execute(
+                """SELECT source_id,state,started_at,protocol_version,registry_digest
+                   FROM collection_runs WHERE run_id=?""",
+                (run_id,),
+            ).fetchone()
+            if (
+                reservation is None
+                or reservation["source_id"] != source_id
+                or reservation["state"] != "collecting"
+                or reservation["started_at"] != started_at
+                or reservation["protocol_version"] != protocol_version
+                or reservation["registry_digest"] != digest(source.as_registry_record())
+            ):
+                raise ObservationError("collection run reservation does not match")
+            self.connection.execute("DELETE FROM observations WHERE run_id=?", (run_id,))
+            cursor = self.connection.execute(
+                """UPDATE collection_runs SET state='failed',terminal_at=?,record_count=0,
+                     byte_count=?,snapshot_digest=?,gap_code=? WHERE run_id=? AND state='collecting'""",
+                (terminal_at, byte_count, snapshot_digest, gap_code, run_id),
+            )
+            if cursor.rowcount != 1:
+                raise ObservationError("collection run reservation does not match")
+            self._enforce_size()
+            self.connection.commit()
+        except ObservationError:
+            self.connection.rollback()
+            raise
+        except sqlite3.DatabaseError as exc:
+            self.connection.rollback()
+            raise ObservationError("collection reservation finalization failed") from exc
+        return {
+            "runId": run_id,
+            "sourceId": source_id,
+            "state": "failed",
+            "recordCount": 0,
+            "byteCount": byte_count,
+            "snapshotDigest": snapshot_digest,
+            "becameCurrent": False,
         }
 
     def recover_interrupted(self, *, terminal_at: str) -> int:
@@ -916,6 +1182,31 @@ class ObservationRepository:
             }
             for row in rows
         ]
+
+    def run_result(self, run_id: str) -> dict[str, Any] | None:
+        row = self.connection.execute(
+            """SELECT r.run_id,r.source_id,r.sequence,r.state,r.started_at,r.protocol_version,
+                      r.registry_digest,r.record_count,r.byte_count,r.snapshot_digest,r.gap_code,
+                      s.current_run_id
+               FROM collection_runs r JOIN sources s ON s.source_id=r.source_id
+               WHERE r.run_id=?""",
+            (run_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return {
+            "runId": row["run_id"],
+            "sourceId": row["source_id"],
+            "state": row["state"],
+            "startedAt": row["started_at"],
+            "protocolVersion": row["protocol_version"],
+            "registryDigest": row["registry_digest"],
+            "recordCount": row["record_count"],
+            "byteCount": row["byte_count"],
+            "snapshotDigest": row["snapshot_digest"],
+            "gapCode": row["gap_code"],
+            "becameCurrent": row["current_run_id"] == row["run_id"],
+        }
 
     def prune(
         self,

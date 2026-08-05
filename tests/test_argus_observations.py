@@ -70,7 +70,7 @@ class ObservationRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ObservationError, "duplicate source"):
             SourceRegistry(duplicate, [])
         future = registry_payload()
-        future["schemaVersion"] = 2
+        future["schemaVersion"] = 3
         with self.assertRaisesRegex(ObservationError, "unsupported source registry version"):
             SourceRegistry(future, [])
         missing_host = registry_payload()
