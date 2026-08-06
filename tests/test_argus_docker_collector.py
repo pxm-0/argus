@@ -325,6 +325,7 @@ class DockerCollectorTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             source_path = Path(directory).resolve() / "source.json"
             source_path.write_text(json.dumps(projected), encoding="utf-8")
+            os.chown(source_path, os.getuid(), os.getgid())
             source_path.chmod(0o640)
             source = load_runtime_source(
                 source_path,
