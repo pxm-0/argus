@@ -1,0 +1,160 @@
+{
+  "fixtureVersion": 1,
+  "responses": {
+    "/version": {
+      "ApiVersion": "1.54",
+      "MinAPIVersion": "1.40"
+    },
+    "/v1.40/containers/json?all=1&size=0": [
+      {
+        "Id": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "Id": "1111111111111111111111111111111111111111111111111111111111111111"
+      }
+    ],
+    "/v1.40/containers/1111111111111111111111111111111111111111111111111111111111111111/json?size=0": {
+      "Id": "1111111111111111111111111111111111111111111111111111111111111111",
+      "Name": "/running-web",
+      "Config": {
+        "Image": "registry.invalid/private/web:fixture",
+        "Env": [
+          "FIXTURE_PRIVATE=not-exported"
+        ],
+        "Labels": {
+          "com.docker.compose.project": "fixture-project",
+          "com.docker.compose.service": "web",
+          "private.fixture.label": "must-not-export"
+        }
+      },
+      "State": {
+        "Status": "running",
+        "Health": {
+          "Status": "healthy",
+          "Log": [
+            {
+              "Output": "private-health-output"
+            }
+          ]
+        }
+      },
+      "HostConfig": {
+        "RestartPolicy": {
+          "Name": "unless-stopped"
+        },
+        "Privileged": false,
+        "NetworkMode": "fixture-project_default",
+        "PidMode": "",
+        "CapAdd": null,
+        "Devices": []
+      },
+      "Mounts": [
+        {
+          "Type": "bind",
+          "Source": "/srv/private/app",
+          "Destination": "/app/data",
+          "RW": false,
+          "Propagation": "rprivate"
+        }
+      ],
+      "NetworkSettings": {
+        "Networks": {
+          "fixture-project_default": {}
+        },
+        "Ports": {
+          "8080/tcp": [
+            {
+              "HostIp": "127.0.0.1",
+              "HostPort": "18080"
+            }
+          ]
+        }
+      }
+    },
+    "/v1.40/containers/2222222222222222222222222222222222222222222222222222222222222222/json?size=0": {
+      "Id": "2222222222222222222222222222222222222222222222222222222222222222",
+      "Name": "/stopped-worker",
+      "Config": {
+        "Image": "registry.invalid/private/worker:fixture",
+        "Env": [],
+        "Labels": {
+          "com.docker.compose.project": "fixture-project",
+          "com.docker.compose.service": "worker"
+        }
+      },
+      "State": {
+        "Status": "exited",
+        "Health": null
+      },
+      "HostConfig": {
+        "RestartPolicy": {
+          "Name": "no"
+        },
+        "Privileged": false,
+        "NetworkMode": "fixture-project_default",
+        "PidMode": "",
+        "CapAdd": [],
+        "Devices": []
+      },
+      "Mounts": [],
+      "NetworkSettings": {
+        "Networks": {
+          "fixture-project_default": {}
+        },
+        "Ports": {}
+      }
+    },
+    "/v1.40/images/json?all=1&digests=1": [
+      {
+        "Id": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "Created": 1700000000,
+        "Size": 123456,
+        "RepoTags": [
+          "registry.invalid/private/web:fixture"
+        ],
+        "RepoDigests": []
+      },
+      {
+        "Id": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "Created": 1700000100,
+        "Size": 654321,
+        "RepoTags": null,
+        "RepoDigests": null
+      }
+    ],
+    "/v1.40/networks": [
+      {
+        "Id": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "Name": "fixture-project_default",
+        "Driver": "bridge",
+        "Scope": "local",
+        "Internal": false,
+        "Attachable": false,
+        "Containers": {
+          "1111111111111111111111111111111111111111111111111111111111111111": {}
+        },
+        "Labels": {
+          "com.docker.compose.project": "fixture-project",
+          "com.docker.compose.network": "default",
+          "private.fixture.label": "must-not-export"
+        }
+      }
+    ],
+    "/v1.40/volumes": {
+      "Volumes": [
+        {
+          "Name": "fixture-project_data",
+          "Driver": "local",
+          "Mountpoint": "/var/lib/docker/volumes/private/_data",
+          "Labels": {
+            "com.docker.compose.project": "fixture-project",
+            "com.docker.compose.volume": "data",
+            "private.fixture.label": "must-not-export"
+          },
+          "Options": null
+        }
+      ],
+      "Warnings": null
+    }
+  }
+}

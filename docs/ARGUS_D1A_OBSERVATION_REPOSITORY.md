@@ -105,7 +105,8 @@ per-source limits or raise the ceiling only through review.
 | SQLite repository, migration, atomic pointer | Build with Python stdlib | D1a |
 | Native fixture normalization | Build one conformance adapter | D1a |
 | Collector socket, paging, peer identity | Implemented above D1a | D1b |
-| Docker/systemd/cron collectors | Not present | D2-D4 |
+| Rootful Docker collector | Implemented above D1b | D2a |
+| Rootless Docker/systemd/cron collectors | Not present | D2b-D4 |
 | Reconciliation to canonical workloads | Evidence table only; no admission | D5 |
 | Completeness API and UI | Stable repository/coverage contract only | D5/D6 |
 | Scheduling and concurrent refresh | Implemented above D1a | D1b |

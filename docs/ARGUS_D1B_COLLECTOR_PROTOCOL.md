@@ -30,6 +30,9 @@ a native command, raw Docker socket, environment, file content, Git remote, or
 credential. Collector bootstrap and removal remain reviewed source metadata;
 D1b does not install or remove units.
 
+The first separately reviewed live source is the D2a rootful Docker collector
+documented in `docs/ARGUS_D2A_ROOTFUL_DOCKER_COLLECTOR.md`.
+
 ## Request and pages
 
 Requests bind protocol, refresh, run, source, host, trust domain, and explicit

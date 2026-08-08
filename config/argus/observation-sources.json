@@ -1,5 +1,104 @@
 {
   "schemaVersion": 2,
-  "hostSources": [],
-  "sources": []
+  "hostSources": [
+    "oreochiserver.rootful-docker"
+  ],
+  "sources": [
+    {
+      "sourceId": "oreochiserver.rootful-docker",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "rootful Docker containers, images, networks, and volumes",
+      "privilege": "domain-read-only",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 950,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "docker-engine:GET:/version",
+          "docker-engine:v1.40:GET:/containers/json?all=1&size=0",
+          "docker-engine:v1.40:GET:/containers/{listed-id}/json?size=0",
+          "docker-engine:v1.40:GET:/images/json?all=1&digests=1",
+          "docker-engine:v1.40:GET:/networks",
+          "docker-engine:v1.40:GET:/volumes"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 1000,
+        "maxRecordBytes": 16384
+      },
+      "minimization": {
+        "resourceKinds": [
+          "container",
+          "image",
+          "network",
+          "volume"
+        ],
+        "attributeAllowlist": {
+          "container": [
+            "lifecycle",
+            "name",
+            "project",
+            "service",
+            "imageRef",
+            "health",
+            "restartPolicy",
+            "networkRefs",
+            "mounts",
+            "publishedPorts",
+            "privilegeFlags"
+          ],
+          "image": [
+            "createdEpoch",
+            "sizeBytes",
+            "referenceCount"
+          ],
+          "network": [
+            "name",
+            "driver",
+            "scope",
+            "internal",
+            "attachable",
+            "containerCount",
+            "project",
+            "network"
+          ],
+          "volume": [
+            "name",
+            "driver",
+            "project",
+            "volume"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed argus-rootful-docker-collector service as UID 950 with primary GID 981 and supplementary Docker GID 983; expose only /run/argus/collectors/rootful-docker/collector.sock.",
+      "removal": "Stop and disable only argus-rootful-docker-collector.service, remove its reviewed unit and dedicated UID 950 after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/rootful-docker/collector.sock",
+        "parentPath": "/run/argus/collectors/rootful-docker",
+        "parentUid": 950,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 950,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 950,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    }
+  ]
 }

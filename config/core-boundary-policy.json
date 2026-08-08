@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:8b2e96878c8d9ba1b360ddf7b6ac5fb244a01dd46e92bbb586f571861406e86a"
+    "expectedSbomDigest": "sha256:f5709aee2cb8fe69bcb116594d6d4a52f075be710604256bc86d92e46ad0576c"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:db74f90824887aa7702e58e8ed21ea083a5148aba838f7a9ad42b55cfe12a205",
+    "expectedEndpointDigest": "sha256:319432a19172faa8df3b32eb9270f89eb4ca6203e7a2ad25b6db9054d3916c71",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -129,6 +129,10 @@
       {
         "path": "scripts/argus_collectors.py",
         "authority": "authenticated-read-only-local-collector-unix-sockets"
+      },
+      {
+        "path": "scripts/argus_docker_collector.py",
+        "authority": "pinned-get-only-rootful-docker-and-authenticated-local-collector-unix-sockets"
       },
       {
         "path": "scripts/argus_domain_agent.py",
