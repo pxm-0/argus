@@ -86,8 +86,8 @@ def _source_measurement(records: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def fixture_once(root: Path, explicit_clock: str) -> dict[str, Any]:
-    registry = load_registry(root / "config/argus/observation-sources.json", root)
+def fixture_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+    registry = load_registry(registry_path, root)
     fixture = json.loads((root / "tests/fixtures/schedules/d3-systemd-schedule.json").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory(prefix="argus-d3-fixture-", dir="/tmp") as directory:
         fixture_root = Path(directory)
@@ -113,8 +113,8 @@ def fixture_once(root: Path, explicit_clock: str) -> dict[str, Any]:
     return measurements
 
 
-def live_once(root: Path, explicit_clock: str) -> dict[str, Any]:
-    registry = load_registry(root / "config/argus/observation-sources.json", root)
+def live_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+    registry = load_registry(registry_path, root)
     with tempfile.TemporaryDirectory(prefix="argus-d3-live-", dir="/tmp") as directory:
         with ObservationRepository(Path(directory) / "observations.sqlite3") as repository:
             result = CollectorScheduler(
@@ -146,10 +146,12 @@ def main() -> int:
     parser.add_argument("--source-revision", required=True)
     parser.add_argument("--captured-at", required=True)
     parser.add_argument("--target", choices=("local-ci", "oreochiserver"), required=True)
+    parser.add_argument("--registry", type=Path)
     args = parser.parse_args()
     try:
         if not args.source_revision or any(character not in "0123456789abcdef" for character in args.source_revision):
             raise ObservationError("source revision must be hexadecimal")
+        registry_path = args.registry or (args.root / "config/argus/observation-sources.json")
         if args.target == "oreochiserver":
             if platform.node().split(".", 1)[0] != "oreochiserver":
                 raise ObservationError("live D3 acceptance must run on oreochiserver")
@@ -176,7 +178,7 @@ def main() -> int:
         runs = []
         for ordinal in range(1, 4):
             started = time.monotonic_ns()
-            measurements.append(runner(args.root, args.captured_at))
+            measurements.append(runner(args.root, args.captured_at, registry_path))
             runs.append({
                 "ordinal": ordinal,
                 "result": "pass",
