@@ -1,6 +1,7 @@
 # Argus M5 Phase 1 Closeout
 
-Status: pending current server revalidation.
+Status: accepted for the parity baseline; PostgreSQL backup repair remains
+tracked separately in issue #312.
 
 This record is the sanitized source-of-truth summary for the Phase 1 server
 baseline. Raw runtime evidence remains on `oreochiserver` under the ignored
@@ -19,20 +20,21 @@ runtime evidence tree and must not be copied into GitHub or Git.
 
 | Check | Target | Result | Evidence |
 |---|---|---|---|
-| reviewed repository revision | `oreochiserver` | pending | sanitized server record |
-| `argus-check` | `oreochiserver` | pending | command summary |
-| `argus doctor --json` | `oreochiserver` | pending | safe JSON fields only |
-| scheduled smoke | `oreochiserver` | pending | failure/warning counts only |
-| workload health | `oreochiserver` | pending | status codes only |
-| listener and unit safety | `oreochiserver` | pending | class/count summary only |
+| reviewed repository revision | `oreochiserver` | `c9f12d85` clean checkout | `main...origin/main`, no local changes |
+| `argus-check` | `oreochiserver` | pass | 406 tests, 0 skips; compile, JSON, manifest, smoke, docs, and secret-safe checks passed |
+| `argus doctor --json` | `oreochiserver` | pass | 0 failures; core-boundary audit pass; localhost-only control API; no observed Funnel exposure |
+| scheduled smoke | `oreochiserver` | pass | `ok=true`, exit code 0, 0 failures, 0 warnings |
+| workload health | `oreochiserver` | pass | 5 enabled workloads returned HTTP 200; disabled `hello-nginx` skipped |
+| listener and unit safety | `oreochiserver` | pass with allowlisted backup failures | smoke timer enabled/active; core units active; only the two known PostgreSQL backup units remain failed |
 
 ## Acceptance gate
 
-Phase 1 is current only when the reviewed checkout is clean, the scheduled
-smoke timer is enabled and active, manual scheduled smoke reports zero failures
-and zero warnings, the core API/worker/issuer/domain-agent units are active, and
-the private-only exposure boundary remains intact. Known unrelated backup
-failures must remain explicitly listed until issue #312 is complete.
+Phase 1 parity is accepted: the reviewed checkout is clean at the fast-forwarded
+main revision, the scheduled smoke timer is enabled and active, manual scheduled
+smoke reports zero failures and zero warnings, the core API/worker/issuer/domain-
+agent units are active, and the private-only exposure boundary remains intact.
+The two known PostgreSQL backup failures remain explicitly listed until issue
+#312 completes its ownership repair and live backup verification.
 
 ## Verification commands
 
