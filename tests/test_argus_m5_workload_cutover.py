@@ -92,6 +92,30 @@ class WorkloadCutoverTests(unittest.TestCase):
     def test_reconcile_lock_wait_stays_under_systemd_start_timeout(self) -> None:
         self.assertLess(module.RECONCILE_LOCK_WAIT_SECONDS, 90)
 
+    def test_absent_source_is_allowed_only_with_explicit_retirement_evidence(self) -> None:
+        original_records = module.source_container_records
+        module.source_container_records = lambda _spec: (_ for _ in ()).throw(
+            module.CutoverError("source Compose project is absent")
+        )
+        state = {
+            "sourceStopped": True,
+            "sourceContainers": 1,
+            "sourceRestartPolicies": {"legacy": {"Name": "no"}},
+            "sourceResurrectionSchedules": 0,
+        }
+        try:
+            self.assertEqual([], module.accepted_source_container_records({}, state))
+            for key, value in (("sourceStopped", False), ("sourceResurrectionSchedules", 1)):
+                invalid = dict(state)
+                invalid[key] = value
+                with self.assertRaisesRegex(
+                    module.CutoverError,
+                    "absent source is not backed by an explicit accepted fence",
+                ):
+                    module.accepted_source_container_records({}, invalid)
+        finally:
+            module.source_container_records = original_records
+
     def test_cutover_contract_has_no_public_exposure_commands(self) -> None:
         script = SCRIPT.read_text()
         self.assertIn("unix:/", script)

@@ -399,6 +399,30 @@ def source_container_records(spec: dict) -> list[dict]:
     return records
 
 
+def accepted_source_container_records(spec: dict, state: dict) -> list[dict]:
+    """Return source records, accepting only an explicitly retired source."""
+    try:
+        return source_container_records(spec)
+    except CutoverError as error:
+        if str(error) != "source Compose project is absent":
+            raise
+        source_count = state.get("sourceContainers")
+        restart_policies = state.get("sourceRestartPolicies")
+        if (
+            state.get("sourceStopped") is not True
+            or not isinstance(source_count, int)
+            or isinstance(source_count, bool)
+            or source_count < 1
+            or not isinstance(restart_policies, dict)
+            or len(restart_policies) != source_count
+            or state.get("sourceResurrectionSchedules") != 0
+        ):
+            raise CutoverError(
+                "absent source is not backed by an explicit accepted fence"
+            ) from error
+        return []
+
+
 def runtime_environment(spec: dict) -> dict[str, dict[str, str]]:
     environments: dict[str, dict[str, str]] = {}
     for record in source_container_records(spec):
@@ -1862,9 +1886,13 @@ def accepted_cutover_state(
         or not state.get("targetRunning")
     ):
         raise CutoverError("accepted cutover evidence is required")
-    if any(status != "exited" for status in source_states(spec).values()):
+    source_records = accepted_source_container_records(spec, state)
+    if any(
+        str(record["state"].get("Status")) != "exited"
+        for record in source_records
+    ):
         raise CutoverError("legacy source is not fenced")
-    for record in source_container_records(spec):
+    for record in source_records:
         if (record["restartPolicy"] or {}).get("Name") != "no":
             raise CutoverError("legacy source restart policy is not fenced")
     runtime_compose = Path(str(state["runtimeComposePath"]))
