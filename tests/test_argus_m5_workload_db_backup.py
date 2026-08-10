@@ -55,6 +55,22 @@ class DatabaseBackupTest(unittest.TestCase):
         self.assertIn("--list", script)
         self.assertIn("partial", script)
 
+    def test_backup_refuses_a_volume_with_wrong_ownership(self) -> None:
+        original = module.ownership_status
+        module.ownership_status = lambda *_args: {
+            "ok": False,
+            "nonPostgresOwnedEntries": 1,
+        }
+        try:
+            with self.assertRaises(module.BackupError):
+                module.require_owned_volume("kadath", "kadath-live-postgres-1")
+        finally:
+            module.ownership_status = original
+
+    def test_repair_requires_exact_workload_confirmation(self) -> None:
+        with self.assertRaises(module.BackupError):
+            module.repair_ownership("kadath", "locigraph")
+
     def test_pruning_keeps_the_newest_copies_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -86,6 +102,7 @@ class DatabaseBackupTest(unittest.TestCase):
                 module.ensure_root_directory,
                 module.container_name,
                 module.credentials,
+                module.require_owned_volume,
             )
             module.BACKUP_ROOT = Path(directory)
             module.subprocess.run = fake_run
@@ -95,6 +112,9 @@ class DatabaseBackupTest(unittest.TestCase):
             )
             module.container_name = lambda _spec: "kadath-live-postgres-1"
             module.credentials = lambda _spec, _container: ("kadath", "kadath")
+            module.require_owned_volume = lambda _workload, _container: {
+                "ok": True
+            }
             try:
                 result = module.backup("kadath")
             finally:
@@ -105,6 +125,7 @@ class DatabaseBackupTest(unittest.TestCase):
                     module.ensure_root_directory,
                     module.container_name,
                     module.credentials,
+                    module.require_owned_volume,
                 ) = originals
 
         dump, verify = calls

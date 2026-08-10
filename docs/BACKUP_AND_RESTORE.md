@@ -75,12 +75,36 @@ pre-cutover database backup schedule stops working the moment a workload moves
 sudo ./scripts/argus-m5-workload-db-backup --workload kadath
 ```
 
-The dump runs inside the sandbox, credentials are read from the container
-environment rather than from anything committed, and the artifact is verified
-with `pg_restore --list` before it replaces the night's copy. A partial dump is
-removed rather than kept. Artifacts land in
+The dump first verifies that every entry in the database volume is owned by the
+container's PostgreSQL UID/GID (999:999), then runs inside the sandbox. Credentials
+are read from the container environment rather than from anything committed, and
+the artifact is verified with `pg_restore --list` before it replaces the night's
+copy. A partial dump is removed rather than kept. Artifacts land in
 `/var/backups/argus-m5-workload-db/<workload>/`, root-owned `0600`, with the
 newest 14 retained.
+
+If the ownership preflight reports a mismatch, inspect it without changing the
+workload:
+
+```bash
+sudo ./scripts/argus-m5-workload-db-backup \
+  --workload kadath --action check-ownership
+```
+
+Repair is deliberately opt-in and workload-scoped. It snapshots the exact
+PostgreSQL volume, stops only the selected database container, applies the
+999:999 ownership repair, restarts the container, and restores the snapshot if
+ownership or PostgreSQL readiness does not verify:
+
+```bash
+sudo ./scripts/argus-m5-workload-db-backup \
+  --workload kadath --action repair-ownership --confirm kadath
+```
+
+Run the normal backup service only after the repair command reports
+`"verified": true`. Never use the repair action for an arbitrary container or
+volume; the script refuses any volume that is not discovered from the selected
+database service.
 
 Install the schedule per workload:
 
