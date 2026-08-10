@@ -146,7 +146,17 @@ def main() -> int:
             runner = live_once
         else:
             runner = fixture_once
-        measurements = [runner(args.root, args.captured_at) for _ in range(3)]
+        measurements = []
+        runs = []
+        for ordinal in range(1, 4):
+            started = time.monotonic_ns()
+            measurements.append(runner(args.root, args.captured_at))
+            runs.append({
+                "ordinal": ordinal,
+                "result": "pass",
+                "durationMs": (time.monotonic_ns() - started) // 1_000_000,
+                "reasonCode": "",
+            })
         validate_measurements(measurements)
         evidence_id = digest({
             "checkId": "d2b-rootless-docker-collectors",
@@ -164,7 +174,7 @@ def main() -> int:
             "sourceRevision": args.source_revision,
             "capturedAt": args.captured_at,
             "evidenceId": evidence_id,
-            "runs": [{"ordinal": index, "result": "pass", "reasonCode": ""} for index in range(1, 4)],
+            "runs": runs,
         }, sort_keys=True, separators=(",", ":")))
     except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
         print("D2B_ACCEPTANCE_FAIL reason=collector-contract", file=sys.stderr)
