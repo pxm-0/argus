@@ -71,6 +71,17 @@ class DatabaseBackupTest(unittest.TestCase):
         with self.assertRaises(module.BackupError):
             module.repair_ownership("kadath", "locigraph")
 
+    def test_rootless_mapping_uses_the_container_id_offset(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            mapping = Path(directory) / "subuid"
+            mapping.write_text("argus-personal-sandbox:231072:65536\n")
+            self.assertEqual(
+                232070,
+                module.rootless_host_id(
+                    "argus-personal-sandbox", mapping, 999
+                ),
+            )
+
     def test_pruning_keeps_the_newest_copies_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

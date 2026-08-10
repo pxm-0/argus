@@ -151,6 +151,8 @@ def volume_source(spec: dict, container: str) -> Path:
 
 
 def rootless_host_id(user: str, mapping: Path, container_id: int) -> int:
+    if container_id < 1:
+        raise BackupError("rootless container IDs must be positive")
     for line in mapping.read_text(encoding="utf-8").splitlines():
         owner, separator, values = line.partition(":")
         if owner != user or not separator:
@@ -159,8 +161,8 @@ def rootless_host_id(user: str, mapping: Path, container_id: int) -> int:
         if not separator:
             continue
         start, length = int(start_text), int(length_text)
-        if 0 <= container_id < length:
-            return start + container_id
+        if container_id <= length:
+            return start + container_id - 1
     raise BackupError(f"rootless ID mapping is missing for {user}")
 
 
@@ -233,6 +235,8 @@ def wait_for_state(spec: dict, container: str, states: set[str]) -> str:
         current = container_state(spec, container)
         if current in states:
             return current
+        if "running" in states and current in {"exited", "dead"}:
+            raise BackupError(f"{container} entered terminal state ({current})")
         time.sleep(1)
     raise BackupError(
         f"{container} did not reach an expected state (last={current})"
