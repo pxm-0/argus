@@ -438,11 +438,19 @@ def _collect_before_deadline(
     remaining = global_deadline - time.monotonic()
     if remaining <= 0:
         raise CollectorError("scheduler-global-timeout")
+    # When the global deadline is what bounds this run, an overrun is the
+    # scheduler's, not the collector's. Blaming the collector made the gap code
+    # depend on which thread noticed first: the waiter marks unfinished futures
+    # scheduler-global-timeout, while a worker that completed just before that
+    # wait returned reported collector-timeout for the very same cause.
+    global_bound = remaining <= source_timeout
     effective_timeout = min(source_timeout, remaining)
     source_deadline = time.monotonic() + effective_timeout
     result = collector(source, request, effective_timeout)
     if time.monotonic() >= source_deadline:
-        raise CollectorError("collector-timeout")
+        raise CollectorError(
+            "scheduler-global-timeout" if global_bound else "collector-timeout"
+        )
     return result
 
 
