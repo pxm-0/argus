@@ -53,7 +53,7 @@ class RootlessDockerCollectorTests(unittest.TestCase):
             self.sources[1].transport["socketPath"],
         )
         self.assertEqual([1002, 1003], [source.transport["socketUid"] for source in self.sources])
-        self.assertEqual([1000, 1000], [source.transport["peerUid"] for source in self.sources])
+        self.assertEqual([1002, 1003], [source.transport["peerUid"] for source in self.sources])
 
     def test_each_source_preserves_bounded_running_and_stopped_records(self) -> None:
         for source in self.sources:

@@ -190,7 +190,7 @@
         "socketUid": 1002,
         "socketGid": 981,
         "socketMode": "0660",
-        "peerUid": 1000,
+        "peerUid": 1002,
         "peerGid": 981,
         "protocolVersions": [
           1,
@@ -286,7 +286,7 @@
         "socketUid": 1003,
         "socketGid": 981,
         "socketMode": "0660",
-        "peerUid": 1000,
+        "peerUid": 1003,
         "peerGid": 981,
         "protocolVersions": [
           1,
