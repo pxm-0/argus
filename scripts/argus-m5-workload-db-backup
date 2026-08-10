@@ -36,10 +36,6 @@ SPECS = {
 RETAINED_COPIES = 14
 DUMP_TIMEOUT_SECONDS = 900
 REPAIR_TIMEOUT_SECONDS = 180
-HELPER_IMAGE = (
-    "postgres:17-trixie@sha256:"
-    "0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b"
-)
 POSTGRES_UID = 999
 POSTGRES_GID = 999
 
@@ -74,34 +70,6 @@ def text(command: list[str], timeout: float | None = None) -> str:
     ).stdout
 
 
-def helper_command(
-    spec: dict,
-    volume: str,
-    target: str,
-    readonly: bool,
-    arguments: list[str],
-    *,
-    interactive: bool = False,
-) -> list[str]:
-    mount = f"type=volume,source={volume},target={target},volume-nocopy"
-    if readonly:
-        mount += ",readonly"
-    docker_arguments = ["run", "--rm"]
-    if interactive:
-        docker_arguments.append("-i")
-    docker_arguments.extend(
-        [
-            "--network",
-            "none",
-            "--mount",
-            mount,
-            HELPER_IMAGE,
-            *arguments,
-        ]
-    )
-    return [*target_command(str(spec["domain"]), *docker_arguments)]
-
-
 def container_name(spec: dict) -> str:
     names = text(
         [
@@ -124,7 +92,7 @@ def container_name(spec: dict) -> str:
     return names[0]
 
 
-def database_volume(spec: dict, container: str) -> str:
+def database_mount(spec: dict, container: str) -> dict:
     try:
         mounts = json.loads(
             text(
@@ -151,36 +119,78 @@ def database_volume(spec: dict, container: str) -> str:
         raise BackupError(
             f"database volume for {container} is absent or ambiguous"
         )
-    volume = matches[0].get("Name")
+    mount = matches[0]
+    volume = mount.get("Name")
     if not isinstance(volume, str) or re.fullmatch(
         r"[A-Za-z0-9][A-Za-z0-9_.-]*", volume
     ) is None:
         raise BackupError(f"database volume name for {container} is unsafe")
-    return volume
+    source = mount.get("Source")
+    if not isinstance(source, str) or not source.startswith("/"):
+        raise BackupError(f"database volume source for {container} is unsafe")
+    return {"name": volume, "source": source}
+
+
+def database_volume(spec: dict, container: str) -> str:
+    return str(database_mount(spec, container)["name"])
+
+
+def volume_source(spec: dict, container: str) -> Path:
+    source = Path(str(database_mount(spec, container)["source"]))
+    allowed_root = Path(f"/var/lib/argus/{spec['domain']}/docker-data/volumes")
+    try:
+        relative = source.relative_to(allowed_root)
+    except ValueError as error:
+        raise BackupError("database volume source is outside its domain store") from error
+    if source.name != "_data" or len(relative.parts) != 2:
+        raise BackupError("database volume source is not an exact Docker volume path")
+    metadata = os.lstat(source)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError("database volume source is not a real directory")
+    return source
+
+
+def rootless_host_id(user: str, mapping: Path, container_id: int) -> int:
+    for line in mapping.read_text(encoding="utf-8").splitlines():
+        owner, separator, values = line.partition(":")
+        if owner != user or not separator:
+            continue
+        start_text, separator, length_text = values.partition(":")
+        if not separator:
+            continue
+        start, length = int(start_text), int(length_text)
+        if 0 <= container_id < length:
+            return start + container_id
+    raise BackupError(f"rootless ID mapping is missing for {user}")
+
+
+def expected_host_ownership(spec: dict) -> tuple[int, int]:
+    user = f"argus-{spec['domain']}"
+    return (
+        rootless_host_id(user, Path("/etc/subuid"), POSTGRES_UID),
+        rootless_host_id(user, Path("/etc/subgid"), POSTGRES_GID),
+    )
+
+
+def volume_entries(source: Path) -> list[Path]:
+    entries = [source]
+    for directory, child_directories, files in os.walk(source, followlinks=False):
+        entries.extend(Path(directory) / name for name in child_directories)
+        entries.extend(Path(directory) / name for name in files)
+    return entries
 
 
 def ownership_status(workload: str, container: str | None = None) -> dict:
     spec = SPECS[workload]
     selected_container = container or container_name(spec)
-    volume = database_volume(spec, selected_container)
-    count_text = text(
-        helper_command(
-            spec,
-            volume,
-            "/data",
-            True,
-            [
-                "sh",
-                "-c",
-                "find /data -xdev \\( ! -uid 999 -o ! -gid 999 \\) -print | wc -l",
-            ],
-        ),
-        timeout=REPAIR_TIMEOUT_SECONDS,
-    ).strip()
-    try:
-        count = int(count_text)
-    except ValueError as error:
-        raise BackupError("database volume ownership check returned invalid output") from error
+    volume = database_mount(spec, selected_container)["name"]
+    source = volume_source(spec, selected_container)
+    expected_uid, expected_gid = expected_host_ownership(spec)
+    count = 0
+    for entry in volume_entries(source):
+        metadata = os.lstat(entry)
+        if metadata.st_uid != expected_uid or metadata.st_gid != expected_gid:
+            count += 1
     return {
         "schemaVersion": 1,
         "workloadId": workload,
@@ -286,35 +296,15 @@ def wait_for_database(spec: dict, container: str, role: str, database: str) -> N
     raise BackupError(f"{container} PostgreSQL readiness did not recover")
 
 
-def snapshot_volume(spec: dict, volume: str, destination: Path) -> None:
+def snapshot_volume(source: Path, destination: Path) -> None:
     partial = destination.with_name(f".{destination.name}.partial")
     descriptor = os.open(
         partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
     )
     try:
         with os.fdopen(descriptor, "wb") as handle:
-            subprocess.run(
-                helper_command(
-                    spec,
-                    volume,
-                    "/snapshot",
-                    True,
-                    [
-                        "tar",
-                        "--acls",
-                        "--xattrs",
-                        "--numeric-owner",
-                        "-C",
-                        "/snapshot",
-                        "-czf",
-                        "-",
-                        ".",
-                    ],
-                ),
-                check=True,
-                stdout=handle,
-                timeout=REPAIR_TIMEOUT_SECONDS,
-            )
+            with tarfile.open(fileobj=handle, mode="w:gz") as archive:
+                archive.add(source, arcname=".", recursive=True)
         with tarfile.open(partial, "r:gz") as archive:
             if archive.next() is None:
                 raise BackupError("database volume snapshot is empty")
@@ -325,32 +315,27 @@ def snapshot_volume(spec: dict, volume: str, destination: Path) -> None:
         raise
 
 
-def restore_volume(spec: dict, volume: str, archive: Path) -> None:
-    with archive.open("rb") as handle:
-        subprocess.run(
-            helper_command(
-                spec,
-                volume,
-                "/restore",
-                False,
-                [
-                    "tar",
-                    "--acls",
-                    "--xattrs",
-                    "--numeric-owner",
-                    "--same-owner",
-                    "-C",
-                    "/restore",
-                    "-xzf",
-                    "-",
-                ],
-                interactive=True,
-            ),
-            check=True,
-            stdin=handle,
-            stdout=subprocess.DEVNULL,
-            timeout=REPAIR_TIMEOUT_SECONDS,
-        )
+def restore_volume(source: Path, archive: Path) -> None:
+    subprocess.run(
+        [
+            "tar",
+            "--numeric-owner",
+            "--same-owner",
+            "-xzf",
+            str(archive),
+            "-C",
+            str(source),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        timeout=REPAIR_TIMEOUT_SECONDS,
+    )
+
+
+def repair_volume_ownership(spec: dict, source: Path) -> None:
+    expected_uid, expected_gid = expected_host_ownership(spec)
+    for entry in volume_entries(source):
+        os.chown(entry, expected_uid, expected_gid, follow_symlinks=False)
 
 
 def repair_ownership(workload: str, confirmation: str | None) -> dict:
@@ -362,6 +347,7 @@ def repair_ownership(workload: str, confirmation: str | None) -> dict:
     container = container_name(spec)
     role, database = credentials(spec, container)
     before = ownership_status(workload, container)
+    source = volume_source(spec, container)
     if before["ok"]:
         return {**before, "changed": False, "verified": True}
     if container_state(spec, container) != "running":
@@ -375,19 +361,8 @@ def repair_ownership(workload: str, confirmation: str | None) -> dict:
     try:
         stop_database(spec, container)
         stopped = True
-        snapshot_volume(spec, before["volume"], snapshot)
-        subprocess.run(
-            helper_command(
-                spec,
-                before["volume"],
-                "/data",
-                False,
-                ["chown", "-R", f"{POSTGRES_UID}:{POSTGRES_GID}", "/data"],
-            ),
-            check=True,
-            stdout=subprocess.DEVNULL,
-            timeout=REPAIR_TIMEOUT_SECONDS,
-        )
+        snapshot_volume(source, snapshot)
+        repair_volume_ownership(spec, source)
         after = ownership_status(workload, container)
         if not after["ok"]:
             raise BackupError("database volume ownership repair did not converge")
@@ -399,7 +374,7 @@ def repair_ownership(workload: str, confirmation: str | None) -> dict:
             if container_state(spec, container) == "running":
                 stop_database(spec, container)
             if snapshot.exists():
-                restore_volume(spec, before["volume"], snapshot)
+                restore_volume(source, snapshot)
             if stopped or snapshot.exists():
                 start_database(spec, container)
         except BaseException as rollback_error:
