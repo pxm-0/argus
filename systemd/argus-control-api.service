@@ -29,7 +29,7 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
 ReadWritePaths=/srv/argus/runtime /var/lib/argus/control
-InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock /var/lib/argus/personal-sandbox/docker.sock /var/lib/argus/work-sandbox/docker.sock
 
 [Install]
 WantedBy=multi-user.target
