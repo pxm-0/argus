@@ -202,8 +202,6 @@ def _systemd_records(
             {
                 "name": name,
                 "loadState": _safe_text(fields[1], maximum=32),
-                "activeState": _safe_text(fields[2], maximum=32),
-                "subState": _safe_text(fields[3], maximum=32),
                 "enabled": name in enabled,
                 "legacyReference": _legacy_reference(name),
                 "scope": "user" if "user-schedules-" in source.source_id else "system",

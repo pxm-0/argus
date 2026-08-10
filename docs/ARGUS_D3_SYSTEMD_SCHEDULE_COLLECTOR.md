@@ -13,8 +13,8 @@ D3 adds four D1b sources on `oreochiserver`:
 
 The collector uses exact read-only `systemctl` and `crontab -l` argv. It does
 not execute a cron or systemd payload. Unit state is limited to the unit name,
-load/active/sub-state, enabled flag, timer target, and a boolean legacy-reference
-marker. Cron observations contain only a hashed entry identity, location,
+stable load/enabled state, timer target, and a boolean legacy-reference marker;
+volatile active/sub-state transitions are deliberately excluded. Cron observations contain only a hashed entry identity, location,
 schedule class, owner where applicable, and the same marker. Directory records
 contain file name, mode, and location; file contents and command lines never
 cross the normalized observation boundary.
