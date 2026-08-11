@@ -1,0 +1,39 @@
+{
+  "processes": [
+    "dockerd S",
+    "caddy S",
+    "python3 S"
+  ],
+  "listeners": [
+    "tcp LISTEN 0 128 127.0.0.1:8088 0.0.0.0:*",
+    "tcp LISTEN 0 128 127.0.0.1:8099 0.0.0.0:*"
+  ],
+  "proxy": {
+    "tailscale-serve": {
+      "returncode": 0,
+      "payload": {"enabled": true}
+    },
+    "tailscale-funnel": {
+      "returncode": 0,
+      "payload": {"enabled": false}
+    },
+    "caddy": {
+      "returncode": 0,
+      "stdout": "active\n"
+    },
+    "cloudflared": {
+      "returncode": 3,
+      "stdout": "inactive\n"
+    }
+  },
+  "roots": {
+    "workloads": [
+      {"path": "hastur/manifest.json", "content": "{\"id\":\"hastur\"}\n"},
+      {"path": "hastur/compose.yml", "content": "services: {}\n"}
+    ],
+    "config": [
+      {"path": "workloads.json", "content": "{\"version\":1}\n"},
+      {"path": "routes.json", "content": "{\"version\":1}\n"}
+    ]
+  }
+}

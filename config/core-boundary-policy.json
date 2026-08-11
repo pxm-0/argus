@@ -153,6 +153,10 @@
       {
         "path": "scripts/argus_systemd_schedule_collector.py",
         "authority": "authenticated-read-only-local-collector-unix-sockets"
+      },
+      {
+        "path": "scripts/argus_optional_evidence_collector.py",
+        "authority": "authenticated-bounded-read-only-host-evidence-unix-sockets"
       }
     ]
   },
