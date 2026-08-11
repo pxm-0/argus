@@ -37,6 +37,18 @@ SOURCE_IDS = {
 }
 SAFE_NAME = re.compile(r"[A-Za-z0-9_.@:+-]{1,96}\Z")
 SAFE_PORT = re.compile(r"(?:[0-9]{1,5}|[A-Za-z][A-Za-z0-9_-]{0,31})\Z")
+PROCESS_PREFIXES = (
+    "caddy",
+    "cloudflared",
+    "containerd",
+    "dockerd",
+    "nginx",
+    "node",
+    "postgres",
+    "redis",
+    "systemd",
+    "tailscaled",
+)
 
 
 class OptionalEvidenceError(CollectorError):
@@ -172,6 +184,11 @@ def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> tu
         name, state = fields[0], fields[-1]
         if not SAFE_NAME.fullmatch(name) or not state or not state[0].isalpha():
             filtered = True
+            continue
+        # Deliberate minimization: transient shells, collectors, and operator
+        # helpers are not durable runtime evidence and would make repeats
+        # nondeterministic. Keep only stable daemon/process classes.
+        if not name.casefold().startswith(PROCESS_PREFIXES):
             continue
         identity = (name, state[0].upper())
         if identity in seen:

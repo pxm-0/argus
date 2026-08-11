@@ -5,7 +5,7 @@ registry:
 
 | Source | Evidence | Deliberate omission |
 | --- | --- | --- |
-| `oreochiserver.process-listeners` | process names/states and listener protocol/port/address scope | PIDs, addresses, command lines, environments, and payloads |
+| `oreochiserver.process-listeners` | stable daemon-class names/states and listener protocol/port/address scope | transient helpers, PIDs, addresses, command lines, environments, and payloads |
 | `oreochiserver.proxy-overlay` | Caddy, Tailscale Serve/Funnel, and cloudflared availability/state | URLs, hosts, route paths, tokens, and provider payloads |
 | `oreochiserver.configured-roots` | bounded counts, JSON validity, and content digests for the reviewed `workloads` and `config` roots | filesystem paths, filenames, file contents, and repository remotes |
 
