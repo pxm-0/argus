@@ -109,7 +109,9 @@ def _command_environment(source: SourceSpec) -> dict[str, str]:
         "SYSTEMD_LESS": "FRX",
     }
     if "user-schedules-" in source.source_id:
-        environment["XDG_RUNTIME_DIR"] = f"/run/user/{source.execution_identity['uid']}"
+        runtime_dir = f"/run/user/{source.execution_identity['uid']}"
+        environment["XDG_RUNTIME_DIR"] = runtime_dir
+        environment["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={runtime_dir}/bus"
     return environment
 
 

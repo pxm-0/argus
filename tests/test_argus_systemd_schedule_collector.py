@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_collectors import collection_request  # noqa: E402
 from argus_observations import load_registry  # noqa: E402
-from argus_systemd_schedule_collector import collect_records  # noqa: E402
+from argus_systemd_schedule_collector import _command_environment, collect_records  # noqa: E402
 
 
 class FixtureRunner:
@@ -122,6 +122,12 @@ class SystemdScheduleCollectorTests(unittest.TestCase):
         file_record = next(item for item in records if item["resourceKind"] == "cron-directory")
         self.assertTrue(file_record["attributes"]["legacyReference"])
         self.assertNotIn("docker-compose", json.dumps(records, sort_keys=True))
+
+    def test_user_scope_pins_its_private_dbus_bus(self) -> None:
+        source = self.registry.sources["oreochiserver.user-schedules-personal-sandbox"]
+        environment = _command_environment(source)
+        self.assertEqual("/run/user/1002", environment["XDG_RUNTIME_DIR"])
+        self.assertEqual("unix:path=/run/user/1002/bus", environment["DBUS_SESSION_BUS_ADDRESS"])
 
     def test_sources_pin_distinct_execution_and_socket_identities(self) -> None:
         d3_source_ids = (
