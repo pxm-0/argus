@@ -1,0 +1,211 @@
+#!/usr/bin/env python3
+"""Three-run D2a fixture/live acceptance with safe aggregate evidence only."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from argus_collectors import CollectionResult, CollectorScheduler, PageValidator, collection_request
+from argus_docker_collector import SOURCE_ID, build_pages, collect_docker_records
+from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+
+
+class FixtureClient:
+    def __init__(self, responses: dict[str, object]):
+        self.responses = responses
+
+    def get(self, path: str):
+        if path not in self.responses:
+            raise ObservationError("fixture route is missing")
+        return copy.deepcopy(self.responses[path])
+
+    def verify_unchanged(self) -> None:
+        return
+
+
+def safe_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    kinds = ("container", "image", "network", "volume")
+    result = {kind: sum(item["resourceKind"] == kind for item in records) for kind in kinds}
+    result["running"] = sum(
+        item["resourceKind"] == "container" and item["attributes"]["lifecycle"] == "running"
+        for item in records
+    )
+    result["stopped"] = result["container"] - result["running"]
+    return result
+
+
+def fixture_once(root: Path, explicit_clock: str) -> tuple[int, dict[str, Any]]:
+    registry = load_registry(root / "config/argus/observation-sources.json", root)
+    source = registry.sources[SOURCE_ID]
+    request = collection_request(
+        source,
+        refresh_id="d2a-fixture-acceptance",
+        run_id="d2a-fixture-acceptance-run",
+        explicit_clock=explicit_clock,
+    )
+    payload = json.loads(
+        (root / "tests/fixtures/docker/rootful-api-v1.40.json").read_text(encoding="utf-8")
+    )
+    started = time.monotonic_ns()
+    records = collect_docker_records(source, request, FixtureClient(payload["responses"]))
+    pages = build_pages(source, request, records)
+    validator = PageValidator(source, request)
+    result = None
+    for page in pages:
+        result = validator.accept(page) or result
+    validator.finish()
+    if result is None or result.state != "completed" or result.records != records:
+        raise ObservationError("fixture collector stream did not complete")
+    duration_ms = (time.monotonic_ns() - started) // 1_000_000
+    return duration_ms, {
+        "counts": safe_counts(records),
+        "pageDigest": digest(pages),
+        "snapshotDigest": digest(records),
+    }
+
+
+def live_once(root: Path, explicit_clock: str) -> tuple[int, dict[str, Any]]:
+    registry = load_registry(root / "config/argus/observation-sources.json", root)
+    with tempfile.TemporaryDirectory(prefix="argus-d2a-", dir="/tmp") as directory:
+        database = Path(directory).resolve() / "observations.sqlite3"
+        started = time.monotonic_ns()
+        with ObservationRepository(database) as repository:
+            result = CollectorScheduler(
+                repository,
+                registry,
+                max_workers=1,
+                global_timeout_milliseconds=6_000,
+            ).refresh(
+                refresh_id="d2a-live-acceptance",
+                explicit_clock=explicit_clock,
+            )
+            if result["status"] != "completed" or len(result["sources"]) != 1:
+                raise ObservationError("live rootful collector did not complete")
+            records = repository.current_snapshot(SOURCE_ID)
+        duration_ms = (time.monotonic_ns() - started) // 1_000_000
+    return duration_ms, {
+        "counts": safe_counts(records),
+        "resultDigest": digest(result),
+        "snapshotDigest": digest(records),
+    }
+
+
+def direct_safe_counts() -> dict[str, int]:
+    def output(argv: list[str]) -> list[str]:
+        completed = subprocess.run(argv, text=True, capture_output=True, check=False, timeout=5)
+        if completed.returncode != 0:
+            raise ObservationError("direct Docker aggregate unavailable")
+        return [line for line in completed.stdout.splitlines() if line]
+
+    containers = [line.split("|", 1) for line in output([
+        "docker", "container", "ls", "--all", "--no-trunc", "--format", "{{.ID}}|{{.State}}",
+    ])]
+    return {
+        "container": len(containers),
+        "running": sum(len(item) == 2 and item[1] == "running" for item in containers),
+        "stopped": sum(len(item) != 2 or item[1] != "running" for item in containers),
+        "image": len(set(output(["docker", "image", "ls", "--all", "--quiet", "--no-trunc"]))),
+        "network": len(set(output(["docker", "network", "ls", "--quiet", "--no-trunc"]))),
+        "volume": len(set(output(["docker", "volume", "ls", "--quiet"]))),
+    }
+
+
+def validate_measurements(measurements: list[dict[str, Any]]) -> None:
+    if len({digest(item) for item in measurements}) != 1:
+        raise ObservationError("repeated D2a evidence differs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D2a rootful Docker collector acceptance")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("local-ci", "oreochiserver"), required=True)
+    parser.add_argument("--baseline-max-ms", type=int)
+    args = parser.parse_args()
+    try:
+        if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
+            raise ObservationError("source revision must be hexadecimal")
+        if args.target == "oreochiserver":
+            if platform.node().split(".", 1)[0] != "oreochiserver":
+                raise ObservationError("live D2a acceptance must run on oreochiserver")
+            if args.baseline_max_ms is None or args.baseline_max_ms <= 0:
+                raise ObservationError("live D2a acceptance requires a positive baseline")
+            revision = subprocess.run(
+                ["git", "-C", str(args.root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            clean = subprocess.run(
+                ["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout == ""
+            if revision != args.source_revision or not clean:
+                raise ObservationError("live acceptance checkout must match the clean source revision")
+            registry = load_registry(args.root / "config/argus/observation-sources.json", args.root)
+            source = registry.sources[SOURCE_ID]
+            if os.geteuid() != 1000 or os.getegid() != 981:
+                raise ObservationError("live acceptance must run as the pinned collector client")
+            direct = direct_safe_counts()
+            runner = live_once
+        else:
+            direct = None
+            runner = fixture_once
+        runs = []
+        measurements = []
+        durations = []
+        for ordinal in range(1, 4):
+            duration, measurement = runner(args.root, args.captured_at)
+            durations.append(duration)
+            measurements.append(measurement)
+            runs.append({"ordinal": ordinal, "result": "pass", "durationMs": duration, "reasonCode": ""})
+        validate_measurements(measurements)
+        if direct is not None and measurements[0]["counts"] != direct:
+            raise ObservationError("collector counts differ from direct safe aggregates")
+        if args.baseline_max_ms is not None and max(durations) * 100 > args.baseline_max_ms * 120:
+            raise ObservationError("collector exceeds the accepted duration budget")
+        evidence_id = digest({
+            "checkId": "d2a-rootful-docker-collector",
+            "measurements": measurements,
+            "sourceRevision": args.source_revision,
+            "target": args.target,
+        })
+        print("MEASUREMENT " + json.dumps({
+            "counts": measurements[0]["counts"],
+            "maxDurationMs": max(durations),
+            "snapshotDigest": measurements[0]["snapshotDigest"],
+        }, sort_keys=True, separators=(",", ":")), file=sys.stderr)
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 309,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d2a-rootful-docker-collector",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D2A_ACCEPTANCE_FAIL reason=collector-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

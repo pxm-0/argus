@@ -23,6 +23,7 @@ from argus_collectors import (  # noqa: E402
     CollectorScheduler,
     PageBuilder,
     PageValidator,
+    _collect_before_deadline,
     collect_from_socket,
     collection_request,
 )
@@ -625,6 +626,36 @@ class CollectorSchedulerTests(unittest.TestCase):
         self.assertEqual("completed", result["sources"][0]["state"])
         self.assertEqual("scheduler-global-timeout", result["sources"][1]["gapCode"])
         self.assertEqual("scheduler-global-timeout", result["sources"][2]["gapCode"])
+
+    def test_overrun_is_attributed_to_whichever_deadline_bound_the_run(self) -> None:
+        """A global-deadline overrun is the scheduler's, not the collector's.
+
+        Regression: the worker path always raised collector-timeout, so the gap
+        code for one cause depended on whether the waiter or the worker noticed
+        first. That made test_global_deadline_does_not_discard_completed_source
+        fail intermittently on loaded runners. Threads are deliberately absent
+        here so the attribution is pinned deterministically.
+        """
+        def overrun(_source, _request, timeout):
+            time.sleep(timeout + 0.02)
+            return CollectionResult("completed", [], None, 2)
+
+        now = time.monotonic()
+        # Global deadline binds: it is nearer than the per-source allowance.
+        with self.assertRaisesRegex(CollectorError, "scheduler-global-timeout"):
+            _collect_before_deadline(
+                overrun, object(), {"protocolVersion": 2}, 5.0, now + 0.02
+            )
+        # Per-source timeout binds: the collector is genuinely at fault.
+        with self.assertRaisesRegex(CollectorError, "collector-timeout"):
+            _collect_before_deadline(
+                overrun, object(), {"protocolVersion": 2}, 0.02, time.monotonic() + 5.0
+            )
+        # An already-expired global deadline never reaches the collector.
+        with self.assertRaisesRegex(CollectorError, "scheduler-global-timeout"):
+            _collect_before_deadline(
+                overrun, object(), {"protocolVersion": 2}, 5.0, time.monotonic() - 1.0
+            )
 
     def test_scheduler_enforces_per_source_timeout_even_for_custom_collector(self) -> None:
         payload = registry_payload(self.root / "source-timeout", count=1)

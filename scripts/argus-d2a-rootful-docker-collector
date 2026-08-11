@@ -1,0 +1,315 @@
+#!/usr/bin/env bash
+# Install, verify, or remove only the reviewed D2a rootful Docker collector.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly SERVICE="argus-rootful-docker-collector.service"
+readonly REVIEWED_UNIT="$ROOT/systemd/$SERVICE"
+readonly INSTALLED_UNIT="/etc/systemd/system/$SERVICE"
+readonly SOURCE_CONFIG_DIR="/etc/argus/collectors"
+readonly SOURCE_CONFIG="$SOURCE_CONFIG_DIR/rootful-docker-source.json"
+readonly COLLECTOR_USER="argus-collector-rootful"
+readonly COLLECTOR_UID="950"
+readonly CONTROL_GROUP="argus-control"
+readonly CONTROL_GID="981"
+readonly DOCKER_GROUP="docker"
+readonly DOCKER_GID="983"
+readonly CLIENT_USER="oreo"
+readonly CLIENT_UID="1000"
+readonly SOCKET_PARENT="/run/argus/collectors/rootful-docker"
+readonly SOCKET_PATH="$SOCKET_PARENT/collector.sock"
+readonly BACKUP_ROOT="/var/backups/argus-d2a-rootful-docker-collector"
+readonly ACK="--acknowledge-d2a-rootful-docker-collector"
+
+BACKUP_DIR=""
+PRIOR_UNIT=false
+PRIOR_SOURCE_CONFIG=false
+PRIOR_ACTIVE=false
+PRIOR_ENABLED=false
+CREATED_USER=false
+APPLYING=false
+
+fail() { printf 'D2A_COLLECTOR_FAIL reason=%s\n' "$1" >&2; exit 1; }
+
+usage() {
+  printf '%s\n' \
+    "Usage:" \
+    "  sudo ./scripts/argus-d2a-rootful-docker-collector --preflight" \
+    "  sudo ./scripts/argus-d2a-rootful-docker-collector --apply $ACK" \
+    "  sudo ./scripts/argus-d2a-rootful-docker-collector --status" \
+    "  sudo ./scripts/argus-d2a-rootful-docker-collector --remove $ACK" \
+    "  sudo ./scripts/argus-d2a-rootful-docker-collector --rollback $ACK"
+}
+
+require_root() {
+  [[ $EUID -eq 0 ]] || fail "root-required"
+}
+
+group_id() {
+  getent group "$1" | awk -F: '{print $3}'
+}
+
+user_id() {
+  getent passwd "$1" | awk -F: '{print $3}'
+}
+
+primary_group_id() {
+  getent passwd "$1" | awk -F: '{print $4}'
+}
+
+validate_identities() {
+  [[ "$(group_id "$CONTROL_GROUP")" == "$CONTROL_GID" ]] || fail "control-group-identity-mismatch"
+  [[ "$(group_id "$DOCKER_GROUP")" == "$DOCKER_GID" ]] || fail "docker-group-identity-mismatch"
+  [[ "$(user_id "$CLIENT_USER")" == "$CLIENT_UID" ]] || fail "collector-client-identity-mismatch"
+  if getent passwd "$COLLECTOR_USER" >/dev/null; then
+    [[ "$(user_id "$COLLECTOR_USER")" == "$COLLECTOR_UID" ]] || fail "collector-user-identity-mismatch"
+    [[ "$(primary_group_id "$COLLECTOR_USER")" == "$CONTROL_GID" ]] || fail "collector-user-group-mismatch"
+    id -Gn "$COLLECTOR_USER" | tr ' ' '\n' | grep -Fxq "$DOCKER_GROUP" || fail "collector-user-docker-group-missing"
+  elif getent passwd "$COLLECTOR_UID" >/dev/null; then
+    fail "collector-uid-unavailable"
+  fi
+}
+
+validate_docker_socket() {
+  [[ -S /var/run/docker.sock ]] || fail "docker-socket-unavailable"
+  [[ "$(stat -Lc '%u:%g:%a' /var/run/docker.sock)" == "0:$DOCKER_GID:660" ]] ||
+    fail "docker-socket-binding-mismatch"
+}
+
+preflight() {
+  require_root
+  for command in awk chmod chown cmp cp date getent git grep id install mv nsenter pgrep python3 rm runuser stat systemctl systemd-analyze tr useradd userdel; do
+    command -v "$command" >/dev/null || fail "required-command-missing"
+  done
+  [[ -d "$ROOT/.git" ]] || fail "reviewed-checkout-missing"
+  [[ -f "$REVIEWED_UNIT" ]] || fail "reviewed-unit-missing"
+  [[ -f "$ROOT/scripts/argus_docker_collector.py" ]] || fail "collector-module-missing"
+  [[ -f "$ROOT/config/argus/observation-sources.json" ]] || fail "source-registry-missing"
+  python3 -m json.tool "$ROOT/config/argus/observation-sources.json" >/dev/null || fail "source-registry-invalid"
+  if getent passwd "$COLLECTOR_USER" >/dev/null; then
+    systemd-analyze verify "$REVIEWED_UNIT" >/dev/null || fail "unit-validation-failed"
+  fi
+  validate_identities
+  validate_docker_socket
+  printf 'D2A_COLLECTOR_PREFLIGHT_OK revision=%s\n' "$(git -C "$ROOT" rev-parse --short HEAD)"
+}
+
+backup_unit() {
+  BACKUP_DIR="$BACKUP_ROOT/$(date -u +%Y%m%dT%H%M%S.%NZ)"
+  install -d -m 0700 "$BACKUP_DIR"
+  if [[ -f "$INSTALLED_UNIT" ]]; then
+    PRIOR_UNIT=true
+    cp --preserve=mode,ownership,timestamps "$INSTALLED_UNIT" "$BACKUP_DIR/$SERVICE"
+  fi
+  if [[ -f "$SOURCE_CONFIG" ]]; then
+    PRIOR_SOURCE_CONFIG=true
+    cp --preserve=mode,ownership,timestamps "$SOURCE_CONFIG" "$BACKUP_DIR/rootful-docker-source.json"
+  fi
+  systemctl is-active --quiet "$SERVICE" && PRIOR_ACTIVE=true
+  systemctl is-enabled --quiet "$SERVICE" 2>/dev/null && PRIOR_ENABLED=true
+}
+
+restore_on_failure() {
+  local failed=$?
+  [[ $APPLYING == true && $failed -ne 0 ]] || return "$failed"
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  if [[ $PRIOR_UNIT == true ]]; then
+    install -m 0644 "$BACKUP_DIR/$SERVICE" "$INSTALLED_UNIT"
+  else
+    rm -f "$INSTALLED_UNIT"
+  fi
+  if [[ $PRIOR_SOURCE_CONFIG == true ]]; then
+    install -o root -g "$CONTROL_GROUP" -m 0640 \
+      "$BACKUP_DIR/rootful-docker-source.json" "$SOURCE_CONFIG"
+  else
+    rm -f "$SOURCE_CONFIG"
+  fi
+  rm -f "$SOURCE_CONFIG_DIR/.rootful-docker-source.json.new"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  [[ $PRIOR_ENABLED == true ]] && systemctl enable "$SERVICE" >/dev/null 2>&1 || true
+  [[ $PRIOR_ACTIVE == true ]] && systemctl start "$SERVICE" >/dev/null 2>&1 || true
+  if [[ $CREATED_USER == true ]] && ! pgrep -u "$COLLECTOR_UID" >/dev/null 2>&1; then
+    userdel "$COLLECTOR_USER" >/dev/null 2>&1 || true
+  fi
+  printf 'D2A_COLLECTOR_ROLLBACK result=restored\n' >&2
+  return "$failed"
+}
+
+install_user() {
+  if getent passwd "$COLLECTOR_USER" >/dev/null; then
+    return
+  fi
+  useradd --system --uid "$COLLECTOR_UID" --gid "$CONTROL_GROUP" \
+    --groups "$DOCKER_GROUP" --home-dir /nonexistent --no-create-home \
+    --shell /usr/sbin/nologin "$COLLECTOR_USER"
+  CREATED_USER=true
+}
+
+render_source_config() {
+  local destination="$1"
+  python3 - "$ROOT/config/argus/observation-sources.json" "$destination" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+source_path = Path(sys.argv[1])
+destination = Path(sys.argv[2])
+payload = json.loads(source_path.read_text(encoding="utf-8"))
+matches = [item for item in payload.get("sources", []) if item.get("sourceId") == "oreochiserver.rootful-docker"]
+if len(matches) != 1 or "oreochiserver.rootful-docker" not in payload.get("hostSources", []):
+    raise SystemExit("reviewed rootful Docker source is missing")
+runtime = {
+    "schemaVersion": payload["schemaVersion"],
+    "hostSources": ["oreochiserver.rootful-docker"],
+    "sources": matches,
+}
+encoded = json.dumps(runtime, ensure_ascii=False, indent=2, sort_keys=True) + "\n"
+with destination.open("x", encoding="utf-8") as handle:
+    handle.write(encoded)
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+}
+
+install_source_config() {
+  install -d -o root -g "$CONTROL_GROUP" -m 0750 "$SOURCE_CONFIG_DIR"
+  local temporary="$SOURCE_CONFIG_DIR/.rootful-docker-source.json.new"
+  [[ ! -e "$temporary" ]] || fail "source-config-temporary-exists"
+  render_source_config "$temporary"
+  chown root:"$CONTROL_GROUP" "$temporary"
+  chmod 0640 "$temporary"
+  if [[ -f "$SOURCE_CONFIG" ]] && cmp -s "$temporary" "$SOURCE_CONFIG"; then
+    rm -f "$temporary"
+    return
+  fi
+  mv "$temporary" "$SOURCE_CONFIG"
+}
+
+validate_source_config() {
+  python3 - "$ROOT/config/argus/observation-sources.json" "$SOURCE_CONFIG" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+registry = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+runtime = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+matches = [item for item in registry.get("sources", []) if item.get("sourceId") == "oreochiserver.rootful-docker"]
+expected = {
+    "schemaVersion": registry.get("schemaVersion"),
+    "hostSources": ["oreochiserver.rootful-docker"],
+    "sources": matches,
+}
+if len(matches) != 1 or runtime != expected:
+    raise SystemExit("runtime rootful Docker source does not match the reviewed projection")
+PY
+}
+
+status() {
+  require_root
+  validate_identities
+  validate_docker_socket
+  [[ -f "$INSTALLED_UNIT" ]] || fail "unit-not-installed"
+  [[ -f "$SOURCE_CONFIG" ]] || fail "runtime-source-config-missing"
+  [[ "$(stat -Lc '%u:%g:%a' "$SOURCE_CONFIG")" == "0:$CONTROL_GID:640" ]] ||
+    fail "runtime-source-config-binding-mismatch"
+  validate_source_config || fail "runtime-source-config-drift"
+  cmp -s "$REVIEWED_UNIT" "$INSTALLED_UNIT" || fail "installed-unit-drift"
+  systemctl is-enabled --quiet "$SERVICE" || fail "service-not-enabled"
+  systemctl is-active --quiet "$SERVICE" || fail "service-not-active"
+  [[ "$(systemctl show "$SERVICE" -p User --value)" == "$COLLECTOR_USER" ]] || fail "service-user-mismatch"
+  [[ "$(systemctl show "$SERVICE" -p Group --value)" == "$CONTROL_GROUP" ]] || fail "service-group-mismatch"
+  [[ "$(stat -Lc '%u:%g:%a' "$SOCKET_PARENT")" == "$COLLECTOR_UID:$CONTROL_GID:750" ]] ||
+    fail "socket-parent-binding-mismatch"
+  [[ -S "$SOCKET_PATH" ]] || fail "collector-socket-missing"
+  [[ "$(stat -Lc '%u:%g:%a' "$SOCKET_PATH")" == "$COLLECTOR_UID:$CONTROL_GID:660" ]] ||
+    fail "collector-socket-binding-mismatch"
+  local api_pid
+  api_pid="$(systemctl show argus-control-api.service -p MainPID --value)"
+  [[ "$api_pid" =~ ^[1-9][0-9]*$ ]] || fail "control-api-not-running"
+  local docker_path masked_binding
+  for docker_path in /run/docker.sock /var/run/docker.sock; do
+    masked_binding="$(
+      nsenter --mount="/proc/$api_pid/ns/mnt" -- \
+        stat -Lc '%F:%u:%g:%a' "$docker_path" 2>/dev/null
+    )" || fail "control-api-docker-socket-mask-missing"
+    [[ "$masked_binding" == "socket:0:0:0" ]] || fail "control-api-docker-socket-mask-mismatch"
+    if nsenter --mount="/proc/$api_pid/ns/mnt" -- \
+      python3 -c 'import socket, sys; peer = socket.socket(socket.AF_UNIX); peer.connect(sys.argv[1])' \
+      "$docker_path" >/dev/null 2>&1; then
+      fail "control-api-docker-socket-connectable"
+    fi
+  done
+  printf 'D2A_COLLECTOR_STATUS_OK service=active socket=authenticated apiDockerSocket=blocked\n'
+}
+
+apply() {
+  preflight
+  backup_unit
+  APPLYING=true
+  trap restore_on_failure EXIT
+  install_user
+  validate_identities
+  install_source_config
+  if [[ ! -f "$INSTALLED_UNIT" ]] || ! cmp -s "$REVIEWED_UNIT" "$INSTALLED_UNIT"; then
+    install -m 0644 "$REVIEWED_UNIT" "$INSTALLED_UNIT"
+  fi
+  systemd-analyze verify "$INSTALLED_UNIT" >/dev/null || fail "installed-unit-validation-failed"
+  systemctl daemon-reload
+  systemctl enable "$SERVICE"
+  systemctl restart "$SERVICE"
+  status
+  APPLYING=false
+  trap - EXIT
+  printf 'D2A_COLLECTOR_APPLY_OK backup=%s\n' "$BACKUP_DIR"
+}
+
+remove_collector() {
+  require_root
+  if [[ -f "$INSTALLED_UNIT" ]] && ! cmp -s "$REVIEWED_UNIT" "$INSTALLED_UNIT"; then
+    fail "installed-unit-drift"
+  fi
+  if [[ -f "$SOURCE_CONFIG" ]]; then
+    validate_source_config || fail "runtime-source-config-drift"
+  fi
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$INSTALLED_UNIT"
+  rm -f "$SOURCE_CONFIG"
+  systemctl daemon-reload
+  [[ ! -e "$SOCKET_PATH" ]] || fail "collector-socket-remains"
+  if getent passwd "$COLLECTOR_USER" >/dev/null; then
+    [[ "$(user_id "$COLLECTOR_USER")" == "$COLLECTOR_UID" ]] || fail "collector-user-identity-mismatch"
+    pgrep -u "$COLLECTOR_UID" >/dev/null 2>&1 && fail "collector-process-remains"
+    userdel "$COLLECTOR_USER"
+  fi
+  printf 'D2A_COLLECTOR_REMOVE_OK workloads=untouched\n'
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+action="$1"
+shift
+case "$action" in
+  --preflight)
+    [[ $# -eq 0 ]] || fail "invalid-invocation"
+    preflight
+    ;;
+  --status)
+    [[ $# -eq 0 ]] || fail "invalid-invocation"
+    status
+    ;;
+  --apply)
+    [[ $# -eq 1 && "$1" == "$ACK" ]] || fail "acknowledgement-required"
+    apply
+    ;;
+  --remove|--rollback)
+    [[ $# -eq 1 && "$1" == "$ACK" ]] || fail "acknowledgement-required"
+    remove_collector
+    ;;
+  --help|-h)
+    usage
+    ;;
+  *)
+    usage >&2
+    exit 2
+    ;;
+esac

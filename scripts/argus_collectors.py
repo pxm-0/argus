@@ -175,6 +175,13 @@ def _verify_connected_socket(
         raise CollectorError("collector-parent-replaced")
     if (socket_before.st_dev, socket_before.st_ino) != (socket_after.st_dev, socket_after.st_ino):
         raise CollectorError("collector-socket-replaced")
+    peer_uid, peer_gid = peer_credentials(connection)
+    if peer_uid != binding["peerUid"] or peer_gid != binding["peerGid"]:
+        raise CollectorError("collector-peer-credentials-mismatch")
+
+
+def peer_credentials(connection: socket.socket) -> tuple[int, int]:
+    """Return authenticated Unix peer identity on supported platforms."""
     if sys.platform.startswith("linux"):
         if not hasattr(socket, "SO_PEERCRED"):
             raise CollectorError("collector-peer-credentials-unavailable")
@@ -182,8 +189,7 @@ def _verify_connected_socket(
         _pid, peer_uid, peer_gid = struct.unpack(
             "3i", connection.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, size)
         )
-        if peer_uid != binding["peerUid"] or peer_gid != binding["peerGid"]:
-            raise CollectorError("collector-peer-credentials-mismatch")
+        return peer_uid, peer_gid
     elif sys.platform == "darwin":
         try:
             libc = ctypes.CDLL(None, use_errno=True)
@@ -201,10 +207,14 @@ def _verify_connected_socket(
             raise CollectorError("collector-peer-credentials-unavailable") from exc
         if status != 0:
             raise CollectorError("collector-peer-credentials-unavailable")
-        if peer_uid.value != binding["peerUid"] or peer_gid.value != binding["peerGid"]:
-            raise CollectorError("collector-peer-credentials-mismatch")
+        return peer_uid.value, peer_gid.value
     else:
         raise CollectorError("collector-peer-credentials-unavailable")
+
+
+def validate_collection_request(source: SourceSpec, request: Any) -> None:
+    """Expose the exact D1b request validator to separately reviewed collectors."""
+    _validate_request(source, request)
 
 
 def collection_request(
@@ -428,11 +438,19 @@ def _collect_before_deadline(
     remaining = global_deadline - time.monotonic()
     if remaining <= 0:
         raise CollectorError("scheduler-global-timeout")
+    # When the global deadline is what bounds this run, an overrun is the
+    # scheduler's, not the collector's. Blaming the collector made the gap code
+    # depend on which thread noticed first: the waiter marks unfinished futures
+    # scheduler-global-timeout, while a worker that completed just before that
+    # wait returned reported collector-timeout for the very same cause.
+    global_bound = remaining <= source_timeout
     effective_timeout = min(source_timeout, remaining)
     source_deadline = time.monotonic() + effective_timeout
     result = collector(source, request, effective_timeout)
     if time.monotonic() >= source_deadline:
-        raise CollectorError("collector-timeout")
+        raise CollectorError(
+            "scheduler-global-timeout" if global_bound else "collector-timeout"
+        )
     return result
 
 
