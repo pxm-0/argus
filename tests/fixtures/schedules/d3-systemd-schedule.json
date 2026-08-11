@@ -1,0 +1,92 @@
+{
+  "fixtureVersion": 1,
+  "system": {
+    "services": [
+      {
+        "unit": "argus-control-api.service",
+        "loadState": "loaded",
+        "activeState": "active",
+        "subState": "running",
+        "enabled": true
+      },
+      {
+        "unit": "oreo-metrics.service",
+        "loadState": "loaded",
+        "activeState": "inactive",
+        "subState": "dead",
+        "enabled": false
+      }
+    ],
+    "timers": [
+      {
+        "unit": "argus-metrics.timer",
+        "activates": "argus-metrics.service"
+      },
+      {
+        "unit": "oreo-metrics.timer",
+        "activates": "oreo-metrics.service"
+      }
+    ],
+    "cronFiles": [
+      {
+        "directory": "cron.d",
+        "entryName": "legacy-job",
+        "mode": 420,
+        "content": "@reboot docker-compose -p intake-os start\n"
+      },
+      {
+        "directory": "cron.daily",
+        "entryName": "logrotate",
+        "mode": 493,
+        "content": "#!/bin/sh\nexit 0\n"
+      }
+    ],
+    "crontab": ""
+  },
+  "users": {
+    "oreo": {
+      "services": [
+        {
+          "unit": "launchpadlib-cache-clean.service",
+          "loadState": "loaded",
+          "activeState": "inactive",
+          "subState": "dead",
+          "enabled": false
+        }
+      ],
+      "timers": [
+        {
+          "unit": "launchpadlib-cache-clean.timer",
+          "activates": "launchpadlib-cache-clean.service"
+        }
+      ],
+      "crontab": "# no legacy schedule\n"
+    },
+    "personal-sandbox": {
+      "services": [
+        {
+          "unit": "argus-personal-sandbox-rootless-docker.service",
+          "loadState": "loaded",
+          "activeState": "active",
+          "subState": "running",
+          "enabled": true
+        }
+      ],
+      "timers": [],
+      "crontab": "@reboot /home/oreo/hastur/legacy-start.sh\n"
+    },
+    "work-sandbox": {
+      "services": [
+        {
+          "unit": "argus-work-sandbox-rootless-docker.service",
+          "loadState": "loaded",
+          "activeState": "active",
+          "subState": "running",
+          "enabled": true
+        }
+      ],
+      "timers": [],
+      "crontab": ""
+    }
+  }
+}
