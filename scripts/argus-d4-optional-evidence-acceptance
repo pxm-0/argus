@@ -122,10 +122,17 @@ def live_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str,
             for item in result["sources"]:
                 if item["state"] == "failed":
                     raise ObservationError("D4 source failed")
-                records = repository.current_snapshot(item["sourceId"])
-                measurements[item["sourceId"]] = _measurement(
-                    item["sourceId"], item["state"], item["gapCode"], records
-                )
+                # Partial/failed runs are intentionally not promoted to the
+                # last-known-good current snapshot.  Measure the committed run
+                # metadata so an optional gap remains visible without reading
+                # raw records back out of the repository.
+                measurements[item["sourceId"]] = {
+                    "sourceId": item["sourceId"],
+                    "state": item["state"],
+                    "gapCode": item["gapCode"] or "",
+                    "recordCount": item["recordCount"],
+                    "snapshotDigest": item["snapshotDigest"],
+                }
     return measurements
 
 
