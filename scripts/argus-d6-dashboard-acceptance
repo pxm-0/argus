@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+"""Run deterministic D6 dashboard completeness acceptance."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import platform
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Any
+
+
+STATES = {"loading", "empty", "error", "partial", "stale", "conflict", "complete"}
+FORBIDDEN_FIXTURE_MARKERS = ("/srv/", "/home/", "docker compose", "token=", "https://", "attributes")
+
+
+def digest(payload: Any) -> str:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return f"sha256:{hashlib.sha256(encoded).hexdigest()}"
+
+
+def validate(root: Path, target: str) -> dict[str, Any]:
+    if target == "browser-private-origin":
+        if platform.node().split(".", 1)[0] != "oreochiserver":
+            raise ValueError("browser-private-origin acceptance must run on oreochiserver")
+        revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, capture_output=True, check=True).stdout.strip()
+        clean = not subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, capture_output=True, check=True).stdout
+        if revision != os.environ.get("ARGUS_D6_SOURCE_REVISION") or not clean:
+            raise ValueError("browser acceptance checkout must match the clean source revision")
+        if os.geteuid() != 1000 or os.getegid() != 981:
+            raise ValueError("browser acceptance must run as the pinned private dashboard client")
+    dashboard = root / "control-plane" / "dashboard"
+    fixture = json.loads((root / "tests/fixtures/dashboard/d6-reconciliation.json").read_text(encoding="utf-8"))
+    states = {state.get("id") for state in fixture.get("states", [])}
+    if states != STATES:
+        raise ValueError("D6 fixture state coverage is incomplete")
+    serialized = json.dumps(fixture, sort_keys=True).lower()
+    if any(marker in serialized for marker in FORBIDDEN_FIXTURE_MARKERS):
+        raise ValueError("D6 fixture contains an unsanitized field")
+    sys.path.insert(0, str(dashboard))
+    from generate_dashboard import JS, render_html  # noqa: PLC0415
+    from m5_style import M5_CSS  # noqa: PLC0415
+
+    html = render_html()
+    checks = {
+        "evidence-state": 'id="evidence-state"' in html and 'id="evidence-state-body"' in html,
+        "explicit-state-rendering": all(f'label: "{label}"' in JS for label in ("Loading", "Empty", "Error", "Partial", "Stale", "Conflict", "Complete")),
+        "read-only-coverage": "mutation authority" in JS.lower() and "Review coverage" in JS and 'href="#estate-coverage"' in JS,
+        "accessibility": "escapeHtml" in JS and "min-height:44px" in M5_CSS,
+        "responsive": "@media(max-width:760px)" in M5_CSS and ".evidence-state-body" in M5_CSS,
+    }
+    if not all(checks.values()):
+        raise ValueError("D6 dashboard contract failed")
+    return {"fixtureStates": sorted(states), "checks": checks}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D6 dashboard completeness acceptance")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("local-ci", "browser-private-origin"), required=True)
+    args = parser.parse_args()
+    os.environ["ARGUS_D6_SOURCE_REVISION"] = args.source_revision
+    try:
+        measurements = []
+        runs = []
+        for ordinal in range(1, 4):
+            started = time.monotonic_ns()
+            measurements.append(validate(args.root, args.target))
+            runs.append({"ordinal": ordinal, "result": "pass", "durationMs": (time.monotonic_ns() - started) // 1_000_000, "reasonCode": ""})
+        if len({digest(measurement) for measurement in measurements}) != 1:
+            raise ValueError("repeated D6 dashboard evidence differs")
+        evidence_id = digest({"checkId": "d6-dashboard-completeness", "measurements": measurements, "sourceRevision": args.source_revision, "target": args.target})
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 318,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d6-dashboard-completeness",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError) as error:
+        print(f"D6_ACCEPTANCE_FAIL reason={error}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

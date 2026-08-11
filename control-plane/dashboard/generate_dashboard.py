@@ -85,6 +85,13 @@ def render_html() -> str:
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
+      <section class="evidence-state" id="evidence-state" aria-labelledby="evidence-state-title" aria-live="polite">
+        <div class="section-head">
+          <div><p class="eyebrow">Evidence gate</p><h2 id="evidence-state-title">Estate completeness</h2></div>
+          <span id="evidence-state-label" class="state-badge info">Loading</span>
+        </div>
+        <div id="evidence-state-body">Loading estate evidence.</div>
+      </section>
       <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
           <div class="command-heading">
@@ -174,6 +181,9 @@ const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
+const evidenceStateEl = document.getElementById("evidence-state");
+const evidenceStateLabelEl = document.getElementById("evidence-state-label");
+const evidenceStateBodyEl = document.getElementById("evidence-state-body");
 const topologyEl = document.getElementById("topology");
 const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
@@ -549,6 +559,70 @@ function setMonitor(open) {
   }
 }
 
+const EVIDENCE_PRESENTATIONS = Object.freeze({
+  loading: { label: "Loading", tone: "info", headline: "Loading estate evidence", detail: "Waiting for the private evidence summary.", action: "Review coverage" },
+  empty: { label: "Empty", tone: "info", headline: "No estate evidence configured", detail: "The dashboard has no configured observation repository to reconcile.", action: "Review coverage" },
+  error: { label: "Error", tone: "bad", headline: "Estate evidence unavailable", detail: "The private evidence summary could not be loaded. No action is authorized.", action: "Review coverage" },
+  partial: { label: "Partial", tone: "warn", headline: "Estate evidence is incomplete", detail: "Some sources or workload identities still need evidence before review can finish.", action: "Review coverage" },
+  stale: { label: "Stale", tone: "warn", headline: "Estate evidence is stale", detail: "One or more source observations are outside the freshness window.", action: "Review coverage" },
+  conflict: { label: "Conflict", tone: "bad", headline: "Estate identity conflict", detail: "The same workload evidence maps to incompatible trust-domain identities.", action: "Review coverage" },
+  complete: { label: "Complete", tone: "good", headline: "Estate evidence is complete", detail: "All reconciled workload identities are known and the configured sources are fresh.", action: "Review coverage" }
+});
+
+function safeEvidenceToken(value) {
+  const token = String(value ?? "");
+  return /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(token) ? token : "redacted";
+}
+
+function reconciliationBlockerLabel(blocker) {
+  const labels = [safeEvidenceToken(blocker?.code || "unclassified")];
+  if (blocker?.sourceId) labels.push(`source ${safeEvidenceToken(blocker.sourceId)}`);
+  if (blocker?.workloadId) labels.push(`workload ${safeEvidenceToken(blocker.workloadId)}`);
+  if (blocker?.trustDomain) labels.push(`domain ${safeEvidenceToken(blocker.trustDomain)}`);
+  return labels.join(" · ");
+}
+
+function boundedCount(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.min(9999, Math.floor(number)) : 0;
+}
+
+function reconciliationState(reconciliation) {
+  if (!reconciliation) return "loading";
+  if (reconciliation.status === "unavailable") return "error";
+  const coverage = reconciliation.coverage || {};
+  const workloads = Array.isArray(reconciliation.workloads) ? reconciliation.workloads : [];
+  const states = new Set(workloads.map((workload) => workload?.state).filter(Boolean));
+  const sources = Array.isArray(coverage.sources) ? coverage.sources : [];
+  if (reconciliation.status === "empty" || coverage.status === "not-configured" || (coverage.configuredSources === 0 && !workloads.length)) return "empty";
+  if (states.has("conflicting")) return "conflict";
+  if (states.has("stale") || sources.some((source) => source?.state === "stale")) return "stale";
+  if (reconciliation.status === "complete" && coverage.status === "complete" && workloads.length && reconciliation.safeToMoveWorkloads === true && workloads.every((workload) => workload?.state === "known")) return "complete";
+  return "partial";
+}
+
+function renderEvidenceState(reconciliation = state?.reconciliation) {
+  const stateId = reconciliationState(reconciliation);
+  const presentation = EVIDENCE_PRESENTATIONS[stateId];
+  const coverage = reconciliation?.coverage || {};
+  const workloads = Array.isArray(reconciliation?.workloads) ? reconciliation.workloads : [];
+  const sources = Array.isArray(coverage.sources) ? coverage.sources : [];
+  const blockers = Array.isArray(reconciliation?.blockers) ? reconciliation.blockers : [];
+  const sourceMarkup = sources.length
+    ? `<ul class="evidence-state-sources">${sources.slice(0, 8).map((source) => `<li><span>${escapeHtml(safeEvidenceToken(source?.sourceId))}</span><strong>${escapeHtml(safeEvidenceToken(source?.state || "unknown"))}</strong></li>`).join("")}</ul>`
+    : `<p class="evidence-state-empty">No source rows are available.</p>`;
+  const blockerMarkup = blockers.length
+    ? `<details class="evidence-state-blockers"><summary>${boundedCount(blockers.length)} blocker${blockers.length === 1 ? "" : "s"}</summary><ul>${blockers.slice(0, 6).map((blocker) => `<li>${escapeHtml(reconciliationBlockerLabel(blocker))}</li>`).join("")}</ul></details>`
+    : `<p class="evidence-state-empty">No reconciliation blockers reported.</p>`;
+  evidenceStateEl.dataset.state = stateId;
+  evidenceStateLabelEl.className = `state-badge ${presentation.tone}`;
+  evidenceStateLabelEl.textContent = presentation.label;
+  evidenceStateBodyEl.innerHTML = `
+    <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p><a class="action evidence-action" href="#estate-coverage">${presentation.action}</a></div>
+    <dl class="evidence-state-meta"><div><dt>Sources</dt><dd>${boundedCount(coverage.freshSources)} fresh / ${boundedCount(coverage.configuredSources)} configured</dd></div><div><dt>Workloads</dt><dd>${boundedCount(workloads.length)} reconciled</dd></div><div><dt>Mutation authority</dt><dd>None granted</dd></div></dl>
+    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`;
+}
+
 function renderSummary() {
   const workloads = state?.workloads || [];
   const exposure = state?.exposure?.providers || {};
@@ -683,6 +757,18 @@ function operationBlockers({
   return blockers;
 }
 
+function renderWorkloadReconciliation(workloadId) {
+  const row = state?.reconciliation?.workloads?.find((item) => item.id === workloadId);
+  if (!row) {
+    return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><p class="eyebrow">D5 evidence</p><strong>Unavailable</strong><p>No sanitized reconciliation row is available for this workload.</p></div><span class="state-badge info">Incomplete</span></section>`;
+  }
+  const sources = Array.isArray(row.matchedSourceIds) ? row.matchedSourceIds.slice(0, 6).map((sourceId) => safeEvidenceToken(sourceId)) : [];
+  const blockers = Array.isArray(row.blockers) ? row.blockers.slice(0, 4) : [];
+  const stateId = safeEvidenceToken(row.state || "incomplete");
+  const blockerText = blockers.length ? blockers.map(reconciliationBlockerLabel).join(" · ") : "No row blockers reported";
+  return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><p class="eyebrow">D5 evidence</p><strong>${escapeHtml(stateId)}</strong><p>${sources.length ? `Matched source${sources.length === 1 ? "" : "s"}: ${escapeHtml(sources.join(", "))}.` : "No matching source identity."} ${escapeHtml(blockerText)}.</p></div><dl><div><dt>Mutation authority</dt><dd>None granted</dd></div><div><dt>Evidence digests</dt><dd>${boundedCount(Array.isArray(row.evidenceDigests) ? row.evidenceDigests.length : 0)} recorded</dd></div></dl></section>`;
+}
+
 function renderWorkload(workload) {
   const id = workload.id;
   const runtime = workload.runtime || {};
@@ -764,6 +850,7 @@ function renderWorkload(workload) {
           <span>Trust domain<strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
         </div>
       </div>
+      ${renderWorkloadReconciliation(id)}
       ${error ? `<details class="workload-notice"><summary>Access requires reconciliation</summary><p>${escapeHtml(error)}</p></details>` : ""}
       <details class="workload-evidence">
         <summary><span>Technical evidence</span><small>12 fields</small></summary>
@@ -858,6 +945,7 @@ function renderEvents() {
 }
 
 function renderDashboard() {
+  renderEvidenceState();
   renderSummary();
   renderTopology();
   workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
@@ -903,6 +991,7 @@ async function loadDashboardState() {
   } catch (error) {
     routeSummary.textContent = "dashboard state unavailable";
     summaryEl.innerHTML = `<div><strong>!</strong><span>${escapeHtml(error.message)}</span></div>`;
+    renderEvidenceState({ status: "unavailable" });
     workloadsEl.innerHTML = "";
     eventsEl.textContent = "No dashboard state loaded.";
   }
