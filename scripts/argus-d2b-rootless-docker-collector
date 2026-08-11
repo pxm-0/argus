@@ -1,0 +1,243 @@
+#!/usr/bin/env bash
+# Install, verify, or remove one reviewed D2b rootless Docker collector.
+set -euo pipefail
+
+readonly ROOT="/srv/argus"
+readonly DOMAIN="${ARGUS_ROOTLESS_DOMAIN:-}"
+readonly CONTROL_GROUP="argus-control"
+readonly CONTROL_GID="981"
+readonly UNIT="argus-rootless-docker-collector@.service"
+readonly REVIEWED_UNIT="$ROOT/systemd/$UNIT"
+readonly INSTALLED_UNIT="/etc/systemd/system/$UNIT"
+readonly SOURCE_CONFIG_DIR="/etc/argus/collectors"
+readonly BACKUP_ROOT="/var/backups/argus-d2b-rootless-docker-collector"
+readonly ACK="--acknowledge-d2b-rootless-docker-collector"
+
+case "$DOMAIN" in
+  personal-sandbox) DOMAIN_UID=1002 ; DOMAIN_GID=1002 ;;
+  work-sandbox) DOMAIN_UID=1003 ; DOMAIN_GID=1003 ;;
+  *) printf 'D2B_COLLECTOR_FAIL reason=unsupported-domain\n' >&2; exit 1 ;;
+esac
+
+readonly DOMAIN_UID DOMAIN_GID
+readonly DOMAIN_USER="argus-$DOMAIN"
+readonly SOURCE_ID="oreochiserver.$DOMAIN.rootless-docker"
+readonly SOURCE_CONFIG="$SOURCE_CONFIG_DIR/$DOMAIN-rootless-docker-source.json"
+readonly ENV_FILE="$SOURCE_CONFIG_DIR/$DOMAIN-rootless-docker.env"
+readonly SERVICE="argus-rootless-docker-collector@$DOMAIN.service"
+readonly SOCKET_PARENT="/run/argus/collectors/$DOMAIN-rootless-docker"
+readonly SOCKET_PATH="$SOCKET_PARENT/collector.sock"
+readonly DOCKER_SOCKET="/var/lib/argus/$DOMAIN/docker.sock"
+
+BACKUP_DIR=""
+APPLYING=false
+
+fail() { printf 'D2B_COLLECTOR_FAIL reason=%s\n' "$1" >&2; exit 1; }
+
+usage() {
+  printf '%s\n' \
+    "Usage: ARGUS_ROOTLESS_DOMAIN=$DOMAIN sudo ./scripts/argus-d2b-rootless-docker-collector --preflight" \
+    "  --apply $ACK" \
+    "  --status" \
+    "  --remove $ACK" \
+    "  --rollback BACKUP $ACK"
+}
+
+require_root() { [[ $EUID -eq 0 ]] || fail "root-required"; }
+
+group_id() { getent group "$1" | awk -F: '{print $3}'; }
+user_id() { getent passwd "$1" | awk -F: '{print $3}'; }
+
+validate_identities() {
+  [[ "$(group_id "$CONTROL_GROUP")" == "$CONTROL_GID" ]] || fail "control-group-identity-mismatch"
+  [[ "$(user_id "$DOMAIN_USER")" == "$DOMAIN_UID" ]] || fail "domain-user-identity-mismatch"
+  [[ "$(getent passwd "$DOMAIN_USER" | awk -F: '{print $4}')" == "$DOMAIN_GID" ]] || fail "domain-group-identity-mismatch"
+}
+
+validate_daemon_socket() {
+  [[ -S "$DOCKER_SOCKET" ]] || fail "rootless-docker-socket-unavailable"
+  local binding
+  binding="$(stat -Lc '%u:%a' "$DOCKER_SOCKET")" || fail "rootless-docker-socket-unavailable"
+  [[ "$binding" == "$DOMAIN_UID:660" ]] || fail "rootless-docker-socket-binding-mismatch"
+  sudo -u "$DOMAIN_USER" XDG_RUNTIME_DIR="/run/user/$DOMAIN_UID" \
+    systemctl --user is-active --quiet "argus-$DOMAIN-rootless-docker.service" ||
+    fail "rootless-docker-daemon-inactive"
+}
+
+preflight() {
+  require_root
+  for command in awk chown cmp cp date getent install mv python3 stat sudo systemctl systemd-analyze; do
+    command -v "$command" >/dev/null || fail "required-command-missing"
+  done
+  [[ -d "$ROOT/.git" ]] || fail "reviewed-checkout-missing"
+  [[ -f "$REVIEWED_UNIT" ]] || fail "reviewed-unit-missing"
+  [[ -f "$ROOT/scripts/argus_rootless_docker_collector.py" ]] || fail "collector-module-missing"
+  [[ -f "$ROOT/config/argus/observation-sources.json" ]] || fail "source-registry-missing"
+  python3 -m json.tool "$ROOT/config/argus/observation-sources.json" >/dev/null || fail "source-registry-invalid"
+  validate_identities
+  validate_daemon_socket
+  printf 'D2B_COLLECTOR_PREFLIGHT_OK domain=%s revision=%s\n' "$DOMAIN" "$(git -C "$ROOT" rev-parse --short HEAD)"
+}
+
+backup_path() {
+  printf '%s/%s/%s\n' "$BACKUP_ROOT" "$DOMAIN" "$(date -u +%Y%m%dT%H%M%S.%NZ)"
+}
+
+backup_files() {
+  local destination="$1"
+  install -d -m 0700 "$destination"
+  for path in "$INSTALLED_UNIT" "$SOURCE_CONFIG" "$ENV_FILE"; do
+    if [[ -e "$path" ]]; then
+      cp --preserve=mode,ownership,timestamps "$path" "$destination/$(basename "$path")"
+    fi
+  done
+}
+
+restore_file() {
+  local name="$1" target="$2" mode="$3" group="$4"
+  if [[ -n "$BACKUP_DIR" && -f "$BACKUP_DIR/$name" ]]; then
+    install -o root -g "$group" -m "$mode" "$BACKUP_DIR/$name" "$target"
+  else
+    rm -f "$target"
+  fi
+}
+
+restore_on_failure() {
+  local failed=$?
+  [[ "$APPLYING" == true && "$failed" -ne 0 ]] || return "$failed"
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  restore_file "$(basename "$INSTALLED_UNIT")" "$INSTALLED_UNIT" 0644 root
+  restore_file "$(basename "$SOURCE_CONFIG")" "$SOURCE_CONFIG" 0640 "$CONTROL_GROUP"
+  restore_file "$(basename "$ENV_FILE")" "$ENV_FILE" 0640 "$CONTROL_GROUP"
+  systemctl daemon-reload >/dev/null 2>&1 || true
+  printf 'D2B_COLLECTOR_ROLLBACK result=restored domain=%s\n' "$DOMAIN" >&2
+  return "$failed"
+}
+
+render_source_config() {
+  local destination="$1"
+  python3 - "$ROOT/config/argus/observation-sources.json" "$destination" "$SOURCE_ID" <<'PY'
+import json
+import os
+import sys
+from pathlib import Path
+
+registry = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+destination = Path(sys.argv[2])
+source_id = sys.argv[3]
+matches = [item for item in registry.get("sources", []) if item.get("sourceId") == source_id]
+if len(matches) != 1 or source_id not in registry.get("hostSources", []):
+    raise SystemExit("reviewed rootless source is missing")
+payload = {
+    "schemaVersion": registry["schemaVersion"],
+    "hostSources": [source_id],
+    "sources": matches,
+}
+with destination.open("x", encoding="utf-8") as handle:
+    handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n")
+    handle.flush()
+    os.fsync(handle.fileno())
+PY
+}
+
+validate_source_config() {
+  python3 - "$ROOT/config/argus/observation-sources.json" "$SOURCE_CONFIG" "$SOURCE_ID" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+registry = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+runtime = json.loads(Path(sys.argv[2]).read_text(encoding="utf-8"))
+source_id = sys.argv[3]
+matches = [item for item in registry.get("sources", []) if item.get("sourceId") == source_id]
+expected = {"schemaVersion": registry.get("schemaVersion"), "hostSources": [source_id], "sources": matches}
+if len(matches) != 1 or runtime != expected:
+    raise SystemExit("runtime rootless source does not match reviewed projection")
+PY
+}
+
+install_projection() {
+  install -d -o root -g "$CONTROL_GROUP" -m 0750 "$SOURCE_CONFIG_DIR"
+  local temporary="$SOURCE_CONFIG_DIR/.$DOMAIN-rootless-docker-source.json.new"
+  [[ ! -e "$temporary" ]] || fail "source-config-temporary-exists"
+  render_source_config "$temporary"
+  chown root:"$CONTROL_GROUP" "$temporary"
+  chmod 0640 "$temporary"
+  mv "$temporary" "$SOURCE_CONFIG"
+
+  local socket_gid
+  socket_gid="$(stat -Lc '%g' "$DOCKER_SOCKET")" || fail "rootless-docker-socket-unavailable"
+  local env_temporary="$SOURCE_CONFIG_DIR/.$DOMAIN-rootless-docker.env.new"
+  printf 'ARGUS_DOCKER_SOCKET_UID=%s\nARGUS_DOCKER_SOCKET_GID=%s\nARGUS_DOCKER_SOCKET_MODE=0660\nARGUS_DOCKER_DAEMON_UID=%s\nARGUS_DOCKER_DAEMON_GID=%s\n' \
+    "$DOMAIN_UID" "$socket_gid" "$DOMAIN_UID" "$DOMAIN_GID" > "$env_temporary"
+  chown root:"$CONTROL_GROUP" "$env_temporary"
+  chmod 0640 "$env_temporary"
+  mv "$env_temporary" "$ENV_FILE"
+}
+
+status() {
+  require_root
+  validate_identities
+  validate_daemon_socket
+  [[ -f "$INSTALLED_UNIT" ]] || fail "unit-not-installed"
+  [[ -f "$SOURCE_CONFIG" && -f "$ENV_FILE" ]] || fail "runtime-source-missing"
+  validate_source_config || fail "runtime-source-drift"
+  cmp -s "$REVIEWED_UNIT" "$INSTALLED_UNIT" || fail "installed-unit-drift"
+  systemctl is-enabled --quiet "$SERVICE" || fail "service-not-enabled"
+  systemctl is-active --quiet "$SERVICE" || fail "service-not-active"
+  [[ "$(systemctl show "$SERVICE" -p User --value)" == "$DOMAIN_USER" ]] || fail "service-user-mismatch"
+  [[ "$(systemctl show "$SERVICE" -p Group --value)" == "$CONTROL_GROUP" ]] || fail "service-group-mismatch"
+  [[ "$(stat -Lc '%u:%g:%a' "$SOCKET_PARENT")" == "$DOMAIN_UID:$CONTROL_GID:750" ]] || fail "collector-parent-binding-mismatch"
+  [[ "$(stat -Lc '%u:%g:%a' "$SOCKET_PATH")" == "$DOMAIN_UID:$CONTROL_GID:660" ]] || fail "collector-socket-binding-mismatch"
+  printf 'D2B_COLLECTOR_STATUS_OK domain=%s service=active socket=authenticated\n' "$DOMAIN"
+}
+
+apply() {
+  preflight
+  BACKUP_DIR="$(backup_path)"
+  backup_files "$BACKUP_DIR"
+  APPLYING=true
+  trap restore_on_failure EXIT
+  install -m 0644 "$REVIEWED_UNIT" "$INSTALLED_UNIT"
+  install_projection
+  systemd-analyze verify "$INSTALLED_UNIT" >/dev/null || fail "unit-validation-failed"
+  systemctl daemon-reload
+  systemctl enable --now "$SERVICE"
+  status
+  APPLYING=false
+  trap - EXIT
+}
+
+remove_collector() {
+  require_root
+  validate_identities
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  rm -f "$SOURCE_CONFIG" "$ENV_FILE"
+  systemctl daemon-reload
+  printf 'D2B_COLLECTOR_REMOVED domain=%s\n' "$DOMAIN"
+}
+
+rollback() {
+  require_root
+  local backup="$1"
+  [[ "$backup" == "$BACKUP_ROOT/$DOMAIN/"* ]] || fail "rollback-path-outside-backup-root"
+  [[ "$backup" != *"/../"* ]] || fail "rollback-path-outside-backup-root"
+  [[ -d "$backup" && "$(stat -Lc '%u:%g:%a' "$backup")" == "0:0:700" ]] || fail "rollback-backup-binding-mismatch"
+  systemctl disable --now "$SERVICE" >/dev/null 2>&1 || true
+  BACKUP_DIR="$backup"
+  restore_file "$(basename "$INSTALLED_UNIT")" "$INSTALLED_UNIT" 0644 root
+  restore_file "$(basename "$SOURCE_CONFIG")" "$SOURCE_CONFIG" 0640 "$CONTROL_GROUP"
+  restore_file "$(basename "$ENV_FILE")" "$ENV_FILE" 0640 "$CONTROL_GROUP"
+  systemctl daemon-reload
+  printf 'D2B_COLLECTOR_ROLLBACK result=restored domain=%s\n' "$DOMAIN"
+}
+
+[[ $# -ge 1 ]] || { usage; exit 2; }
+case "$1" in
+  --preflight) [[ $# -eq 1 ]] || { usage; exit 2; }; preflight ;;
+  --status) [[ $# -eq 1 ]] || { usage; exit 2; }; status ;;
+  --apply) [[ $# -eq 2 && "$2" == "$ACK" ]] || { usage; exit 2; }; apply ;;
+  --remove) [[ $# -eq 2 && "$2" == "$ACK" ]] || { usage; exit 2; }; remove_collector ;;
+  --rollback) [[ $# -eq 3 && "$3" == "$ACK" ]] || { usage; exit 2; }; rollback "$2" ;;
+  *) usage; exit 2 ;;
+esac

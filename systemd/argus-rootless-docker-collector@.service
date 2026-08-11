@@ -1,0 +1,52 @@
+[Unit]
+Description=Argus minimized read-only %i rootless Docker collector
+After=network.target
+
+[Service]
+Type=simple
+User=argus-%i
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+Environment=ARGUS_SOURCE_ID=oreochiserver.%i.rootless-docker
+Environment=ARGUS_SOURCE_REGISTRY=/etc/argus/collectors/%i-rootless-docker-source.json
+Environment=ARGUS_SOURCE_CONFIG_UID=0
+Environment=ARGUS_SOURCE_CONFIG_GID=981
+Environment=ARGUS_SOURCE_CONFIG_MODE=0640
+Environment=ARGUS_COLLECTOR_CLIENT_UID=1000
+Environment=ARGUS_COLLECTOR_CLIENT_GID=981
+Environment=ARGUS_DOCKER_SOCKET=/var/lib/argus/%i/docker.sock
+EnvironmentFile=/etc/argus/collectors/%i-rootless-docker.env
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_rootless_docker_collector.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+RuntimeDirectory=argus/collectors/%i-rootless-docker
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+ReadOnlyPaths=/srv/argus/scripts /etc/argus/collectors/%i-rootless-docker-source.json /etc/argus/collectors/%i-rootless-docker.env /var/lib/argus/%i/docker.sock
+InaccessiblePaths=/var/lib/argus/control /var/run/docker.sock /run/docker.sock /etc/argus/operators.json /etc/argus/control-token /etc/argus/operator-proxy-token /srv/argus/config /srv/argus/control-plane /srv/argus/runtime /srv/argus/tests /srv/argus/docs /run/argus/domains
+
+[Install]
+WantedBy=multi-user.target

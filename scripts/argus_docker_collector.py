@@ -685,6 +685,8 @@ def load_runtime_source(
     uid: int,
     gid: int,
     mode: int = 0o640,
+    expected_source_ids: set[str] | None = None,
+    expected_host_sources: tuple[str, ...] | None = None,
 ) -> SourceSpec:
     try:
         metadata = os.lstat(path)
@@ -703,9 +705,13 @@ def load_runtime_source(
     if not isinstance(payload, dict):
         raise DockerCollectorError("collector-runtime-source-invalid")
     registry = SourceRegistry(payload, [])
-    if set(registry.sources) != {SOURCE_ID} or registry.host_sources != (SOURCE_ID,):
+    source_ids = expected_source_ids if expected_source_ids is not None else {SOURCE_ID}
+    host_sources = expected_host_sources if expected_host_sources is not None else tuple(sorted(source_ids))
+    if set(registry.sources) != source_ids or registry.host_sources != host_sources:
         raise DockerCollectorError("collector-source-registry-invalid")
-    return registry.sources[SOURCE_ID]
+    if len(source_ids) != 1:
+        raise DockerCollectorError("collector-source-registry-invalid")
+    return registry.sources[next(iter(source_ids))]
 
 
 def main() -> int:

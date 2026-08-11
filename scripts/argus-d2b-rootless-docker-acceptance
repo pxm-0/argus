@@ -1,0 +1,186 @@
+#!/usr/bin/env python3
+"""Three-run fixture/live acceptance for the configured rootless collectors."""
+
+from __future__ import annotations
+
+import argparse
+import copy
+import json
+import os
+import platform
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from argus_collectors import CollectorScheduler, PageValidator, collection_request
+from argus_docker_collector import build_pages, collect_docker_records
+from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
+
+
+ROOTLESS_SOURCE_IDS = (
+    "oreochiserver.personal-sandbox.rootless-docker",
+    "oreochiserver.work-sandbox.rootless-docker",
+)
+
+
+class FixtureClient:
+    def __init__(self, responses: dict[str, object]):
+        self.responses = responses
+
+    def get(self, path: str):
+        if path not in self.responses:
+            raise ObservationError("fixture route is missing")
+        return copy.deepcopy(self.responses[path])
+
+    def verify_unchanged(self) -> None:
+        return
+
+
+def rootless_registry(root: Path) -> SourceRegistry:
+    registry = load_registry(root / "config/argus/observation-sources.json", root)
+    sources = [registry.sources[source_id].as_registry_record() for source_id in ROOTLESS_SOURCE_IDS]
+    return SourceRegistry(
+        {
+            "schemaVersion": registry.schema_version,
+            "hostSources": list(ROOTLESS_SOURCE_IDS),
+            "sources": sources,
+        },
+        registry.canonical_domains,
+    )
+
+
+def safe_counts(records: list[dict[str, Any]]) -> dict[str, int]:
+    result = {kind: sum(item["resourceKind"] == kind for item in records) for kind in ("container", "image", "network", "volume")}
+    result["running"] = sum(
+        item["resourceKind"] == "container" and item["attributes"]["lifecycle"] == "running"
+        for item in records
+    )
+    result["stopped"] = result["container"] - result["running"]
+    return result
+
+
+def fixture_once(root: Path, explicit_clock: str) -> dict[str, Any]:
+    registry = rootless_registry(root)
+    fixture = json.loads((root / "tests/fixtures/docker/rootful-api-v1.40.json").read_text(encoding="utf-8"))
+    measurements = {}
+    for source_id in ROOTLESS_SOURCE_IDS:
+        source = registry.sources[source_id]
+        request = collection_request(
+            source,
+            refresh_id="d2b-fixture-acceptance",
+            run_id=f"d2b-fixture-{source_id}",
+            explicit_clock=explicit_clock,
+        )
+        records = collect_docker_records(source, request, FixtureClient(fixture["responses"]))
+        validator = PageValidator(source, request)
+        result = None
+        for page in build_pages(source, request, records):
+            result = validator.accept(page) or result
+        validator.finish()
+        if result is None or result.state != "completed" or result.records != records:
+            raise ObservationError("rootless fixture stream did not complete")
+        measurements[source_id] = {"counts": safe_counts(records), "snapshotDigest": digest(records)}
+    return measurements
+
+
+def live_once(root: Path, explicit_clock: str) -> dict[str, Any]:
+    registry = rootless_registry(root)
+    with tempfile.TemporaryDirectory(prefix="argus-d2b-", dir="/tmp") as directory:
+        with ObservationRepository(Path(directory) / "observations.sqlite3") as repository:
+            result = CollectorScheduler(
+                repository,
+                registry,
+                max_workers=2,
+                global_timeout_milliseconds=12_000,
+            ).refresh(
+                refresh_id="d2b-live-acceptance",
+                explicit_clock=explicit_clock,
+            )
+            if result["status"] != "completed" or any(item["state"] != "completed" for item in result["sources"]):
+                raise ObservationError("rootless collectors did not complete")
+            snapshots = {
+                source_id: safe_counts(repository.current_snapshot(source_id))
+                for source_id in ROOTLESS_SOURCE_IDS
+            }
+    return {"counts": snapshots, "resultDigest": digest(result)}
+
+
+def validate_measurements(measurements: list[dict[str, Any]]) -> None:
+    if len({digest(item) for item in measurements}) != 1:
+        raise ObservationError("repeated D2b evidence differs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D2b rootless Docker collector acceptance")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("local-ci", "oreochiserver"), required=True)
+    args = parser.parse_args()
+    try:
+        if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
+            raise ObservationError("source revision must be hexadecimal")
+        if args.target == "oreochiserver":
+            if platform.node().split(".", 1)[0] != "oreochiserver":
+                raise ObservationError("live D2b acceptance must run on oreochiserver")
+            revision = subprocess.run(
+                ["git", "-C", str(args.root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            clean = not subprocess.run(
+                ["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+            if revision != args.source_revision or not clean:
+                raise ObservationError("live acceptance checkout must match the clean source revision")
+            if os.geteuid() != 1000 or os.getegid() != 981:
+                raise ObservationError("live acceptance must run as the pinned collector client")
+            runner = live_once
+        else:
+            runner = fixture_once
+        measurements = []
+        runs = []
+        for ordinal in range(1, 4):
+            started = time.monotonic_ns()
+            measurements.append(runner(args.root, args.captured_at))
+            runs.append({
+                "ordinal": ordinal,
+                "result": "pass",
+                "durationMs": (time.monotonic_ns() - started) // 1_000_000,
+                "reasonCode": "",
+            })
+        validate_measurements(measurements)
+        evidence_id = digest({
+            "checkId": "d2b-rootless-docker-collectors",
+            "measurements": measurements,
+            "sourceRevision": args.source_revision,
+            "target": args.target,
+        })
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 313,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d2b-rootless-docker-collectors",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D2B_ACCEPTANCE_FAIL reason=collector-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
