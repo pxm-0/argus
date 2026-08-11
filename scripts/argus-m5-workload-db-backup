@@ -25,11 +25,6 @@ SPECS = {
         "project": "kadath-live",
         "service": "postgres",
     },
-    "locigraph": {
-        "domain": "personal-sandbox",
-        "project": "locigraph",
-        "service": "postgres",
-    },
     "intake-os": {
         "domain": "work-sandbox",
         "project": "intake-os",

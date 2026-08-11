@@ -6,7 +6,7 @@ application target, publishes a port, or changes a route.
 
 The fixed mapping is:
 
-- `hastur`, `kadath`, `nodens`, and `locigraph` → `personal-sandbox`
+- `hastur`, `kadath`, and `nodens` → `personal-sandbox`
 - `intake-os` → `work-sandbox`
 
 The script validates the canonical manifest, live Compose identity, container
@@ -48,8 +48,7 @@ never from a second view of a changing source. GNU tar performs the native
 content/metadata comparison against the restored target, and the checksummed
 evidence records the exact source-archive digest.
 
-Hastur is paused only while its live data bind is archived. LociGraph pauses
-only `backend` and `worker` while the shared raw-data volume is archived.
+Hastur is paused only while its live data bind is archived.
 Every paused container is unpaused before restore work continues, including
 when archiving fails. PostgreSQL and Redis use logical hot snapshots and are
 not paused.
@@ -68,7 +67,6 @@ remain excluded:
 
 - Hastur: `.env`, `auth`, SSH material
 - Nodens: `.env`
-- LociGraph: `.env`
 - Intake OS: `.env.server`
 
 Those credentials must be provisioned separately before cutover. Hastur auth

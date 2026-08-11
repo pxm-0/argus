@@ -11,8 +11,10 @@ created after each workload's declared writers are stopped.
 | Hastur | `personal-sandbox` | `hastur` | tailnet HTTPS `8445` |
 | Kadath | `personal-sandbox` | `kadath-live` | tailnet HTTPS `8443` |
 | Nodens | `personal-sandbox` | `nodens` | tailnet HTTPS `8444` |
-| LociGraph | `personal-sandbox` | `locigraph` | tailnet HTTPS `443` |
 | Intake OS | `work-sandbox` | `intake-os` | tailnet HTTPS `8446` |
+
+LociGraph was retired before this retained-workload cutover. See
+[`RETIRED_LOCIGRAPH.md`](RETIRED_LOCIGRAPH.md) for the destruction evidence.
 
 The target Compose network remains `internal: true`. A Caddy sidecar on that
 network listens on a sandbox-owned Unix socket. Tailscale Serve connects

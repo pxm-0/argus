@@ -20,9 +20,7 @@ loader.exec_module(module)
 class WorkloadCutoverTests(unittest.TestCase):
     def test_reviewed_domain_and_tailnet_mapping(self) -> None:
         self.assertEqual("personal-sandbox", module.SPECS["hastur"]["domain"])
-        self.assertEqual("personal-sandbox", module.SPECS["locigraph"]["domain"])
         self.assertEqual("work-sandbox", module.SPECS["intake-os"]["domain"])
-        self.assertEqual(443, module.SPECS["locigraph"]["tail_port"])
         self.assertEqual(8443, module.SPECS["kadath"]["tail_port"])
         self.assertEqual(8444, module.SPECS["nodens"]["tail_port"])
         self.assertEqual(8445, module.SPECS["hastur"]["tail_port"])
@@ -120,10 +118,6 @@ class WorkloadCutoverTests(unittest.TestCase):
     def test_all_stateful_writers_are_explicit(self) -> None:
         self.assertEqual(("hastur",), module.SPECS["hastur"]["writers"])
         self.assertEqual(("api", "web"), module.SPECS["kadath"]["writers"])
-        self.assertEqual(
-            ("backend", "caddy", "frontend", "worker"),
-            module.SPECS["locigraph"]["writers"],
-        )
         self.assertEqual(
             ("api", "local-proxy", "web"),
             module.SPECS["intake-os"]["writers"],
@@ -363,7 +357,6 @@ class DeclaredEgressTest(unittest.TestCase):
     NETWORKS = [
         {"project": "hastur", "network": "default", "networkId": "a" * 64, "interface": "argus-hastur"},
         {"project": "kadath-live", "network": "default", "networkId": "b" * 64, "interface": "br-bbbbbbbbbbbb"},
-        {"project": "locigraph", "network": "default", "networkId": "c" * 64, "interface": "br-cccccccccccc"},
         {"project": "nodens", "network": "default", "networkId": "d" * 64, "interface": "br-dddddddddddd"},
     ]
 
@@ -376,7 +369,7 @@ class DeclaredEgressTest(unittest.TestCase):
             ["hastur"], sorted(module.domain_egress("personal-sandbox"))
         )
         self.assertEqual({}, module.domain_egress("work-sandbox"))
-        for workload in ("kadath", "nodens", "locigraph", "intake-os"):
+        for workload in ("kadath", "nodens", "intake-os"):
             self.assertIsNone(
                 module.validated_egress(workload, module.SPECS[workload]),
                 workload,
@@ -391,7 +384,7 @@ class DeclaredEgressTest(unittest.TestCase):
         rendered = module.firewall_text(
             "personal-sandbox", module.domain_egress("personal-sandbox"), self.NETWORKS
         )
-        for workload in ("kadath", "nodens", "locigraph"):
+        for workload in ("kadath", "nodens"):
             self.assertNotIn(module.sandbox_bridge(workload), rendered)
 
     def test_sealed_rendering_is_byte_identical_to_the_installed_policy(self) -> None:

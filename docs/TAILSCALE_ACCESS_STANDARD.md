@@ -91,11 +91,6 @@ standard end-to-end, then the rebind-first workloads once approved.
 
 ### Out of scope
 
-- **locigraph** — tailnet-*eligible* (`accessCompatibility: tailnet`) but desired
-  access is `none`. Backend (`0.0.0.0:8000`) and Caddy (`0.0.0.0:8090`) are
-  wildcard-bound, and Postgres (`15432`) and Redis (`16379`) are host-exposed.
-  It must be bind-remediated and re-classified `none → tailnet` before it enters
-  this standard.
 - **dozzle** (`local`), **hello-nginx** (`cloudflare-protected`, plan-only) — not
   tailnet workloads.
 

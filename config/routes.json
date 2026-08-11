@@ -59,19 +59,6 @@
         "requiresAuth": true
       }
     },
-    "locigraph": {
-      "tailnet": {
-        "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net"
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
-        "requiresAuth": true
-      }
-    },
     "kadath": {
       "tailnet": {
         "enabled": true,

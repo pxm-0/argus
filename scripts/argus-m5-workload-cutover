@@ -146,21 +146,6 @@ SPECS = {
         # Sealed: no egress declared. See #267.
         "egress": None,
     },
-    "locigraph": {
-        "domain": "personal-sandbox",
-        "project": "locigraph",
-        "source": "/home/oreo/LociGraph",
-        "compose": "docker-compose.yml",
-        "writers": ("backend", "caddy", "frontend", "worker"),
-        "endpoint_service": "caddy",
-        "endpoint_port": 80,
-        "health_path": "/",
-        "tail_port": 443,
-        "stateful": True,
-        "ingress_image": "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9",
-        # Sealed: no egress declared. See #267.
-        "egress": None,
-    },
     "intake-os": {
         "domain": "work-sandbox",
         "project": "intake-os",
