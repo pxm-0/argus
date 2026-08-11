@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:dcc9a3e2e9b3da3951e1be50abe9f06605d24c1589b61854a4310236b136531a"
+    "expectedSbomDigest": "sha256:a2f8e1717774e6171c6b98ae253799d8198e9705fabcf2db253dfce1bda38061"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:d7bc3dfcb7dacc65533c94318945d6bb750c86ea307e78ede927036ee363f39e",
+    "expectedEndpointDigest": "sha256:44d35c8cbcef546272f072bbd0646f56dfdf60e8d34cc3bbe29ac12aa89bd4bb",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
