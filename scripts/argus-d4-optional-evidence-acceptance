@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_collectors import CollectorScheduler, PageValidator, collection_request
-from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
 from argus_optional_evidence_collector import build_pages, collect_records
 
 
@@ -78,8 +78,20 @@ def _measurement(source_id: str, state: str, gap_code: str | None, records: list
     }
 
 
-def fixture_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+def d4_registry(root: Path, registry_path: Path) -> SourceRegistry:
     registry = load_registry(registry_path, root)
+    return SourceRegistry(
+        {
+            "schemaVersion": registry.schema_version,
+            "hostSources": list(SOURCE_IDS),
+            "sources": [registry.sources[source_id].as_registry_record() for source_id in SOURCE_IDS],
+        },
+        registry.canonical_domains,
+    )
+
+
+def fixture_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+    registry = d4_registry(root, registry_path)
     fixture = json.loads((root / "tests/fixtures/optional-evidence/d4.json").read_text(encoding="utf-8"))
     with tempfile.TemporaryDirectory(prefix="argus-d4-fixture-", dir="/tmp") as directory:
         fixture_root = Path(directory)
@@ -107,7 +119,7 @@ def fixture_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[s
 
 
 def live_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
-    registry = load_registry(registry_path, root)
+    registry = d4_registry(root, registry_path)
     with tempfile.TemporaryDirectory(prefix="argus-d4-live-", dir="/tmp") as directory:
         with ObservationRepository(Path(directory) / "observations.sqlite3") as repository:
             result = CollectorScheduler(
