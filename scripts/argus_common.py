@@ -17,6 +17,8 @@ from pathlib import Path
 from typing import Any
 
 from argus_m5_topology import build_topology
+from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_reconciliation import reconcile
 
 
 APPROVED_OPERATOR_LINKS = {
@@ -253,12 +255,55 @@ def dashboard_state() -> dict[str, Any]:
         "exposure": exposure,
         "monitoring": monitoring,
         "events": events[-20:],
+        "reconciliation": dashboard_reconciliation(),
         "topology": build_topology(
             workloads=merged,
             legacy=legacy_classification,
             classified=workload_classification,
         ),
     }
+
+
+def dashboard_reconciliation() -> dict[str, Any]:
+    """Return the sanitized D5 view without granting dashboard authority."""
+    configured_root = root()
+    registry_path = configured_root / "config" / "argus" / "observation-sources.json"
+    database = Path(os.environ.get("ARGUS_OBSERVATIONS_DB", configured_root / "runtime" / "argus" / "observations.sqlite3"))
+    if not registry_path.is_file() or not database.is_file():
+        summary = {
+            "schemaVersion": 1,
+            "status": "empty",
+            "observationState": "incomplete",
+            "coverage": {
+                "status": "not-configured",
+                "configuredSources": 0,
+                "freshSources": 0,
+                "sources": [],
+                "registryDigest": None,
+                "gapDigest": digest([]),
+            },
+            "workloads": [],
+            "blockers": [{"code": "observation-repository-unavailable"}],
+            "safeToMoveWorkloads": False,
+            "mutationAuthority": "none",
+        }
+        summary["evidenceDigest"] = digest(summary)
+        return summary
+    try:
+        registry = load_registry(registry_path, configured_root)
+        with ObservationRepository(database, read_only=True) as repository:
+            return reconcile(configured_root, repository, registry)
+    except (ObservationError, OSError, ValueError):
+        summary = {
+            "schemaVersion": 1,
+            "status": "unavailable",
+            "observationState": "incomplete",
+            "blockers": [{"code": "observation-repository-unavailable"}],
+            "safeToMoveWorkloads": False,
+            "mutationAuthority": "none",
+        }
+        summary["evidenceDigest"] = digest(summary)
+        return summary
 
 
 def operation_allowed(workload_id: str, operation: str) -> bool:

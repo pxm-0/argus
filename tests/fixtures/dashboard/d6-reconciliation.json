@@ -1,0 +1,83 @@
+{
+  "schemaVersion": 1,
+  "notice": "Sanitized dashboard fixtures only; not an API or repository schema.",
+  "states": [
+    {
+      "id": "loading",
+      "summary": {
+        "status": "loading",
+        "coverage": {"status": "not-configured", "configuredSources": 0, "freshSources": 0, "sources": []},
+        "workloads": [],
+        "blockers": [],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "empty",
+      "summary": {
+        "status": "empty",
+        "coverage": {"status": "not-configured", "configuredSources": 0, "freshSources": 0, "sources": []},
+        "workloads": [],
+        "blockers": [{"code": "observation-repository-unavailable"}],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "error",
+      "summary": {
+        "status": "unavailable",
+        "coverage": {},
+        "workloads": [],
+        "blockers": [{"code": "observation-repository-unavailable"}],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "partial",
+      "summary": {
+        "status": "incomplete",
+        "coverage": {"status": "partial", "configuredSources": 2, "freshSources": 1, "sources": [{"sourceId": "personal-source", "state": "fresh"}, {"sourceId": "work-source", "state": "failed"}]},
+        "workloads": [{"id": "demo", "state": "incomplete", "blockers": [{"code": "source-collection-failed"}]}],
+        "blockers": [{"code": "source-collection-failed", "sourceId": "work-source"}],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "stale",
+      "summary": {
+        "status": "incomplete",
+        "coverage": {"status": "stale", "configuredSources": 1, "freshSources": 0, "sources": [{"sourceId": "personal-source", "state": "stale"}]},
+        "workloads": [{"id": "demo", "state": "stale", "blockers": [{"code": "source-stale"}]}],
+        "blockers": [{"code": "source-stale", "sourceId": "personal-source"}],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "conflict",
+      "summary": {
+        "status": "incomplete",
+        "coverage": {"status": "complete", "configuredSources": 2, "freshSources": 2, "sources": [{"sourceId": "personal-source", "state": "fresh"}, {"sourceId": "work-source", "state": "fresh"}]},
+        "workloads": [{"id": "demo", "state": "conflicting", "blockers": [{"code": "identity-conflict"}]}],
+        "blockers": [{"code": "identity-conflict", "workloadId": "demo"}],
+        "safeToMoveWorkloads": false,
+        "mutationAuthority": "none"
+      }
+    },
+    {
+      "id": "complete",
+      "summary": {
+        "status": "complete",
+        "coverage": {"status": "complete", "configuredSources": 1, "freshSources": 1, "sources": [{"sourceId": "personal-source", "state": "fresh"}]},
+        "workloads": [{"id": "demo", "state": "known", "blockers": []}],
+        "blockers": [],
+        "safeToMoveWorkloads": true,
+        "mutationAuthority": "none"
+      }
+    }
+  ]
+}
