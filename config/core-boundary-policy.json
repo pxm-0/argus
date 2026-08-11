@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:b4fcfa48c008c4fe0e094084a50110469f3f4ef6aff8dd88a1070aecf5c08b19"
+    "expectedSbomDigest": "sha256:72d7b2c9f333f7c0037ca9340488ce0bd402fe915568ce19bbf30dcd9eb27773"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:44d35c8cbcef546272f072bbd0646f56dfdf60e8d34cc3bbe29ac12aa89bd4bb",
+    "expectedEndpointDigest": "sha256:35824ce9cb1f0fd54a78a3dd8aa6dafcf0784d1ab24f7d01393780e26c78738f",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -85,10 +85,6 @@
       {
         "path": "scripts/argus-control-plane-reconcile",
         "authority": "configured-local-control-api"
-      },
-      {
-        "path": "scripts/argus-locigraph-production-cutover",
-        "authority": "explicit-local-workload-cutover-health-read"
       },
       {
         "path": "scripts/argus-m4-hello-nginx-preflight",

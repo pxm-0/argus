@@ -42,17 +42,6 @@
       "lastAppliedAt": "2026-07-29T03:55:13Z",
       "lastError": ""
     },
-    "locigraph": {
-      "desired": "tailnet",
-      "effective": "tailnet",
-      "urls": {
-        "local": "",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "2026-07-29T13:47:44Z",
-      "lastError": ""
-    },
     "kadath": {
       "desired": "tailnet",
       "effective": "tailnet",
