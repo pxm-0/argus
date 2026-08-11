@@ -160,16 +160,19 @@ def _listener_records(source: SourceSpec, observed_at: str, payload: bytes) -> l
     return records
 
 
-def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> list[dict[str, Any]]:
+def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> tuple[list[dict[str, Any]], bool]:
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
+    filtered = False
     for line in _text(payload).splitlines():
         fields = line.split()
         if len(fields) < 2:
+            filtered = True
             continue
         name, state = fields[0], fields[-1]
         if not SAFE_NAME.fullmatch(name) or not state or not state[0].isalpha():
-            raise OptionalEvidenceError("process-output-invalid")
+            filtered = True
+            continue
         identity = (name, state[0].upper())
         if identity in seen:
             continue
@@ -182,7 +185,7 @@ def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> li
             {"name": identity[0], "state": identity[1]},
             len(records),
         ))
-    return records
+    return records, filtered
 
 
 def collect_process_listeners(
@@ -195,10 +198,11 @@ def collect_process_listeners(
     listeners = _run(source, ["ss", "-H", "-lntu", "-n"], runner=runner)
     if process.returncode != 0 or listeners.returncode != 0:
         raise OptionalEvidenceError("process-listener-command-failed")
-    records = _process_records(source, request["explicitClock"], process.stdout)
+    records, filtered = _process_records(source, request["explicitClock"], process.stdout)
     records.extend(_listener_records(source, request["explicitClock"], listeners.stdout))
     records.sort(key=lambda item: (item["resourceKind"], item["nativeId"]))
-    return normalize_records(source, records)[0], None, "completed"
+    gap_code = "process-record-filtered" if filtered else None
+    return normalize_records(source, records)[0], gap_code, "partial" if gap_code else "completed"
 
 
 def _json_payload(result: subprocess.CompletedProcess[bytes]) -> Any:
