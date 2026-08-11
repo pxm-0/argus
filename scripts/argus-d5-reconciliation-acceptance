@@ -159,7 +159,6 @@ def main() -> int:
         if len({digest(measurement) for measurement in measurements}) != 1:
             raise ObservationError("repeated D5 reconciliation evidence differs")
         evidence_id = digest({"checkId": "d5-estate-reconciliation", "measurements": measurements, "sourceRevision": args.source_revision, "target": args.target})
-        summary_digest = digest(measurements[0])
         print(json.dumps({
             "schemaVersion": 1,
             "issueId": 324,
@@ -170,7 +169,6 @@ def main() -> int:
             "sourceRevision": args.source_revision,
             "capturedAt": args.captured_at,
             "evidenceId": evidence_id,
-            "summaryDigest": summary_digest,
             "runs": runs,
         }, sort_keys=True, separators=(",", ":")))
     except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
@@ -181,4 +179,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
