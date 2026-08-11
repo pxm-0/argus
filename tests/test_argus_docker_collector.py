@@ -320,7 +320,7 @@ class DockerCollectorTests(unittest.TestCase):
         projected = {
             "schemaVersion": payload["schemaVersion"],
             "hostSources": ["oreochiserver.rootful-docker"],
-            "sources": [payload["sources"][0]],
+            "sources": [next(item for item in payload["sources"] if item["sourceId"] == "oreochiserver.rootful-docker")],
         }
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             source_path = Path(directory).resolve() / "source.json"

@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Run deterministic three-run D5 reconciliation acceptance."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Any
+
+from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
+from argus_reconciliation import reconcile
+
+
+PERSONAL_SOURCE = "oreochiserver.personal-sandbox.rootless-docker"
+WORK_SOURCE = "oreochiserver.work-sandbox.rootless-docker"
+ROOTFUL_SOURCE = "oreochiserver.rootful-docker"
+
+
+def _record(project: str, ordinal: int, observed_at: str) -> dict[str, Any]:
+    return {
+        "schemaVersion": 1,
+        "resourceKind": "container",
+        "nativeId": f"fixture-{project}-{ordinal}",
+        "observedAt": observed_at,
+        "attributes": {
+            "lifecycle": "running",
+            "name": project,
+            "project": project,
+            "service": "",
+            "imageRef": "fixture-image",
+            "health": "none",
+            "restartPolicy": "none",
+            "networkRefs": [],
+            "mounts": [],
+            "publishedPorts": [],
+            "privilegeFlags": {
+                "privileged": False,
+                "hostNetwork": False,
+                "hostPid": False,
+                "addedCapabilities": False,
+                "hostDevices": False,
+            },
+        },
+        "provenance": {"adapter": "d5-fixture", "adapterVersion": "1", "ordinal": ordinal},
+    }
+
+
+def _clock(value: str) -> datetime:
+    try:
+        return datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as exc:
+        raise ObservationError("captured-at must be canonical UTC time") from exc
+
+
+def _canonical_projects(root: Path) -> tuple[dict[str, str], dict[str, str]]:
+    workloads = json.loads((root / "config/workloads.json").read_text(encoding="utf-8"))["workloads"]
+    classification = json.loads((root / "config/argus/workload-classification.json").read_text(encoding="utf-8"))["workloads"]
+    projects: dict[str, str] = {}
+    domains: dict[str, str] = {}
+    for item in workloads:
+        workload_id = item["id"]
+        projects[workload_id] = item.get("runtime", {}).get("composeProject", "")
+        domains[workload_id] = classification[workload_id]["trustDomain"]
+    return projects, domains
+
+
+def once(root: Path, registry: SourceRegistry, captured_at: str, scenario: str) -> dict[str, Any]:
+    captured = _clock(captured_at)
+    projects, domains = _canonical_projects(root)
+    with tempfile.TemporaryDirectory(prefix="argus-d5-acceptance-", dir="/tmp") as directory:
+        with ObservationRepository(Path(directory) / "observations.sqlite3") as repository:
+            repository.sync_registry(registry, explicit_clock=captured_at)
+            ordinal = 0
+            for source_id in sorted(registry.sources):
+                source = registry.sources[source_id]
+                terminal = captured if scenario not in {"stale"} else captured - timedelta(days=1)
+                records: list[dict[str, Any]] = []
+                if scenario in {"complete", "stale"}:
+                    for workload_id, project in sorted(projects.items()):
+                        expected_source = PERSONAL_SOURCE if domains[workload_id] == "personal-sandbox" else WORK_SOURCE
+                        if source_id == expected_source and project:
+                            records.append(_record(project, ordinal, terminal.strftime("%Y-%m-%dT%H:%M:%SZ")))
+                            ordinal += 1
+                if scenario == "failed" and source_id == PERSONAL_SOURCE:
+                    records = [_record("hastur", ordinal, captured_at)]
+                    ordinal += 1
+                if scenario == "conflicting" and source_id in {PERSONAL_SOURCE, ROOTFUL_SOURCE}:
+                    records = [_record("hastur", ordinal, captured_at)]
+                    ordinal += 1
+                repository.ingest(
+                    registry,
+                    run_id=f"d5-{scenario}-{source_id}",
+                    source_id=source_id,
+                    sequence=None,
+                    state="completed",
+                    started_at=terminal.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    terminal_at=terminal.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    records=records,
+                )
+                if scenario == "failed" and source_id == PERSONAL_SOURCE:
+                    repository.ingest(
+                        registry,
+                        run_id=f"d5-{scenario}-failed",
+                        source_id=source_id,
+                        sequence=None,
+                        state="failed",
+                        started_at=captured_at,
+                        terminal_at=captured_at,
+                        records=[],
+                        gap_code="fixture-collector-failed",
+                    )
+            summary = reconcile(root, repository, registry, explicit_clock=captured_at)
+    states = {row["id"]: row["state"] for row in summary["workloads"]}
+    return {
+        "scenario": scenario,
+        "status": summary["status"],
+        "safeToMoveWorkloads": summary["safeToMoveWorkloads"],
+        "states": states,
+        "blockerCodes": sorted({item["code"] for item in summary["blockers"]}),
+        "evidenceDigest": summary["evidenceDigest"],
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D5 estate reconciliation acceptance")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("local-ci", "oreochiserver"), required=True)
+    parser.add_argument("--registry", type=Path)
+    args = parser.parse_args()
+    try:
+        if not args.source_revision or any(character not in "0123456789abcdef" for character in args.source_revision):
+            raise ObservationError("source revision must be hexadecimal")
+        if args.target == "oreochiserver":
+            if platform.node().split(".", 1)[0] != "oreochiserver":
+                raise ObservationError("live D5 acceptance must run on oreochiserver")
+            revision = subprocess.run(["git", "-C", str(args.root), "rev-parse", "HEAD"], text=True, capture_output=True, check=True).stdout.strip()
+            clean = not subprocess.run(["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"], text=True, capture_output=True, check=True).stdout
+            if revision != args.source_revision or not clean:
+                raise ObservationError("live acceptance checkout must match the clean source revision")
+            if os.geteuid() != 1000 or os.getegid() != 981:
+                raise ObservationError("live D5 acceptance must run as the pinned collector client")
+        registry = load_registry(args.registry or (args.root / "config/argus/observation-sources.json"), args.root)
+        measurements: list[dict[str, Any]] = []
+        runs: list[dict[str, Any]] = []
+        for ordinal in range(1, 4):
+            started = time.monotonic_ns()
+            measurements.append({scenario: once(args.root, registry, args.captured_at, scenario) for scenario in ("empty", "complete", "stale", "failed", "conflicting")})
+            runs.append({"ordinal": ordinal, "result": "pass", "durationMs": (time.monotonic_ns() - started) // 1_000_000, "reasonCode": ""})
+        if len({digest(measurement) for measurement in measurements}) != 1:
+            raise ObservationError("repeated D5 reconciliation evidence differs")
+        evidence_id = digest({"checkId": "d5-estate-reconciliation", "measurements": measurements, "sourceRevision": args.source_revision, "target": args.target})
+        summary_digest = digest(measurements[0])
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 324,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d5-estate-reconciliation",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "summaryDigest": summary_digest,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D5_ACCEPTANCE_FAIL reason=reconciliation-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
+

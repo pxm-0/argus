@@ -15,6 +15,9 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
+from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_reconciliation import reconcile
+
 
 TAILSCALE_HTTPS_URL = re.compile(
     r"^https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*\.ts\.net(?::[1-9][0-9]{0,4})?/?$"
@@ -288,6 +291,41 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
         "legacyRefreshScope": "rootful-compose-containers-only",
         "requiredSources": list(REQUIRED_ESTATE_SOURCES),
     }
+    reconciliation: dict[str, Any] | None = None
+    registry_path = repo / "config" / "argus" / "observation-sources.json"
+    database = Path(os.environ.get("ARGUS_OBSERVATIONS_DB", repo / "runtime" / "argus" / "observations.sqlite3"))
+    if registry_path.is_file() and database.is_file():
+        try:
+            registry = load_registry(registry_path, repo)
+            with ObservationRepository(database, read_only=True) as repository:
+                reconciliation = reconcile(
+                    repo,
+                    repository,
+                    registry,
+                    explicit_clock=os.environ.get("ARGUS_OBSERVATIONS_CLOCK"),
+                )
+        except (ObservationError, OSError, ValueError, sqlite3.Error):
+            reconciliation = {
+                "schemaVersion": 1,
+                "status": "unavailable",
+                "observationState": "incomplete",
+                "blockers": [{"code": "observation-repository-unavailable"}],
+                "safeToMoveWorkloads": False,
+                "mutationAuthority": "none",
+            }
+            reconciliation["evidenceDigest"] = digest(reconciliation)
+    if reconciliation is not None and reconciliation.get("status") != "unavailable":
+        source_rows = reconciliation.get("coverage", {}).get("sources", [])
+        coverage["complete"] = reconciliation.get("coverage", {}).get("status") == "complete"
+        coverage["freshSources"] = [
+            row["sourceId"] for row in source_rows if row.get("state") == "fresh"
+        ]
+        coverage["actionBlockers"] = [
+            code for code in sorted({
+                entry["code"] for entry in reconciliation.get("blockers", [])
+                if isinstance(entry, dict) and isinstance(entry.get("code"), str)
+            })
+        ]
     if action == "refresh":
         return _error(
             "estate-refresh-contract-incomplete",
@@ -299,8 +337,9 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
     return _success(
         f"estate.{action}",
         coverage=coverage,
-        observationState="incomplete",
-        safeToMoveWorkloads=False,
+        observationState=(reconciliation or {}).get("observationState", "incomplete"),
+        safeToMoveWorkloads=(reconciliation or {}).get("safeToMoveWorkloads", False),
+        **({"reconciliation": reconciliation} if reconciliation is not None else {}),
     )
 
 
