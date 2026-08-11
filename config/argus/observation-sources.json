@@ -7,7 +7,10 @@
     "oreochiserver.system-schedules",
     "oreochiserver.user-schedules-oreo",
     "oreochiserver.user-schedules-personal-sandbox",
-    "oreochiserver.user-schedules-work-sandbox"
+    "oreochiserver.user-schedules-work-sandbox",
+    "oreochiserver.configured-roots",
+    "oreochiserver.process-listeners",
+    "oreochiserver.proxy-overlay"
   ],
   "sources": [
     {
@@ -634,6 +637,225 @@
         "socketGid": 981,
         "socketMode": "0660",
         "peerUid": 1003,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.configured-roots",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "reviewed workload and configuration root summaries",
+      "privilege": "host-read-only",
+      "freshnessSloSeconds": 900,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "filesystem:reviewed-root-summaries"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 8388608,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "root-summary"
+        ],
+        "attributeAllowlist": {
+          "root-summary": [
+            "rootRef",
+            "entryCount",
+            "manifestCount",
+            "composeCount",
+            "jsonValid",
+            "contentDigest"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed optional evidence collector as UID 1000 with primary GID 981; expose only its exact Unix socket.",
+      "removal": "Stop and disable only the optional evidence collector instance, remove its source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/optional/configured-roots/collector.sock",
+        "parentPath": "/run/argus/collectors/optional/configured-roots",
+        "parentUid": 1000,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1000,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1000,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.process-listeners",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "bounded process-kind and listener-state inventory",
+      "privilege": "host-read-only",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [
+          [
+            "ps",
+            "-eo",
+            "comm=,state="
+          ],
+          [
+            "ss",
+            "-H",
+            "-lntu",
+            "-n"
+          ]
+        ],
+        "apis": []
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "listener",
+          "process-summary"
+        ],
+        "attributeAllowlist": {
+          "listener": [
+            "protocol",
+            "port",
+            "addressScope"
+          ],
+          "process-summary": [
+            "name",
+            "state"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed optional evidence collector as UID 1000 with primary GID 981; expose only its exact Unix socket.",
+      "removal": "Stop and disable only the optional evidence collector instance, remove its source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/optional/process-listeners/collector.sock",
+        "parentPath": "/run/argus/collectors/optional/process-listeners",
+        "parentUid": 1000,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1000,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1000,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.proxy-overlay",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "bounded proxy and provider state without route payloads",
+      "privilege": "host-read-only",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [
+          [
+            "tailscale",
+            "serve",
+            "status",
+            "--json"
+          ],
+          [
+            "tailscale",
+            "funnel",
+            "status",
+            "--json"
+          ],
+          [
+            "systemctl",
+            "is-active",
+            "caddy"
+          ],
+          [
+            "systemctl",
+            "is-active",
+            "cloudflared"
+          ]
+        ],
+        "apis": []
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 32,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "provider-state"
+        ],
+        "attributeAllowlist": {
+          "provider-state": [
+            "provider",
+            "available",
+            "configured",
+            "active",
+            "state",
+            "evidenceDigest"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed optional evidence collector as UID 1000 with primary GID 981; expose only its exact Unix socket.",
+      "removal": "Stop and disable only the optional evidence collector instance, remove its source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/optional/proxy-overlay/collector.sock",
+        "parentPath": "/run/argus/collectors/optional/proxy-overlay",
+        "parentUid": 1000,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1000,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1000,
         "peerGid": 981,
         "protocolVersions": [
           1,

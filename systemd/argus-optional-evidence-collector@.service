@@ -1,0 +1,38 @@
+[Unit]
+Description=Argus bounded optional evidence collector %i
+After=local-fs.target
+
+[Service]
+Type=simple
+User=oreo
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_SOURCE_ID=oreochiserver.%i
+Environment=ARGUS_SOURCE_REGISTRY=/etc/argus/collectors/optional/%i.json
+Environment=ARGUS_SOURCE_CONFIG_UID=0
+Environment=ARGUS_SOURCE_CONFIG_GID=981
+Environment=ARGUS_SOURCE_CONFIG_MODE=0640
+Environment=ARGUS_COLLECTOR_CLIENT_UID=1000
+Environment=ARGUS_COLLECTOR_CLIENT_GID=981
+Environment=ARGUS_REPO_ROOT=/srv/argus
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_optional_evidence_collector.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+RuntimeDirectory=argus/collectors/optional/%i
+RuntimeDirectoryMode=0750
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX AF_NETLINK
+ReadOnlyPaths=/srv/argus/config /srv/argus/workloads
+ReadWritePaths=/run/argus/collectors/optional/%i
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,228 @@
+#!/usr/bin/env python3
+"""Run three-run fixture or live acceptance for D4 optional evidence."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import platform
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+from typing import Any
+
+from argus_collectors import CollectorScheduler, PageValidator, collection_request
+from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
+from argus_optional_evidence_collector import build_pages, collect_records
+
+
+SOURCE_IDS = (
+    "oreochiserver.configured-roots",
+    "oreochiserver.process-listeners",
+    "oreochiserver.proxy-overlay",
+)
+FORBIDDEN_MARKERS = ("/srv/", "/home/", "docker compose", "docker-compose", "http://", "https://")
+
+
+class FixtureRunner:
+    def __init__(self, fixture: dict[str, Any]):
+        self.fixture = fixture
+
+    def __call__(self, argv: list[str], **_kwargs: Any) -> subprocess.CompletedProcess[bytes]:
+        if argv == ["ps", "-eo", "comm=,state="]:
+            return subprocess.CompletedProcess(argv, 0, ("\n".join(self.fixture["processes"]) + "\n").encode(), b"")
+        if argv == ["ss", "-H", "-lntu", "-n"]:
+            return subprocess.CompletedProcess(argv, 0, ("\n".join(self.fixture["listeners"]) + "\n").encode(), b"")
+        names = {
+            ("tailscale", "serve", "status", "--json"): "tailscale-serve",
+            ("tailscale", "funnel", "status", "--json"): "tailscale-funnel",
+            ("systemctl", "is-active", "caddy"): "caddy",
+            ("systemctl", "is-active", "cloudflared"): "cloudflared",
+        }
+        key = names.get(tuple(argv))
+        if key is None:
+            raise AssertionError(f"unexpected fixture command: {argv}")
+        item = self.fixture["proxy"][key]
+        if "payload" in item:
+            output = json.dumps(item["payload"], sort_keys=True).encode()
+        else:
+            output = item.get("stdout", "").encode()
+        return subprocess.CompletedProcess(argv, int(item["returncode"]), output, b"")
+
+
+def _fixture_root(fixture: dict[str, Any], root: Path) -> None:
+    for logical, items in fixture["roots"].items():
+        for item in items:
+            path = root / logical / item["path"]
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(item["content"], encoding="utf-8")
+
+
+def _assert_sanitized(records: list[dict[str, Any]]) -> None:
+    encoded = json.dumps(records, sort_keys=True)
+    if any(marker in encoded for marker in FORBIDDEN_MARKERS):
+        raise ObservationError("D4 evidence contains raw command, path, or route data")
+
+
+def _measurement(source_id: str, state: str, gap_code: str | None, records: list[dict[str, Any]]) -> dict[str, Any]:
+    _assert_sanitized(records)
+    return {
+        "sourceId": source_id,
+        "state": state,
+        "gapCode": gap_code or "",
+        "recordCount": len(records),
+        "snapshotDigest": digest(records),
+    }
+
+
+def d4_registry(root: Path, registry_path: Path) -> SourceRegistry:
+    registry = load_registry(registry_path, root)
+    return SourceRegistry(
+        {
+            "schemaVersion": registry.schema_version,
+            "hostSources": list(SOURCE_IDS),
+            "sources": [registry.sources[source_id].as_registry_record() for source_id in SOURCE_IDS],
+        },
+        registry.canonical_domains,
+    )
+
+
+def fixture_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+    registry = d4_registry(root, registry_path)
+    fixture = json.loads((root / "tests/fixtures/optional-evidence/d4.json").read_text(encoding="utf-8"))
+    with tempfile.TemporaryDirectory(prefix="argus-d4-fixture-", dir="/tmp") as directory:
+        fixture_root = Path(directory)
+        _fixture_root(fixture, fixture_root)
+        runner = FixtureRunner(fixture)
+        measurements: dict[str, Any] = {}
+        for source_id in SOURCE_IDS:
+            source = registry.sources[source_id]
+            request = collection_request(
+                source,
+                refresh_id="d4-fixture-acceptance",
+                run_id=f"d4-fixture-{source_id}",
+                explicit_clock=explicit_clock,
+            )
+            records, gap_code, state = collect_records(source, request, runner=runner, root=fixture_root)
+            validator = PageValidator(source, request)
+            result = None
+            for page in build_pages(source, request, records, state=state, gap_code=gap_code):
+                result = validator.accept(page) or result
+            validator.finish()
+            if result is None or result.state != state or result.records != records or result.gap_code != gap_code:
+                raise ObservationError("D4 fixture stream did not complete")
+            measurements[source_id] = _measurement(source_id, state, gap_code, records)
+    return measurements
+
+
+def live_once(root: Path, explicit_clock: str, registry_path: Path) -> dict[str, Any]:
+    registry = d4_registry(root, registry_path)
+    with tempfile.TemporaryDirectory(prefix="argus-d4-live-", dir="/tmp") as directory:
+        with ObservationRepository(Path(directory) / "observations.sqlite3") as repository:
+            result = CollectorScheduler(
+                repository,
+                registry,
+                max_workers=3,
+                global_timeout_milliseconds=30_000,
+            ).refresh(refresh_id="d4-live-acceptance", explicit_clock=explicit_clock)
+            if result["status"] not in {"completed", "partial"}:
+                raise ObservationError("D4 collectors did not produce a terminal refresh")
+            measurements = {}
+            for item in result["sources"]:
+                if item["state"] == "failed":
+                    raise ObservationError("D4 source failed")
+                # Partial/failed runs are intentionally not promoted to the
+                # last-known-good current snapshot.  Measure the committed run
+                # metadata so an optional gap remains visible without reading
+                # raw records back out of the repository.
+                measurements[item["sourceId"]] = {
+                    "sourceId": item["sourceId"],
+                    "state": item["state"],
+                    "gapCode": item["gapCode"] or "",
+                    "recordCount": item["recordCount"],
+                    "snapshotDigest": item["snapshotDigest"],
+                }
+    return measurements
+
+
+def _validate_repeated(measurements: list[dict[str, Any]]) -> None:
+    if len({digest(item) for item in measurements}) != 1:
+        raise ObservationError("repeated D4 evidence differs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run D4 optional evidence collector acceptance")
+    parser.add_argument("--root", type=Path, required=True)
+    parser.add_argument("--source-revision", required=True)
+    parser.add_argument("--captured-at", required=True)
+    parser.add_argument("--target", choices=("local-ci", "oreochiserver"), required=True)
+    parser.add_argument("--registry", type=Path)
+    args = parser.parse_args()
+    try:
+        if not args.source_revision or any(character not in "0123456789abcdef" for character in args.source_revision):
+            raise ObservationError("source revision must be hexadecimal")
+        registry_path = args.registry or (args.root / "config/argus/observation-sources.json")
+        if args.target == "oreochiserver":
+            if platform.node().split(".", 1)[0] != "oreochiserver":
+                raise ObservationError("live D4 acceptance must run on oreochiserver")
+            revision = subprocess.run(
+                ["git", "-C", str(args.root), "rev-parse", "HEAD"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout.strip()
+            clean = not subprocess.run(
+                ["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"],
+                text=True,
+                capture_output=True,
+                check=True,
+            ).stdout
+            if revision != args.source_revision or not clean:
+                raise ObservationError("live acceptance checkout must match the clean source revision")
+            if os.geteuid() != 1000 or os.getegid() != 981:
+                raise ObservationError("live D4 acceptance must run as the pinned collector client")
+            runner = live_once
+        else:
+            runner = fixture_once
+        measurements = []
+        runs = []
+        for ordinal in range(1, 4):
+            started = time.monotonic_ns()
+            measurements.append(runner(args.root, args.captured_at, registry_path))
+            runs.append({
+                "ordinal": ordinal,
+                "result": "pass",
+                "durationMs": (time.monotonic_ns() - started) // 1_000_000,
+                "reasonCode": "",
+            })
+        _validate_repeated(measurements)
+        evidence_id = digest({
+            "checkId": "d4-optional-evidence-collectors",
+            "measurements": measurements,
+            "sourceRevision": args.source_revision,
+            "target": args.target,
+        })
+        print("MEASUREMENT " + json.dumps(measurements[0], sort_keys=True, separators=(",", ":")), file=sys.stderr)
+        print(json.dumps({
+            "schemaVersion": 1,
+            "issueId": 325,
+            "phase": "post",
+            "target": args.target,
+            "checkId": "d4-optional-evidence-collectors",
+            "expectedRuns": 3,
+            "sourceRevision": args.source_revision,
+            "capturedAt": args.captured_at,
+            "evidenceId": evidence_id,
+            "runs": runs,
+        }, sort_keys=True, separators=(",", ":")))
+    except (ObservationError, OSError, ValueError, KeyError, json.JSONDecodeError, subprocess.SubprocessError):
+        print("D4_ACCEPTANCE_FAIL reason=collector-contract", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
