@@ -1,0 +1,49 @@
+[Unit]
+Description=Argus read-only system systemd and cron collector
+After=argus-control-api.service
+
+[Service]
+Type=simple
+User=oreo
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_SOURCE_ID=oreochiserver.system-schedules
+Environment=ARGUS_SOURCE_REGISTRY=/etc/argus/collectors/system-schedules-source.json
+Environment=ARGUS_SOURCE_CONFIG_UID=0
+Environment=ARGUS_SOURCE_CONFIG_GID=981
+Environment=ARGUS_SOURCE_CONFIG_MODE=0640
+Environment=ARGUS_COLLECTOR_CLIENT_UID=1000
+Environment=ARGUS_COLLECTOR_CLIENT_GID=981
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_systemd_schedule_collector.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+RuntimeDirectory=argus/collectors/system-schedules
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=restart
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+ReadOnlyPaths=/srv/argus/scripts /etc/argus/collectors/system-schedules-source.json /etc/crontab /etc/cron.d /etc/cron.daily /etc/cron.hourly /etc/cron.weekly /etc/cron.monthly
+InaccessiblePaths=/var/run/docker.sock /run/docker.sock /etc/argus/operators.json /etc/argus/control-token /etc/argus/operator-proxy-token /srv/argus/config /srv/argus/control-plane /srv/argus/runtime /srv/argus/tests /srv/argus/docs /run/argus/domains
+
+[Install]
+WantedBy=multi-user.target

@@ -3,7 +3,11 @@
   "hostSources": [
     "oreochiserver.rootful-docker",
     "oreochiserver.personal-sandbox.rootless-docker",
-    "oreochiserver.work-sandbox.rootless-docker"
+    "oreochiserver.work-sandbox.rootless-docker",
+    "oreochiserver.system-schedules",
+    "oreochiserver.user-schedules-oreo",
+    "oreochiserver.user-schedules-personal-sandbox",
+    "oreochiserver.user-schedules-work-sandbox"
   ],
   "sources": [
     {
@@ -280,6 +284,349 @@
         "kind": "unix-stream",
         "socketPath": "/run/argus/collectors/work-sandbox-rootless-docker/collector.sock",
         "parentPath": "/run/argus/collectors/work-sandbox-rootless-docker",
+        "parentUid": 1003,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1003,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1003,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.system-schedules",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "system systemd services/timers and host cron directories",
+      "privilege": "host-read-only",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "systemd:list-units",
+          "systemd:list-timers",
+          "systemd:list-unit-files",
+          "cron:directories"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "systemd-service",
+          "systemd-timer",
+          "cron-entry",
+          "cron-directory"
+        ],
+        "attributeAllowlist": {
+          "systemd-service": [
+            "name",
+            "loadState",
+            "enabled",
+            "legacyReference",
+            "scope"
+          ],
+          "systemd-timer": [
+            "name",
+            "activates",
+            "legacyReference",
+            "scope"
+          ],
+          "cron-entry": [
+            "scope",
+            "location",
+            "scheduleClass",
+            "legacyReference"
+          ],
+          "cron-directory": [
+            "directory",
+            "entryName",
+            "mode",
+            "legacyReference"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed system schedule collector as UID 1000 with primary GID 981; expose only /run/argus/collectors/system-schedules/collector.sock.",
+      "removal": "Stop and disable only argus-system-schedules-collector.service, remove its reviewed source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/system-schedules/collector.sock",
+        "parentPath": "/run/argus/collectors/system-schedules",
+        "parentUid": 1000,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1000,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1000,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.user-schedules-oreo",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "legacy-rootful",
+      "scope": "oreo user systemd services/timers and crontab",
+      "privilege": "unprivileged",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1000,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "systemd:user-list-units",
+          "systemd:user-list-timers",
+          "systemd:user-list-unit-files",
+          "cron:user-crontab"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "systemd-service",
+          "systemd-timer",
+          "cron-entry",
+          "cron-directory"
+        ],
+        "attributeAllowlist": {
+          "systemd-service": [
+            "name",
+            "loadState",
+            "enabled",
+            "legacyReference",
+            "scope"
+          ],
+          "systemd-timer": [
+            "name",
+            "activates",
+            "legacyReference",
+            "scope"
+          ],
+          "cron-entry": [
+            "scope",
+            "location",
+            "scheduleClass",
+            "legacyReference",
+            "owner"
+          ],
+          "cron-directory": [
+            "directory",
+            "entryName",
+            "mode",
+            "legacyReference"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed user schedule collector for oreo as UID 1000 with primary GID 981; expose only /run/argus/collectors/user-schedules-oreo/collector.sock.",
+      "removal": "Stop and disable only argus-user-schedules-collector@oreo.service, remove its reviewed source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/user-schedules-oreo/collector.sock",
+        "parentPath": "/run/argus/collectors/user-schedules-oreo",
+        "parentUid": 1000,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1000,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1000,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.user-schedules-personal-sandbox",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "personal-sandbox",
+      "scope": "argus-personal-sandbox user systemd services/timers and crontab",
+      "privilege": "unprivileged",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1002,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "systemd:user-list-units",
+          "systemd:user-list-timers",
+          "systemd:user-list-unit-files",
+          "cron:user-crontab"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "systemd-service",
+          "systemd-timer",
+          "cron-entry",
+          "cron-directory"
+        ],
+        "attributeAllowlist": {
+          "systemd-service": [
+            "name",
+            "loadState",
+            "enabled",
+            "legacyReference",
+            "scope"
+          ],
+          "systemd-timer": [
+            "name",
+            "activates",
+            "legacyReference",
+            "scope"
+          ],
+          "cron-entry": [
+            "scope",
+            "location",
+            "scheduleClass",
+            "legacyReference",
+            "owner"
+          ],
+          "cron-directory": [
+            "directory",
+            "entryName",
+            "mode",
+            "legacyReference"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed user schedule collector for argus-personal-sandbox as UID 1002 with primary GID 981; expose only /run/argus/collectors/user-schedules-personal-sandbox/collector.sock.",
+      "removal": "Stop and disable only argus-user-schedules-collector@argus-personal-sandbox.service, remove its reviewed source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/user-schedules-personal-sandbox/collector.sock",
+        "parentPath": "/run/argus/collectors/user-schedules-personal-sandbox",
+        "parentUid": 1002,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1002,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1002,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.user-schedules-work-sandbox",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "work-sandbox",
+      "scope": "argus-work-sandbox user systemd services/timers and crontab",
+      "privilege": "unprivileged",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1003,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "systemd:user-list-units",
+          "systemd:user-list-timers",
+          "systemd:user-list-unit-files",
+          "cron:user-crontab"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 4096,
+        "maxRecordBytes": 8192
+      },
+      "minimization": {
+        "resourceKinds": [
+          "systemd-service",
+          "systemd-timer",
+          "cron-entry",
+          "cron-directory"
+        ],
+        "attributeAllowlist": {
+          "systemd-service": [
+            "name",
+            "loadState",
+            "enabled",
+            "legacyReference",
+            "scope"
+          ],
+          "systemd-timer": [
+            "name",
+            "activates",
+            "legacyReference",
+            "scope"
+          ],
+          "cron-entry": [
+            "scope",
+            "location",
+            "scheduleClass",
+            "legacyReference",
+            "owner"
+          ],
+          "cron-directory": [
+            "directory",
+            "entryName",
+            "mode",
+            "legacyReference"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed user schedule collector for argus-work-sandbox as UID 1003 with primary GID 981; expose only /run/argus/collectors/user-schedules-work-sandbox/collector.sock.",
+      "removal": "Stop and disable only argus-user-schedules-collector@argus-work-sandbox.service, remove its reviewed source projection after socket removal, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/user-schedules-work-sandbox/collector.sock",
+        "parentPath": "/run/argus/collectors/user-schedules-work-sandbox",
         "parentUid": 1003,
         "parentGid": 981,
         "parentMode": "0750",

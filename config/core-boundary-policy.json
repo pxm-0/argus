@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:fe2215b1a841029f147c2e4661a75365d9ee2cf0d303d81a71d6c75671dad101"
+    "expectedSbomDigest": "sha256:dcc9a3e2e9b3da3951e1be50abe9f06605d24c1589b61854a4310236b136531a"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:319432a19172faa8df3b32eb9270f89eb4ca6203e7a2ad25b6db9054d3916c71",
+    "expectedEndpointDigest": "sha256:d7bc3dfcb7dacc65533c94318945d6bb750c86ea307e78ede927036ee363f39e",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -149,6 +149,10 @@
       {
         "path": "scripts/smoke-test",
         "authority": "configured-health-and-local-api-read"
+      },
+      {
+        "path": "scripts/argus_systemd_schedule_collector.py",
+        "authority": "authenticated-read-only-local-collector-unix-sockets"
       }
     ]
   },
