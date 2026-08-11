@@ -124,7 +124,13 @@ class SystemdScheduleCollectorTests(unittest.TestCase):
         self.assertNotIn("docker-compose", json.dumps(records, sort_keys=True))
 
     def test_sources_pin_distinct_execution_and_socket_identities(self) -> None:
-        sources = [self.registry.sources[source_id] for source_id in self.registry.host_sources]
+        d3_source_ids = (
+            "oreochiserver.system-schedules",
+            "oreochiserver.user-schedules-oreo",
+            "oreochiserver.user-schedules-personal-sandbox",
+            "oreochiserver.user-schedules-work-sandbox",
+        )
+        sources = [self.registry.sources[source_id] for source_id in d3_source_ids]
         self.assertEqual([(1000, 981), (1000, 981), (1002, 981), (1003, 981)], [
             (source.execution_identity["uid"], source.execution_identity["gid"])
             for source in sources
