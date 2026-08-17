@@ -106,10 +106,11 @@ SPECS = {
         # both this immutable ID and its OCI provenance before stopping Hastur.
         "image_refresh": {
             "hastur": {
-                "image": "sha256:f43fccbe2714fdd9fb3bcc2bf23e6ad96a2624bfbd6168b82e9434dd71e4113b",
+                "image": "sha256:4120c4c5c3e9f7deb4b944881f2104b969c0fd5f1fc394d2af874efb26f68ceb",
                 "source": "https://github.com/pxm-0/hastur",
-                "revision": "03ebe98a2a04874deb5f79128caef6fc53df1fb2",
+                "revision": "82e5f437e6858763b37f561bf9094e41920fab05",
                 "checks": {
+                    "src/archive/index-db.mjs": "sha256:36e7d9d2161ca5c566d544c0d798d8be938b6d58b55f92e40f9bd1af2094c919",
                     "src/server.mjs": "sha256:3694928fa515bb97ed44216c28bc2d91bd3f42ec4fd4a527ee57f789999e9cca",
                     "src/schedule.mjs": "sha256:aedd906c338dd800a27427d679420e17330edabeb45c2e67325d09d7f8747b67",
                 },

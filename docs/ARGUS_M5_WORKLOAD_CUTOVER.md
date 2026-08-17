@@ -193,8 +193,11 @@ checks its OCI provenance labels, verifies the declared source-file digests, and
 runs every syntax check with `--network none` before stopping the accepted container. The previous Compose is
 retained for automatic recovery, and named volumes are never removed.
 
-For Hastur, revision `03ebe98a2a04874deb5f79128caef6fc53df1fb2`
-introduces the in-process scheduler. Both the workload replacement and its
+For Hastur, revision `82e5f437e6858763b37f561bf9094e41920fab05`
+includes the in-process scheduler and indexes crawl history by `finished_at`.
+Without that index, the growing `raw_json` history spills its newest-first sort
+to temporary storage; this rootless overlay rejects the spill with `EOVERFLOW`,
+which Node reports as SQLite error 14. Both the workload replacement and its
 Caddy 2.11.4 ingress sidecar are flat-rootfs images because their accepted
 layered images cannot be instantiated again by the current rootless storage
 driver. Refresh proves both pinned images can unpack before stopping the
