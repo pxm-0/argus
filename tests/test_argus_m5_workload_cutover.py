@@ -614,11 +614,12 @@ class RuntimeRefreshTest(unittest.TestCase):
         self.assertEqual(["hastur"], sorted(declaration))
         self.assertRegex(declaration["hastur"]["image"], r"^sha256:[0-9a-f]{64}$")
         self.assertEqual(
-            "03ebe98a2a04874deb5f79128caef6fc53df1fb2",
+            "82e5f437e6858763b37f561bf9094e41920fab05",
             declaration["hastur"]["revision"],
         )
         self.assertEqual(
             {
+                "src/archive/index-db.mjs": "sha256:36e7d9d2161ca5c566d544c0d798d8be938b6d58b55f92e40f9bd1af2094c919",
                 "src/schedule.mjs": "sha256:aedd906c338dd800a27427d679420e17330edabeb45c2e67325d09d7f8747b67",
                 "src/server.mjs": "sha256:3694928fa515bb97ed44216c28bc2d91bd3f42ec4fd4a527ee57f789999e9cca",
             },
