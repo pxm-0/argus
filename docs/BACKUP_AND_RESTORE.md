@@ -75,11 +75,15 @@ pre-cutover database backup schedule stops working the moment a workload moves
 sudo ./scripts/argus-m5-workload-db-backup --workload kadath
 ```
 
-The dump first verifies that every entry in the database volume is owned by the
-container's PostgreSQL UID/GID (999:999), then runs inside the sandbox. Credentials
-are read from the container environment rather than from anything committed, and
-the artifact is verified with `pg_restore --list` before it replaces the night's
-copy. A partial dump is removed rather than kept. Artifacts land in
+The dump first resolves the `postgres` UID/GID from the exact immutable image
+used by the workload, then verifies that every entry in the database volume is
+owned by that mapped account. This matters because the retained images do not
+share one account convention (Kadath uses `999:999`; Intake uses `70:70`). The
+dump then runs inside the sandbox. Only the role and database name are selected
+from the inspected container environment; the environment is never printed and
+no credential is read from the repository. The artifact is verified with
+`pg_restore --list` before it replaces the night's copy. A partial dump is
+removed rather than kept. Artifacts land in
 `/var/backups/argus-m5-workload-db/<workload>/`, root-owned `0600`, with the
 newest 14 retained.
 
@@ -92,8 +96,9 @@ sudo ./scripts/argus-m5-workload-db-backup \
 ```
 
 Repair is deliberately opt-in and workload-scoped. It snapshots the exact
-PostgreSQL volume, stops only the selected database container, applies the
-999:999 ownership repair, restarts the container, and requires both
+PostgreSQL volume, stops only the selected database container when it is
+running, applies the image-derived ownership repair, starts the container, and
+requires both
 `pg_isready` and a real `SELECT 1` query. It restores the snapshot if ownership
 or PostgreSQL query readiness does not verify. A root-owned per-workload lock
 prevents a scheduled dump and an ownership repair from overlapping:

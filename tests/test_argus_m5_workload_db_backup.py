@@ -47,8 +47,47 @@ class DatabaseBackupTest(unittest.TestCase):
 
     def test_credentials_come_from_the_container_not_the_repo(self) -> None:
         script = SCRIPT.read_text()
-        self.assertIn("printenv", script)
+        self.assertIn("{{json .Config.Env}}", script)
+        self.assertNotIn('\"printenv\"', script)
         self.assertNotIn("POSTGRES_PASSWORD=", script)
+
+    def test_database_lookup_includes_an_exited_container(self) -> None:
+        calls = []
+        original = module.text
+        module.text = lambda command, *_args: calls.append(command) or "postgres-1\n"
+        try:
+            self.assertEqual(
+                "postgres-1", module.container_name(module.SPECS["kadath"])
+            )
+        finally:
+            module.text = original
+        self.assertIn("--all", calls[0])
+
+    def test_postgres_identity_comes_from_the_exact_networkless_image(self) -> None:
+        calls = []
+        image = "sha256:" + "a" * 64
+
+        def fake_text(command, *_args):
+            calls.append(command)
+            return image + "\n" if "inspect" in command else "70\n70\n"
+
+        original = module.text
+        module.text = fake_text
+        try:
+            self.assertEqual(
+                (70, 70),
+                module.postgres_container_ids(
+                    module.SPECS["intake-os"], "intake-os-postgres-1"
+                ),
+            )
+        finally:
+            module.text = original
+        probe = calls[1]
+        self.assertIn("--network", probe)
+        self.assertEqual("none", probe[probe.index("--network") + 1])
+        self.assertIn("--read-only", probe)
+        self.assertIn(image, probe)
+        self.assertNotIn("POSTGRES_PASSWORD", " ".join(probe))
 
     def test_dump_is_verified_before_it_counts(self) -> None:
         script = SCRIPT.read_text()
@@ -125,7 +164,7 @@ class DatabaseBackupTest(unittest.TestCase):
 
     def test_failed_repair_restores_snapshot_before_restart(self) -> None:
         events = []
-        states = iter(("running", "exited"))
+        states = iter(("running", "exited", "exited"))
         ownership = iter(
             (
                 {"ok": False, "nonPostgresOwnedEntries": 2},
@@ -198,6 +237,78 @@ class DatabaseBackupTest(unittest.TestCase):
             ["stop", "snapshot", "repair", "restore", "start"],
             events,
         )
+
+    def test_repair_can_recover_an_exited_database(self) -> None:
+        events = []
+        ownership = iter(
+            (
+                {"ok": False, "nonPostgresOwnedEntries": 2},
+                {"ok": True, "nonPostgresOwnedEntries": 0},
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "volume" / "_data"
+            source.mkdir(parents=True)
+            originals = (
+                module.BACKUP_ROOT,
+                module.os.geteuid,
+                module.container_name,
+                module.credentials,
+                module.ownership_status,
+                module.volume_source,
+                module.directory_identity,
+                module.container_state,
+                module.ensure_root_directory,
+                module.stop_database,
+                module.snapshot_volume,
+                module.repair_volume_ownership,
+                module.start_database,
+                module.wait_for_database,
+            )
+            module.BACKUP_ROOT = root / "backups"
+            module.os.geteuid = lambda: 0
+            module.container_name = lambda _spec: "kadath-live-postgres-1"
+            module.credentials = lambda *_args: ("kadath", "kadath")
+            module.ownership_status = lambda *_args: next(ownership)
+            module.volume_source = lambda *_args: source
+            module.directory_identity = lambda _path: (1, 2)
+            module.container_state = lambda *_args: "exited"
+            module.ensure_root_directory = lambda path: path.mkdir(
+                parents=True, exist_ok=True
+            )
+            module.stop_database = lambda *_args: events.append("stop")
+
+            def snapshot(_source, destination):
+                events.append("snapshot")
+                destination.write_bytes(b"snapshot")
+
+            module.snapshot_volume = snapshot
+            module.repair_volume_ownership = lambda *_args: events.append("repair")
+            module.start_database = lambda *_args: events.append("start")
+            module.wait_for_database = lambda *_args: events.append("query")
+            try:
+                result = module.repair_ownership("kadath", "kadath")
+            finally:
+                (
+                    module.BACKUP_ROOT,
+                    module.os.geteuid,
+                    module.container_name,
+                    module.credentials,
+                    module.ownership_status,
+                    module.volume_source,
+                    module.directory_identity,
+                    module.container_state,
+                    module.ensure_root_directory,
+                    module.stop_database,
+                    module.snapshot_volume,
+                    module.repair_volume_ownership,
+                    module.start_database,
+                    module.wait_for_database,
+                ) = originals
+
+        self.assertTrue(result["verified"])
+        self.assertEqual(["snapshot", "repair", "start", "query"], events)
 
     def test_database_operations_use_a_nonblocking_workload_lock(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
