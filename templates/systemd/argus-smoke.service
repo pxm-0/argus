@@ -6,6 +6,11 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/srv/argus
+# These root-only preflights never expose a Docker socket to the oreo service
+# identity. A leading '-' records failure evidence and lets the scheduled
+# runner emit one complete failed status instead of retaining yesterday's log.
+ExecStartPre=-+/usr/local/lib/argus/argus-m5-rootless-gid-repair --domain personal-sandbox --probe
+ExecStartPre=-+/usr/local/lib/argus/argus-m5-rootless-gid-repair --domain work-sandbox --probe
 ExecStart=/srv/argus/scripts/argus-smoke-scheduled
 User=oreo
 Group=oreo

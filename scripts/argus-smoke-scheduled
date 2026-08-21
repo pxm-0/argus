@@ -6,11 +6,16 @@ import json
 import re
 import subprocess
 from pathlib import Path
+import stat
+import time
 
 from argus_common import audit, now, root
 
 
 SUMMARY = re.compile(r"Smoke summary: (?P<failures>\d+) failure\(s\), (?P<warnings>\d+) warning\(s\)")
+ROOTLESS_PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
+ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox")
+ROOTLESS_PROBE_MAX_AGE_SECONDS = 900
 
 
 def parse_summary(output: str) -> tuple[int, int]:
@@ -18,6 +23,54 @@ def parse_summary(output: str) -> tuple[int, int]:
     if not match:
         return -1, -1
     return int(match.group("failures")), int(match.group("warnings"))
+
+
+def rootless_probe_status(directory: Path = ROOTLESS_PROBE_ROOT) -> dict:
+    domains = []
+    current = time.time()
+    try:
+        directory_metadata = directory.lstat()
+    except OSError:
+        directory_safe = False
+    else:
+        directory_safe = (
+            directory_metadata.st_uid == 0
+            and stat.S_ISDIR(directory_metadata.st_mode)
+            and stat.S_IMODE(directory_metadata.st_mode) == 0o755
+        )
+    for domain in ROOTLESS_DOMAINS:
+        path = directory / f"{domain}.json"
+        try:
+            metadata = path.lstat()
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            domains.append({"domain": domain, "ok": False, "reason": "missing-or-invalid"})
+            continue
+        age = current - metadata.st_mtime
+        safe_file = (
+            directory_safe
+            and metadata.st_uid == 0
+            and stat.S_ISREG(metadata.st_mode)
+            and stat.S_IMODE(metadata.st_mode) == 0o644
+        )
+        valid = (
+            safe_file
+            and -60 <= age <= ROOTLESS_PROBE_MAX_AGE_SECONDS
+            and payload.get("schemaVersion") == 1
+            and payload.get("domain") == domain
+            and payload.get("daemonActive") is True
+            and payload.get("containerCreation") is True
+            and payload.get("ok") is True
+            and payload.get("reason") == "passed"
+        )
+        domains.append(
+            {
+                "domain": domain,
+                "ok": valid,
+                "reason": "passed" if valid else "failed-or-stale",
+            }
+        )
+    return {"ok": all(item["ok"] for item in domains), "domains": domains}
 
 
 def main() -> int:
@@ -31,7 +84,8 @@ def main() -> int:
         command.append("--offline")
     result = subprocess.run(command, cwd=root(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
     failures, warnings = parse_summary(result.stdout)
-    ok = result.returncode == 0 and failures == 0
+    rootless_probe = {"ok": True, "domains": [], "skipped": True} if args.offline else rootless_probe_status()
+    ok = result.returncode == 0 and failures == 0 and warnings == 0 and rootless_probe["ok"]
 
     args.log_dir.mkdir(parents=True, exist_ok=True)
     (args.log_dir / "latest.log").write_text(result.stdout)
@@ -42,10 +96,19 @@ def main() -> int:
         "exitCode": result.returncode,
         "failures": failures,
         "warnings": warnings,
+        "rootlessRuntimeProbe": rootless_probe,
         "log": str(args.log_dir / "latest.log"),
     }
     (args.log_dir / "latest.json").write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
-    audit("smoke.scheduled", "platform", "ok" if ok else "failed", exitCode=result.returncode, failures=failures, warnings=warnings)
+    audit(
+        "smoke.scheduled",
+        "platform",
+        "ok" if ok else "failed",
+        exitCode=result.returncode,
+        failures=failures,
+        warnings=warnings,
+        rootlessRuntimeProbeOk=rootless_probe["ok"],
+    )
     print(json.dumps(status, indent=2, sort_keys=True))
     return 0 if ok else 1
 
