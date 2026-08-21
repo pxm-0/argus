@@ -12,6 +12,7 @@ or branch in them is not current guidance unless a current document repeats it.
 - [`TAILSCALE_ACCESS_STANDARD.md`](TAILSCALE_ACCESS_STANDARD.md) — private tailnet route safety contract.
 - [`BACKUP_AND_RESTORE.md`](BACKUP_AND_RESTORE.md) — current backup and restore entry point.
 - [`RUNBOOKS/sandbox-firewall-remediation.md`](RUNBOOKS/sandbox-firewall-remediation.md) — exact sandbox network policy plan/apply/verify/rollback.
+- [`RUNBOOKS/rootless-data-root-gid-recovery.md`](RUNBOOKS/rootless-data-root-gid-recovery.md) — bounded primary-GID drift audit, migration, verification, and rollback.
 
 ## Contributor
 

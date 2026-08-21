@@ -1,0 +1,1645 @@
+#!/usr/bin/env python3
+"""Audit and repair a rootless Docker data root after primary-GID drift.
+
+Rootless Docker maps container GID 0 to the sandbox account's primary GID.
+If that primary GID changes, files created by the old namespace become
+unmapped and container creation can fail with EOVERFLOW.  This tool changes
+only entries that still have the explicitly supplied stale root GID and the
+sandbox account's exact UID.  It never changes subordinate-ID-owned entries.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+from contextlib import ExitStack
+import fcntl
+import grp
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import stat
+import subprocess
+import sys
+import tempfile
+import time
+from typing import Iterable
+
+
+DOMAINS = ("personal-sandbox", "work-sandbox")
+STATE_ROOT = Path("/var/lib/argus/rootless-gid-repair")
+LOCK_ROOT = Path("/run/argus-m5-rootless-gid-repair")
+CUTOVER_LOCK = Path("/run/argus-m5-workload-cutover/lock")
+PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
+MIGRATION_RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
+APPLY_ACK = "--acknowledge-rootless-gid-repair"
+RECOVERY_ACK = "--acknowledge-rootless-gid-recovery"
+ROLLBACK_ACK = "--acknowledge-rootless-gid-rollback"
+DOCKER_TIMEOUT_SECONDS = 60
+DAEMON_TIMEOUT_SECONDS = 90
+RUNNING_STABILITY_SECONDS = 5
+FIREWALL_RETRIES = 2
+SCRIPT_ROOT = Path(__file__).resolve().parent
+SMOKE_IMAGE = SCRIPT_ROOT / "fixtures/argus-hello-world-amd64.tar"
+
+
+class RepairError(RuntimeError):
+    pass
+
+
+def run(
+    command: list[str],
+    *,
+    check: bool = True,
+    stdout=None,
+    stderr=None,
+    timeout: float | None = None,
+) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        command,
+        check=check,
+        text=True,
+        stdout=stdout,
+        stderr=stderr,
+        timeout=timeout,
+    )
+
+
+def text(command: list[str], timeout: float | None = None) -> str:
+    return run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        timeout=timeout,
+    ).stdout
+
+
+def sandbox_user(domain: str) -> str:
+    if domain not in DOMAINS:
+        raise RepairError("unsupported sandbox domain")
+    return f"argus-{domain}"
+
+
+def target_command(domain: str, *arguments: str) -> list[str]:
+    user = sandbox_user(domain)
+    return [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        f"HOME=/home/{user}",
+        "docker",
+        "--host",
+        f"unix:///var/lib/argus/{domain}/docker.sock",
+        *arguments,
+    ]
+
+
+def user_systemctl_command(domain: str, *arguments: str) -> list[str]:
+    user = sandbox_user(domain)
+    identity = pwd.getpwnam(user)
+    return [
+        "runuser",
+        "-u",
+        user,
+        "--",
+        "env",
+        f"HOME=/home/{user}",
+        f"XDG_RUNTIME_DIR=/run/user/{identity.pw_uid}",
+        "systemctl",
+        "--user",
+        *arguments,
+    ]
+
+
+def daemon_unit(domain: str) -> str:
+    return f"argus-{domain}-rootless-docker.service"
+
+
+def data_root(domain: str) -> Path:
+    return Path(f"/var/lib/argus/{domain}/docker-data")
+
+
+def require_real_directory(path: Path) -> os.stat_result:
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise RepairError(f"unsafe directory boundary: {path}")
+    return metadata
+
+
+def verified_data_root(domain: str, sandbox_uid: int) -> Path:
+    root = data_root(domain)
+    current = Path(root.anchor)
+    require_real_directory(current)
+    for part in root.parts[1:]:
+        current /= part
+        require_real_directory(current)
+    metadata = os.lstat(root)
+    if metadata.st_uid != sandbox_uid:
+        raise RepairError("sandbox user does not own its Docker data root")
+    return root
+
+
+def subordinate_ranges(path: Path, user: str) -> tuple[tuple[int, int], ...]:
+    ranges = []
+    metadata = os.lstat(path)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        raise RepairError(f"unsafe subordinate-ID file: {path}")
+    for line in path.read_text(encoding="utf-8").splitlines():
+        owner, separator, values = line.partition(":")
+        if owner != user or not separator:
+            continue
+        start_text, separator, length_text = values.partition(":")
+        if not separator:
+            raise RepairError(f"invalid subordinate-ID entry for {user}")
+        try:
+            start = int(start_text)
+            length = int(length_text)
+        except ValueError as error:
+            raise RepairError(f"invalid subordinate-ID entry for {user}") from error
+        if start <= 0 or length <= 0:
+            raise RepairError(f"invalid subordinate-ID entry for {user}")
+        ranges.append((start, length))
+    if len(ranges) != 1:
+        raise RepairError(f"expected one subordinate-ID range for {user}")
+    return tuple(ranges)
+
+
+def validate_stale_gid(
+    stale_gid: int, current_gid: int, ranges: Iterable[tuple[int, int]]
+) -> None:
+    if stale_gid <= 0:
+        raise RepairError("stale GID must be a positive non-root ID")
+    if stale_gid == current_gid:
+        raise RepairError("stale GID already matches the sandbox primary GID")
+    for start, length in ranges:
+        if start <= stale_gid < start + length:
+            raise RepairError("stale GID overlaps the sandbox subordinate range")
+
+
+def iter_entries(root: Path):
+    """Yield one filesystem without following symlinks or active mounts."""
+    root_bytes = os.fsencode(root)
+    root_metadata = os.lstat(root_bytes)
+    root_device = root_metadata.st_dev
+    yield root_bytes, root_metadata
+    pending = [root_bytes]
+    while pending:
+        directory = pending.pop()
+        try:
+            children = list(os.scandir(directory))
+        except OSError as error:
+            raise RepairError(
+                f"could not scan bounded data root at {os.fsdecode(directory)}"
+            ) from error
+        for child in children:
+            try:
+                metadata = child.stat(follow_symlinks=False)
+            except OSError as error:
+                raise RepairError("data-root entry changed during audit") from error
+            path = os.fsencode(child.path)
+            yield path, metadata
+            if stat.S_ISDIR(metadata.st_mode) and metadata.st_dev == root_device:
+                pending.append(path)
+
+
+def relative_entry(root: Path, path: bytes) -> bytes:
+    relative = os.path.relpath(path, os.fsencode(root))
+    if relative == b".":
+        return relative
+    if os.path.isabs(relative) or any(
+        part in (b"", b".", b"..") for part in relative.split(b"/")
+    ):
+        raise RepairError("unsafe relative data-root path")
+    return relative
+
+
+def selected_entries(
+    root: Path, sandbox_uid: int, stale_gid: int
+) -> tuple[list[bytes], int, int]:
+    selected = []
+    foreign = 0
+    total = 0
+    for path, metadata in iter_entries(root):
+        total += 1
+        if metadata.st_gid != stale_gid:
+            continue
+        if metadata.st_uid != sandbox_uid:
+            foreign += 1
+            continue
+        selected.append(relative_entry(root, path))
+    selected.sort()
+    return selected, foreign, total
+
+
+def boundary(domain: str, stale_gid: int) -> dict:
+    user = sandbox_user(domain)
+    identity = pwd.getpwnam(user)
+    root = verified_data_root(domain, identity.pw_uid)
+    uid_ranges = subordinate_ranges(Path("/etc/subuid"), user)
+    gid_ranges = subordinate_ranges(Path("/etc/subgid"), user)
+    if uid_ranges != gid_ranges:
+        raise RepairError("sandbox subordinate UID/GID ranges differ")
+    validate_stale_gid(stale_gid, identity.pw_gid, gid_ranges)
+    entries, foreign, total = selected_entries(
+        root, identity.pw_uid, stale_gid
+    )
+    if foreign:
+        raise RepairError(
+            "stale-GID entries owned by another UID make repair unsafe"
+        )
+    try:
+        stale_group = grp.getgrgid(stale_gid).gr_name
+    except KeyError:
+        stale_group = None
+    return {
+        "domain": domain,
+        "user": user,
+        "uid": identity.pw_uid,
+        "currentGid": identity.pw_gid,
+        "staleGid": stale_gid,
+        "staleGroup": stale_group,
+        "dataRoot": root,
+        "entries": entries,
+        "totalEntries": total,
+    }
+
+
+def ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    metadata = os.lstat(path)
+    if (
+        metadata.st_uid != 0
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RepairError(f"unsafe private directory: {path}")
+    os.chmod(path, 0o700)
+
+
+def write_exclusive(path: Path, payload: bytes) -> None:
+    descriptor = os.open(
+        path,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | os.O_NOFOLLOW
+        | os.O_CLOEXEC,
+        0o600,
+    )
+    try:
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            view = view[written:]
+        os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_json(path: Path, payload: dict) -> None:
+    temporary = path.with_name(f".{path.name}.partial")
+    temporary.unlink(missing_ok=True)
+    write_exclusive(
+        temporary,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode(),
+    )
+    os.replace(temporary, path)
+    os.chmod(path, 0o600)
+
+
+def write_manifest(directory: Path, entries: list[bytes]) -> tuple[Path, str]:
+    manifest = directory / "paths.b64"
+    payload = b"".join(base64.b64encode(entry) + b"\n" for entry in entries)
+    write_exclusive(manifest, payload)
+    return manifest, hashlib.sha256(payload).hexdigest()
+
+
+def read_manifest(path: Path, expected_digest: str) -> list[bytes]:
+    metadata = os.lstat(path)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise RepairError("rollback path manifest ownership or mode is unsafe")
+    payload = path.read_bytes()
+    if hashlib.sha256(payload).hexdigest() != expected_digest:
+        raise RepairError("rollback path manifest checksum does not match")
+    entries = []
+    for encoded in payload.splitlines():
+        try:
+            relative = base64.b64decode(encoded, validate=True)
+        except ValueError as error:
+            raise RepairError("rollback path manifest is invalid") from error
+        if relative != b"." and (
+            os.path.isabs(relative)
+            or any(part in (b"", b".", b"..") for part in relative.split(b"/"))
+        ):
+            raise RepairError("rollback path manifest escapes the data root")
+        entries.append(relative)
+    if len(entries) != len(set(entries)):
+        raise RepairError("rollback path manifest contains duplicates")
+    return entries
+
+
+def absolute_entry(root: Path, relative: bytes) -> bytes:
+    if relative == b".":
+        return os.fsencode(root)
+    candidate = os.path.normpath(os.path.join(os.fsencode(root), relative))
+    if os.path.commonpath((os.fsencode(root), candidate)) != os.fsencode(root):
+        raise RepairError("rollback path escapes the data root")
+    return candidate
+
+
+def validate_paths(
+    root: Path,
+    entries: Iterable[bytes],
+    expected_uid: int,
+    expected_gid: int,
+) -> list[bytes]:
+    return validate_paths_for_gids(
+        root, entries, expected_uid, {expected_gid}
+    )
+
+
+def validate_paths_for_gids(
+    root: Path,
+    entries: Iterable[bytes],
+    expected_uid: int,
+    expected_gids: set[int],
+) -> list[bytes]:
+    paths = []
+    verified_directories = {os.fsencode(root)}
+    for relative in entries:
+        if relative != b".":
+            current = os.fsencode(root)
+            for component in relative.split(b"/")[:-1]:
+                current = os.path.join(current, component)
+                if current in verified_directories:
+                    continue
+                metadata = os.lstat(current)
+                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(
+                    metadata.st_mode
+                ):
+                    raise RepairError(
+                        "selected data-root path has an unsafe ancestor"
+                    )
+                verified_directories.add(current)
+        path = absolute_entry(root, relative)
+        try:
+            metadata = os.lstat(path)
+        except FileNotFoundError as error:
+            raise RepairError("selected data-root entry disappeared") from error
+        if (
+            metadata.st_uid != expected_uid
+            or metadata.st_gid not in expected_gids
+        ):
+            raise RepairError("selected data-root ownership changed unexpectedly")
+        paths.append(path)
+    return paths
+
+
+def change_paths(
+    paths: Iterable[bytes],
+    expected_uid: int,
+    from_gid: int,
+    to_gid: int,
+    *,
+    allow_already_changed: bool = False,
+) -> None:
+    checked = []
+    accepted_gids = {from_gid, to_gid} if allow_already_changed else {from_gid}
+    for path in paths:
+        metadata = os.lstat(path)
+        if (
+            metadata.st_uid != expected_uid
+            or metadata.st_gid not in accepted_gids
+        ):
+            raise RepairError("selected data-root ownership changed unexpectedly")
+        checked.append(path)
+    changed = []
+    try:
+        for path in checked:
+            if os.lstat(path).st_gid == to_gid:
+                continue
+            os.chown(path, -1, to_gid, follow_symlinks=False)
+            changed.append(path)
+        for path in checked:
+            metadata = os.lstat(path)
+            if metadata.st_uid != expected_uid or metadata.st_gid != to_gid:
+                raise RepairError("data-root GID migration did not converge")
+    except BaseException as error:
+        compensation_error = None
+        for path in reversed(changed):
+            try:
+                metadata = os.lstat(path)
+                if metadata.st_uid != expected_uid or metadata.st_gid != to_gid:
+                    raise RepairError(
+                        "changed data-root ownership moved during compensation"
+                    )
+                os.chown(path, -1, from_gid, follow_symlinks=False)
+            except BaseException as caught:
+                compensation_error = caught
+                break
+        if compensation_error is not None:
+            raise RepairError(
+                "data-root GID change failed and compensation failed"
+            ) from compensation_error
+        raise error
+
+
+def docker_ids(domain: str, running_only: bool = False) -> set[str]:
+    arguments = ["ps", "--quiet", "--no-trunc"]
+    if not running_only:
+        arguments.insert(1, "--all")
+    return set(text(target_command(domain, *arguments), 30).split())
+
+
+def volume_names(domain: str) -> set[str]:
+    return set(
+        text(
+            target_command(domain, "volume", "ls", "--quiet"),
+            30,
+        ).split()
+    )
+
+
+def project_names(domain: str, containers: Iterable[str]) -> set[str]:
+    projects = set()
+    for container in containers:
+        project = text(
+            target_command(
+                domain,
+                "inspect",
+                "--format={{index .Config.Labels \"com.docker.compose.project\"}}",
+                container,
+            ),
+            30,
+        ).strip()
+        if project and project != "<no value>":
+            projects.add(project)
+    return projects
+
+
+def restart_policies(domain: str, containers: Iterable[str]) -> dict[str, str]:
+    policies = {}
+    for container in containers:
+        policy = text(
+            target_command(
+                domain,
+                "inspect",
+                "--format={{.HostConfig.RestartPolicy.Name}}",
+                container,
+            ),
+            30,
+        ).strip()
+        policies[container] = policy
+    return policies
+
+
+def require_restart_suppression(domain: str, containers: Iterable[str]) -> None:
+    unsafe = {
+        container: policy
+        for container, policy in restart_policies(domain, containers).items()
+        if policy not in {"no", "on-failure", "unless-stopped"}
+    }
+    if unsafe:
+        raise RepairError(
+            "container restart policy could bypass the containment sequence"
+        )
+
+
+def inventory(domain: str) -> dict:
+    containers = docker_ids(domain)
+    return {
+        "containerIds": sorted(containers),
+        "volumeNames": sorted(volume_names(domain)),
+        "projectNames": sorted(project_names(domain, containers)),
+    }
+
+
+def inventory_digest(value: dict) -> str:
+    payload = json.dumps(value, separators=(",", ":"), sort_keys=True).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def daemon_is_active(domain: str) -> bool:
+    return (
+        run(
+            user_systemctl_command(
+                domain, "is-active", "--quiet", daemon_unit(domain)
+            ),
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        ).returncode
+        == 0
+    )
+
+
+def sandbox_runtime_processes(domain: str) -> list[str]:
+    sandbox_uid = pwd.getpwnam(sandbox_user(domain)).pw_uid
+    runtime_names = {
+        "containerd",
+        "containerd-shim",
+        "dockerd",
+        "fuse-overlayfs",
+        "rootlesskit",
+        "slirp4netns",
+    }
+    found = []
+    for process in Path("/proc").iterdir():
+        if not process.name.isdigit():
+            continue
+        try:
+            status_lines = (process / "status").read_text().splitlines()
+            owner = next(
+                int(line.split()[1])
+                for line in status_lines
+                if line.startswith("Uid:")
+            )
+            name = (process / "comm").read_text().strip()
+        except (FileNotFoundError, ProcessLookupError, PermissionError, StopIteration):
+            continue
+        if owner == sandbox_uid and name in runtime_names:
+            found.append(name)
+    return sorted(found)
+
+
+def mounts_below(root: Path) -> int:
+    prefix = str(root) + "/"
+    count = 0
+    for line in Path("/proc/self/mountinfo").read_text().splitlines():
+        fields = line.split()
+        if len(fields) < 5:
+            raise RepairError("host mount inventory is malformed")
+        mountpoint = (
+            fields[4]
+            .replace("\\040", " ")
+            .replace("\\011", "\t")
+            .replace("\\012", "\n")
+            .replace("\\134", "\\")
+        )
+        if mountpoint == str(root) or mountpoint.startswith(prefix):
+            count += 1
+    return count
+
+
+def stop_daemon(domain: str) -> None:
+    run(
+        user_systemctl_command(domain, "stop", daemon_unit(domain)),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=DAEMON_TIMEOUT_SECONDS,
+    )
+    if daemon_is_active(domain):
+        raise RepairError("sandbox daemon did not stop")
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not sandbox_runtime_processes(domain):
+            break
+        time.sleep(1)
+    else:
+        raise RepairError("sandbox runtime processes remained after daemon stop")
+    if mounts_below(data_root(domain)):
+        raise RepairError("sandbox data root still contains active mounts")
+
+
+def start_daemon(domain: str) -> None:
+    run(
+        user_systemctl_command(domain, "start", daemon_unit(domain)),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=DAEMON_TIMEOUT_SECONDS,
+    )
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    socket_path = Path(f"/var/lib/argus/{domain}/docker.sock")
+    while time.monotonic() < deadline:
+        if daemon_is_active(domain) and socket_path.is_socket():
+            result = run(
+                target_command(domain, "info", "--format={{.ServerVersion}}"),
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=15,
+            )
+            if result.returncode == 0:
+                return
+        time.sleep(1)
+    raise RepairError("sandbox daemon did not become API-ready")
+
+
+def quiesce_containers(domain: str, containers: set[str]) -> None:
+    current = docker_ids(domain, running_only=True)
+    if current != containers:
+        raise RepairError("sandbox running set changed before quiescence")
+    if containers:
+        run(
+            target_command(
+                domain, "stop", "--time", "60", *sorted(containers)
+            ),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DAEMON_TIMEOUT_SECONDS,
+        )
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if not docker_ids(domain, running_only=True):
+            return
+        time.sleep(1)
+    raise RepairError("sandbox containers did not quiesce")
+
+
+def restore_firewall(domain: str) -> None:
+    namespace_unit = f"argus-{domain}-namespace.service"
+    firewall_unit = f"argus-{domain}-firewall.service"
+    run(
+        ["systemctl", "is-active", "--quiet", namespace_unit],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=30,
+    )
+    for attempt in range(FIREWALL_RETRIES):
+        restarted = run(
+            ["systemctl", "restart", firewall_unit],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DAEMON_TIMEOUT_SECONDS,
+        )
+        active = run(
+            ["systemctl", "is-active", "--quiet", firewall_unit],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if restarted.returncode == 0 and active.returncode == 0:
+            return
+        if attempt + 1 < FIREWALL_RETRIES:
+            run(
+                ["systemctl", "reset-failed", firewall_unit],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=30,
+            )
+            time.sleep(1)
+    raise RepairError("sandbox firewall did not recover")
+
+
+def verified_ingress_directories(
+    domain: str, containers: Iterable[str]
+) -> list[Path]:
+    """Return exact accepted ingress binds that need restart preparation."""
+    identity = pwd.getpwnam(sandbox_user(domain))
+    domain_root = MIGRATION_RUNTIME_ROOT / domain
+    directories = set()
+    for container in sorted(containers):
+        try:
+            mounts = json.loads(
+                text(
+                    target_command(
+                        domain,
+                        "inspect",
+                        "--format={{json .Mounts}}",
+                        container,
+                    ),
+                    30,
+                )
+            )
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RepairError("container mount inventory is malformed") from error
+        if not isinstance(mounts, list):
+            raise RepairError("container mount inventory is malformed")
+        matches = [
+            mount
+            for mount in mounts
+            if isinstance(mount, dict)
+            and mount.get("Destination") == "/run/argus-ingress"
+        ]
+        if not matches:
+            continue
+        if len(matches) != 1:
+            raise RepairError("container ingress mount is ambiguous")
+        mount = matches[0]
+        if mount.get("Type") != "bind" or mount.get("RW") is not True:
+            raise RepairError("container ingress mount is unsafe")
+        source_value = mount.get("Source")
+        if not isinstance(source_value, str) or not source_value.startswith("/"):
+            raise RepairError("container ingress source is unsafe")
+        source = Path(source_value)
+        try:
+            relative = source.relative_to(domain_root)
+        except ValueError as error:
+            raise RepairError("container ingress source escapes its domain") from error
+        if len(relative.parts) != 3 or relative.parts[-1] != "ingress":
+            raise RepairError("container ingress source is not an accepted path")
+        current = MIGRATION_RUNTIME_ROOT
+        for part in (domain, *relative.parts):
+            metadata = os.lstat(current)
+            if (
+                metadata.st_uid != 0
+                or stat.S_ISLNK(metadata.st_mode)
+                or not stat.S_ISDIR(metadata.st_mode)
+            ):
+                raise RepairError("container ingress path boundary is unsafe")
+            current /= part
+        metadata = os.lstat(source)
+        if (
+            metadata.st_uid != 0
+            or metadata.st_gid != 0
+            or stat.S_ISLNK(metadata.st_mode)
+            or not stat.S_ISDIR(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o711
+        ):
+            raise RepairError("locked ingress directory is unsafe")
+        socket_path = source / "upstream.sock"
+        try:
+            socket_metadata = os.lstat(socket_path)
+        except FileNotFoundError:
+            pass
+        else:
+            if (
+                not stat.S_ISSOCK(socket_metadata.st_mode)
+                or socket_metadata.st_uid != identity.pw_uid
+                or socket_metadata.st_gid != identity.pw_gid
+            ):
+                raise RepairError("stale ingress endpoint is unsafe")
+        directories.add(source)
+    return sorted(directories)
+
+
+def prepare_ingress_directories(domain: str, directories: Iterable[Path]) -> None:
+    identity = pwd.getpwnam(sandbox_user(domain))
+    for directory in directories:
+        socket_path = directory / "upstream.sock"
+        try:
+            metadata = os.lstat(socket_path)
+        except FileNotFoundError:
+            pass
+        else:
+            if not stat.S_ISSOCK(metadata.st_mode):
+                raise RepairError("stale ingress endpoint changed type")
+            os.unlink(socket_path)
+        os.chown(directory, identity.pw_uid, identity.pw_gid)
+        os.chmod(directory, 0o700)
+
+
+def lock_ingress_directories(
+    domain: str, directories: Iterable[Path], *, require_socket: bool
+) -> None:
+    identity = pwd.getpwnam(sandbox_user(domain))
+    selected = list(directories)
+    ready = not require_socket
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    while require_socket and time.monotonic() < deadline:
+        ready = True
+        for directory in selected:
+            try:
+                metadata = os.lstat(directory / "upstream.sock")
+            except FileNotFoundError:
+                ready = False
+                break
+            if (
+                not stat.S_ISSOCK(metadata.st_mode)
+                or metadata.st_uid != identity.pw_uid
+                or metadata.st_gid != identity.pw_gid
+            ):
+                ready = False
+                break
+        if ready:
+            break
+        time.sleep(1)
+    for directory in selected:
+        os.chown(directory, 0, 0)
+        os.chmod(directory, 0o711)
+    if not ready:
+        raise RepairError("sandbox ingress endpoint did not recover")
+
+
+def container_start_contracts(
+    domain: str, containers: Iterable[str]
+) -> dict[str, dict]:
+    contracts = {}
+    service_index = {}
+    for container in sorted(containers):
+        try:
+            labels = json.loads(
+                text(
+                    target_command(
+                        domain,
+                        "inspect",
+                        "--format={{json .Config.Labels}}",
+                        container,
+                    ),
+                    30,
+                )
+            )
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RepairError("container Compose labels are malformed") from error
+        if not isinstance(labels, dict):
+            raise RepairError("container Compose labels are malformed")
+        project = labels.get("com.docker.compose.project")
+        service = labels.get("com.docker.compose.service")
+        depends_on = labels.get("com.docker.compose.depends_on", "")
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(service, str)
+            or not service
+            or not isinstance(depends_on, str)
+        ):
+            raise RepairError("container Compose identity is incomplete")
+        key = (project, service)
+        if key in service_index:
+            raise RepairError("container Compose service identity is ambiguous")
+        service_index[key] = container
+        contracts[container] = {
+            "project": project,
+            "service": service,
+            "dependsOn": depends_on,
+            "dependencies": [],
+        }
+    accepted_conditions = {
+        "service_started",
+        "service_healthy",
+        "service_completed_successfully",
+    }
+    for container, contract in contracts.items():
+        dependencies = []
+        encoded_dependencies = contract.pop("dependsOn")
+        if encoded_dependencies:
+            for encoded in encoded_dependencies.split(","):
+                parts = encoded.split(":")
+                if (
+                    len(parts) != 3
+                    or not parts[0]
+                    or parts[1] not in accepted_conditions
+                    or parts[2] not in {"true", "false"}
+                ):
+                    raise RepairError("container Compose dependency is malformed")
+                dependency = service_index.get(
+                    (contract["project"], parts[0])
+                )
+                if dependency is None:
+                    raise RepairError(
+                        "container Compose dependency is outside the running set"
+                    )
+                dependencies.append((dependency, parts[1]))
+        contract["dependencies"] = dependencies
+    return contracts
+
+
+def container_state(domain: str, container: str) -> dict:
+    try:
+        state = json.loads(
+            text(
+                target_command(
+                    domain,
+                    "inspect",
+                    "--format={{json .State}}",
+                    container,
+                ),
+                30,
+            )
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RepairError("container runtime state is malformed") from error
+    if not isinstance(state, dict):
+        raise RepairError("container runtime state is malformed")
+    return state
+
+
+def dependency_satisfied(state: dict, condition: str) -> bool:
+    status = state.get("Status")
+    if condition == "service_started":
+        return status == "running"
+    if condition == "service_healthy":
+        health = state.get("Health")
+        return (
+            status == "running"
+            and isinstance(health, dict)
+            and health.get("Status") == "healthy"
+        )
+    if condition == "service_completed_successfully":
+        return status == "exited" and state.get("ExitCode") == 0
+    raise RepairError("unsupported Compose dependency condition")
+
+
+def start_missing_in_dependency_order(
+    domain: str,
+    expected: set[str],
+    missing: Iterable[str],
+    prepared_ingress: set[Path],
+) -> None:
+    contracts = container_start_contracts(domain, expected)
+    pending = set(missing)
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    while pending:
+        ready = []
+        for container in sorted(pending):
+            dependencies = contracts[container]["dependencies"]
+            if all(
+                dependency_satisfied(container_state(domain, dependency), condition)
+                for dependency, condition in dependencies
+            ):
+                ready.append(container)
+        for container in ready:
+            directories = verified_ingress_directories(domain, [container])
+            prepare_ingress_directories(domain, directories)
+            prepared_ingress.update(directories)
+            run(
+                target_command(domain, "start", container),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=DAEMON_TIMEOUT_SECONDS,
+            )
+            pending.remove(container)
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            raise RepairError(
+                "container dependency order did not become startable"
+            )
+        time.sleep(1)
+
+
+def restore_running_set(domain: str, expected: set[str]) -> None:
+    current = docker_ids(domain, running_only=True)
+    extra = sorted(current - expected)
+    missing = sorted(expected - current)
+    if extra:
+        run(
+            target_command(domain, "stop", "--time", "30", *extra),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=DAEMON_TIMEOUT_SECONDS,
+        )
+    ingress_directories: set[Path] = set()
+    try:
+        if missing:
+            start_missing_in_dependency_order(
+                domain, expected, missing, ingress_directories
+            )
+        deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+        stable_since = None
+        while time.monotonic() < deadline:
+            if docker_ids(domain, running_only=True) == expected:
+                if stable_since is None:
+                    stable_since = time.monotonic()
+                elif time.monotonic() - stable_since >= RUNNING_STABILITY_SECONDS:
+                    lock_ingress_directories(
+                        domain, sorted(ingress_directories), require_socket=True
+                    )
+                    return
+            else:
+                stable_since = None
+            time.sleep(1)
+        raise RepairError("sandbox pre-running container set was not restored")
+    except BaseException:
+        lock_ingress_directories(
+            domain, sorted(ingress_directories), require_socket=False
+        )
+        raise
+
+
+def probe_daemon(domain: str) -> None:
+    if not SMOKE_IMAGE.is_file():
+        raise RepairError("vendored daemon smoke image is missing")
+    run(
+        target_command(domain, "load", "--input", str(SMOKE_IMAGE)),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=DOCKER_TIMEOUT_SECONDS,
+    )
+    run(
+        target_command(
+            domain, "run", "--rm", "--network", "none", "hello-world"
+        ),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=DOCKER_TIMEOUT_SECONDS,
+    )
+
+
+def require_installed_probe_boundary() -> None:
+    for path in (Path(__file__).resolve(), SMOKE_IMAGE):
+        metadata = os.lstat(path)
+        if (
+            metadata.st_uid != 0
+            or not stat.S_ISREG(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) & 0o022
+        ):
+            raise RepairError(
+                "scheduled probe executable or fixture is not root-controlled"
+            )
+
+
+def ensure_lock_directory(
+    path: Path, *, create: bool, mode: int = 0o700
+) -> None:
+    created = False
+    if create:
+        try:
+            path.mkdir(parents=True, exist_ok=False)
+        except FileExistsError:
+            pass
+        else:
+            created = True
+    metadata = os.lstat(path)
+    if (
+        metadata.st_uid != 0
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RepairError(f"unsafe lock directory: {path}")
+    if created:
+        os.chmod(path, mode)
+        metadata = os.lstat(path)
+    if stat.S_IMODE(metadata.st_mode) & 0o022:
+        raise RepairError(f"writable operation lock directory: {path}")
+
+
+def acquire_lock(
+    path: Path, *, create_parent: bool = False, parent_mode: int = 0o700
+):
+    ensure_lock_directory(
+        path.parent, create=create_parent, mode=parent_mode
+    )
+    descriptor = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    metadata = os.fstat(descriptor)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) & 0o022
+    ):
+        os.close(descriptor)
+        raise RepairError(f"unsafe operation lock: {path}")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise RepairError("another M5 workload operation is active") from error
+    return os.fdopen(descriptor, "a+")
+
+
+def public_plan(details: dict) -> dict:
+    return {
+        "schemaVersion": 1,
+        "domain": details["domain"],
+        "sandboxUid": details["uid"],
+        "currentGid": details["currentGid"],
+        "staleGid": details["staleGid"],
+        "staleGroup": details["staleGroup"],
+        "dataRoot": str(details["dataRoot"]),
+        "selectedEntries": len(details["entries"]),
+        "totalEntries": details["totalEntries"],
+        "daemonActive": daemon_is_active(details["domain"]),
+        "safe": True,
+    }
+
+
+def write_probe_result(domain: str, result: dict) -> None:
+    PROBE_ROOT.mkdir(parents=True, exist_ok=True)
+    metadata = os.lstat(PROBE_ROOT)
+    if (
+        metadata.st_uid != 0
+        or stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISDIR(metadata.st_mode)
+    ):
+        raise RepairError("unsafe rootless runtime probe directory")
+    os.chmod(PROBE_ROOT, 0o755)
+    destination = PROBE_ROOT / f"{domain}.json"
+    temporary = PROBE_ROOT / f".{domain}.json.partial"
+    temporary.unlink(missing_ok=True)
+    write_exclusive(
+        temporary,
+        (json.dumps(result, indent=2, sort_keys=True) + "\n").encode(),
+    )
+    os.chmod(temporary, 0o644)
+    os.replace(temporary, destination)
+    os.chmod(destination, 0o644)
+
+
+def runtime_probe(domain: str) -> dict:
+    active = daemon_is_active(domain)
+    result = {
+        "schemaVersion": 1,
+        "domain": domain,
+        "daemonActive": active,
+        "containerCreation": False,
+        "ok": False,
+        "generatedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+    }
+    if not active:
+        result["reason"] = "daemon-inactive"
+        write_probe_result(domain, result)
+        return result
+    try:
+        probe_daemon(domain)
+    except (RepairError, OSError, subprocess.SubprocessError) as error:
+        result["reason"] = type(error).__name__
+    else:
+        result["containerCreation"] = True
+        result["ok"] = True
+        result["reason"] = "passed"
+    write_probe_result(domain, result)
+    return result
+
+
+def prepare_state(details: dict) -> tuple[Path, Path, dict]:
+    ensure_private_directory(STATE_ROOT)
+    domain_root = STATE_ROOT / details["domain"]
+    ensure_private_directory(domain_root)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    state_dir = Path(tempfile.mkdtemp(prefix=f"{stamp}-", dir=domain_root))
+    os.chmod(state_dir, 0o700)
+    manifest, digest = write_manifest(state_dir, details["entries"])
+    summary = {
+        "schemaVersion": 1,
+        "domain": details["domain"],
+        "dataRoot": str(details["dataRoot"]),
+        "sandboxUid": details["uid"],
+        "fromGid": details["staleGid"],
+        "toGid": details["currentGid"],
+        "entryCount": len(details["entries"]),
+        "pathManifest": manifest.name,
+        "pathManifestSha256": digest,
+        "status": "prepared",
+        "createdAt": stamp,
+    }
+    summary_path = state_dir / "repair-summary.json"
+    atomic_json(summary_path, summary)
+    return summary_path, manifest, summary
+
+
+def update_summary(path: Path, summary: dict, status: str, **values) -> None:
+    summary.update(values)
+    summary["status"] = status
+    atomic_json(path, summary)
+
+
+def complete_runtime_recovery(
+    domain: str, expected_running: set[str], expected_inventory: dict
+) -> dict:
+    if not daemon_is_active(domain):
+        start_daemon(domain)
+    restore_firewall(domain)
+    probe_daemon(domain)
+    restore_running_set(domain, expected_running)
+    recovered_inventory = inventory(domain)
+    if recovered_inventory != expected_inventory:
+        raise RepairError("container, volume, or Compose project inventory changed")
+    return recovered_inventory
+
+
+def apply_repair(domain: str, stale_gid: int) -> dict:
+    if not daemon_is_active(domain):
+        raise RepairError("refusing apply unless the sandbox daemon is active")
+    before_inventory = inventory(domain)
+    before_running = docker_ids(domain, running_only=True)
+    require_restart_suppression(domain, before_inventory["containerIds"])
+    stopped = False
+    migrated = False
+    forward_started = False
+    summary_path = None
+    summary = None
+    paths: list[bytes] = []
+    stage = "preflight"
+    details = boundary(domain, stale_gid)
+    if not details["entries"]:
+        return {**public_plan(details), "changed": False, "verified": True}
+    try:
+        stage = "container-quiescence"
+        quiesce_containers(domain, before_running)
+        stage = "daemon-stop"
+        stop_daemon(domain)
+        stopped = True
+        stage = "boundary-rescan"
+        details = boundary(domain, stale_gid)
+        if not details["entries"]:
+            raise RepairError("repair boundary changed after daemon stop")
+        summary_path, _manifest, summary = prepare_state(details)
+        stage = "metadata-validation"
+        paths = validate_paths(
+            details["dataRoot"],
+            details["entries"],
+            details["uid"],
+            details["staleGid"],
+        )
+        # From this point the exception path must tolerate a partially changed
+        # set. change_paths compensates its own successful writes, and the
+        # outer rollback performs an idempotent manifest-wide convergence.
+        migrated = True
+        change_paths(
+            paths,
+            details["uid"],
+            details["staleGid"],
+            details["currentGid"],
+        )
+        update_summary(
+            summary_path,
+            summary,
+            "migrated",
+            preInventorySha256=inventory_digest(before_inventory),
+            preRunningContainers=sorted(before_running),
+        )
+        # Starting Docker crosses the recovery boundary: the daemon may update
+        # engine metadata immediately, making a path-by-path ownership rollback
+        # unsafe. From this point onward recovery proceeds forward and never
+        # rewrites the accepted GID migration back to the stale group.
+        stage = "daemon-start"
+        forward_started = True
+        start_daemon(domain)
+        stopped = False
+        stage = "runtime-recovery"
+        after_inventory = complete_runtime_recovery(
+            domain, before_running, before_inventory
+        )
+        update_summary(
+            summary_path,
+            summary,
+            "succeeded",
+            completedAt=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+            inventorySha256=inventory_digest(after_inventory),
+            preRunningContainers=sorted(before_running),
+            daemonProbe="passed",
+        )
+    except BaseException as error:
+        failure_stage = stage
+        if forward_started:
+            try:
+                after_inventory = complete_runtime_recovery(
+                    domain, before_running, before_inventory
+                )
+            except BaseException as recovery_error:
+                if summary_path is not None and summary is not None:
+                    try:
+                        update_summary(
+                            summary_path,
+                            summary,
+                            "recovery-required",
+                            failedAt=time.strftime(
+                                "%Y%m%dT%H%M%SZ", time.gmtime()
+                            ),
+                            failureStage=failure_stage,
+                            failureType=type(error).__name__,
+                            recoveryFailureType=type(recovery_error).__name__,
+                            daemonActive=daemon_is_active(domain),
+                            metadataRetained=True,
+                        )
+                    except BaseException:
+                        pass
+                raise RepairError(
+                    "rootless GID migration retained; runtime recovery is required"
+                ) from error
+            update_summary(
+                summary_path,
+                summary,
+                "succeeded",
+                completedAt=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+                inventorySha256=inventory_digest(after_inventory),
+                preRunningContainers=sorted(before_running),
+                daemonProbe="passed",
+                recoveryRetried=True,
+                recoveredFailureStage=failure_stage,
+            )
+            return {
+                "schemaVersion": 1,
+                "domain": domain,
+                "changed": True,
+                "verified": True,
+                "migratedEntries": len(details["entries"]),
+                "fromGid": details["staleGid"],
+                "toGid": details["currentGid"],
+                "daemonProbe": "passed",
+                "inventoryPreserved": True,
+                "recoveryRetried": True,
+                "summaryPath": str(summary_path),
+            }
+        rollback_error = None
+        try:
+            if not stopped and daemon_is_active(domain):
+                quiesce_containers(
+                    domain, docker_ids(domain, running_only=True)
+                )
+                stop_daemon(domain)
+                stopped = True
+            if migrated:
+                rollback_paths = validate_paths_for_gids(
+                    details["dataRoot"],
+                    details["entries"],
+                    details["uid"],
+                    {details["currentGid"], details["staleGid"]},
+                )
+                change_paths(
+                    rollback_paths,
+                    details["uid"],
+                    details["currentGid"],
+                    details["staleGid"],
+                    allow_already_changed=True,
+                )
+            if stopped:
+                start_daemon(domain)
+                stopped = False
+                restore_firewall(domain)
+                restore_running_set(domain, before_running)
+            if summary_path is not None and summary is not None:
+                update_summary(
+                    summary_path,
+                    summary,
+                    "rolled-back",
+                    completedAt=time.strftime(
+                        "%Y%m%dT%H%M%SZ", time.gmtime()
+                    ),
+                    failureStage=failure_stage,
+                    failureType=type(error).__name__,
+                )
+        except BaseException as caught:
+            rollback_error = caught
+        if rollback_error is not None:
+            if summary_path is not None and summary is not None:
+                try:
+                    update_summary(
+                        summary_path,
+                        summary,
+                        "rollback-failed",
+                        failedAt=time.strftime(
+                            "%Y%m%dT%H%M%SZ", time.gmtime()
+                        ),
+                        failureStage=failure_stage,
+                        failureType=type(error).__name__,
+                        rollbackFailureType=type(rollback_error).__name__,
+                    )
+                except BaseException:
+                    pass
+            raise RepairError(
+                "rootless GID repair failed and metadata rollback failed"
+            ) from rollback_error
+        raise error
+    return {
+        "schemaVersion": 1,
+        "domain": domain,
+        "changed": True,
+        "verified": True,
+        "migratedEntries": len(details["entries"]),
+        "fromGid": details["staleGid"],
+        "toGid": details["currentGid"],
+        "daemonProbe": "passed",
+        "inventoryPreserved": True,
+        "summaryPath": str(summary_path),
+    }
+
+
+def load_repair_summary(
+    path: Path, domain: str, accepted_statuses: set[str]
+) -> tuple[dict, list[bytes]]:
+    expected_root = STATE_ROOT / domain
+    absolute = Path(os.path.abspath(path))
+    try:
+        relative = absolute.relative_to(expected_root)
+    except ValueError as error:
+        raise RepairError("repair summary is outside the domain state root") from error
+    if len(relative.parts) != 2 or relative.name != "repair-summary.json":
+        raise RepairError("repair summary path is not exact")
+    require_real_directory(expected_root)
+    require_real_directory(absolute.parent)
+    metadata = os.lstat(absolute)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        raise RepairError("repair summary ownership or mode is unsafe")
+    summary = json.loads(absolute.read_text(encoding="utf-8"))
+    if (
+        summary.get("schemaVersion") != 1
+        or summary.get("domain") != domain
+        or summary.get("dataRoot") != str(data_root(domain))
+        or summary.get("status") not in accepted_statuses
+    ):
+        raise RepairError("repair summary is not accepted for this action")
+    manifest_name = summary.get("pathManifest")
+    digest = summary.get("pathManifestSha256")
+    if (
+        not isinstance(manifest_name, str)
+        or Path(manifest_name).name != manifest_name
+        or not isinstance(digest, str)
+    ):
+        raise RepairError("repair manifest binding is invalid")
+    entries = read_manifest(absolute.parent / manifest_name, digest)
+    if len(entries) != summary.get("entryCount"):
+        raise RepairError("repair manifest count does not match")
+    return summary, entries
+
+
+def recover_repair(domain: str, summary_path: Path) -> dict:
+    summary, entries = load_repair_summary(
+        summary_path, domain, {"recovery-required"}
+    )
+    identity = pwd.getpwnam(sandbox_user(domain))
+    from_gid = summary.get("fromGid")
+    to_gid = summary.get("toGid")
+    if (
+        summary.get("sandboxUid") != identity.pw_uid
+        or not isinstance(from_gid, int)
+        or to_gid != identity.pw_gid
+    ):
+        raise RepairError("recovery summary no longer matches sandbox identity")
+    details = boundary(domain, from_gid)
+    if details["entries"]:
+        raise RepairError("recovery refuses an incomplete GID migration")
+    validate_paths(data_root(domain), entries, identity.pw_uid, to_gid)
+    expected_running = summary.get("preRunningContainers")
+    if (
+        not isinstance(expected_running, list)
+        or any(not isinstance(item, str) or not item for item in expected_running)
+        or len(expected_running) != len(set(expected_running))
+    ):
+        raise RepairError("recovery summary running set is malformed")
+    current_inventory = inventory(domain)
+    if summary.get("preInventorySha256") != inventory_digest(current_inventory):
+        raise RepairError("recovery inventory no longer matches the migration")
+    recovered_inventory = complete_runtime_recovery(
+        domain, set(expected_running), current_inventory
+    )
+    update_summary(
+        summary_path,
+        summary,
+        "succeeded",
+        completedAt=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        inventorySha256=inventory_digest(recovered_inventory),
+        daemonProbe="passed",
+        recoveryRetried=True,
+        recoveredFailureStage=summary.get("failureStage", "runtime-recovery"),
+    )
+    return {
+        "schemaVersion": 1,
+        "domain": domain,
+        "changed": False,
+        "verified": True,
+        "migratedEntries": len(entries),
+        "fromGid": from_gid,
+        "toGid": to_gid,
+        "daemonProbe": "passed",
+        "inventoryPreserved": True,
+        "recoveryRetried": True,
+        "summaryPath": str(summary_path),
+    }
+
+
+def rollback_repair(domain: str, summary_path: Path) -> dict:
+    summary, entries = load_repair_summary(
+        summary_path, domain, {"succeeded"}
+    )
+    user = sandbox_user(domain)
+    identity = pwd.getpwnam(user)
+    if summary.get("sandboxUid") != identity.pw_uid:
+        raise RepairError("sandbox UID changed since repair")
+    from_gid = summary.get("fromGid")
+    to_gid = summary.get("toGid")
+    if not isinstance(from_gid, int) or to_gid != identity.pw_gid:
+        raise RepairError("sandbox GID changed since repair")
+    root = verified_data_root(domain, identity.pw_uid)
+    before_running = docker_ids(domain, running_only=True)
+    require_restart_suppression(domain, docker_ids(domain))
+    stopped = False
+    try:
+        quiesce_containers(domain, before_running)
+        stop_daemon(domain)
+        stopped = True
+        paths = validate_paths_for_gids(
+            root, entries, identity.pw_uid, {to_gid, from_gid}
+        )
+        change_paths(
+            paths,
+            identity.pw_uid,
+            to_gid,
+            from_gid,
+            allow_already_changed=True,
+        )
+        start_daemon(domain)
+        stopped = False
+        restore_firewall(domain)
+        restore_running_set(domain, before_running)
+    except BaseException:
+        if stopped:
+            try:
+                start_daemon(domain)
+                restore_firewall(domain)
+                restore_running_set(domain, before_running)
+            except BaseException:
+                pass
+        raise
+    update_summary(
+        summary_path,
+        summary,
+        "rollback-succeeded",
+        rolledBackAt=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+    )
+    return {
+        "schemaVersion": 1,
+        "domain": domain,
+        "rolledBack": True,
+        "restoredEntries": len(entries),
+        "fromGid": to_gid,
+        "toGid": from_gid,
+    }
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--domain", choices=DOMAINS, required=True)
+    action = parser.add_mutually_exclusive_group(required=True)
+    action.add_argument("--plan", action="store_true")
+    action.add_argument("--apply", action="store_true")
+    action.add_argument("--recover", type=Path)
+    action.add_argument("--rollback", type=Path)
+    action.add_argument("--probe", action="store_true")
+    parser.add_argument("--from-gid", type=int)
+    parser.add_argument(APPLY_ACK, action="store_true")
+    parser.add_argument(RECOVERY_ACK, action="store_true")
+    parser.add_argument(ROLLBACK_ACK, action="store_true")
+    arguments = parser.parse_args()
+    if os.geteuid() != 0:
+        raise RepairError("run with sudo")
+    if arguments.recover:
+        if not getattr(
+            arguments, RECOVERY_ACK.removeprefix("--").replace("-", "_")
+        ):
+            raise RepairError(f"recovery requires {RECOVERY_ACK}")
+    elif arguments.rollback:
+        if not getattr(arguments, ROLLBACK_ACK.removeprefix("--").replace("-", "_")):
+            raise RepairError(f"rollback requires {ROLLBACK_ACK}")
+    elif not arguments.probe:
+        if arguments.from_gid is None:
+            raise RepairError("plan/apply requires --from-gid")
+        if arguments.apply and not getattr(
+            arguments, APPLY_ACK.removeprefix("--").replace("-", "_")
+        ):
+            raise RepairError(f"apply requires {APPLY_ACK}")
+    if arguments.plan:
+        # Planning is strictly read-only. Apply rescans after taking both
+        # mutation locks and stopping the daemon, so this snapshot never
+        # authorizes a later change by itself.
+        result = public_plan(boundary(arguments.domain, arguments.from_gid))
+    else:
+        if arguments.probe:
+            require_installed_probe_boundary()
+            write_probe_result(
+                arguments.domain,
+                {
+                    "schemaVersion": 1,
+                    "domain": arguments.domain,
+                    "daemonActive": False,
+                    "containerCreation": False,
+                    "ok": False,
+                    "generatedAt": time.strftime(
+                        "%Y-%m-%dT%H:%M:%SZ", time.gmtime()
+                    ),
+                    "reason": "probe-incomplete",
+                },
+            )
+        with ExitStack() as locks:
+            locks.enter_context(
+                acquire_lock(
+                    LOCK_ROOT / f"{arguments.domain}.lock", create_parent=True
+                )
+            )
+            locks.enter_context(
+                acquire_lock(
+                    CUTOVER_LOCK, create_parent=True, parent_mode=0o700
+                )
+            )
+            if arguments.apply:
+                result = apply_repair(arguments.domain, arguments.from_gid)
+            elif arguments.recover:
+                result = recover_repair(arguments.domain, arguments.recover)
+            elif arguments.rollback:
+                result = rollback_repair(arguments.domain, arguments.rollback)
+            else:
+                result = runtime_probe(arguments.domain)
+    print(json.dumps(result, sort_keys=True))
+    return 0 if result.get("ok", result.get("verified", True)) else 1
+
+
+if __name__ == "__main__":
+    try:
+        raise SystemExit(main())
+    except (RepairError, OSError, subprocess.SubprocessError, json.JSONDecodeError) as error:
+        print(f"{type(error).__name__}: {error}", file=sys.stderr)
+        raise SystemExit(1) from error

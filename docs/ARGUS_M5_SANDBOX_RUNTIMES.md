@@ -34,7 +34,9 @@ sudo scripts/argus-m5-sandbox-bootstrap \
 An already-active rootless daemon is not restarted by an idempotent reapply.
 `systemctl is-active` only proves the process is running — a 2026-07-30 outage
 left a daemon reporting active while unable to create a container at all
-(`EOVERFLOW` on `containerd-mount`, root cause never identified). Every apply
+(`EOVERFLOW` on `containerd-mount`). A later recurrence established the cause:
+the sandbox account's primary GID had changed while existing namespace-root
+files retained the previous host GID. Every apply
 now also loads a vendored `hello-world` image (`scripts/fixtures/`) and runs
 it through the cell's own socket, refusing to report success if that fails —
 whether or not the daemon was just restarted. The image is vendored rather
@@ -47,6 +49,10 @@ longer to finish initializing than an existing one, confirmed live rebuilding
 personal-sandbox. This is the rebuild-and-verify gate: run apply against a
 rebuilt cell and trust the exit code, not just `daemonRestarted` in its
 output.
+
+Do not wipe a populated `docker-data` directory to recover this condition.
+The bounded audit/migration and its rollback contract are documented in
+[`RUNBOOKS/rootless-data-root-gid-recovery.md`](RUNBOOKS/rootless-data-root-gid-recovery.md).
 
 The bootstrap backs up subordinate-ID files and every affected unit, helper,
 firewall file, and prior service state beneath
