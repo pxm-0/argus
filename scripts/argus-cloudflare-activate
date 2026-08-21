@@ -8,7 +8,8 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-from argus_common import audit, regenerate_dashboard
+from argus_admission import evaluate_current
+from argus_common import audit, regenerate_dashboard, root
 from argus_cloudflare_activation import (
     ACCESS_CONFIRMATION,
     activation_plan,
@@ -51,6 +52,13 @@ def main() -> int:
     args = parser.parse_args()
 
     plan = activation_plan(args.workload_id)
+    admission = evaluate_current(
+        root(),
+        args.workload_id,
+        "access.cloudflare-protected.apply",
+    )
+    if not admission.allowed:
+        plan["blockers"].append(admission.decision_code)
     if args.confirm_workload != args.workload_id:
         plan["blockers"].append("workload confirmation did not match")
     if args.confirm_hostname != plan.get("hostname"):

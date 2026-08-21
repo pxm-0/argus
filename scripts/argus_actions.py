@@ -8,7 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from argus_common import audit, by_id, http_status, load_manifest, operation_allowed, runtime_config
+from argus_admission import evaluate_current
+from argus_common import audit, by_id, http_status, load_manifest, root, runtime_config
 
 
 MAX_LOG_LINES = 100
@@ -124,24 +125,20 @@ def migration_preflight(
     actor: str = "local-cli",
 ) -> dict[str, Any]:
     """Return a redacted, read-only migration readiness assessment."""
-    workload = _workload(workload_id)
-    if workload is None:
-        return _blocked("migration-preflight", workload_id, "unknown workload", status=404)
-    manifest = load_manifest(workload_id)
-    operations = manifest.get("operations", {})
-    permission = operations.get("migrationPreflight", {})
-    allowed = (
-        operations.get("migrationPreflightAllowed") is True
-        or (isinstance(permission, dict) and permission.get("allowed") is True)
-    )
-    migration = manifest.get("migration", {})
-    status = str(migration.get("status", workload.get("migration", {}).get("status", "")))
-    if not allowed:
+    admission = evaluate_current(root(), workload_id, "migration.preflight")
+    if not admission.allowed:
         return _blocked(
             "migration-preflight",
             workload_id,
-            "migration preflight disabled by manifest",
+            admission.decision_code,
+            status=404 if admission.decision_code == "unknown-workload" else 403,
         )
+    workload = _workload(workload_id)
+    if workload is None:
+        return _blocked("migration-preflight", workload_id, "unknown-workload", status=404)
+    manifest = load_manifest(workload_id)
+    migration = manifest.get("migration", {})
+    status = str(migration.get("status", workload.get("migration", {}).get("status", "")))
     if status not in {"planned", "rolled-back"}:
         return _blocked(
             "migration-preflight",
@@ -252,11 +249,15 @@ def sanitize_log_text(text: str, *, max_lines: int = MAX_LOG_LINES, max_bytes: i
 
 
 def logs_preview(workload_id: str, *, max_lines: int = MAX_LOG_LINES) -> dict[str, Any]:
-    if _workload(workload_id) is None:
-        return _blocked("logs-preview", workload_id, "unknown workload", status=404)
-    if not operation_allowed(workload_id, "logsAllowed"):
-        audit("logs.preview", workload_id, "blocked", reason="logs not allowed")
-        return _blocked("logs-preview", workload_id, "logs not allowed")
+    admission = evaluate_current(root(), workload_id, "logs.preview")
+    if not admission.allowed:
+        audit("logs.preview", workload_id, "blocked", reason=admission.decision_code)
+        return _blocked(
+            "logs-preview",
+            workload_id,
+            admission.decision_code,
+            status=404 if admission.decision_code == "unknown-workload" else 403,
+        )
     runtime, reason = _compose_runtime(workload_id)
     if reason:
         audit("logs.preview", workload_id, "blocked", reason=reason)
@@ -295,11 +296,19 @@ def logs_preview(workload_id: str, *, max_lines: int = MAX_LOG_LINES) -> dict[st
 
 
 def restart_preview(workload_id: str) -> dict[str, Any]:
+    admission = evaluate_current(root(), workload_id, "workload.restart")
+    if not admission.allowed:
+        return _blocked(
+            "restart-preview",
+            workload_id,
+            admission.decision_code,
+            status=404 if admission.decision_code == "unknown-workload" else 403,
+        )
     workload = _workload(workload_id)
     if workload is None:
-        return _blocked("restart-preview", workload_id, "unknown workload", status=404)
+        return _blocked("restart-preview", workload_id, "unknown-workload", status=404)
     runtime, reason = _compose_runtime(workload_id)
-    allowed = operation_allowed(workload_id, "restartAllowed") and reason is None
+    allowed = admission.allowed and reason is None
     health = _health(workload)
     result = {
         **_base("restart-preview", workload_id),
@@ -314,7 +323,7 @@ def restart_preview(workload_id: str) -> dict[str, Any]:
         },
         "health": health,
         "summary": f"Restart is {'allowed' if allowed else 'blocked'} for {workload_id}.",
-        "reason": "" if allowed else reason or "restart not allowed",
+        "reason": "" if allowed else reason or admission.decision_code,
     }
     audit("restart.preview", workload_id, "ok" if allowed else "blocked", reason=result["reason"])
     return result
@@ -369,17 +378,21 @@ def restart_apply(workload_id: str, *, confirmation: str, health_timeout: float 
 
 
 def backup_preview(workload_id: str) -> dict[str, Any]:
-    if _workload(workload_id) is None:
-        return _blocked("backup-preview", workload_id, "unknown workload", status=404)
+    admission = evaluate_current(root(), workload_id, "backup.create")
+    if not admission.allowed:
+        return _blocked(
+            "backup-preview",
+            workload_id,
+            admission.decision_code,
+            status=404 if admission.decision_code == "unknown-workload" else 403,
+        )
     manifest = load_manifest(workload_id)
     backup = manifest.get("backup", {}) if manifest else {}
-    allowed = operation_allowed(workload_id, "backupAllowed") or bool(backup.get("backupAllowed", False))
+    allowed = True
     destination = str(backup.get("destination", ""))
     approved_root = f"/srv/argus/runtime/backups/{workload_id}"
     destination_ok = bool(destination) and destination.startswith(approved_root)
     warnings = []
-    if not allowed:
-        warnings.append("backup is disabled by manifest")
     if not destination_ok:
         warnings.append(f"backup destination must be under {approved_root}")
     result = {

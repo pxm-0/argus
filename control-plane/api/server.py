@@ -49,10 +49,7 @@ from argus_actions import (  # noqa: E402
     restart_preview,
 )
 from argus_access_runtime import route_contract  # noqa: E402
-from argus_canonical import (  # noqa: E402
-    canonical_policy_version,
-    canonical_revision,
-)
+from argus_admission import AdmissionDecision, evaluate_current  # noqa: E402
 from argus_common import audit, by_id, dashboard_state, load_json, policy_decision  # noqa: E402
 from argus_ipc import request as ipc_request  # noqa: E402
 from argus_operations import (  # noqa: E402
@@ -182,8 +179,11 @@ def validate_body_keys(
 
 def trust_domain(workload_id: str) -> str:
     classification_path = ROOT / "config" / "argus" / "workload-classification.json"
-    if classification_path.exists():
+    try:
         data = json.loads(classification_path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return "legacy-rootful"
+    if isinstance(data, dict):
         classified = data.get("workloads", {})
         if isinstance(classified, dict) and isinstance(classified.get(workload_id), dict):
             return str(classified[workload_id].get("trustDomain", "legacy-rootful"))
@@ -242,10 +242,20 @@ def private_dashboard_state() -> dict[str, Any]:
 
 def operation_preview(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> dict[str, Any]:
     validate_typed_parameters(operation_type, parameters)
-    item = workload(workload_id)
+    admission = evaluate_current(ROOT, workload_id, operation_type)
+    item = (
+        None
+        if admission.decision_code in {"dependency-unavailable", "unknown-workload"}
+        else workload(workload_id)
+    )
     domain = trust_domain(workload_id)
-    revision = canonical_revision(ROOT, workload_id)
-    allowed, reason = operation_policy(workload_id, operation_type, parameters)
+    revision = admission.revision
+    allowed, reason = operation_policy(
+        workload_id,
+        operation_type,
+        parameters,
+        _admission=admission,
+    )
     rollback = {
         "health.refresh": "No mutation; no rollback required.",
         "logs.preview": "No mutation; no rollback required.",
@@ -265,12 +275,13 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "operationType": operation_type,
         "parameters": parameters,
         "expectedRevision": revision,
-        "policyVersion": canonical_policy_version(ROOT, workload_id),
+        "policyVersion": admission.policy_version,
     }
     result = {
         **preview,
-        "allowed": bool(item) and allowed,
-        "reason": "unknown workload" if not item else reason,
+        "allowed": allowed,
+        "reason": reason,
+        "admission": admission.as_dict(),
         "previewDigest": digest(preview),
         "expectedBlastRadius": impact,
         "healthChecks": ["canonical revision recheck", "workload health policy check"],
@@ -307,10 +318,23 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
     return result
 
 
-def operation_policy(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> tuple[bool, str]:
+def operation_policy(
+    workload_id: str,
+    operation_type: str,
+    parameters: dict[str, Any],
+    *,
+    _admission: AdmissionDecision | None = None,
+) -> tuple[bool, str]:
+    admission = _admission or evaluate_current(
+        ROOT,
+        workload_id,
+        operation_type,
+    )
+    if not admission.allowed:
+        return False, admission.decision_code
     item = workload(workload_id)
     if item is None:
-        return False, "unknown workload"
+        return False, "unknown-workload"
     domain = trust_domain(workload_id)
     if not agent_available(domain):
         return False, f"{domain} domain agent unavailable"

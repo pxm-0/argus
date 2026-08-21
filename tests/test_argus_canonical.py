@@ -36,10 +36,7 @@ class CanonicalBindingTests(unittest.TestCase):
         self.assertIsNotNone(records["workload"])
         self.assertIsNotNone(records["classification"])
         self.assertEqual(64, len(canonical_revision(ROOT, "hello-nginx")))
-        self.assertEqual(
-            64,
-            len(canonical_policy_version(ROOT, "hello-nginx")),
-        )
+        self.assertEqual("1", canonical_policy_version(ROOT, "hello-nginx"))
 
     def test_policy_and_route_drift_change_the_expected_bindings(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -71,10 +68,20 @@ class CanonicalBindingTests(unittest.TestCase):
             manifest = json.loads(manifest_path.read_text())
             manifest["operations"]["restartAllowed"] = False
             manifest_path.write_text(json.dumps(manifest))
-            self.assertNotEqual(
+            self.assertEqual(
                 policy_version,
                 canonical_policy_version(clone, "hello-nginx"),
             )
+            self.assertNotEqual(
+                revision,
+                canonical_revision(clone, "hello-nginx"),
+            )
+
+            policy_path = clone / "config" / "policy.json"
+            policy = json.loads(policy_path.read_text())
+            policy["version"] = 2
+            policy_path.write_text(json.dumps(policy))
+            self.assertEqual("2", canonical_policy_version(clone, "hello-nginx"))
 
 
 if __name__ == "__main__":

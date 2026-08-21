@@ -55,9 +55,22 @@ class MigrationUiTests(unittest.TestCase):
             "composePath": "/srv/argus/workloads/candidate/source/compose.yml",
             "composeProject": "candidate",
         }
+        permission = contract.get("operations", {}).get("migrationPreflight")
+        admission_allowed = (
+            contract.get("operations", {}).get("migrationPreflightAllowed") is True
+            or (
+                isinstance(permission, dict)
+                and permission.get("allowed") is True
+            )
+        )
+        admission = Mock(
+            allowed=admission_allowed,
+            decision_code=("allowed" if admission_allowed else "operation-not-capable"),
+        )
         audit = Mock()
         with (
             patch("argus_actions._workload", return_value=candidate),
+            patch("argus_actions.evaluate_current", return_value=admission),
             patch("argus_actions.load_manifest", return_value=contract),
             patch("argus_actions.runtime_config", return_value=runtime_contract),
             patch("argus_actions.Path.is_dir", return_value=True),
@@ -80,7 +93,7 @@ class MigrationUiTests(unittest.TestCase):
     def test_sandbox_reconcile_only_workload_blocks_shared_access_policy(self) -> None:
         decision = policy_decision("hastur", "none")
         self.assertFalse(decision["allowed"])
-        self.assertEqual("access mutation disabled by workload policy", decision["reason"])
+        self.assertEqual("operation-not-capable", decision["reason"])
         self.assertEqual("tailnet", decision["effective"])
 
     def test_non_candidate_workload_preflight_fails_closed(self) -> None:
@@ -88,7 +101,7 @@ class MigrationUiTests(unittest.TestCase):
             result = migration_preflight("hello-nginx")
 
         self.assertFalse(result["allowed"])
-        self.assertIn("disabled by manifest", result["reason"])
+        self.assertEqual("operation-not-capable", result["reason"])
 
     def test_migration_preflight_is_a_parameterless_typed_operation(self) -> None:
         self.assertIn("migration.preflight", TYPED_OPERATIONS)
@@ -138,7 +151,7 @@ class MigrationUiTests(unittest.TestCase):
         }
         result, _audit = self.assessment(manifest=manifest)
         self.assertFalse(result["allowed"])
-        self.assertIn("disabled by manifest", result["reason"])
+        self.assertEqual("operation-not-capable", result["reason"])
 
     def test_ready_contract_passes_and_records_success(self) -> None:
         result, audit = self.assessment()
@@ -272,6 +285,10 @@ class MigrationUiTests(unittest.TestCase):
         }
         with (
             patch("argus_actions._workload", return_value=candidate),
+            patch(
+                "argus_actions.evaluate_current",
+                return_value=Mock(allowed=True, decision_code="allowed"),
+            ),
             patch("argus_actions.load_manifest", return_value=manifest),
             patch("argus_actions.runtime_config", return_value=manifest["runtime"]),
             patch("argus_actions.audit"),

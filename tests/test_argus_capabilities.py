@@ -20,6 +20,7 @@ from argus_capabilities import (  # noqa: E402
     validate_envelope,
 )
 from argus_capability_issuer import CapabilityIssuer  # noqa: E402
+from argus_admission import current_request  # noqa: E402
 from argus_operations import OperationLedger, digest  # noqa: E402
 
 
@@ -62,23 +63,28 @@ class CapabilityTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.private_key, self.public_key = generate_keypair(self.root)
         self.ledger = OperationLedger(self.root / "operations.sqlite3")
+        self.request = current_request(
+            ROOT,
+            "hello-nginx",
+            "workload.restart",
+        )
         preview = {
-            "workloadId": "demo",
+            "workloadId": "hello-nginx",
             "trustDomain": "personal-sandbox",
             "operationType": "workload.restart",
             "parameters": {},
-            "expectedRevision": "revision",
-            "policyVersion": "policy",
+            "expectedRevision": self.request.expected_revision,
+            "policyVersion": self.request.policy_version,
         }
         self.operation, _ = self.ledger.create(
-            workload_id="demo",
+            workload_id="hello-nginx",
             trust_domain="personal-sandbox",
             operation_type="workload.restart",
             requested_by="operator@example.com",
             parameters={},
             preview_digest=digest(preview),
-            expected_revision="revision",
-            policy_version="policy",
+            expected_revision=self.request.expected_revision,
+            policy_version=self.request.policy_version,
             idempotency_key="idem",
         )
         self.ledger.transition(
@@ -96,6 +102,7 @@ class CapabilityTests(unittest.TestCase):
         issuer = CapabilityIssuer(
             self.ledger,
             Ed25519Signer(self.private_key),
+            root=ROOT,
         )
         signed = issuer.issue(
             str(self.operation["operation_id"]),
@@ -110,6 +117,57 @@ class CapabilityTests(unittest.TestCase):
         self.assertEqual(1, envelope["schemaVersion"])
         self.assertEqual(43, len(envelope["nonce"]))
         self.assertNotIn("parameters", envelope)
+
+    def test_production_issuer_rechecks_canonical_admission(self) -> None:
+        preview = {
+            "workloadId": "hello-nginx",
+            "trustDomain": "personal-sandbox",
+            "operationType": "workload.restart",
+            "parameters": {},
+            "expectedRevision": self.request.expected_revision,
+            "policyVersion": self.request.policy_version,
+        }
+        issuer = CapabilityIssuer(
+            self.ledger,
+            Ed25519Signer(self.private_key),
+            root=ROOT,
+        )
+        signed = issuer.issue(
+            str(self.operation["operation_id"]),
+            "personal-sandbox",
+        )
+        self.assertEqual(
+            self.operation["operation_id"],
+            Ed25519Verifier([self.public_key]).verify(signed)["operationId"],
+        )
+        self.ledger.transition(
+            str(self.operation["operation_id"]),
+            {"running"},
+            "succeeded",
+            finished_at=int(time.time()),
+        )
+
+        stale_preview = {**preview, "expectedRevision": "0" * 64}
+        stale, _ = self.ledger.create(
+            workload_id="hello-nginx",
+            trust_domain="personal-sandbox",
+            operation_type="workload.restart",
+            requested_by="operator@example.com",
+            parameters={},
+            preview_digest=digest(stale_preview),
+            expected_revision="0" * 64,
+            policy_version=self.request.policy_version,
+            idempotency_key="stale-admission",
+        )
+        self.ledger.transition(
+            str(stale["operation_id"]),
+            {"awaiting-approval"},
+            "queued",
+            approved_at=int(time.time()),
+        )
+        self.ledger.claim(str(stale["operation_id"]))
+        with self.assertRaisesRegex(ValueError, "admission denied: revision-stale"):
+            issuer.issue(str(stale["operation_id"]), "personal-sandbox")
 
     def test_signature_domain_expiry_and_operation_binding_fail_closed(self) -> None:
         signer = Ed25519Signer(self.private_key)
@@ -221,6 +279,7 @@ class CapabilityTests(unittest.TestCase):
         issuer = CapabilityIssuer(
             self.ledger,
             Ed25519Signer(self.private_key),
+            root=ROOT,
         )
         with self.assertRaisesRegex(ValueError, "no persisted approval"):
             issuer.issue(str(unapproved["operation_id"]), "personal-sandbox")
