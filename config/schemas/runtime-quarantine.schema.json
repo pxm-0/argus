@@ -1,0 +1,30 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://argus.invalid/schemas/runtime-quarantine-v1.json",
+  "title": "Argus observed runtime quarantine registry",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "sourceKind", "sourceTrustDomain", "defaultDisposition", "runtimes"],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "sourceKind": {"const": "docker-compose"},
+    "sourceTrustDomain": {"const": "legacy-rootful"},
+    "defaultDisposition": {"const": "review-required"},
+    "runtimes": {
+      "type": "object",
+      "propertyNames": {"pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["lifecycle", "admission", "access", "publicExposure", "dispositionIssue"],
+        "properties": {
+          "lifecycle": {"const": "observed"},
+          "admission": {"const": "denied"},
+          "access": {"const": "none"},
+          "publicExposure": {"const": false},
+          "dispositionIssue": {"type": "integer", "minimum": 1}
+        }
+      }
+    }
+  }
+}

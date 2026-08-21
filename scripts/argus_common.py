@@ -64,6 +64,8 @@ OPERATION_SCRIPTS = [
     "argus-events",
     "argus-action-preview",
     "argus-action-apply",
+    "argus-workload-onboard",
+    "argus-admission-doctor",
     "argus-access-reconcile",
     "argus-cloudflare-activate-preview",
     "argus-cloudflare-activate",

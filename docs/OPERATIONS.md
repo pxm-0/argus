@@ -66,6 +66,37 @@ argus workload list
 argus workload show nodens --json
 ```
 
+### Reviewed onboarding and admission drift
+
+`scripts/argus-workload-onboard preview` writes only an ignored, digest-bound
+review plan. `apply` accepts that exact plan and workload-ID confirmation,
+backs up all six canonical files outside Git, and either commits the complete
+default-deny candidate or recovers/rolls it back. It never adopts or starts a
+discovered runtime, and every generated mutation capability remains denied.
+
+```bash
+scripts/argus-workload-onboard preview \
+  --id example --name "Example" --kind web-app --runtime docker-compose \
+  --compose-project example --realm personal --zone sandbox --stage none \
+  --trust-domain personal-sandbox
+scripts/argus-workload-onboard apply \
+  --plan-digest sha256:<reviewed-digest> --confirm example
+```
+
+`scripts/argus-admission-doctor --json` is read-only. By default on the server
+it synchronously reuses the existing rootful Docker inventory helper and does
+not persist inventory or require a daemon. Supplying both `--database` and
+`--registry` selects the normalized observation repository for cross-domain
+diagnostics. Explicit pre-onboarding observations may appear only in the
+schema-validated `config/argus/runtime-quarantine.json`; those records remain
+`admission=denied`, `access=none`, and linked to a disposition issue. The doctor
+reports their count without adopting them. Any finding returns exit `1`;
+invalid evidence returns exit `2`.
+
+```bash
+scripts/argus-admission-doctor --json
+```
+
 ## Workload moves
 
 `local-read-only` — `argus workload move preview <id>`

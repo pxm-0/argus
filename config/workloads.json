@@ -142,8 +142,10 @@
       },
       "runtime": {
         "type": "docker-compose",
-        "composePath": "/home/oreo/kadath/deploy/compose.yml",
-        "legacyComposePaths": [],
+        "composePath": "",
+        "legacyComposePaths": [
+          "/home/oreo/kadath/deploy/compose.yml"
+        ],
         "composeProject": "kadath-live",
         "service": ""
       },
@@ -286,6 +288,7 @@
       },
       "migration": {
         "status": "migrated",
+        "targetTrustDomain": "personal-sandbox",
         "originalPath": "/srv/apps/hello-nginx",
         "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
         "compatibilitySymlink": true,

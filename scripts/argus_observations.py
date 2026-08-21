@@ -1136,7 +1136,12 @@ class ObservationRepository:
                     terminal_epoch = int(datetime.fromisoformat(current["terminal_at"].replace("Z", "+00:00")).timestamp())
                 except (TypeError, ValueError) as exc:
                     raise ObservationError("stored terminal timestamp is invalid") from exc
-                state = "fresh" if explicit_clock_epoch - terminal_epoch <= source.freshness_slo_seconds else "stale"
+                age_seconds = explicit_clock_epoch - terminal_epoch
+                if age_seconds < 0:
+                    state = "failed"
+                    gaps.append({"kind": "source-clock-ahead", "sourceId": source_id, "runId": current_run_id})
+                else:
+                    state = "fresh" if age_seconds <= source.freshness_slo_seconds else "stale"
                 if state == "stale":
                     gaps.append({"kind": "source-stale", "sourceId": source_id, "runId": current_run_id})
             sources.append({

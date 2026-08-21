@@ -1,0 +1,79 @@
+#!/usr/bin/env python3
+"""Preview or apply one reviewed default-deny workload onboarding plan."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from argus_onboarding import OnboardingError, OnboardingManager, OnboardingRecoveryRequired
+
+
+def _root() -> Path:
+    override = os.environ.get("ARGUS_ROOT")
+    return Path(override).expanduser().resolve() if override else Path(__file__).resolve().parents[1]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Review and apply default-deny workload onboarding.")
+    parser.add_argument("--root", type=Path, default=_root())
+    parser.add_argument("--runtime-root", type=Path)
+    parser.add_argument("--json", action="store_true", help="Emit the machine-readable result (the default).")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    preview = subparsers.add_parser("preview", help="Create an ignored digest-bound review plan.")
+    preview.add_argument("--id", required=True, dest="workload_id")
+    preview.add_argument("--name", required=True)
+    preview.add_argument("--kind", required=True)
+    preview.add_argument("--runtime", required=True, choices=("docker-compose",))
+    preview.add_argument("--compose-project", required=True)
+    preview.add_argument("--realm", required=True, choices=("personal", "work"))
+    preview.add_argument("--zone", required=True, choices=("sandbox", "managed"))
+    preview.add_argument("--stage", required=True, choices=("none", "dev", "staging", "production"))
+    preview.add_argument("--trust-domain", required=True)
+
+    apply = subparsers.add_parser("apply", help="Apply an exact current onboarding plan.")
+    apply.add_argument("--plan-digest", required=True)
+    apply.add_argument("--confirm", required=True)
+
+    arguments = parser.parse_args()
+    try:
+        manager = OnboardingManager(arguments.root, arguments.runtime_root)
+        if arguments.command == "preview":
+            result = manager.preview(
+                workload_id=arguments.workload_id,
+                name=arguments.name,
+                kind=arguments.kind,
+                runtime=arguments.runtime,
+                compose_project=arguments.compose_project,
+                realm=arguments.realm,
+                zone=arguments.zone,
+                stage=arguments.stage,
+                trust_domain=arguments.trust_domain,
+            )
+        else:
+            result = manager.apply(plan_digest=arguments.plan_digest, confirm=arguments.confirm)
+    except OnboardingRecoveryRequired as exc:
+        print(json.dumps({
+            "ok": False,
+            "error": {"code": "onboarding-recovery-required", "message": str(exc)},
+            "canonicalState": exc.canonical_state,
+            "mutationAuthority": "none",
+        }, sort_keys=True))
+        return 3
+    except (OnboardingError, OSError) as exc:
+        print(json.dumps({
+            "ok": False,
+            "error": {"code": "onboarding-refused", "message": str(exc)},
+            "canonicalState": "unchanged-or-rolled-back",
+            "mutationAuthority": "none",
+        }, sort_keys=True))
+        return 2
+    print(json.dumps({"ok": True, **result}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
