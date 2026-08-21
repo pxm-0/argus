@@ -80,8 +80,8 @@ target. Reconciliation waits for the rootless Docker socket, verifies the
 source fence, prepares the private socket directory, starts the preserved
 Compose project, re-locks the socket directory, and rechecks the tailnet
 endpoint. A source that was explicitly retired may be absent: the accepted
-evidence must still record a stopped source container count, `no` restart
-policies, and zero resurrection schedules. The periodic retry also handles a
+evidence must still record `sourceStopped=true`, a positive source container
+count, and zero resurrection schedules. The periodic retry also handles a
 sandbox-daemon-only restart. This prevents daemon-restart races from starting
 both source and target writers.
 

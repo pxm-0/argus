@@ -100,12 +100,17 @@ class WorkloadCutoverTests(unittest.TestCase):
         state = {
             "sourceStopped": True,
             "sourceContainers": 1,
-            "sourceRestartPolicies": {"legacy": {"Name": "no"}},
             "sourceResurrectionSchedules": 0,
         }
         try:
             self.assertEqual([], module.accepted_source_container_records({}, state))
-            for key, value in (("sourceStopped", False), ("sourceResurrectionSchedules", 1)):
+            for key, value in (
+                ("sourceStopped", False),
+                ("sourceContainers", 0),
+                ("sourceContainers", True),
+                ("sourceContainers", "1"),
+                ("sourceResurrectionSchedules", 1),
+            ):
                 invalid = dict(state)
                 invalid[key] = value
                 with self.assertRaisesRegex(
@@ -113,6 +118,14 @@ class WorkloadCutoverTests(unittest.TestCase):
                     "absent source is not backed by an explicit accepted fence",
                 ):
                     module.accepted_source_container_records({}, invalid)
+
+            module.source_container_records = lambda _spec: (_ for _ in ()).throw(
+                module.CutoverError("source container inventory is malformed")
+            )
+            with self.assertRaisesRegex(
+                module.CutoverError, "source container inventory is malformed"
+            ):
+                module.accepted_source_container_records({}, state)
         finally:
             module.source_container_records = original_records
 

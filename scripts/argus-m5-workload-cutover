@@ -407,14 +407,11 @@ def accepted_source_container_records(spec: dict, state: dict) -> list[dict]:
         if str(error) != "source Compose project is absent":
             raise
         source_count = state.get("sourceContainers")
-        restart_policies = state.get("sourceRestartPolicies")
         if (
             state.get("sourceStopped") is not True
             or not isinstance(source_count, int)
             or isinstance(source_count, bool)
             or source_count < 1
-            or not isinstance(restart_policies, dict)
-            or len(restart_policies) != source_count
             or state.get("sourceResurrectionSchedules") != 0
         ):
             raise CutoverError(
