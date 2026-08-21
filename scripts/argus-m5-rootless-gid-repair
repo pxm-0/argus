@@ -364,6 +364,17 @@ def validate_paths(
     expected_uid: int,
     expected_gid: int,
 ) -> list[bytes]:
+    return validate_paths_for_gids(
+        root, entries, expected_uid, {expected_gid}
+    )
+
+
+def validate_paths_for_gids(
+    root: Path,
+    entries: Iterable[bytes],
+    expected_uid: int,
+    expected_gids: set[int],
+) -> list[bytes]:
     paths = []
     verified_directories = {os.fsencode(root)}
     for relative in entries:
@@ -386,27 +397,62 @@ def validate_paths(
             metadata = os.lstat(path)
         except FileNotFoundError as error:
             raise RepairError("selected data-root entry disappeared") from error
-        if metadata.st_uid != expected_uid or metadata.st_gid != expected_gid:
+        if (
+            metadata.st_uid != expected_uid
+            or metadata.st_gid not in expected_gids
+        ):
             raise RepairError("selected data-root ownership changed unexpectedly")
         paths.append(path)
     return paths
 
 
 def change_paths(
-    paths: Iterable[bytes], expected_uid: int, from_gid: int, to_gid: int
+    paths: Iterable[bytes],
+    expected_uid: int,
+    from_gid: int,
+    to_gid: int,
+    *,
+    allow_already_changed: bool = False,
 ) -> None:
     checked = []
+    accepted_gids = {from_gid, to_gid} if allow_already_changed else {from_gid}
     for path in paths:
         metadata = os.lstat(path)
-        if metadata.st_uid != expected_uid or metadata.st_gid != from_gid:
+        if (
+            metadata.st_uid != expected_uid
+            or metadata.st_gid not in accepted_gids
+        ):
             raise RepairError("selected data-root ownership changed unexpectedly")
         checked.append(path)
-    for path in checked:
-        os.chown(path, -1, to_gid, follow_symlinks=False)
-    for path in checked:
-        metadata = os.lstat(path)
-        if metadata.st_uid != expected_uid or metadata.st_gid != to_gid:
-            raise RepairError("data-root GID migration did not converge")
+    changed = []
+    try:
+        for path in checked:
+            if os.lstat(path).st_gid == to_gid:
+                continue
+            os.chown(path, -1, to_gid, follow_symlinks=False)
+            changed.append(path)
+        for path in checked:
+            metadata = os.lstat(path)
+            if metadata.st_uid != expected_uid or metadata.st_gid != to_gid:
+                raise RepairError("data-root GID migration did not converge")
+    except BaseException as error:
+        compensation_error = None
+        for path in reversed(changed):
+            try:
+                metadata = os.lstat(path)
+                if metadata.st_uid != expected_uid or metadata.st_gid != to_gid:
+                    raise RepairError(
+                        "changed data-root ownership moved during compensation"
+                    )
+                os.chown(path, -1, from_gid, follow_symlinks=False)
+            except BaseException as caught:
+                compensation_error = caught
+                break
+        if compensation_error is not None:
+            raise RepairError(
+                "data-root GID change failed and compensation failed"
+            ) from compensation_error
+        raise error
 
 
 def docker_ids(domain: str, running_only: bool = False) -> set[str]:
@@ -1051,13 +1097,16 @@ def apply_repair(domain: str, stale_gid: int) -> dict:
             details["uid"],
             details["staleGid"],
         )
+        # From this point the exception path must tolerate a partially changed
+        # set. change_paths compensates its own successful writes, and the
+        # outer rollback performs an idempotent manifest-wide convergence.
+        migrated = True
         change_paths(
             paths,
             details["uid"],
             details["staleGid"],
             details["currentGid"],
         )
-        migrated = True
         update_summary(
             summary_path,
             summary,
@@ -1147,17 +1196,18 @@ def apply_repair(domain: str, stale_gid: int) -> dict:
                 stop_daemon(domain)
                 stopped = True
             if migrated:
-                rollback_paths = validate_paths(
+                rollback_paths = validate_paths_for_gids(
                     details["dataRoot"],
                     details["entries"],
                     details["uid"],
-                    details["currentGid"],
+                    {details["currentGid"], details["staleGid"]},
                 )
                 change_paths(
                     rollback_paths,
                     details["uid"],
                     details["currentGid"],
                     details["staleGid"],
+                    allow_already_changed=True,
                 )
             if stopped:
                 start_daemon(domain)
@@ -1269,8 +1319,16 @@ def rollback_repair(domain: str, summary_path: Path) -> dict:
         quiesce_containers(domain, before_running)
         stop_daemon(domain)
         stopped = True
-        paths = validate_paths(root, entries, identity.pw_uid, to_gid)
-        change_paths(paths, identity.pw_uid, to_gid, from_gid)
+        paths = validate_paths_for_gids(
+            root, entries, identity.pw_uid, {to_gid, from_gid}
+        )
+        change_paths(
+            paths,
+            identity.pw_uid,
+            to_gid,
+            from_gid,
+            allow_already_changed=True,
+        )
         start_daemon(domain)
         stopped = False
         restore_firewall(domain)

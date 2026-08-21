@@ -242,6 +242,40 @@ class RootlessGidRepairTest(unittest.TestCase):
             events,
         )
 
+    def test_change_compensates_prior_paths_after_mid_loop_failure(self) -> None:
+        paths = [b"/data/one", b"/data/two"]
+        gids = {path: 981 for path in paths}
+        events = []
+        original_lstat = module.os.lstat
+        original_chown = module.os.chown
+
+        def fake_lstat(path):
+            return SimpleNamespace(st_uid=1002, st_gid=gids[path])
+
+        def fake_chown(path, uid, gid, *, follow_symlinks):
+            events.append((path, uid, gid, follow_symlinks))
+            if path == paths[1] and gid == 1002:
+                raise OSError("injected chown failure")
+            gids[path] = gid
+
+        module.os.lstat = fake_lstat
+        module.os.chown = fake_chown
+        try:
+            with self.assertRaisesRegex(OSError, "injected chown failure"):
+                module.change_paths(paths, 1002, 981, 1002)
+        finally:
+            module.os.lstat = original_lstat
+            module.os.chown = original_chown
+        self.assertEqual({b"/data/one": 981, b"/data/two": 981}, gids)
+        self.assertEqual(
+            [
+                (b"/data/one", -1, 1002, False),
+                (b"/data/two", -1, 1002, False),
+                (b"/data/one", -1, 981, False),
+            ],
+            events,
+        )
+
     def test_apply_stops_before_change_and_probes_before_success(self) -> None:
         events = []
         details = {
