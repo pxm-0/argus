@@ -98,8 +98,46 @@ def _canonical(root: Path) -> tuple[list[dict[str, Any]], dict[str, dict[str, An
     return sorted(workloads, key=lambda item: item["id"]), classifications
 
 
-def _canonical_findings(root: Path) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]]]:
+def _runtime_quarantine(root: Path, canonical_ids: set[str]) -> set[str]:
+    payload = _load(root / "config" / "argus" / "runtime-quarantine.json")
+    records = payload.get("runtimes")
+    if (
+        payload.get("schemaVersion") != 1
+        or payload.get("sourceKind") != "docker-compose"
+        or payload.get("sourceTrustDomain") != LEGACY_TRUST_DOMAIN
+        or payload.get("defaultDisposition") != "review-required"
+        or not isinstance(records, dict)
+    ):
+        raise AdmissionDoctorError("runtime quarantine registry is malformed")
+    expected = {
+        "lifecycle": "observed",
+        "admission": "denied",
+        "access": "none",
+        "publicExposure": False,
+    }
+    quarantined: set[str] = set()
+    for project, record in records.items():
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(record, dict)
+            or any(record.get(key) != value for key, value in expected.items())
+            or not isinstance(record.get("dispositionIssue"), int)
+            or isinstance(record.get("dispositionIssue"), bool)
+            or record["dispositionIssue"] < 1
+            or set(record) != {*expected, "dispositionIssue"}
+        ):
+            raise AdmissionDoctorError("runtime quarantine registry is malformed")
+        if project not in canonical_ids:
+            quarantined.add(project)
+    return quarantined
+
+
+def _canonical_findings(
+    root: Path,
+) -> tuple[list[dict[str, Any]], dict[str, dict[str, str]], set[str]]:
     workloads, classifications = _canonical(root)
+    quarantined_projects = _runtime_quarantine(root, {item["id"] for item in workloads})
     findings: list[dict[str, Any]] = []
     projects: dict[str, dict[str, str]] = {}
     for workload in workloads:
@@ -187,13 +225,14 @@ def _canonical_findings(root: Path) -> tuple[list[dict[str, Any]], dict[str, dic
             if project in projects:
                 findings.append({"code": "project-name-drift", "workloadId": workload_id, "registryProject": project, "manifestProject": project})
             projects[project] = {"workloadId": workload_id, "trustDomain": expected_domain}
-    return findings, projects
+    return findings, projects, quarantined_projects
 
 
 def _observation_findings(
     repository: ObservationRepository,
     registry: SourceRegistry,
     projects: dict[str, dict[str, str]],
+    quarantined_projects: set[str],
     *,
     clock_epoch: int,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
@@ -204,6 +243,7 @@ def _observation_findings(
     configured_container_sources = 0
     fresh_container_sources = 0
     container_domains: set[str] = set()
+    observed_quarantined: set[str] = set()
     for source_row in coverage.get("sources", []):
         if not isinstance(source_row, dict):
             continue
@@ -236,6 +276,9 @@ def _observation_findings(
     for project, domains in sorted(observed.items()):
         canonical = projects.get(project)
         if canonical is None:
+            if project in quarantined_projects and domains == {LEGACY_TRUST_DOMAIN}:
+                observed_quarantined.add(project)
+                continue
             findings.append({"code": "unknown-runtime", "runtimeProject": project, "observedTrustDomains": sorted(domains)})
             continue
         expected = canonical["trustDomain"]
@@ -261,6 +304,7 @@ def _observation_findings(
         "status": "complete" if docker_complete else ("not-configured" if configured_container_sources == 0 else "incomplete"),
         "configuredSources": configured_container_sources,
         "freshSources": fresh_container_sources,
+        "knownQuarantinedRuntimeCount": len(observed_quarantined),
         "registryDigest": coverage.get("registryDigest"),
         "sourceStates": [
             {"sourceId": source_id, "state": source_states[source_id]}
@@ -272,6 +316,7 @@ def _observation_findings(
 
 def _legacy_observation_findings(
     projects: dict[str, dict[str, str]],
+    quarantined_projects: set[str],
     collector: LegacyCollector | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Collect the current rootful Compose view without persisting inventory.
@@ -292,6 +337,8 @@ def _legacy_observation_findings(
     for project in observed_projects:
         canonical = projects.get(project)
         if canonical is None:
+            if project in quarantined_projects:
+                continue
             findings.append({
                 "code": "unknown-runtime",
                 "runtimeProject": project,
@@ -318,6 +365,7 @@ def _legacy_observation_findings(
         "status": "complete" if available else "incomplete",
         "configuredSources": 1,
         "freshSources": 1 if available else 0,
+        "knownQuarantinedRuntimeCount": len(set(observed_projects) & quarantined_projects),
         "registryDigest": digest({
             "sourceId": LEGACY_SOURCE_ID,
             "trustDomain": LEGACY_TRUST_DOMAIN,
@@ -343,23 +391,27 @@ def report(
     """Build one deterministic report without modifying canonical or runtime state."""
     root = root.expanduser().resolve()
     evaluated_at, clock_epoch = _clock(clock)
-    canonical_findings, projects = _canonical_findings(root)
+    canonical_findings, projects, quarantined_projects = _canonical_findings(root)
     findings = list(canonical_findings)
     observation: dict[str, Any]
     if database is None:
         if registry_path is not None:
             raise AdmissionDoctorError("an observation registry requires an explicit database")
         try:
-            observed_findings, observation = _legacy_observation_findings(projects, legacy_collector)
+            observed_findings, observation = _legacy_observation_findings(
+                projects,
+                quarantined_projects,
+                legacy_collector,
+            )
             findings.extend(observed_findings)
             if observation.get("status") != "complete":
                 findings.append({"code": "observation-unavailable"})
         except (OSError, ValueError):
             findings.append({"code": "observation-unavailable"})
-            observation = {"status": "unavailable", "configuredSources": 1, "freshSources": 0, "registryDigest": None, "sourceStates": []}
+            observation = {"status": "unavailable", "configuredSources": 1, "freshSources": 0, "knownQuarantinedRuntimeCount": 0, "registryDigest": None, "sourceStates": []}
     elif registry_path is None or not database.is_file() or not registry_path.is_file():
         findings.append({"code": "observation-unavailable"})
-        observation = {"status": "unavailable", "configuredSources": 0, "freshSources": 0, "registryDigest": None, "sourceStates": []}
+        observation = {"status": "unavailable", "configuredSources": 0, "freshSources": 0, "knownQuarantinedRuntimeCount": 0, "registryDigest": None, "sourceStates": []}
     else:
         try:
             registry = load_registry(registry_path, root)
@@ -370,6 +422,7 @@ def report(
                         repository,
                         registry,
                         projects,
+                        quarantined_projects,
                         clock_epoch=clock_epoch,
                     )
                 finally:
@@ -379,7 +432,7 @@ def report(
                 findings.append({"code": "observation-unavailable"})
         except (ObservationError, OSError, ValueError, sqlite3.Error):
             findings.append({"code": "observation-unavailable"})
-            observation = {"status": "unavailable", "configuredSources": 0, "freshSources": 0, "registryDigest": None, "sourceStates": []}
+            observation = {"status": "unavailable", "configuredSources": 0, "freshSources": 0, "knownQuarantinedRuntimeCount": 0, "registryDigest": None, "sourceStates": []}
 
     unique = {json.dumps(item, sort_keys=True): item for item in findings}
     findings = sorted(unique.values(), key=canonical_bytes)

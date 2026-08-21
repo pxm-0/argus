@@ -23,11 +23,12 @@
     "observationState": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["status", "configuredSources", "freshSources", "registryDigest", "sourceStates"],
+      "required": ["status", "configuredSources", "freshSources", "knownQuarantinedRuntimeCount", "registryDigest", "sourceStates"],
       "properties": {
         "status": {"enum": ["complete", "incomplete", "not-configured", "unavailable"]},
         "configuredSources": {"type": "integer", "minimum": 0},
         "freshSources": {"type": "integer", "minimum": 0},
+        "knownQuarantinedRuntimeCount": {"type": "integer", "minimum": 0},
         "registryDigest": {"type": ["string", "null"]},
         "sourceStates": {
           "type": "array",

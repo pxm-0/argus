@@ -87,7 +87,11 @@ scripts/argus-workload-onboard apply \
 it synchronously reuses the existing rootful Docker inventory helper and does
 not persist inventory or require a daemon. Supplying both `--database` and
 `--registry` selects the normalized observation repository for cross-domain
-diagnostics. Any finding returns exit `1`; invalid evidence returns exit `2`.
+diagnostics. Explicit pre-onboarding observations may appear only in the
+schema-validated `config/argus/runtime-quarantine.json`; those records remain
+`admission=denied`, `access=none`, and linked to a disposition issue. The doctor
+reports their count without adopting them. Any finding returns exit `1`;
+invalid evidence returns exit `2`.
 
 ```bash
 scripts/argus-admission-doctor --json

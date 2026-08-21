@@ -75,7 +75,11 @@ class OnboardingManagerTests(unittest.TestCase):
         }
 
     def test_preview_is_exact_default_deny_and_writes_no_canonical_state(self) -> None:
-        for schema_name in ("workload-onboarding-plan.schema.json", "admission-doctor.schema.json"):
+        for schema_name in (
+            "workload-onboarding-plan.schema.json",
+            "admission-doctor.schema.json",
+            "runtime-quarantine.schema.json",
+        ):
             schema = json.loads((ROOT / "config" / "schemas" / schema_name).read_text())
             self.assertEqual("object", schema["type"])
             self.assertFalse(schema["additionalProperties"])
@@ -83,6 +87,10 @@ class OnboardingManagerTests(unittest.TestCase):
         self.assertEqual(4, len(plan_schema["properties"]["inputs"]["allOf"]))
         self.assertEqual(6, len(plan_schema["properties"]["files"]["prefixItems"]))
         self.assertFalse(plan_schema["properties"]["files"]["items"])
+        quarantine_schema = json.loads((ROOT / "config/schemas/runtime-quarantine.schema.json").read_text())
+        self.assertEqual("legacy-rootful", quarantine_schema["properties"]["sourceTrustDomain"]["const"])
+        self.assertEqual("denied", quarantine_schema["properties"]["runtimes"]["additionalProperties"]["properties"]["admission"]["const"])
+        self.assertFalse(quarantine_schema["properties"]["runtimes"]["additionalProperties"]["properties"]["publicExposure"]["const"])
         before = self.canonical_snapshot()
         plan = self.manager.preview(**ONBOARDING)
         self.assertEqual(before, self.canonical_snapshot())
@@ -394,7 +402,14 @@ class AdmissionDoctorTests(unittest.TestCase):
         (self.root / "workloads/demo").mkdir(parents=True)
         self.registry_path = self.root / "config/argus/observation-sources.json"
         shutil.copy(ROOT / "tests/fixtures/observation/reference-registry.json", self.registry_path)
-        (self.root / "config/argus/legacy-classification.json").write_text(json.dumps({"trustDomain": "personal-sandbox"}))
+        (self.root / "config/argus/legacy-classification.json").write_text(json.dumps({"version": 1, "workloads": {}}))
+        (self.root / "config/argus/runtime-quarantine.json").write_text(json.dumps({
+            "schemaVersion": 1,
+            "sourceKind": "docker-compose",
+            "sourceTrustDomain": "legacy-rootful",
+            "defaultDisposition": "review-required",
+            "runtimes": {},
+        }))
         (self.root / "config/argus/workload-classification.json").write_text(json.dumps({
             "schemaVersion": 1,
             "workloads": {"demo": {
@@ -497,7 +512,30 @@ class AdmissionDoctorTests(unittest.TestCase):
         self.assertEqual("complete", value["observationState"]["status"])
         self.assertEqual(1, value["observationState"]["configuredSources"])
         self.assertEqual(1, value["observationState"]["freshSources"])
+        self.assertEqual(0, value["observationState"]["knownQuarantinedRuntimeCount"])
         self.assertEqual(before, after)
+
+    def test_explicit_legacy_quarantine_is_known_but_never_adopted(self) -> None:
+        path = self.root / "config/argus/runtime-quarantine.json"
+        payload = json.loads(path.read_text())
+        payload["runtimes"]["quarantined-project"] = {
+            "lifecycle": "observed", "admission": "denied", "access": "none",
+            "publicExposure": False, "dispositionIssue": 345,
+        }
+        path.write_text(json.dumps(payload))
+        value = self.run_legacy_doctor([{"composeProject": "quarantined-project"}])
+        self.assertTrue(value["ok"])
+        self.assertEqual([], value["findings"])
+        self.assertEqual(1, value["observationState"]["knownQuarantinedRuntimeCount"])
+        self.assertFalse(value["adoptionPerformed"])
+
+    def test_malformed_runtime_quarantine_is_refused(self) -> None:
+        path = self.root / "config/argus/runtime-quarantine.json"
+        payload = json.loads(path.read_text())
+        payload["runtimes"]["unsafe"] = {"admission": "allowed"}
+        path.write_text(json.dumps(payload))
+        with self.assertRaisesRegex(ValueError, "runtime quarantine registry is malformed"):
+            self.run_legacy_doctor()
 
     def test_legacy_inventory_reports_unknown_and_wrong_domain_projects(self) -> None:
         value = self.run_legacy_doctor([

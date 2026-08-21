@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "sourceKind": "docker-compose",
+  "sourceTrustDomain": "legacy-rootful",
+  "defaultDisposition": "review-required",
+  "runtimes": {
+    "project-discovery": {
+      "lifecycle": "observed",
+      "admission": "denied",
+      "access": "none",
+      "publicExposure": false,
+      "dispositionIssue": 345
+    },
+    "yog-sothoth": {
+      "lifecycle": "observed",
+      "admission": "denied",
+      "access": "none",
+      "publicExposure": false,
+      "dispositionIssue": 345
+    }
+  }
+}
