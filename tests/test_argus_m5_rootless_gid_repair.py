@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.machinery
 import importlib.util
+import json
 import os
 from pathlib import Path
 import stat
@@ -331,7 +332,7 @@ class RootlessGidRepairTest(unittest.TestCase):
         self.assertLess(events.index("start"), events.index("probe"))
         self.assertLess(events.index("probe"), events.index("restore"))
 
-    def test_failed_probe_rolls_metadata_back_before_restart(self) -> None:
+    def test_failed_probe_keeps_forward_migration_for_runtime_recovery(self) -> None:
         events = []
         details = {
             "domain": "personal-sandbox",
@@ -367,8 +368,7 @@ class RootlessGidRepairTest(unittest.TestCase):
                 module.probe_daemon,
                 module.restore_running_set,
             )
-            active = iter((True, True))
-            module.daemon_is_active = lambda _domain: next(active)
+            module.daemon_is_active = lambda _domain: True
             module.inventory = lambda _domain: inventory
             module.docker_ids = lambda _domain, running_only=False: {"one"}
             module.boundary = lambda *_args: details
@@ -386,8 +386,10 @@ class RootlessGidRepairTest(unittest.TestCase):
                 events.append(f"change:{from_gid}:{to_gid}")
 
             module.change_paths = change
-            module.update_summary = lambda *_args, **_kwargs: events.append(
-                "summary"
+            module.update_summary = (
+                lambda _path, _summary, status, **values: events.append(
+                    ("summary", status, values)
+                )
             )
             module.start_daemon = lambda _domain: events.append("start")
             module.restore_firewall = lambda _domain: events.append("firewall")
@@ -396,7 +398,9 @@ class RootlessGidRepairTest(unittest.TestCase):
             )
             module.restore_running_set = lambda *_args: events.append("restore")
             try:
-                with self.assertRaisesRegex(module.RepairError, "probe failed"):
+                with self.assertRaisesRegex(
+                    module.RepairError, "migration retained"
+                ):
                     module.apply_repair("personal-sandbox", 981)
             finally:
                 (
@@ -417,10 +421,110 @@ class RootlessGidRepairTest(unittest.TestCase):
                     module.restore_running_set,
                 ) = originals
         self.assertEqual(
-            ["change:981:1002", "change:1002:981"],
-            [event for event in events if event.startswith("change:")],
+            ["change:981:1002"],
+            [
+                event
+                for event in events
+                if isinstance(event, str) and event.startswith("change:")
+            ],
         )
-        self.assertLess(events.index("change:1002:981"), len(events) - 1)
+        summaries = [event for event in events if not isinstance(event, str)]
+        self.assertEqual("recovery-required", summaries[-1][1])
+        self.assertTrue(summaries[-1][2]["metadataRetained"])
+
+    def test_ingress_is_prepared_before_start_and_relocked_after_stability(
+        self,
+    ) -> None:
+        events = []
+        ingress = Path("/runtime/workload/stage/ingress")
+        states = iter((set(), {"app", "ingress"}, {"app", "ingress"}))
+        originals = (
+            module.docker_ids,
+            module.verified_ingress_directories,
+            module.prepare_ingress_directories,
+            module.lock_ingress_directories,
+            module.run,
+            module.RUNNING_STABILITY_SECONDS,
+        )
+        module.docker_ids = lambda *_args, **_kwargs: next(states)
+        module.verified_ingress_directories = (
+            lambda _domain, missing: events.append(("discover", set(missing)))
+            or [ingress]
+        )
+        module.prepare_ingress_directories = (
+            lambda _domain, paths: events.append(("prepare", list(paths)))
+        )
+        module.lock_ingress_directories = (
+            lambda _domain, paths, *, require_socket: events.append(
+                ("lock", list(paths), require_socket)
+            )
+        )
+        module.run = lambda command, **_kwargs: events.append(
+            ("start", command)
+        ) or SimpleNamespace(returncode=0)
+        module.RUNNING_STABILITY_SECONDS = 0
+        try:
+            module.restore_running_set(
+                "personal-sandbox", {"app", "ingress"}
+            )
+        finally:
+            (
+                module.docker_ids,
+                module.verified_ingress_directories,
+                module.prepare_ingress_directories,
+                module.lock_ingress_directories,
+                module.run,
+                module.RUNNING_STABILITY_SECONDS,
+            ) = originals
+        labels = [event[0] for event in events]
+        self.assertLess(labels.index("discover"), labels.index("prepare"))
+        self.assertLess(labels.index("prepare"), labels.index("start"))
+        self.assertLess(labels.index("start"), labels.index("lock"))
+        self.assertTrue(events[-1][2])
+
+    def test_ingress_bind_cannot_escape_the_domain_runtime(self) -> None:
+        original_text = module.text
+        original_getpwnam = module.pwd.getpwnam
+        module.text = lambda *_args, **_kwargs: json.dumps(
+            [
+                {
+                    "Type": "bind",
+                    "Source": "/tmp/attacker/ingress",
+                    "Destination": "/run/argus-ingress",
+                    "RW": True,
+                }
+            ]
+        )
+        module.pwd.getpwnam = lambda _user: SimpleNamespace(
+            pw_uid=1002, pw_gid=1002
+        )
+        try:
+            with self.assertRaisesRegex(module.RepairError, "escapes"):
+                module.verified_ingress_directories(
+                    "personal-sandbox", {"container"}
+                )
+        finally:
+            module.text = original_text
+            module.pwd.getpwnam = original_getpwnam
+
+    def test_firewall_retries_one_transient_verifier_failure(self) -> None:
+        calls = []
+        returncodes = iter((0, 1, 1, 0, 0, 0))
+        originals = (module.run, module.time.sleep)
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=next(returncodes))
+
+        module.run = fake_run
+        module.time.sleep = lambda _seconds: None
+        try:
+            module.restore_firewall("personal-sandbox")
+        finally:
+            module.run, module.time.sleep = originals
+        restarts = [command for command in calls if "restart" in command]
+        self.assertEqual(2, len(restarts))
+        self.assertTrue(any("reset-failed" in command for command in calls))
 
     def test_script_has_no_public_or_broad_deletion_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")

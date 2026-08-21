@@ -65,9 +65,20 @@ The sanitized result names a summary below
 root-owned mode `0600`; neither contains workload data, environment values, or
 credentials.
 
-If apply verification fails, the tool attempts to restore the manifested GIDs
-and exact pre-running set. An incomplete metadata rollback is reported as a
-hard failure and must not be treated as accepted recovery.
+Before Docker is restarted, an apply failure restores the manifested GIDs and
+the exact pre-running set. Starting Docker is the forward-recovery boundary:
+the daemon may update engine metadata immediately, so a later firewall,
+container-probe, or workload failure never rewrites the accepted GIDs back to
+the stale group. The tool retries bounded runtime recovery and otherwise writes
+a root-only `recovery-required` summary with stable failure classes while
+leaving the migrated metadata in place.
+
+Accepted ingress sidecars need an additional lifecycle step. Their host Unix
+socket directories are root-locked while running; the repair validates and
+temporarily hands only those exact bind directories to the sandbox identity,
+removes only the stale `upstream.sock`, starts the recorded containers, waits
+for the replacement sockets, and root-locks the directories again. A failed
+restart relocks every prepared directory before reporting recovery required.
 
 ## Explicit rollback
 
