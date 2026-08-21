@@ -1930,6 +1930,30 @@ def accepted_cutover_state(
     return state, state_dir, runtime_compose, socket_path
 
 
+def backfill_source_resurrection_evidence(
+    state_dir: Path, state: dict
+) -> tuple[dict, bool]:
+    """Upgrade a present-source acceptance record before later retirement.
+
+    accepted_cutover_state has already proved that the source project is
+    inspectable and no resurrection schedule exists. Historical Intake OS
+    evidence predates that field, so preserve a root-only copy before binding
+    the current zero-schedule observation into the accepted record.
+    """
+    if "sourceResurrectionSchedules" in state:
+        if state["sourceResurrectionSchedules"] != 0:
+            raise CutoverError("accepted source resurrection evidence is unsafe")
+        return state, False
+    backup = state_dir / (
+        "cutover.before-source-resurrection-evidence."
+        f"{time.strftime('%Y%m%dT%H%M%SZ', time.gmtime())}-{time.time_ns()}.json"
+    )
+    updated = {**state, "sourceResurrectionSchedules": 0}
+    write_state(backup, state)
+    write_state(state_dir / "cutover.json", updated)
+    return updated, True
+
+
 def refresh_overlay(
     compose: dict, workload: str, spec: dict, credential_dir: Path | None
 ) -> dict:
@@ -2282,8 +2306,11 @@ def reconcile(workload: str) -> dict:
     if os.geteuid() != 0:
         raise CutoverError("run with sudo")
     spec = SPECS[workload]
-    _state, state_dir, runtime_compose, socket_path = accepted_cutover_state(
+    state, state_dir, runtime_compose, socket_path = accepted_cutover_state(
         workload, spec
+    )
+    _state, evidence_backfilled = backfill_source_resurrection_evidence(
+        state_dir, state
     )
     container_ids = target_container_ids(spec)
     running = 0
@@ -2347,6 +2374,7 @@ def reconcile(workload: str) -> dict:
         "publishedPorts": False,
         "publicRoute": False,
         "egressPolicyDrift": egress_policy_drift(spec),
+        "sourceScheduleEvidenceBackfilled": evidence_backfilled,
         "reconciled": True,
     }
 

@@ -85,6 +85,12 @@ count, and zero resurrection schedules. The periodic retry also handles a
 sandbox-daemon-only restart. This prevents daemon-restart races from starting
 both source and target writers.
 
+Historical accepted records created before the resurrection-schedule field are
+upgraded only while the source project is still inspectable and the live
+schedule sweep is empty. Reconcile writes a root-only copy of the prior record
+before binding that zero-schedule observation; an already absent source with
+missing evidence remains refused.
+
 For stateful workloads, authority is durably committed immediately before
 the target starts. Failures before that boundary restore the previous
 firewall and restart policies and may restart the source only after target
