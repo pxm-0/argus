@@ -2,6 +2,7 @@ import importlib.machinery
 import importlib.util
 from pathlib import Path
 import tempfile
+from types import SimpleNamespace
 import unittest
 
 
@@ -81,6 +82,154 @@ class DatabaseBackupTest(unittest.TestCase):
                     "argus-personal-sandbox", mapping, 999
                 ),
             )
+
+    def test_database_readiness_requires_a_real_query(self) -> None:
+        calls = []
+
+        def fake_run(command, **_kwargs):
+            calls.append(command)
+            return SimpleNamespace(returncode=1 if "psql" in command else 0)
+
+        original = module.subprocess.run
+        module.subprocess.run = fake_run
+        try:
+            ready = module.database_ready(
+                module.SPECS["kadath"],
+                "kadath-live-postgres-1",
+                "kadath",
+                "kadath",
+            )
+        finally:
+            module.subprocess.run = original
+
+        self.assertFalse(ready)
+        self.assertEqual(2, len(calls))
+        self.assertIn("pg_isready", calls[0])
+        self.assertIn("psql", calls[1])
+        self.assertIn("SELECT 1", calls[1])
+        self.assertNotIn("POSTGRES_PASSWORD", " ".join(calls[1]))
+
+    def test_snapshot_is_fully_readable_and_private(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            source = root / "source"
+            source.mkdir()
+            (source / "PG_VERSION").write_text("18\n")
+            destination = root / "snapshot.tar.gz"
+
+            module.snapshot_volume(source, destination)
+
+            self.assertEqual(0o600, destination.stat().st_mode & 0o777)
+            with module.tarfile.open(destination, "r:gz") as archive:
+                self.assertIn("./PG_VERSION", archive.getnames())
+
+    def test_failed_repair_restores_snapshot_before_restart(self) -> None:
+        events = []
+        states = iter(("running", "exited"))
+        ownership = iter(
+            (
+                {"ok": False, "nonPostgresOwnedEntries": 2},
+                {"ok": False, "nonPostgresOwnedEntries": 1},
+            )
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "volume" / "_data"
+            source.mkdir(parents=True)
+            originals = (
+                module.BACKUP_ROOT,
+                module.os.geteuid,
+                module.container_name,
+                module.credentials,
+                module.ownership_status,
+                module.volume_source,
+                module.directory_identity,
+                module.container_state,
+                module.ensure_root_directory,
+                module.stop_database,
+                module.snapshot_volume,
+                module.repair_volume_ownership,
+                module.restore_volume,
+                module.start_database,
+            )
+            module.BACKUP_ROOT = root / "backups"
+            module.os.geteuid = lambda: 0
+            module.container_name = lambda _spec: "kadath-live-postgres-1"
+            module.credentials = lambda _spec, _container: ("kadath", "kadath")
+            module.ownership_status = lambda *_args: next(ownership)
+            module.volume_source = lambda *_args: source
+            module.directory_identity = lambda _path: (1, 2)
+            module.container_state = lambda *_args: next(states)
+            module.ensure_root_directory = lambda path: path.mkdir(
+                parents=True, exist_ok=True
+            )
+            module.stop_database = lambda *_args: events.append("stop")
+
+            def snapshot(_source, destination):
+                events.append("snapshot")
+                destination.write_bytes(b"snapshot")
+
+            module.snapshot_volume = snapshot
+            module.repair_volume_ownership = lambda *_args: events.append("repair")
+            module.restore_volume = lambda *_args: events.append("restore")
+            module.start_database = lambda *_args: events.append("start")
+            try:
+                with self.assertRaises(module.BackupError):
+                    module.repair_ownership("kadath", "kadath")
+            finally:
+                (
+                    module.BACKUP_ROOT,
+                    module.os.geteuid,
+                    module.container_name,
+                    module.credentials,
+                    module.ownership_status,
+                    module.volume_source,
+                    module.directory_identity,
+                    module.container_state,
+                    module.ensure_root_directory,
+                    module.stop_database,
+                    module.snapshot_volume,
+                    module.repair_volume_ownership,
+                    module.restore_volume,
+                    module.start_database,
+                ) = originals
+
+        self.assertEqual(
+            ["stop", "snapshot", "repair", "restore", "start"],
+            events,
+        )
+
+    def test_database_operations_use_a_nonblocking_workload_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            originals = (
+                module.LOCK_ROOT,
+                module.ensure_root_directory,
+                module.os.fstat,
+            )
+            module.LOCK_ROOT = Path(directory) / "locks"
+            module.ensure_root_directory = lambda path: path.mkdir(
+                parents=True, exist_ok=True
+            )
+            module.os.fstat = lambda _descriptor: SimpleNamespace(
+                st_uid=0,
+                st_mode=module.stat.S_IFREG | 0o600,
+            )
+            first = None
+            try:
+                first = module.acquire_workload_lock("kadath")
+                with self.assertRaisesRegex(
+                    module.BackupError,
+                    "another kadath database operation is active",
+                ):
+                    module.acquire_workload_lock("kadath")
+            finally:
+                if first is not None:
+                    first.close()
+                (
+                    module.LOCK_ROOT,
+                    module.ensure_root_directory,
+                    module.os.fstat,
+                ) = originals
 
     def test_pruning_keeps_the_newest_copies_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

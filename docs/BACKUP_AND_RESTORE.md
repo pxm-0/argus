@@ -93,8 +93,10 @@ sudo ./scripts/argus-m5-workload-db-backup \
 
 Repair is deliberately opt-in and workload-scoped. It snapshots the exact
 PostgreSQL volume, stops only the selected database container, applies the
-999:999 ownership repair, restarts the container, and restores the snapshot if
-ownership or PostgreSQL readiness does not verify:
+999:999 ownership repair, restarts the container, and requires both
+`pg_isready` and a real `SELECT 1` query. It restores the snapshot if ownership
+or PostgreSQL query readiness does not verify. A root-owned per-workload lock
+prevents a scheduled dump and an ownership repair from overlapping:
 
 ```bash
 sudo ./scripts/argus-m5-workload-db-backup \

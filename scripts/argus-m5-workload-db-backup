@@ -8,6 +8,7 @@ inside the sandbox and verifies the artifact before keeping it.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -20,6 +21,7 @@ import time
 
 
 BACKUP_ROOT = Path("/var/backups/argus-m5-workload-db")
+LOCK_ROOT = Path("/run/argus-m5-workload-db-backup")
 # Retained workloads that carry a database, mapped to their sandbox identity.
 SPECS = {
     "kadath": {
@@ -276,17 +278,37 @@ def start_database(spec: dict, container: str) -> None:
 def wait_for_database(spec: dict, container: str, role: str, database: str) -> None:
     deadline = time.monotonic() + REPAIR_TIMEOUT_SECONDS
     while time.monotonic() < deadline:
+        if database_ready(spec, container, role, database):
+            return
+        time.sleep(1)
+    raise BackupError(f"{container} PostgreSQL readiness did not recover")
+
+
+def database_ready(spec: dict, container: str, role: str, database: str) -> bool:
+    commands = (
+        ("pg_isready", "-U", role, "-d", database),
+        (
+            "psql",
+            "--no-psqlrc",
+            "--no-password",
+            "--tuples-only",
+            "--no-align",
+            "-U",
+            role,
+            "-d",
+            database,
+            "-c",
+            "SELECT 1",
+        ),
+    )
+    for command in commands:
         result = subprocess.run(
             [
                 *target_command(
                     str(spec["domain"]),
                     "exec",
                     container,
-                    "pg_isready",
-                    "-U",
-                    role,
-                    "-d",
-                    database,
+                    *command,
                 )
             ],
             check=False,
@@ -294,10 +316,9 @@ def wait_for_database(spec: dict, container: str, role: str, database: str) -> N
             stderr=subprocess.DEVNULL,
             timeout=30,
         )
-        if result.returncode == 0:
-            return
-        time.sleep(1)
-    raise BackupError(f"{container} PostgreSQL readiness did not recover")
+        if result.returncode != 0:
+            return False
+    return True
 
 
 def snapshot_volume(source: Path, destination: Path) -> None:
@@ -309,9 +330,15 @@ def snapshot_volume(source: Path, destination: Path) -> None:
         with os.fdopen(descriptor, "wb") as handle:
             with tarfile.open(fileobj=handle, mode="w:gz") as archive:
                 archive.add(source, arcname=".", recursive=True)
-        with tarfile.open(partial, "r:gz") as archive:
-            if archive.next() is None:
-                raise BackupError("database volume snapshot is empty")
+        subprocess.run(
+            ["tar", "-tzf", str(partial)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=REPAIR_TIMEOUT_SECONDS,
+        )
+        if partial.stat().st_size == 0:
+            raise BackupError("database volume snapshot is empty")
         os.replace(partial, destination)
         os.chmod(destination, 0o600)
     except BaseException:
@@ -342,6 +369,37 @@ def repair_volume_ownership(spec: dict, source: Path) -> None:
         os.chown(entry, expected_uid, expected_gid, follow_symlinks=False)
 
 
+def directory_identity(path: Path) -> tuple[int, int]:
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError("database volume source changed type")
+    return metadata.st_dev, metadata.st_ino
+
+
+def acquire_workload_lock(workload: str):
+    ensure_root_directory(LOCK_ROOT)
+    path = LOCK_ROOT / f"{workload}.lock"
+    descriptor = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    metadata = os.fstat(descriptor)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise BackupError("database backup lock ownership or mode is unsafe")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise BackupError(f"another {workload} database operation is active") from error
+    return os.fdopen(descriptor, "a+")
+
+
 def repair_ownership(workload: str, confirmation: str | None) -> dict:
     if confirmation != workload:
         raise BackupError("repair requires --confirm matching --workload exactly")
@@ -352,6 +410,7 @@ def repair_ownership(workload: str, confirmation: str | None) -> dict:
     role, database = credentials(spec, container)
     before = ownership_status(workload, container)
     source = volume_source(spec, container)
+    source_identity = directory_identity(source)
     if before["ok"]:
         return {**before, "changed": False, "verified": True}
     if container_state(spec, container) != "running":
@@ -365,6 +424,9 @@ def repair_ownership(workload: str, confirmation: str | None) -> dict:
     try:
         stop_database(spec, container)
         stopped = True
+        stopped_source = volume_source(spec, container)
+        if stopped_source != source or directory_identity(stopped_source) != source_identity:
+            raise BackupError("database volume changed while stopping the container")
         snapshot_volume(source, snapshot)
         repair_volume_ownership(spec, source)
         after = ownership_status(workload, container)
@@ -528,14 +590,17 @@ def main() -> int:
         help="exact workload ID required for ownership repair",
     )
     arguments = parser.parse_args()
-    if arguments.action == "check-ownership":
-        result = ownership_status(arguments.workload)
-        print(json.dumps(result, sort_keys=True))
-        return 0 if result["ok"] else 1
-    if arguments.action == "repair-ownership":
-        result = repair_ownership(arguments.workload, arguments.confirm)
-    else:
-        result = backup(arguments.workload)
+    if os.geteuid() != 0:
+        raise BackupError("run with sudo")
+    with acquire_workload_lock(arguments.workload):
+        if arguments.action == "check-ownership":
+            result = ownership_status(arguments.workload)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["ok"] else 1
+        if arguments.action == "repair-ownership":
+            result = repair_ownership(arguments.workload, arguments.confirm)
+        else:
+            result = backup(arguments.workload)
     print(json.dumps(result, sort_keys=True))
     return 0
 
