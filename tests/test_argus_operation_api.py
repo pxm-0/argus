@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import shutil
 import os
 import sqlite3
 import tempfile
@@ -140,6 +141,46 @@ class OperationApiTests(unittest.TestCase):
                 {"operationType", "parameters"},
             )
 
+    def test_preview_exposes_the_shared_admission_decision(self) -> None:
+        with patch.object(self.server, "agent_available", return_value=True):
+            preview = self.server.operation_preview(
+                "hello-nginx",
+                "workload.restart",
+                {},
+            )
+        self.assertTrue(preview["allowed"])
+        self.assertEqual("allowed", preview["admission"]["decisionCode"])
+        self.assertEqual(
+            preview["expectedRevision"],
+            preview["admission"]["revision"],
+        )
+        self.assertEqual(
+            preview["policyVersion"],
+            preview["admission"]["policyVersion"],
+        )
+
+    def test_preview_fails_closed_when_admission_dependencies_are_malformed(self) -> None:
+        clone = self.runtime / "repository"
+        shutil.copytree(ROOT / "config", clone / "config")
+        shutil.copytree(ROOT / "workloads", clone / "workloads")
+        (clone / "config" / "argus" / "workload-classification.json").write_text(
+            "{",
+            encoding="utf-8",
+        )
+        with patch.object(self.server, "ROOT", clone):
+            preview = self.server.operation_preview(
+                "hello-nginx",
+                "workload.restart",
+                {},
+            )
+        self.assertFalse(preview["allowed"])
+        self.assertEqual("dependency-unavailable", preview["reason"])
+        self.assertEqual(
+            "dependency-unavailable",
+            preview["admission"]["decisionCode"],
+        )
+        self.assertEqual("legacy-rootful", preview["trustDomain"])
+
     def test_migration_preflight_preview_disables_completed_workload(self) -> None:
         with patch.object(self.server, "agent_available", return_value=True):
             preview = self.server.operation_preview(
@@ -162,11 +203,11 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual("", preview["confirmationPhrase"])
         self.assertIsNone(preview["migrationReadiness"]["readyForCutover"])
         self.assertEqual(
-            (False, "access mutation disabled by workload policy"),
+            (False, "operation-not-capable"),
             access_policy,
         )
         self.assertEqual(
-            (False, "health refresh disabled by workload policy"),
+            (False, "operation-not-capable"),
             health_policy,
         )
 

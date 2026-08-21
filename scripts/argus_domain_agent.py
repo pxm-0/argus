@@ -19,7 +19,7 @@ from argus_actions import (
     wait_for_health,
 )
 from argus_access_runtime import apply_tailscale_access, route_contract
-from argus_canonical import canonical_policy_version, canonical_revision
+from argus_admission import evaluate_current
 from argus_capabilities import (
     Ed25519Verifier,
     ReplayStore,
@@ -85,11 +85,13 @@ class AgentService:
             os.environ["DOCKER_HOST"] = f"unix:///var/lib/argus/{domain}/docker.sock"
 
     def policy_check(self, workload_id: str, operation_type: str, parameters: dict[str, Any]) -> tuple[bool, str]:
+        admission = evaluate_current(self.root, workload_id, operation_type)
+        if not admission.allowed:
+            return False, admission.decision_code
         item = by_id().get(workload_id)
         if item is None:
-            return False, "unknown workload"
+            return False, "unknown-workload"
         manifest = load_manifest(workload_id)
-        operations = manifest.get("operations", {})
         if operation_type == "health.refresh":
             if item.get("actions", {}).get("sandboxReconcileOnly") is True:
                 return False, "health refresh disabled by workload policy"
@@ -99,7 +101,7 @@ class AgentService:
             )
             return allowed, "health check not configured"
         if operation_type == "logs.preview":
-            return bool(operations.get("logsAllowed") or operations.get("logs", {}).get("allowed")), "logs disabled by manifest"
+            return True, "admission allowed"
         if operation_type == "migration.preflight":
             preview = migration_preflight(workload_id, record_audit=False)
             allowed = bool(preview.get("allowed"))
@@ -109,9 +111,9 @@ class AgentService:
                 else str(preview.get("reason", "migration preflight disabled by manifest"))
             )
         if operation_type == "workload.restart":
-            return bool(operations.get("restartAllowed") or operations.get("restart", {}).get("allowed")), "restart disabled by manifest"
+            return True, "admission allowed"
         if operation_type == "backup.create":
-            return bool(operations.get("backupAllowed") or operations.get("backup", {}).get("allowed") or manifest.get("backup", {}).get("backupAllowed")), "backup disabled by manifest"
+            return True, "admission allowed"
         if operation_type == "access.apply":
             if item.get("actions", {}).get("sandboxReconcileOnly") is True:
                 return False, "access mutation disabled by workload policy"
@@ -256,13 +258,15 @@ class AgentService:
                 trust_domain=self.domain,
             )
             workload_id = str(operation["workload_id"])
-            if canonical_revision(self.root, workload_id) != operation["expected_revision"]:
-                raise ValueError("stale canonical revision")
-            if (
-                canonical_policy_version(self.root, workload_id)
-                != operation["policy_version"]
-            ):
-                raise ValueError("stale policy version")
+            admission = evaluate_current(
+                self.root,
+                workload_id,
+                str(operation["operation_type"]),
+                expected_revision=str(operation["expected_revision"]),
+                expected_policy_version=str(operation["policy_version"]),
+            )
+            if not admission.allowed:
+                raise PermissionError(admission.decision_code)
             preview = {
                 "workloadId": operation["workload_id"],
                 "trustDomain": operation["trust_domain"],

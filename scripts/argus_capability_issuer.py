@@ -5,6 +5,7 @@ import socketserver
 from pathlib import Path
 from typing import Any
 
+from argus_admission import evaluate_current
 from argus_capabilities import Ed25519Signer, build_envelope
 from argus_ipc import receive_frame, send_frame
 from argus_operations import MUTATIONS, OperationLedger, digest
@@ -15,9 +16,12 @@ class CapabilityIssuer:
         self,
         ledger: OperationLedger,
         signer: Ed25519Signer,
+        *,
+        root: Path,
     ) -> None:
         self.ledger = ledger
         self.signer = signer
+        self.root = root
 
     def issue(
         self,
@@ -37,6 +41,15 @@ class CapabilityIssuer:
             raise ValueError("operation has no operator identity")
         if digest(operation["parameters"]) != operation["parameters_digest"]:
             raise ValueError("operation parameter binding is invalid")
+        admission = evaluate_current(
+            self.root,
+            str(operation["workload_id"]),
+            str(operation["operation_type"]),
+            expected_revision=str(operation["expected_revision"]),
+            expected_policy_version=str(operation["policy_version"]),
+        )
+        if not admission.allowed:
+            raise ValueError(f"admission denied: {admission.decision_code}")
         preview = {
             "workloadId": operation["workload_id"],
             "trustDomain": operation["trust_domain"],
@@ -153,7 +166,13 @@ def main() -> int:
         migrate_schema=False,
         read_only=True,
     )
-    issuer = CapabilityIssuer(ledger, signer)
+    root = Path(
+        os.environ.get(
+            "ARGUS_ROOT",
+            Path(__file__).resolve().parents[1],
+        )
+    ).resolve()
+    issuer = CapabilityIssuer(ledger, signer, root=root)
     socket_path.parent.mkdir(parents=True, exist_ok=True)
     socket_path.unlink(missing_ok=True)
     with socketserver.ThreadingUnixStreamServer(

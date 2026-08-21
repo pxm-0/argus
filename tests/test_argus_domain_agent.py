@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -19,7 +20,12 @@ from argus_operations import digest  # noqa: E402
 
 
 class DomainAgentServiceTests(unittest.TestCase):
-    def service(self, directory: Path) -> tuple[AgentService, Ed25519Signer]:
+    def service(
+        self,
+        directory: Path,
+        *,
+        repository: Path = ROOT,
+    ) -> tuple[AgentService, Ed25519Signer]:
         private_key = directory / "issuer.key"
         public_key = directory / "issuer.pub"
         subprocess.run(
@@ -50,7 +56,7 @@ class DomainAgentServiceTests(unittest.TestCase):
             stderr=subprocess.DEVNULL,
         )
         service = AgentService(
-            ROOT,
+            repository,
             directory / "runtime",
             "personal-sandbox",
             [public_key],
@@ -105,19 +111,19 @@ class DomainAgentServiceTests(unittest.TestCase):
             with tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 service, _signer = self.service(Path(directory))
                 self.assertEqual(os.environ["DOCKER_HOST"], "unix:///var/lib/argus/personal-sandbox/docker.sock")
-                self.assertEqual(service.policy_check("hello-nginx", "logs.preview", {}), (True, "logs disabled by manifest"))
-                self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "restart disabled by manifest"))
+                self.assertEqual(service.policy_check("hello-nginx", "logs.preview", {}), (True, "admission allowed"))
+                self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "admission allowed"))
                 self.assertEqual(
                     service.policy_check("hastur", "migration.preflight", {}),
                     (False, "migration status migrated is not a migration candidate"),
                 )
                 self.assertEqual(
                     service.policy_check("hastur", "access.apply", {"desired": "none"}),
-                    (False, "access mutation disabled by workload policy"),
+                    (False, "operation-not-capable"),
                 )
                 self.assertEqual(
                     service.policy_check("hastur", "health.refresh", {}),
-                    (False, "health refresh disabled by workload policy"),
+                    (False, "operation-not-capable"),
                 )
                 preflight = service.execute_typed(
                     "migration.preflight",
@@ -154,6 +160,24 @@ class DomainAgentServiceTests(unittest.TestCase):
             allowed, reason = service.policy_check("hello-nginx", "access.apply", {"desired": "tailnet"})
             self.assertFalse(allowed)
             self.assertIn("approved Tailscale Serve route", reason)
+
+    def test_agent_shares_dependency_unavailable_denial(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            base = Path(directory)
+            repository = base / "repository"
+            shutil.copytree(ROOT / "config", repository / "config")
+            shutil.copytree(ROOT / "workloads", repository / "workloads")
+            (
+                repository
+                / "config"
+                / "argus"
+                / "workload-classification.json"
+            ).write_text("{", encoding="utf-8")
+            service, _signer = self.service(base, repository=repository)
+            self.assertEqual(
+                (False, "dependency-unavailable"),
+                service.policy_check("hello-nginx", "workload.restart", {}),
+            )
 
     def test_unavailable_health_evidence_fails_operation_and_is_preserved(self) -> None:
         result = {

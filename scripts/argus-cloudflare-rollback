@@ -5,7 +5,8 @@ import argparse
 import json
 import subprocess
 
-from argus_common import audit, regenerate_dashboard
+from argus_admission import evaluate_current
+from argus_common import audit, regenerate_dashboard, root
 from argus_cloudflare_activation import activation_plan, lower_effective
 
 
@@ -43,6 +44,17 @@ def main() -> int:
         return 0
     if args.confirm_workload != args.workload_id:
         payload.update({"ok": False, "reason": "workload confirmation did not match"})
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        audit("cloudflare.rollback", args.workload_id, "blocked", reason=payload["reason"])
+        return 2
+
+    admission = evaluate_current(
+        root(),
+        args.workload_id,
+        "access.cloudflare-protected.rollback",
+    )
+    if not admission.allowed:
+        payload.update({"ok": False, "reason": admission.decision_code})
         print(json.dumps(payload, indent=2, sort_keys=True))
         audit("cloudflare.rollback", args.workload_id, "blocked", reason=payload["reason"])
         return 2

@@ -43,6 +43,9 @@
     "timeoutSeconds": 3
   },
   "operations": {
+    "health": {
+      "allowed": true
+    },
     "logs": {
       "allowed": true
     },
@@ -50,6 +53,9 @@
       "allowed": true
     },
     "backup": {
+      "allowed": true
+    },
+    "access": {
       "allowed": true
     },
     "logsAllowed": true,

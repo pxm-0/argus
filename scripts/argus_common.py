@@ -323,6 +323,30 @@ def runtime_config(workload_id: str) -> dict[str, Any]:
 
 
 def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
+    from argus_admission import evaluate_current
+
+    admission = evaluate_current(root(), workload_id, "access.apply")
+    if admission.decision_code in {
+        "dependency-unavailable",
+        "manifest-invalid",
+    }:
+        return {
+            "allowed": False,
+            "reason": admission.decision_code,
+            "effective": None,
+            "plannedOnly": False,
+            "confirmationRequired": False,
+            "confirmationPhrase": "",
+            "changes": {
+                "files": [
+                    "config/access.json",
+                    "runtime/audit.log",
+                    "control-plane/dashboard/public/*",
+                ],
+                "routes": {},
+            },
+            "admission": admission.as_dict(),
+        }
     workload_map = by_id()
     privacy = load_json("privacy.json")
     policy = load_json("policy.json")
@@ -335,12 +359,24 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
     if workload_id not in workload_map:
         return {
             "allowed": False,
-            "reason": "unknown workload",
+            "reason": admission.decision_code,
             "effective": None,
             "plannedOnly": False,
             "confirmationRequired": False,
             "confirmationPhrase": "",
             "changes": changes,
+            "admission": admission.as_dict(),
+        }
+    if not admission.allowed:
+        return {
+            "allowed": False,
+            "reason": admission.decision_code,
+            "effective": access.get("workloads", {}).get(workload_id, {}).get("effective"),
+            "plannedOnly": False,
+            "confirmationRequired": False,
+            "confirmationPhrase": "",
+            "changes": changes,
+            "admission": admission.as_dict(),
         }
     if workload_map[workload_id].get("actions", {}).get("sandboxReconcileOnly") is True:
         return {

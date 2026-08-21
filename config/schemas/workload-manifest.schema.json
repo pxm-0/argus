@@ -124,13 +124,52 @@
         "logs": {
           "$ref": "#/$defs/operationPermission"
         },
+        "health": {
+          "$ref": "#/$defs/operationPermission"
+        },
         "restart": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "deploy": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "start": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "stop": {
           "$ref": "#/$defs/operationPermission"
         },
         "backup": {
           "$ref": "#/$defs/operationPermission"
         },
+        "restore": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "access": {
+          "$ref": "#/$defs/operationPermission"
+        },
         "migrationPreflight": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "migrationCutover": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "migrationRollback": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "productionPromote": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "productionRollback": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "cloudflareProtectedPlan": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "cloudflareProtectedApply": {
+          "$ref": "#/$defs/operationPermission"
+        },
+        "cloudflareProtectedRollback": {
           "$ref": "#/$defs/operationPermission"
         }
       }

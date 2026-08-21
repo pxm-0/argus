@@ -7,6 +7,7 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from argus_admission import evaluate_current
 from argus_m1 import deny_direct_legacy_mutation
 from argus_common import audit, by_id, load_json, now, print_json, root, save_json, yaml_quote
 
@@ -78,6 +79,11 @@ def _inside_repo(path: Path) -> bool:
 
 
 def activation_plan(workload_id: str = "hello-nginx") -> dict[str, Any]:
+    admission = evaluate_current(
+        root(),
+        workload_id,
+        "access.cloudflare-protected.plan",
+    )
     workloads = by_id()
     workload = workloads.get(workload_id)
     provider = _provider()
@@ -89,6 +95,9 @@ def activation_plan(workload_id: str = "hello-nginx") -> dict[str, Any]:
     config_path = _external_config_path(provider)
     blockers: list[str] = []
     warnings: list[str] = []
+
+    if not admission.allowed:
+        blockers.append(admission.decision_code)
 
     if workload is None:
         blockers.append("unknown workload")
@@ -144,6 +153,7 @@ def activation_plan(workload_id: str = "hello-nginx") -> dict[str, Any]:
         "ingress": ingress_text(hostname, service) if hostname and service else "",
         "blockers": blockers,
         "warnings": warnings,
+        "admission": admission.as_dict(),
         "manualChecks": [
             "Cloudflare named tunnel exists and credentials are stored outside Git.",
             "Cloudflare Access application exists for the hostname.",
@@ -174,6 +184,13 @@ def write_evidence(payload: dict[str, Any]) -> Path:
 
 
 def set_effective_cloudflare_protected(workload_id: str) -> None:
+    admission = evaluate_current(
+        root(),
+        workload_id,
+        "access.cloudflare-protected.apply",
+    )
+    if not admission.allowed:
+        raise PermissionError(admission.decision_code)
     deny_direct_legacy_mutation("Cloudflare effective-state")
     access = load_json("access.json")
     item = access["workloads"][workload_id]
@@ -184,6 +201,13 @@ def set_effective_cloudflare_protected(workload_id: str) -> None:
 
 
 def lower_effective(workload_id: str, effective: str = "local", reason: str = "Cloudflare activation rolled back") -> None:
+    admission = evaluate_current(
+        root(),
+        workload_id,
+        "access.cloudflare-protected.rollback",
+    )
+    if not admission.allowed:
+        raise PermissionError(admission.decision_code)
     deny_direct_legacy_mutation("Cloudflare effective-state")
     access = load_json("access.json")
     item = access["workloads"][workload_id]

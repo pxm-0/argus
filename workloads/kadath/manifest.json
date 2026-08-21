@@ -45,6 +45,9 @@
     "timeoutSeconds": 3
   },
   "operations": {
+    "health": {
+      "allowed": false
+    },
     "logs": {
       "allowed": false
     },
@@ -52,6 +55,9 @@
       "allowed": false
     },
     "backup": {
+      "allowed": false
+    },
+    "access": {
       "allowed": false
     },
     "migrationPreflight": {
