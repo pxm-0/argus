@@ -1,0 +1,51 @@
+#!/usr/bin/env python3
+"""Report admission and runtime drift without mutation authority."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from argus_admission_doctor import AdmissionDoctorError, default_database, report
+
+
+def _root() -> Path:
+    configured = os.environ.get("ARGUS_ROOT")
+    return Path(configured).expanduser().resolve() if configured else Path(__file__).resolve().parents[1]
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Run the read-only Argus admission drift doctor.")
+    parser.add_argument("--root", type=Path, default=_root())
+    parser.add_argument("--database", type=Path)
+    parser.add_argument("--registry", type=Path)
+    parser.add_argument("--clock")
+    parser.add_argument("--json", action="store_true", help="Emit JSON (the default).")
+    arguments = parser.parse_args()
+    try:
+        root = arguments.root.expanduser().resolve()
+        database = arguments.database.expanduser().resolve() if arguments.database else default_database(root)
+        registry = (
+            arguments.registry.expanduser().resolve()
+            if arguments.registry
+            else (root / "config" / "argus" / "observation-sources.json" if database is not None else None)
+        )
+        value = report(root, database, registry, clock=arguments.clock or os.environ.get("ARGUS_OBSERVATIONS_CLOCK"))
+    except (AdmissionDoctorError, OSError) as exc:
+        print(json.dumps({
+            "schemaVersion": 1,
+            "ok": False,
+            "error": {"code": "admission-doctor-refused", "message": str(exc)},
+            "mutationAuthority": "none",
+            "actionsTaken": [],
+            "adoptionPerformed": False,
+        }, sort_keys=True))
+        return 2
+    print(json.dumps(value, sort_keys=True))
+    return 0 if value.get("ok") is True else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

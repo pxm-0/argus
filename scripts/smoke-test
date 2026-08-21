@@ -936,6 +936,31 @@ def check_doctor(repo: Path, smoke: Smoke) -> None:
     smoke.check(result.returncode == 0 and payload.get("ok") is True, "doctor security audit clean")
 
 
+def check_admission_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
+    result = run([str(repo / "scripts" / "argus-admission-doctor"), "--root", str(repo), "--json"], repo)
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        smoke.fail("admission drift doctor JSON valid")
+        return
+    contract_ok = (
+        result.returncode in ({0, 1} if offline else {0})
+        and payload.get("schemaVersion") == 1
+        and payload.get("mutationAuthority") == "none"
+        and payload.get("actionsTaken") == []
+        and payload.get("adoptionPerformed") is False
+        and isinstance(payload.get("findings"), list)
+        and isinstance(payload.get("evidenceDigest"), str)
+    )
+    if offline:
+        smoke.check(contract_ok, "admission drift doctor reports without mutation authority")
+    else:
+        smoke.check(
+            contract_ok and payload.get("ok") is True and payload.get("findings") == [],
+            "admission drift doctor has complete drift-free Docker evidence",
+        )
+
+
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
     workloads = run([str(repo / "scripts" / "argus-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
@@ -1010,6 +1035,7 @@ def main() -> int:
     check_funnel(repo, smoke, args.offline)
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)
+    check_admission_doctor(repo, smoke, args.offline)
     check_doctor(repo, smoke)
     check_cli(repo, smoke, args.offline)
     check_caddy(repo, smoke, args.offline)

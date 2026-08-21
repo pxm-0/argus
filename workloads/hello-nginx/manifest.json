@@ -26,6 +26,7 @@
   },
   "migration": {
     "status": "migrated",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "/srv/apps/hello-nginx",
     "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
     "compatibilitySymlink": true,

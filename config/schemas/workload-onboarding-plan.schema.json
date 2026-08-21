@@ -1,0 +1,92 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://argus.invalid/schemas/workload-onboarding-plan-v1.json",
+  "title": "Argus default-deny workload onboarding plan",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "workloadId",
+    "inputs",
+    "mutationAuthority",
+    "defaults",
+    "dependencies",
+    "files",
+    "planDigest"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "workloadId": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+    "inputs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "kind", "runtime", "composeProject", "realm", "zone", "stage", "trustDomain"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$"},
+        "name": {"type": "string", "minLength": 1, "maxLength": 120},
+        "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
+        "runtime": {"const": "docker-compose"},
+        "composeProject": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
+        "realm": {"enum": ["personal", "work"]},
+        "zone": {"enum": ["sandbox", "managed"]},
+        "stage": {"enum": ["none", "dev", "staging", "production"]},
+        "trustDomain": {"enum": ["personal-sandbox", "personal-managed", "work-sandbox", "work-managed"]}
+      },
+      "allOf": [
+        {"if": {"properties": {"realm": {"const": "personal"}, "zone": {"const": "sandbox"}}}, "then": {"properties": {"trustDomain": {"const": "personal-sandbox"}}}},
+        {"if": {"properties": {"realm": {"const": "personal"}, "zone": {"const": "managed"}}}, "then": {"properties": {"trustDomain": {"const": "personal-managed"}}}},
+        {"if": {"properties": {"realm": {"const": "work"}, "zone": {"const": "sandbox"}}}, "then": {"properties": {"trustDomain": {"const": "work-sandbox"}}}},
+        {"if": {"properties": {"realm": {"const": "work"}, "zone": {"const": "managed"}}}, "then": {"properties": {"trustDomain": {"const": "work-managed"}}}}
+      ]
+    },
+    "mutationAuthority": {"const": "reviewed-onboarding-only"},
+    "defaults": {
+      "const": {"access": "none", "admission": "denied", "publicExposure": false}
+    },
+    "dependencies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["policyDigest", "policyVersion"],
+      "properties": {
+        "policyDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
+        "policyVersion": {"type": "string", "minLength": 1}
+      }
+    },
+    "files": {
+      "type": "array",
+      "minItems": 6,
+      "maxItems": 6,
+      "prefixItems": [
+        {"$ref": "#/$defs/workloadFile"},
+        {"$ref": "#/$defs/privacyFile"},
+        {"$ref": "#/$defs/accessFile"},
+        {"$ref": "#/$defs/routeFile"},
+        {"$ref": "#/$defs/classificationFile"},
+        {"$ref": "#/$defs/manifestFile"}
+      ],
+      "items": false
+    },
+    "planDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  },
+  "$defs": {
+    "file": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["key", "path", "before", "beforeDigest", "after", "afterDigest"],
+      "properties": {
+        "key": {"type": "string"},
+        "path": {"type": "string"},
+        "before": {"type": ["object", "null"]},
+        "beforeDigest": {"oneOf": [{"const": "absent"}, {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}]},
+        "after": {"type": "object"},
+        "afterDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+      }
+    },
+    "workloadFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "workload"}, "path": {"const": "config/workloads.json"}}}]},
+    "privacyFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "privacy"}, "path": {"const": "config/privacy.json"}}}]},
+    "accessFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "access"}, "path": {"const": "config/access.json"}}}]},
+    "routeFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "route"}, "path": {"const": "config/routes.json"}}}]},
+    "classificationFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "classification"}, "path": {"const": "config/argus/workload-classification.json"}}}]},
+    "manifestFile": {"allOf": [{"$ref": "#/$defs/file"}, {"properties": {"key": {"const": "manifest"}, "path": {"type": "string", "pattern": "^workloads/[a-z0-9][a-z0-9-]{0,62}/manifest\\.json$"}}}]}
+  }
+}

@@ -247,10 +247,13 @@ class ObservationRepositoryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory, ObservationRepository(Path(directory) / "observations.sqlite3") as repo:
             repo.sync_registry(self.registry, explicit_clock="2026-08-05T00:00:00Z")
             result = self.ingest(repo, 1, records=[])
-            fresh = repo.coverage(self.registry, explicit_clock_epoch=1785888001)
+            future = repo.coverage(self.registry, explicit_clock_epoch=1785888001)
+            fresh = repo.coverage(self.registry, explicit_clock_epoch=1785888061)
             stale = repo.coverage(self.registry, explicit_clock_epoch=1785889000)
         self.assertTrue(result["becameCurrent"])
         self.assertEqual(0, result["recordCount"])
+        self.assertEqual("failed", future["sources"][0]["state"])
+        self.assertEqual("source-clock-ahead", future["gaps"][0]["kind"])
         self.assertEqual("fresh", fresh["sources"][0]["state"])
         self.assertEqual("stale", stale["sources"][0]["state"])
         with tempfile.TemporaryDirectory() as directory, ObservationRepository(Path(directory) / "other.sqlite3") as repo:

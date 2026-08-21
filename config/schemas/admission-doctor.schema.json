@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://argus.invalid/schemas/admission-doctor-v1.json",
+  "title": "Argus read-only admission drift report",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "ok",
+    "evaluatedAt",
+    "observationState",
+    "findings",
+    "findingCounts",
+    "mutationAuthority",
+    "actionsTaken",
+    "adoptionPerformed",
+    "evidenceDigest"
+  ],
+  "properties": {
+    "schemaVersion": {"const": 1},
+    "ok": {"type": "boolean"},
+    "evaluatedAt": {"type": "string", "format": "date-time", "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$"},
+    "observationState": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "configuredSources", "freshSources", "registryDigest", "sourceStates"],
+      "properties": {
+        "status": {"enum": ["complete", "incomplete", "not-configured", "unavailable"]},
+        "configuredSources": {"type": "integer", "minimum": 0},
+        "freshSources": {"type": "integer", "minimum": 0},
+        "registryDigest": {"type": ["string", "null"]},
+        "sourceStates": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sourceId", "state"],
+            "properties": {
+              "sourceId": {"type": "string", "minLength": 1},
+              "state": {"enum": ["never_observed", "fresh", "stale", "failed", "excluded"]}
+            }
+          }
+        }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["code"],
+        "properties": {
+          "code": {"enum": ["unknown-runtime", "missing-runtime", "project-name-drift", "revision-drift", "classification-drift", "observation-unavailable"]},
+          "workloadId": {"type": "string"},
+          "runtimeProject": {"type": "string"},
+          "registryProject": {"type": "string"},
+          "manifestProject": {"type": "string"},
+          "expectedTrustDomain": {"type": "string"},
+          "manifestTrustDomain": {"type": "string"},
+          "workloadTrustDomain": {"type": "string"},
+          "observedTrustDomains": {"type": "array", "items": {"type": "string"}},
+          "fields": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": false
+      }
+    },
+    "findingCounts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["unknown-runtime", "missing-runtime", "project-name-drift", "revision-drift", "classification-drift", "observation-unavailable"],
+      "properties": {
+        "unknown-runtime": {"type": "integer", "minimum": 0},
+        "missing-runtime": {"type": "integer", "minimum": 0},
+        "project-name-drift": {"type": "integer", "minimum": 0},
+        "revision-drift": {"type": "integer", "minimum": 0},
+        "classification-drift": {"type": "integer", "minimum": 0},
+        "observation-unavailable": {"type": "integer", "minimum": 0}
+      }
+    },
+    "mutationAuthority": {"const": "none"},
+    "actionsTaken": {"const": []},
+    "adoptionPerformed": {"const": false},
+    "evidenceDigest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"}
+  }
+}
