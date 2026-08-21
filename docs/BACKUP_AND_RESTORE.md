@@ -75,12 +75,43 @@ pre-cutover database backup schedule stops working the moment a workload moves
 sudo ./scripts/argus-m5-workload-db-backup --workload kadath
 ```
 
-The dump runs inside the sandbox, credentials are read from the container
-environment rather than from anything committed, and the artifact is verified
-with `pg_restore --list` before it replaces the night's copy. A partial dump is
+The dump first resolves the `postgres` UID/GID from the exact immutable image
+used by the workload, then verifies that every entry in the database volume is
+owned by that mapped account. This matters because the retained images do not
+share one account convention (Kadath uses `999:999`; Intake uses `70:70`). The
+dump then runs inside the sandbox. Only the role and database name are selected
+from the inspected container environment; the environment is never printed and
+no credential is read from the repository. The artifact is verified with
+`pg_restore --list` before it replaces the night's copy. A partial dump is
 removed rather than kept. Artifacts land in
 `/var/backups/argus-m5-workload-db/<workload>/`, root-owned `0600`, with the
 newest 14 retained.
+
+If the ownership preflight reports a mismatch, inspect it without changing the
+workload:
+
+```bash
+sudo ./scripts/argus-m5-workload-db-backup \
+  --workload kadath --action check-ownership
+```
+
+Repair is deliberately opt-in and workload-scoped. It snapshots the exact
+PostgreSQL volume, stops only the selected database container when it is
+running, applies the image-derived ownership repair, starts the container, and
+requires both
+`pg_isready` and a real `SELECT 1` query. It restores the snapshot if ownership
+or PostgreSQL query readiness does not verify. A root-owned per-workload lock
+prevents a scheduled dump and an ownership repair from overlapping:
+
+```bash
+sudo ./scripts/argus-m5-workload-db-backup \
+  --workload kadath --action repair-ownership --confirm kadath
+```
+
+Run the normal backup service only after the repair command reports
+`"verified": true`. Never use the repair action for an arbitrary container or
+volume; the script refuses any volume that is not discovered from the selected
+database service.
 
 Install the schedule per workload:
 

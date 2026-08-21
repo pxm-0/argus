@@ -8,16 +8,20 @@ inside the sandbox and verifies the artifact before keeping it.
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import subprocess
 import sys
+import tarfile
 import time
 
 
 BACKUP_ROOT = Path("/var/backups/argus-m5-workload-db")
+LOCK_ROOT = Path("/run/argus-m5-workload-db-backup")
 # Retained workloads that carry a database, mapped to their sandbox identity.
 SPECS = {
     "kadath": {
@@ -33,6 +37,8 @@ SPECS = {
 }
 RETAINED_COPIES = 14
 DUMP_TIMEOUT_SECONDS = 900
+REPAIR_TIMEOUT_SECONDS = 180
+IMAGE_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
 
 
 class BackupError(RuntimeError):
@@ -71,6 +77,7 @@ def container_name(spec: dict) -> str:
             *target_command(
                 str(spec["domain"]),
                 "ps",
+                "--all",
                 "--format",
                 "{{.Names}}",
                 "--filter",
@@ -87,12 +94,453 @@ def container_name(spec: dict) -> str:
     return names[0]
 
 
+def database_mount(spec: dict, container: str) -> dict:
+    try:
+        mounts = json.loads(
+            text(
+                [
+                    *target_command(
+                        str(spec["domain"]),
+                        "inspect",
+                        "--format={{json .Mounts}}",
+                        container,
+                    )
+                ]
+            )
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise BackupError(f"could not inspect database volume for {container}") from error
+    matches = [
+        mount
+        for mount in mounts
+        if isinstance(mount, dict)
+        and mount.get("Type") == "volume"
+        and mount.get("Destination") == "/var/lib/postgresql/data"
+    ]
+    if len(matches) != 1:
+        raise BackupError(
+            f"database volume for {container} is absent or ambiguous"
+        )
+    mount = matches[0]
+    volume = mount.get("Name")
+    if not isinstance(volume, str) or re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*", volume
+    ) is None:
+        raise BackupError(f"database volume name for {container} is unsafe")
+    source = mount.get("Source")
+    if not isinstance(source, str) or not source.startswith("/"):
+        raise BackupError(f"database volume source for {container} is unsafe")
+    return {"name": volume, "source": source}
+
+
+def database_volume(spec: dict, container: str) -> str:
+    return str(database_mount(spec, container)["name"])
+
+
+def volume_source(spec: dict, container: str) -> Path:
+    source = Path(str(database_mount(spec, container)["source"]))
+    allowed_root = Path(f"/var/lib/argus/{spec['domain']}/docker-data/volumes")
+    try:
+        relative = source.relative_to(allowed_root)
+    except ValueError as error:
+        raise BackupError("database volume source is outside its domain store") from error
+    if source.name != "_data" or len(relative.parts) != 2:
+        raise BackupError("database volume source is not an exact Docker volume path")
+    metadata = os.lstat(source)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError("database volume source is not a real directory")
+    return source
+
+
+def rootless_host_id(user: str, mapping: Path, container_id: int) -> int:
+    if container_id < 1:
+        raise BackupError("rootless container IDs must be positive")
+    for line in mapping.read_text(encoding="utf-8").splitlines():
+        owner, separator, values = line.partition(":")
+        if owner != user or not separator:
+            continue
+        start_text, separator, length_text = values.partition(":")
+        if not separator:
+            continue
+        start, length = int(start_text), int(length_text)
+        if container_id <= length:
+            return start + container_id - 1
+    raise BackupError(f"rootless ID mapping is missing for {user}")
+
+
+def postgres_container_ids(spec: dict, container: str) -> tuple[int, int]:
+    """Resolve the postgres account from the exact image used by the target.
+
+    Retained workloads do not all use the same PostgreSQL image: Kadath maps
+    postgres as 999:999 while Intake maps it as 70:70.  Probe the immutable
+    image ID in an ephemeral, read-only, networkless container instead of
+    guessing from a distribution convention.
+    """
+    domain = str(spec["domain"])
+    image = text(
+        target_command(
+            domain,
+            "inspect",
+            "--format={{.Image}}",
+            container,
+        ),
+        30,
+    ).strip()
+    if IMAGE_ID_PATTERN.fullmatch(image) is None:
+        raise BackupError("database container image identity is unsafe")
+    output = text(
+        target_command(
+            domain,
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--entrypoint",
+            "/bin/sh",
+            image,
+            "-eu",
+            "-c",
+            "id -u postgres; id -g postgres",
+        ),
+        REPAIR_TIMEOUT_SECONDS,
+    ).splitlines()
+    if len(output) != 2 or any(not value.isdecimal() for value in output):
+        raise BackupError("database image postgres identity is malformed")
+    uid, gid = (int(value) for value in output)
+    if not 0 < uid <= 65535 or not 0 < gid <= 65535:
+        raise BackupError("database image postgres identity is unsafe")
+    return uid, gid
+
+
+def expected_host_ownership(
+    spec: dict, container: str
+) -> tuple[int, int, int, int]:
+    user = f"argus-{spec['domain']}"
+    postgres_uid, postgres_gid = postgres_container_ids(spec, container)
+    return (
+        rootless_host_id(user, Path("/etc/subuid"), postgres_uid),
+        rootless_host_id(user, Path("/etc/subgid"), postgres_gid),
+        postgres_uid,
+        postgres_gid,
+    )
+
+
+def volume_entries(source: Path) -> list[Path]:
+    entries = [source]
+    for directory, child_directories, files in os.walk(source, followlinks=False):
+        entries.extend(Path(directory) / name for name in child_directories)
+        entries.extend(Path(directory) / name for name in files)
+    return entries
+
+
+def ownership_status(workload: str, container: str | None = None) -> dict:
+    spec = SPECS[workload]
+    selected_container = container or container_name(spec)
+    volume = database_mount(spec, selected_container)["name"]
+    source = volume_source(spec, selected_container)
+    expected_uid, expected_gid, postgres_uid, postgres_gid = (
+        expected_host_ownership(spec, selected_container)
+    )
+    count = 0
+    for entry in volume_entries(source):
+        metadata = os.lstat(entry)
+        if metadata.st_uid != expected_uid or metadata.st_gid != expected_gid:
+            count += 1
+    return {
+        "schemaVersion": 1,
+        "workloadId": workload,
+        "container": selected_container,
+        "volume": volume,
+        "expectedUid": postgres_uid,
+        "expectedGid": postgres_gid,
+        "nonPostgresOwnedEntries": count,
+        "ok": count == 0,
+    }
+
+
+def require_owned_volume(workload: str, container: str) -> dict:
+    status = ownership_status(workload, container)
+    if not status["ok"]:
+        raise BackupError(
+            f"{workload} database volume ownership mismatch; "
+            f"run --action repair-ownership --confirm {workload}"
+        )
+    return status
+
+
+def container_state(spec: dict, container: str) -> str:
+    return text(
+        [
+            *target_command(
+                str(spec["domain"]),
+                "inspect",
+                "--format={{.State.Status}}",
+                container,
+            )
+        ]
+    ).strip()
+
+
+def wait_for_state(spec: dict, container: str, states: set[str]) -> str:
+    deadline = time.monotonic() + REPAIR_TIMEOUT_SECONDS
+    current = "unknown"
+    while time.monotonic() < deadline:
+        current = container_state(spec, container)
+        if current in states:
+            return current
+        if "running" in states and current in {"exited", "dead"}:
+            raise BackupError(f"{container} entered terminal state ({current})")
+        time.sleep(1)
+    raise BackupError(
+        f"{container} did not reach an expected state (last={current})"
+    )
+
+
+def stop_database(spec: dict, container: str) -> None:
+    subprocess.run(
+        [
+            *target_command(
+                str(spec["domain"]),
+                "stop",
+                "--time",
+                "60",
+                container,
+            )
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=REPAIR_TIMEOUT_SECONDS,
+    )
+    wait_for_state(spec, container, {"exited", "dead"})
+
+
+def start_database(spec: dict, container: str) -> None:
+    subprocess.run(
+        [*target_command(str(spec["domain"]), "start", container)],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        timeout=REPAIR_TIMEOUT_SECONDS,
+    )
+    wait_for_state(spec, container, {"running"})
+
+
+def wait_for_database(spec: dict, container: str, role: str, database: str) -> None:
+    deadline = time.monotonic() + REPAIR_TIMEOUT_SECONDS
+    while time.monotonic() < deadline:
+        if database_ready(spec, container, role, database):
+            return
+        time.sleep(1)
+    raise BackupError(f"{container} PostgreSQL readiness did not recover")
+
+
+def database_ready(spec: dict, container: str, role: str, database: str) -> bool:
+    commands = (
+        ("pg_isready", "-U", role, "-d", database),
+        (
+            "psql",
+            "--no-psqlrc",
+            "--no-password",
+            "--tuples-only",
+            "--no-align",
+            "-U",
+            role,
+            "-d",
+            database,
+            "-c",
+            "SELECT 1",
+        ),
+    )
+    for command in commands:
+        result = subprocess.run(
+            [
+                *target_command(
+                    str(spec["domain"]),
+                    "exec",
+                    container,
+                    *command,
+                )
+            ],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=30,
+        )
+        if result.returncode != 0:
+            return False
+    return True
+
+
+def snapshot_volume(source: Path, destination: Path) -> None:
+    partial = destination.with_name(f".{destination.name}.partial")
+    descriptor = os.open(
+        partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600
+    )
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            with tarfile.open(fileobj=handle, mode="w:gz") as archive:
+                archive.add(source, arcname=".", recursive=True)
+        subprocess.run(
+            ["tar", "-tzf", str(partial)],
+            check=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=REPAIR_TIMEOUT_SECONDS,
+        )
+        if partial.stat().st_size == 0:
+            raise BackupError("database volume snapshot is empty")
+        os.replace(partial, destination)
+        os.chmod(destination, 0o600)
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+
+
+def restore_volume(source: Path, archive: Path) -> None:
+    subprocess.run(
+        [
+            "tar",
+            "--numeric-owner",
+            "--same-owner",
+            "-xzf",
+            str(archive),
+            "-C",
+            str(source),
+        ],
+        check=True,
+        stdout=subprocess.DEVNULL,
+        timeout=REPAIR_TIMEOUT_SECONDS,
+    )
+
+
+def repair_volume_ownership(
+    spec: dict, container: str, source: Path
+) -> None:
+    expected_uid, expected_gid, _postgres_uid, _postgres_gid = (
+        expected_host_ownership(spec, container)
+    )
+    for entry in volume_entries(source):
+        os.chown(entry, expected_uid, expected_gid, follow_symlinks=False)
+
+
+def directory_identity(path: Path) -> tuple[int, int]:
+    metadata = os.lstat(path)
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+        raise BackupError("database volume source changed type")
+    return metadata.st_dev, metadata.st_ino
+
+
+def acquire_workload_lock(workload: str):
+    ensure_root_directory(LOCK_ROOT)
+    path = LOCK_ROOT / f"{workload}.lock"
+    descriptor = os.open(
+        path,
+        os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC,
+        0o600,
+    )
+    metadata = os.fstat(descriptor)
+    if (
+        metadata.st_uid != 0
+        or not stat.S_ISREG(metadata.st_mode)
+        or stat.S_IMODE(metadata.st_mode) != 0o600
+    ):
+        os.close(descriptor)
+        raise BackupError("database backup lock ownership or mode is unsafe")
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as error:
+        os.close(descriptor)
+        raise BackupError(f"another {workload} database operation is active") from error
+    return os.fdopen(descriptor, "a+")
+
+
+def repair_ownership(workload: str, confirmation: str | None) -> dict:
+    if confirmation != workload:
+        raise BackupError("repair requires --confirm matching --workload exactly")
+    if os.geteuid() != 0:
+        raise BackupError("run with sudo")
+    spec = SPECS[workload]
+    container = container_name(spec)
+    role, database = credentials(spec, container)
+    before = ownership_status(workload, container)
+    source = volume_source(spec, container)
+    source_identity = directory_identity(source)
+    if before["ok"]:
+        return {**before, "changed": False, "verified": True}
+    initial_state = container_state(spec, container)
+    if initial_state not in {"running", "exited"}:
+        raise BackupError(
+            "refusing repair unless the selected database is running or exited"
+        )
+    directory = BACKUP_ROOT / workload
+    ensure_root_directory(BACKUP_ROOT)
+    ensure_root_directory(directory)
+    stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+    snapshot = directory / f"{workload}-ownership-{stamp}.tar.gz"
+    stopped = False
+    try:
+        if initial_state == "running":
+            stop_database(spec, container)
+            stopped = True
+        stopped_source = volume_source(spec, container)
+        if stopped_source != source or directory_identity(stopped_source) != source_identity:
+            raise BackupError("database volume changed while stopping the container")
+        snapshot_volume(source, snapshot)
+        repair_volume_ownership(spec, container, source)
+        after = ownership_status(workload, container)
+        if not after["ok"]:
+            raise BackupError("database volume ownership repair did not converge")
+        start_database(spec, container)
+        stopped = False
+        wait_for_database(spec, container, role, database)
+    except BaseException as error:
+        try:
+            if snapshot.exists():
+                if container_state(spec, container) == "running":
+                    stop_database(spec, container)
+                restore_volume(source, snapshot)
+            current_state = container_state(spec, container)
+            if initial_state == "running" and current_state != "running":
+                start_database(spec, container)
+            elif initial_state == "exited" and current_state == "running":
+                stop_database(spec, container)
+        except BaseException as rollback_error:
+            raise BackupError(
+                "ownership repair failed and snapshot rollback failed"
+            ) from rollback_error
+        raise error
+    return {
+        **after,
+        "changed": True,
+        "verified": True,
+        "snapshotPath": str(snapshot),
+    }
+
+
 def credentials(spec: dict, container: str) -> tuple[str, str]:
-    """Read role and database from container env, never from a committed file."""
+    """Read only role/database from inspect; never print the container env."""
     values = {}
-    for entry in text(
-        [*target_command(str(spec["domain"]), "exec", container, "printenv")]
-    ).splitlines():
+    try:
+        environment = json.loads(
+            text(
+                target_command(
+                    str(spec["domain"]),
+                    "inspect",
+                    "--format={{json .Config.Env}}",
+                    container,
+                ),
+                30,
+            )
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise BackupError("database container environment is malformed") from error
+    if not isinstance(environment, list) or not all(
+        isinstance(entry, str) for entry in environment
+    ):
+        raise BackupError("database container environment is malformed")
+    for entry in environment:
         key, separator, value = entry.partition("=")
         if separator:
             values[key] = value
@@ -135,6 +583,7 @@ def backup(workload: str) -> dict:
     ensure_root_directory(directory)
     container = container_name(spec)
     role, database = credentials(spec, container)
+    require_owned_volume(workload, container)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
     artifact = directory / f"{workload}-{stamp}.dump"
     partial = directory / f".{artifact.name}.partial"
@@ -210,8 +659,28 @@ def backup(workload: str) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--workload", required=True, choices=sorted(SPECS))
+    parser.add_argument(
+        "--action",
+        choices=("backup", "check-ownership", "repair-ownership"),
+        default="backup",
+    )
+    parser.add_argument(
+        "--confirm",
+        help="exact workload ID required for ownership repair",
+    )
     arguments = parser.parse_args()
-    print(json.dumps(backup(arguments.workload), sort_keys=True))
+    if os.geteuid() != 0:
+        raise BackupError("run with sudo")
+    with acquire_workload_lock(arguments.workload):
+        if arguments.action == "check-ownership":
+            result = ownership_status(arguments.workload)
+            print(json.dumps(result, sort_keys=True))
+            return 0 if result["ok"] else 1
+        if arguments.action == "repair-ownership":
+            result = repair_ownership(arguments.workload, arguments.confirm)
+        else:
+            result = backup(arguments.workload)
+    print(json.dumps(result, sort_keys=True))
     return 0
 
 
