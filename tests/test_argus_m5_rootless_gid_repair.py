@@ -49,6 +49,7 @@ class RootlessGidRepairTest(unittest.TestCase):
         self.assertNotIn("acquire_lock", plan_branch)
         self.assertNotIn("write_", plan_branch)
         self.assertIn(module.APPLY_ACK, source)
+        self.assertIn(module.RECOVERY_ACK, source)
         self.assertIn(module.ROLLBACK_ACK, source)
 
     def test_stale_gid_must_not_be_root_current_or_subordinate(self) -> None:
@@ -466,7 +467,7 @@ class RootlessGidRepairTest(unittest.TestCase):
         self.assertEqual("recovery-required", summaries[-1][1])
         self.assertTrue(summaries[-1][2]["metadataRetained"])
 
-    def test_ingress_is_prepared_before_start_and_relocked_after_stability(
+    def test_restore_relocks_prepared_ingress_after_stability(
         self,
     ) -> None:
         events = []
@@ -474,28 +475,22 @@ class RootlessGidRepairTest(unittest.TestCase):
         states = iter((set(), {"app", "ingress"}, {"app", "ingress"}))
         originals = (
             module.docker_ids,
-            module.verified_ingress_directories,
-            module.prepare_ingress_directories,
+            module.start_missing_in_dependency_order,
             module.lock_ingress_directories,
-            module.run,
             module.RUNNING_STABILITY_SECONDS,
         )
         module.docker_ids = lambda *_args, **_kwargs: next(states)
-        module.verified_ingress_directories = (
-            lambda _domain, missing: events.append(("discover", set(missing)))
-            or [ingress]
-        )
-        module.prepare_ingress_directories = (
-            lambda _domain, paths: events.append(("prepare", list(paths)))
+        module.start_missing_in_dependency_order = (
+            lambda _domain, _expected, missing, prepared: events.append(
+                ("start", set(missing))
+            )
+            or prepared.add(ingress)
         )
         module.lock_ingress_directories = (
             lambda _domain, paths, *, require_socket: events.append(
                 ("lock", list(paths), require_socket)
             )
         )
-        module.run = lambda command, **_kwargs: events.append(
-            ("start", command)
-        ) or SimpleNamespace(returncode=0)
         module.RUNNING_STABILITY_SECONDS = 0
         try:
             module.restore_running_set(
@@ -504,17 +499,150 @@ class RootlessGidRepairTest(unittest.TestCase):
         finally:
             (
                 module.docker_ids,
-                module.verified_ingress_directories,
-                module.prepare_ingress_directories,
+                module.start_missing_in_dependency_order,
                 module.lock_ingress_directories,
-                module.run,
                 module.RUNNING_STABILITY_SECONDS,
             ) = originals
         labels = [event[0] for event in events]
-        self.assertLess(labels.index("discover"), labels.index("prepare"))
-        self.assertLess(labels.index("prepare"), labels.index("start"))
         self.assertLess(labels.index("start"), labels.index("lock"))
         self.assertTrue(events[-1][2])
+
+    def test_missing_containers_start_in_health_gated_dependency_order(
+        self,
+    ) -> None:
+        postgres = "postgres"
+        api = "api"
+        web = "web"
+        ingress_container = "ingress"
+        expected = {postgres, api, web, ingress_container}
+        contracts = {
+            postgres: {"dependencies": []},
+            api: {"dependencies": [(postgres, "service_healthy")]},
+            web: {"dependencies": [(api, "service_started")]},
+            ingress_container: {
+                "dependencies": [(web, "service_started")]
+            },
+        }
+        states = {
+            container: {"Status": "exited", "ExitCode": 0}
+            for container in expected
+        }
+        health_checks = 0
+        events = []
+        ingress = Path("/runtime/workload/stage/ingress")
+        originals = (
+            module.container_start_contracts,
+            module.container_state,
+            module.verified_ingress_directories,
+            module.prepare_ingress_directories,
+            module.run,
+            module.time.sleep,
+        )
+        module.container_start_contracts = lambda *_args: contracts
+
+        def state(_domain, container):
+            nonlocal health_checks
+            if container == postgres and states[container]["Status"] == "running":
+                health_checks += 1
+                states[container]["Health"] = {
+                    "Status": "healthy" if health_checks > 1 else "starting"
+                }
+            return states[container]
+
+        module.container_state = state
+        module.verified_ingress_directories = (
+            lambda _domain, containers: [ingress]
+            if list(containers) == [ingress_container]
+            else []
+        )
+        module.prepare_ingress_directories = (
+            lambda _domain, paths: events.append(("prepare", list(paths)))
+        )
+
+        def start(command, **_kwargs):
+            container = command[-1]
+            events.append(("start", container))
+            states[container] = {"Status": "running", "ExitCode": 0}
+            return SimpleNamespace(returncode=0)
+
+        module.run = start
+        module.time.sleep = lambda _seconds: events.append(("wait",))
+        prepared = set()
+        try:
+            module.start_missing_in_dependency_order(
+                "work-sandbox", expected, expected, prepared
+            )
+        finally:
+            (
+                module.container_start_contracts,
+                module.container_state,
+                module.verified_ingress_directories,
+                module.prepare_ingress_directories,
+                module.run,
+                module.time.sleep,
+            ) = originals
+        starts = [event[1] for event in events if event[0] == "start"]
+        self.assertEqual([postgres, api, web, ingress_container], starts)
+        self.assertIn(("wait",), events)
+        self.assertLess(
+            events.index(("prepare", [ingress])),
+            events.index(("start", ingress_container)),
+        )
+        self.assertEqual({ingress}, prepared)
+
+    def test_forward_recovery_revalidates_manifest_and_inventory(self) -> None:
+        summary_path = Path("/state/repair-summary.json")
+        inventory = {
+            "containerIds": ["one"],
+            "volumeNames": ["volume"],
+            "projectNames": ["project"],
+        }
+        summary = {
+            "sandboxUid": 1003,
+            "fromGid": 981,
+            "toGid": 1003,
+            "preRunningContainers": ["one"],
+            "preInventorySha256": module.inventory_digest(inventory),
+            "failureStage": "runtime-recovery",
+        }
+        updates = []
+        originals = (
+            module.load_repair_summary,
+            module.pwd.getpwnam,
+            module.boundary,
+            module.validate_paths,
+            module.inventory,
+            module.complete_runtime_recovery,
+            module.update_summary,
+        )
+        module.load_repair_summary = lambda *_args: (summary, [b"entry"])
+        module.pwd.getpwnam = lambda _user: SimpleNamespace(
+            pw_uid=1003, pw_gid=1003
+        )
+        module.boundary = lambda *_args: {"entries": []}
+        module.validate_paths = lambda *_args: None
+        module.inventory = lambda _domain: inventory
+        module.complete_runtime_recovery = lambda *_args: inventory
+        module.update_summary = (
+            lambda _path, _summary, status, **values: updates.append(
+                (status, values)
+            )
+        )
+        try:
+            result = module.recover_repair("work-sandbox", summary_path)
+        finally:
+            (
+                module.load_repair_summary,
+                module.pwd.getpwnam,
+                module.boundary,
+                module.validate_paths,
+                module.inventory,
+                module.complete_runtime_recovery,
+                module.update_summary,
+            ) = originals
+        self.assertTrue(result["verified"])
+        self.assertTrue(result["inventoryPreserved"])
+        self.assertEqual("succeeded", updates[-1][0])
 
     def test_ingress_bind_cannot_escape_the_domain_runtime(self) -> None:
         original_text = module.text

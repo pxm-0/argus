@@ -34,6 +34,7 @@ CUTOVER_LOCK = Path("/run/argus-m5-workload-cutover/lock")
 PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
 MIGRATION_RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
 APPLY_ACK = "--acknowledge-rootless-gid-repair"
+RECOVERY_ACK = "--acknowledge-rootless-gid-recovery"
 ROLLBACK_ACK = "--acknowledge-rootless-gid-rollback"
 DOCKER_TIMEOUT_SECONDS = 60
 DAEMON_TIMEOUT_SECONDS = 90
@@ -826,6 +827,153 @@ def lock_ingress_directories(
         raise RepairError("sandbox ingress endpoint did not recover")
 
 
+def container_start_contracts(
+    domain: str, containers: Iterable[str]
+) -> dict[str, dict]:
+    contracts = {}
+    service_index = {}
+    for container in sorted(containers):
+        try:
+            labels = json.loads(
+                text(
+                    target_command(
+                        domain,
+                        "inspect",
+                        "--format={{json .Config.Labels}}",
+                        container,
+                    ),
+                    30,
+                )
+            )
+        except (json.JSONDecodeError, TypeError) as error:
+            raise RepairError("container Compose labels are malformed") from error
+        if not isinstance(labels, dict):
+            raise RepairError("container Compose labels are malformed")
+        project = labels.get("com.docker.compose.project")
+        service = labels.get("com.docker.compose.service")
+        depends_on = labels.get("com.docker.compose.depends_on", "")
+        if (
+            not isinstance(project, str)
+            or not project
+            or not isinstance(service, str)
+            or not service
+            or not isinstance(depends_on, str)
+        ):
+            raise RepairError("container Compose identity is incomplete")
+        key = (project, service)
+        if key in service_index:
+            raise RepairError("container Compose service identity is ambiguous")
+        service_index[key] = container
+        contracts[container] = {
+            "project": project,
+            "service": service,
+            "dependsOn": depends_on,
+            "dependencies": [],
+        }
+    accepted_conditions = {
+        "service_started",
+        "service_healthy",
+        "service_completed_successfully",
+    }
+    for container, contract in contracts.items():
+        dependencies = []
+        encoded_dependencies = contract.pop("dependsOn")
+        if encoded_dependencies:
+            for encoded in encoded_dependencies.split(","):
+                parts = encoded.split(":")
+                if (
+                    len(parts) != 3
+                    or not parts[0]
+                    or parts[1] not in accepted_conditions
+                    or parts[2] not in {"true", "false"}
+                ):
+                    raise RepairError("container Compose dependency is malformed")
+                dependency = service_index.get(
+                    (contract["project"], parts[0])
+                )
+                if dependency is None:
+                    raise RepairError(
+                        "container Compose dependency is outside the running set"
+                    )
+                dependencies.append((dependency, parts[1]))
+        contract["dependencies"] = dependencies
+    return contracts
+
+
+def container_state(domain: str, container: str) -> dict:
+    try:
+        state = json.loads(
+            text(
+                target_command(
+                    domain,
+                    "inspect",
+                    "--format={{json .State}}",
+                    container,
+                ),
+                30,
+            )
+        )
+    except (json.JSONDecodeError, TypeError) as error:
+        raise RepairError("container runtime state is malformed") from error
+    if not isinstance(state, dict):
+        raise RepairError("container runtime state is malformed")
+    return state
+
+
+def dependency_satisfied(state: dict, condition: str) -> bool:
+    status = state.get("Status")
+    if condition == "service_started":
+        return status == "running"
+    if condition == "service_healthy":
+        health = state.get("Health")
+        return (
+            status == "running"
+            and isinstance(health, dict)
+            and health.get("Status") == "healthy"
+        )
+    if condition == "service_completed_successfully":
+        return status == "exited" and state.get("ExitCode") == 0
+    raise RepairError("unsupported Compose dependency condition")
+
+
+def start_missing_in_dependency_order(
+    domain: str,
+    expected: set[str],
+    missing: Iterable[str],
+    prepared_ingress: set[Path],
+) -> None:
+    contracts = container_start_contracts(domain, expected)
+    pending = set(missing)
+    deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
+    while pending:
+        ready = []
+        for container in sorted(pending):
+            dependencies = contracts[container]["dependencies"]
+            if all(
+                dependency_satisfied(container_state(domain, dependency), condition)
+                for dependency, condition in dependencies
+            ):
+                ready.append(container)
+        for container in ready:
+            directories = verified_ingress_directories(domain, [container])
+            prepare_ingress_directories(domain, directories)
+            prepared_ingress.update(directories)
+            run(
+                target_command(domain, "start", container),
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=DAEMON_TIMEOUT_SECONDS,
+            )
+            pending.remove(container)
+        if not pending:
+            return
+        if time.monotonic() >= deadline:
+            raise RepairError(
+                "container dependency order did not become startable"
+            )
+        time.sleep(1)
+
+
 def restore_running_set(domain: str, expected: set[str]) -> None:
     current = docker_ids(domain, running_only=True)
     extra = sorted(current - expected)
@@ -837,15 +985,11 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
             stderr=subprocess.DEVNULL,
             timeout=DAEMON_TIMEOUT_SECONDS,
         )
-    ingress_directories = verified_ingress_directories(domain, missing)
-    prepare_ingress_directories(domain, ingress_directories)
+    ingress_directories: set[Path] = set()
     try:
         if missing:
-            run(
-                target_command(domain, "start", *missing),
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                timeout=DAEMON_TIMEOUT_SECONDS,
+            start_missing_in_dependency_order(
+                domain, expected, missing, ingress_directories
             )
         deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
         stable_since = None
@@ -855,7 +999,7 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
                     stable_since = time.monotonic()
                 elif time.monotonic() - stable_since >= RUNNING_STABILITY_SECONDS:
                     lock_ingress_directories(
-                        domain, ingress_directories, require_socket=True
+                        domain, sorted(ingress_directories), require_socket=True
                     )
                     return
             else:
@@ -864,7 +1008,7 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
         raise RepairError("sandbox pre-running container set was not restored")
     except BaseException:
         lock_ingress_directories(
-            domain, ingress_directories, require_socket=False
+            domain, sorted(ingress_directories), require_socket=False
         )
         raise
 
@@ -1261,15 +1405,17 @@ def apply_repair(domain: str, stale_gid: int) -> dict:
     }
 
 
-def load_rollback_summary(path: Path, domain: str) -> tuple[dict, list[bytes]]:
+def load_repair_summary(
+    path: Path, domain: str, accepted_statuses: set[str]
+) -> tuple[dict, list[bytes]]:
     expected_root = STATE_ROOT / domain
     absolute = Path(os.path.abspath(path))
     try:
         relative = absolute.relative_to(expected_root)
     except ValueError as error:
-        raise RepairError("rollback summary is outside the domain state root") from error
+        raise RepairError("repair summary is outside the domain state root") from error
     if len(relative.parts) != 2 or relative.name != "repair-summary.json":
-        raise RepairError("rollback summary path is not exact")
+        raise RepairError("repair summary path is not exact")
     require_real_directory(expected_root)
     require_real_directory(absolute.parent)
     metadata = os.lstat(absolute)
@@ -1278,15 +1424,15 @@ def load_rollback_summary(path: Path, domain: str) -> tuple[dict, list[bytes]]:
         or not stat.S_ISREG(metadata.st_mode)
         or stat.S_IMODE(metadata.st_mode) != 0o600
     ):
-        raise RepairError("rollback summary ownership or mode is unsafe")
+        raise RepairError("repair summary ownership or mode is unsafe")
     summary = json.loads(absolute.read_text(encoding="utf-8"))
     if (
         summary.get("schemaVersion") != 1
         or summary.get("domain") != domain
         or summary.get("dataRoot") != str(data_root(domain))
-        or summary.get("status") != "succeeded"
+        or summary.get("status") not in accepted_statuses
     ):
-        raise RepairError("rollback summary is not an accepted repair")
+        raise RepairError("repair summary is not accepted for this action")
     manifest_name = summary.get("pathManifest")
     digest = summary.get("pathManifestSha256")
     if (
@@ -1294,15 +1440,72 @@ def load_rollback_summary(path: Path, domain: str) -> tuple[dict, list[bytes]]:
         or Path(manifest_name).name != manifest_name
         or not isinstance(digest, str)
     ):
-        raise RepairError("rollback manifest binding is invalid")
+        raise RepairError("repair manifest binding is invalid")
     entries = read_manifest(absolute.parent / manifest_name, digest)
     if len(entries) != summary.get("entryCount"):
-        raise RepairError("rollback manifest count does not match")
+        raise RepairError("repair manifest count does not match")
     return summary, entries
 
 
+def recover_repair(domain: str, summary_path: Path) -> dict:
+    summary, entries = load_repair_summary(
+        summary_path, domain, {"recovery-required"}
+    )
+    identity = pwd.getpwnam(sandbox_user(domain))
+    from_gid = summary.get("fromGid")
+    to_gid = summary.get("toGid")
+    if (
+        summary.get("sandboxUid") != identity.pw_uid
+        or not isinstance(from_gid, int)
+        or to_gid != identity.pw_gid
+    ):
+        raise RepairError("recovery summary no longer matches sandbox identity")
+    details = boundary(domain, from_gid)
+    if details["entries"]:
+        raise RepairError("recovery refuses an incomplete GID migration")
+    validate_paths(data_root(domain), entries, identity.pw_uid, to_gid)
+    expected_running = summary.get("preRunningContainers")
+    if (
+        not isinstance(expected_running, list)
+        or any(not isinstance(item, str) or not item for item in expected_running)
+        or len(expected_running) != len(set(expected_running))
+    ):
+        raise RepairError("recovery summary running set is malformed")
+    current_inventory = inventory(domain)
+    if summary.get("preInventorySha256") != inventory_digest(current_inventory):
+        raise RepairError("recovery inventory no longer matches the migration")
+    recovered_inventory = complete_runtime_recovery(
+        domain, set(expected_running), current_inventory
+    )
+    update_summary(
+        summary_path,
+        summary,
+        "succeeded",
+        completedAt=time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()),
+        inventorySha256=inventory_digest(recovered_inventory),
+        daemonProbe="passed",
+        recoveryRetried=True,
+        recoveredFailureStage=summary.get("failureStage", "runtime-recovery"),
+    )
+    return {
+        "schemaVersion": 1,
+        "domain": domain,
+        "changed": False,
+        "verified": True,
+        "migratedEntries": len(entries),
+        "fromGid": from_gid,
+        "toGid": to_gid,
+        "daemonProbe": "passed",
+        "inventoryPreserved": True,
+        "recoveryRetried": True,
+        "summaryPath": str(summary_path),
+    }
+
+
 def rollback_repair(domain: str, summary_path: Path) -> dict:
-    summary, entries = load_rollback_summary(summary_path, domain)
+    summary, entries = load_repair_summary(
+        summary_path, domain, {"succeeded"}
+    )
     user = sandbox_user(domain)
     identity = pwd.getpwnam(user)
     if summary.get("sandboxUid") != identity.pw_uid:
@@ -1364,15 +1567,22 @@ def main() -> int:
     action = parser.add_mutually_exclusive_group(required=True)
     action.add_argument("--plan", action="store_true")
     action.add_argument("--apply", action="store_true")
+    action.add_argument("--recover", type=Path)
     action.add_argument("--rollback", type=Path)
     action.add_argument("--probe", action="store_true")
     parser.add_argument("--from-gid", type=int)
     parser.add_argument(APPLY_ACK, action="store_true")
+    parser.add_argument(RECOVERY_ACK, action="store_true")
     parser.add_argument(ROLLBACK_ACK, action="store_true")
     arguments = parser.parse_args()
     if os.geteuid() != 0:
         raise RepairError("run with sudo")
-    if arguments.rollback:
+    if arguments.recover:
+        if not getattr(
+            arguments, RECOVERY_ACK.removeprefix("--").replace("-", "_")
+        ):
+            raise RepairError(f"recovery requires {RECOVERY_ACK}")
+    elif arguments.rollback:
         if not getattr(arguments, ROLLBACK_ACK.removeprefix("--").replace("-", "_")):
             raise RepairError(f"rollback requires {ROLLBACK_ACK}")
     elif not arguments.probe:
@@ -1417,6 +1627,8 @@ def main() -> int:
             )
             if arguments.apply:
                 result = apply_repair(arguments.domain, arguments.from_gid)
+            elif arguments.recover:
+                result = recover_repair(arguments.domain, arguments.recover)
             elif arguments.rollback:
                 result = rollback_repair(arguments.domain, arguments.rollback)
             else:

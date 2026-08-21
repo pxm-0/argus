@@ -73,6 +73,21 @@ the stale group. The tool retries bounded runtime recovery and otherwise writes
 a root-only `recovery-required` summary with stable failure classes while
 leaving the migrated metadata in place.
 
+Resume that exact forward recovery only from its root-owned summary:
+
+```text
+sudo scripts/argus-m5-rootless-gid-repair \
+  --domain work-sandbox \
+  --recover /var/lib/argus/rootless-gid-repair/work-sandbox/<timestamp>/repair-summary.json \
+  --acknowledge-rootless-gid-recovery
+```
+
+Recovery revalidates the manifest, requires zero remaining stale-GID entries,
+binds the current container/volume/Compose inventory to the pre-migration
+digest, and restores the exact pre-running container IDs. Containers start in
+their declared Compose dependency order, including health-gated dependencies;
+the command never recreates a container or named volume.
+
 Accepted ingress sidecars need an additional lifecycle step. Their host Unix
 socket directories are root-locked while running; the repair validates and
 temporarily hands only those exact bind directories to the sandbox identity,
