@@ -148,7 +148,9 @@ def _ensure_directory_like(path: Path, template: Path) -> None:
     template_stat = template.stat()
     if not stat.S_ISDIR(template_stat.st_mode):
         raise OnboardingError("canonical directory template is invalid")
-    path.mkdir(mode=stat.S_IMODE(template_stat.st_mode))
+    selected_mode = stat.S_IMODE(template_stat.st_mode)
+    path.mkdir(mode=selected_mode)
+    path.chmod(selected_mode)
     try:
         os.chown(path, template_stat.st_uid, template_stat.st_gid)
     except PermissionError:

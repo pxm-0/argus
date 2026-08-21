@@ -115,7 +115,11 @@ class OnboardingManagerTests(unittest.TestCase):
         access_metadata = (self.root / "config/access.json").stat()
         workloads_metadata = (self.root / "workloads").stat()
         plan = self.manager.preview(**ONBOARDING)
-        result = self.manager.apply(plan_digest=plan["planDigest"], confirm="reviewed-demo")
+        previous_umask = os.umask(0o077)
+        try:
+            result = self.manager.apply(plan_digest=plan["planDigest"], confirm="reviewed-demo")
+        finally:
+            os.umask(previous_umask)
         repeated = self.manager.apply(plan_digest=plan["planDigest"], confirm="reviewed-demo")
         self.assertEqual(result, repeated)
         self.assertEqual("completed", result["status"])
