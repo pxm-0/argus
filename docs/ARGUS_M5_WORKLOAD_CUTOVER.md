@@ -79,8 +79,17 @@ a root-owned, retrying systemd timer that reconciles only the authoritative
 target. Reconciliation waits for the rootless Docker socket, verifies the
 source fence, prepares the private socket directory, starts the preserved
 Compose project, re-locks the socket directory, and rechecks the tailnet
-endpoint. The periodic retry also handles a sandbox-daemon-only restart. This
-prevents daemon-restart races from starting both source and target writers.
+endpoint. A source that was explicitly retired may be absent: the accepted
+evidence must still record `sourceStopped=true`, a positive source container
+count, and zero resurrection schedules. The periodic retry also handles a
+sandbox-daemon-only restart. This prevents daemon-restart races from starting
+both source and target writers.
+
+Historical accepted records created before the resurrection-schedule field are
+upgraded only while the source project is still inspectable and the live
+schedule sweep is empty. Reconcile writes a root-only copy of the prior record
+before binding that zero-schedule observation; an already absent source with
+missing evidence remains refused.
 
 For stateful workloads, authority is durably committed immediately before
 the target starts. Failures before that boundary restore the previous

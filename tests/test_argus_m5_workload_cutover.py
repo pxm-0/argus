@@ -92,6 +92,72 @@ class WorkloadCutoverTests(unittest.TestCase):
     def test_reconcile_lock_wait_stays_under_systemd_start_timeout(self) -> None:
         self.assertLess(module.RECONCILE_LOCK_WAIT_SECONDS, 90)
 
+    def test_absent_source_is_allowed_only_with_explicit_retirement_evidence(self) -> None:
+        original_records = module.source_container_records
+        module.source_container_records = lambda _spec: (_ for _ in ()).throw(
+            module.CutoverError("source Compose project is absent")
+        )
+        state = {
+            "sourceStopped": True,
+            "sourceContainers": 1,
+            "sourceResurrectionSchedules": 0,
+        }
+        try:
+            self.assertEqual([], module.accepted_source_container_records({}, state))
+            for key, value in (
+                ("sourceStopped", False),
+                ("sourceContainers", 0),
+                ("sourceContainers", True),
+                ("sourceContainers", "1"),
+                ("sourceResurrectionSchedules", 1),
+            ):
+                invalid = dict(state)
+                invalid[key] = value
+                with self.assertRaisesRegex(
+                    module.CutoverError,
+                    "absent source is not backed by an explicit accepted fence",
+                ):
+                    module.accepted_source_container_records({}, invalid)
+
+            module.source_container_records = lambda _spec: (_ for _ in ()).throw(
+                module.CutoverError("source container inventory is malformed")
+            )
+            with self.assertRaisesRegex(
+                module.CutoverError, "source container inventory is malformed"
+            ):
+                module.accepted_source_container_records({}, state)
+        finally:
+            module.source_container_records = original_records
+
+    def test_legacy_schedule_evidence_is_backed_up_before_backfill(self) -> None:
+        state_dir = Path("/state/nodens")
+        state = {"workloadId": "nodens", "sourceStopped": True}
+        writes = []
+        original_write_state = module.write_state
+        module.write_state = lambda path, value: writes.append(
+            (path, dict(value))
+        )
+        try:
+            updated, backfilled = module.backfill_source_resurrection_evidence(
+                state_dir, state
+            )
+            repeated, repeated_backfill = (
+                module.backfill_source_resurrection_evidence(state_dir, updated)
+            )
+        finally:
+            module.write_state = original_write_state
+        self.assertTrue(backfilled)
+        self.assertFalse(repeated_backfill)
+        self.assertEqual(updated, repeated)
+        self.assertNotIn("sourceResurrectionSchedules", writes[0][1])
+        self.assertIn(
+            "cutover.before-source-resurrection-evidence.",
+            writes[0][0].name,
+        )
+        self.assertEqual(state_dir / "cutover.json", writes[1][0])
+        self.assertEqual(0, writes[1][1]["sourceResurrectionSchedules"])
+        self.assertEqual(2, len(writes))
+
     def test_cutover_contract_has_no_public_exposure_commands(self) -> None:
         script = SCRIPT.read_text()
         self.assertIn("unix:/", script)
