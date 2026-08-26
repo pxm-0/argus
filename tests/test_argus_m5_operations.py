@@ -110,12 +110,73 @@ class OperationLedgerTests(unittest.TestCase):
         for operation_type, parameters in [
             ("health.refresh", {}),
             ("logs.preview", {"maxLines": 100}),
-            ("migration.preflight", {}),
+            ("migration.preflight", {"targetTrustDomain": "personal-sandbox"}),
             ("workload.restart", {"healthTimeoutSeconds": 30}),
             ("backup.create", {"planRevision": "a" * 64}),
+            ("workload.deploy", {"targetRevision": "sha256:" + "a" * 64}),
+            ("workload.start", {}),
+            ("workload.stop", {}),
+            ("backup.restore", {"artifactId": "run-1"}),
+            ("migration.cutover", {"preflightOperationId": "00000000-0000-4000-8000-000000000001"}),
+            ("migration.rollback", {"cutoverOperationId": "00000000-0000-4000-8000-000000000001"}),
+            ("production.promote", {"sourceOperationId": "00000000-0000-4000-8000-000000000001", "targetTrustDomain": "managed-production"}),
+            ("production.rollback", {"promotionOperationId": "00000000-0000-4000-8000-000000000001"}),
             ("access.apply", {"desired": "tailnet"}),
         ]:
             validate_typed_parameters(operation_type, parameters)
+
+    def test_cutover_requires_successful_ready_preflight_and_rollback_links_once(self) -> None:
+        preflight, _ = self.create(
+            operation_type="migration.preflight",
+            parameters={"targetTrustDomain": "personal-sandbox"},
+            idempotency_key="preflight",
+        )
+        preflight_id = str(preflight["operation_id"])
+        self.ledger.transition(preflight_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(
+            preflight_id, {"running"}, "succeeded", finished_at=int(time.time()),
+            redacted_result_json='{"readyForCutover":true}',
+        )
+        cutover, _ = self.create(
+            operation_type="migration.cutover",
+            parameters={"preflightOperationId": preflight_id},
+            idempotency_key="cutover",
+        )
+        cutover_id = str(cutover["operation_id"])
+        self.ledger.transition(cutover_id, {"awaiting-approval"}, "queued", approved_at=int(time.time()))
+        self.ledger.transition(cutover_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(cutover_id, {"running"}, "succeeded", finished_at=int(time.time()))
+        rollback, _ = self.create(
+            operation_type="migration.rollback",
+            parameters={"cutoverOperationId": cutover_id},
+            idempotency_key="rollback",
+        )
+        self.assertEqual(rollback["operation_id"], self.ledger.get(cutover_id)["rollback_operation_id"])
+        with self.assertRaisesRegex(OperationValidationError, "already has a rollback"):
+            self.create(
+                operation_type="migration.rollback",
+                parameters={"cutoverOperationId": cutover_id},
+                idempotency_key="rollback-2",
+            )
+
+    def test_cutover_refuses_unready_or_mismatched_preflight(self) -> None:
+        preflight, _ = self.create(
+            operation_type="migration.preflight",
+            parameters={"targetTrustDomain": "work-sandbox"},
+            idempotency_key="preflight-mismatch",
+        )
+        operation_id = str(preflight["operation_id"])
+        self.ledger.transition(operation_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(
+            operation_id, {"running"}, "succeeded", finished_at=int(time.time()),
+            redacted_result_json='{"readyForCutover":true}',
+        )
+        with self.assertRaisesRegex(OperationValidationError, "target does not match"):
+            self.create(
+                operation_type="migration.cutover",
+                parameters={"preflightOperationId": operation_id},
+                idempotency_key="bad-cutover",
+            )
 
     def test_terminal_operation_releases_lock(self) -> None:
         operation, _ = self.create()
@@ -182,7 +243,7 @@ class OperationLedgerTests(unittest.TestCase):
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(2, connection.execute("PRAGMA synchronous").fetchone()[0])
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
-            self.assertEqual(1, connection.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
 
     def test_state_change_and_event_are_one_transaction(self) -> None:
         operation, _ = self.create()
@@ -284,7 +345,7 @@ class OperationLedgerTests(unittest.TestCase):
             connection.execute(
                 "CREATE TABLE operations (operation_id TEXT PRIMARY KEY)"
             )
-            connection.execute("PRAGMA user_version=1")
+            connection.execute("PRAGMA user_version=2")
         with self.assertRaisesRegex(
             RuntimeError,
             "missing operations columns",

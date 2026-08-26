@@ -300,7 +300,7 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertIn("wait_for_ledger_schema", script)
         self.assertIn("LEDGER_SCHEMA_OK", script)
         self.assertIn(
-            "operation ledger did not reach schema version 1 within 10 seconds",
+            "operation ledger did not reach schema version 2 within 10 seconds",
             script,
         )
         self.assertIn(

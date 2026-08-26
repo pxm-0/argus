@@ -110,7 +110,11 @@ class DomainAgentServiceTests(unittest.TestCase):
         try:
             with tempfile.TemporaryDirectory(dir="/tmp") as directory:
                 service, _signer = self.service(Path(directory))
-                self.assertEqual(os.environ["DOCKER_HOST"], "unix:///var/lib/argus/personal-sandbox/docker.sock")
+                self.assertNotIn("DOCKER_HOST", os.environ)
+                self.assertEqual(
+                    service.compose_command("hello-nginx", "ps")[:3],
+                    ["docker", "--host", "unix:///var/lib/argus/personal-sandbox/docker.sock"],
+                )
                 self.assertEqual(service.policy_check("hello-nginx", "logs.preview", {}), (True, "admission allowed"))
                 self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "admission allowed"))
                 self.assertEqual(

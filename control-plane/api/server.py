@@ -54,6 +54,7 @@ from argus_common import audit, by_id, dashboard_state, load_json, policy_decisi
 from argus_ipc import request as ipc_request  # noqa: E402
 from argus_operations import (  # noqa: E402
     MUTATIONS,
+    PRIVILEGED_MUTATIONS,
     OperationConflict,
     OperationLedger,
     OperationValidationError,
@@ -222,6 +223,40 @@ def agent_available(domain: str) -> bool:
     }
 
 
+def privileged_agent_available(domain: str) -> bool:
+    socket_path = Path(os.environ.get("ARGUS_PRIVILEGED_LIFECYCLE_SOCKET", "/run/argus/privileged-lifecycle/agent.sock"))
+    try:
+        metadata = socket_path.stat()
+        if (
+            not stat.S_ISSOCK(metadata.st_mode)
+            or stat.S_IMODE(metadata.st_mode) != 0o660
+            or metadata.st_uid != pwd.getpwnam("root").pw_uid
+            or metadata.st_gid != grp.getgrnam("argus-control").gr_gid
+        ):
+            return False
+        response = ipc_request(str(socket_path), {"method": "agent.status", "trustDomain": domain}, timeout_seconds=10)
+    except (KeyError, OSError, RuntimeError, ValueError):
+        return False
+    return response == {"ok": True, "status": "available", "trustDomain": domain}
+
+
+def confirmation_phrase(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> str:
+    phrases = {
+        "workload.restart": workload_id,
+        "backup.create": workload_id,
+        "access.apply": workload_id,
+        "workload.deploy": f"deploy {workload_id} at {parameters.get('targetRevision', '')}",
+        "workload.start": f"start {workload_id}",
+        "workload.stop": f"stop {workload_id}",
+        "backup.restore": f"restore {workload_id} from {parameters.get('artifactId', '')}",
+        "migration.cutover": f"cut over {workload_id}",
+        "migration.rollback": f"roll back migration for {workload_id}",
+        "production.promote": f"promote {workload_id} to private production",
+        "production.rollback": f"roll back production for {workload_id}",
+    }
+    return phrases.get(operation_type, "")
+
+
 def private_dashboard_state() -> dict[str, Any]:
     state = dashboard_state()
     active_domains: set[str] = set()
@@ -249,6 +284,16 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         else workload(workload_id)
     )
     domain = trust_domain(workload_id)
+    if operation_type == "production.promote":
+        domain = str(parameters.get("targetTrustDomain", domain))
+    elif operation_type == "migration.cutover":
+        reference = LEDGER.get(str(parameters.get("preflightOperationId", "")))
+        if reference:
+            domain = str(reference.get("parameters", {}).get("targetTrustDomain", domain))
+    elif operation_type == "production.rollback":
+        reference = LEDGER.get(str(parameters.get("promotionOperationId", "")))
+        if reference:
+            domain = str(reference.get("trust_domain", domain))
     revision = admission.revision
     allowed, reason = operation_policy(
         workload_id,
@@ -260,6 +305,14 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "health.refresh": "No mutation; no rollback required.",
         "logs.preview": "No mutation; no rollback required.",
         "migration.preflight": "No mutation; no rollback required.",
+        "workload.deploy": "Apply the previously pinned revision as a new operation.",
+        "workload.start": "Stop the workload as a new audited operation.",
+        "workload.stop": "Start the same pinned revision as a new audited operation.",
+        "backup.restore": "Live state is unchanged; discard the isolated recovery candidate.",
+        "migration.cutover": "Create migration.rollback linked to this cutover operation.",
+        "migration.rollback": "A new preflight and cutover are required to migrate again.",
+        "production.promote": "Create production.rollback linked to this promotion.",
+        "production.rollback": "A new health gate and promotion are required.",
         "workload.restart": "Restart is not data-destructive; investigate and restart the previous canonical revision.",
         "backup.create": "No live-state rollback; remove the failed or unwanted artifact through retention tooling.",
         "access.apply": "Apply the previously effective none/local/tailnet state as a new audited operation.",
@@ -268,6 +321,14 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "workload.restart": "Brief workload unavailability while the approved service restarts.",
         "backup.create": "Possible workload I/O load; service remains available.",
         "access.apply": "Reachability changes only for this workload.",
+        "workload.deploy": "Brief private workload replacement while the pinned revision starts.",
+        "workload.start": "Starts only the approved private workload.",
+        "workload.stop": "Stops only the approved private workload.",
+        "backup.restore": "I/O occurs only in an isolated recovery directory.",
+        "migration.cutover": "Fences the source before starting the private target.",
+        "migration.rollback": "Stops the target and restores the proven source placement.",
+        "production.promote": "Fences sandbox source before starting private production.",
+        "production.rollback": "Stops private production and restores the proven source.",
     }.get(operation_type, "No availability impact.")
     preview = {
         "workloadId": workload_id,
@@ -286,7 +347,7 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "expectedBlastRadius": impact,
         "healthChecks": ["canonical revision recheck", "workload health policy check"],
         "rollbackBehavior": rollback,
-        "confirmationPhrase": workload_id if operation_type in MUTATIONS else "",
+        "confirmationPhrase": confirmation_phrase(workload_id, operation_type, parameters),
     }
     if operation_type == "logs.preview" and result["allowed"]:
         log_result = logs_preview(workload_id, max_lines=int(parameters.get("maxLines", 100)))
@@ -336,7 +397,8 @@ def operation_policy(
     if item is None:
         return False, "unknown-workload"
     domain = trust_domain(workload_id)
-    if not agent_available(domain):
+    available = privileged_agent_available(domain) if operation_type in PRIVILEGED_MUTATIONS else agent_available(domain)
+    if not available:
         return False, f"{domain} domain agent unavailable"
     if operation_type == "health.refresh":
         if item.get("actions", {}).get("sandboxReconcileOnly") is True:
@@ -359,6 +421,10 @@ def operation_policy(
             if allowed
             else str(preview.get("reason", "migration preflight disabled by manifest"))
         )
+    if operation_type in {"workload.deploy", "workload.start", "workload.stop", "backup.restore"}:
+        return domain != "legacy-rootful", "lifecycle operation requires a sealed trust domain"
+    if operation_type in PRIVILEGED_MUTATIONS:
+        return True, "privileged lifecycle broker available; durable dependency checks apply"
     if operation_type == "workload.restart":
         preview = restart_preview(workload_id)
         return bool(preview.get("allowed")), str(preview.get("reason", "restart disabled by manifest"))
@@ -796,8 +862,9 @@ class Handler(BaseHTTPRequestHandler):
         ):
             self.send_json(403, {"error": "operation approval requires the originating session"})
             return
-        if str(body.get("confirmation", "")) != operation["workload_id"]:
-            self.send_json(403, {"error": "typed workload confirmation required"})
+        expected_confirmation = str(operation.get("preview", {}).get("confirmationPhrase", ""))
+        if str(body.get("confirmation", "")) != expected_confirmation:
+            self.send_json(403, {"error": "exact preview confirmation required"})
             return
         if int(time.time()) - parse_timestamp(str(operation["created_at"])) >= PREVIEW_TTL_SECONDS:
             LEDGER.transition(

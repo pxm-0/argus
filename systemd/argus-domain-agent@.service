@@ -18,6 +18,7 @@ Environment=ARGUS_ISSUER_PUBLIC_KEY=/etc/argus/domains/%i/issuer.pub
 Environment=ARGUS_ISSUER_PREVIOUS_PUBLIC_KEY=/etc/argus/domains/%i/issuer.previous.pub
 Environment=ARGUS_AGENT_SOCKET=/run/argus/domains/%i/agent.sock
 Environment=ARGUS_CAPABILITY_REPLAY_DB=/var/lib/argus/%i/capabilities.sqlite3
+Environment=ARGUS_RESTORE_STATE=/var/lib/argus/%i/restore-operations
 Environment=HOME=/var/lib/argus/%i
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_domain_agent.py
 Restart=on-failure

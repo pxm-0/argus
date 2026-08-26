@@ -15,7 +15,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_actions import _verify_backup_artifact, migration_preflight
 from argus_common import policy_decision
-from argus_operations import TYPED_OPERATIONS, validate_typed_parameters
+from argus_operations import OperationValidationError, TYPED_OPERATIONS, validate_typed_parameters
 
 
 class MigrationUiTests(unittest.TestCase):
@@ -103,9 +103,11 @@ class MigrationUiTests(unittest.TestCase):
         self.assertFalse(result["allowed"])
         self.assertEqual("operation-not-capable", result["reason"])
 
-    def test_migration_preflight_is_a_parameterless_typed_operation(self) -> None:
+    def test_migration_preflight_requires_an_explicit_target_domain(self) -> None:
         self.assertIn("migration.preflight", TYPED_OPERATIONS)
-        validate_typed_parameters("migration.preflight", {})
+        validate_typed_parameters("migration.preflight", {"targetTrustDomain": "personal-sandbox"})
+        with self.assertRaises(OperationValidationError):
+            validate_typed_parameters("migration.preflight", {})
         with self.assertRaises(ValueError):
             validate_typed_parameters("migration.preflight", {"cutover": True})
 
