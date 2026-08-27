@@ -240,19 +240,24 @@ def privileged_agent_available(domain: str) -> bool:
     return response == {"ok": True, "status": "available", "trustDomain": domain}
 
 
-def confirmation_phrase(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> str:
+def confirmation_phrase(
+    workload_id: str,
+    operation_type: str,
+    parameters: dict[str, Any],
+    trust_domain_id: str = "",
+) -> str:
     phrases = {
         "workload.restart": workload_id,
         "backup.create": workload_id,
         "access.apply": workload_id,
-        "workload.deploy": f"deploy {workload_id} at {parameters.get('targetRevision', '')}",
+        "workload.deploy": f"deploy {workload_id} {parameters.get('targetRevision', '')}",
         "workload.start": f"start {workload_id}",
         "workload.stop": f"stop {workload_id}",
-        "backup.restore": f"restore {workload_id} from {parameters.get('artifactId', '')}",
-        "migration.cutover": f"cut over {workload_id}",
-        "migration.rollback": f"roll back migration for {workload_id}",
-        "production.promote": f"promote {workload_id} to private production",
-        "production.rollback": f"roll back production for {workload_id}",
+        "backup.restore": f"restore {workload_id} {parameters.get('artifactId', '')}",
+        "migration.cutover": f"migrate {workload_id} to {trust_domain_id}",
+        "migration.rollback": f"rollback migration {workload_id}",
+        "production.promote": f"promote {workload_id} to production",
+        "production.rollback": f"rollback production {workload_id}",
     }
     return phrases.get(operation_type, "")
 
@@ -347,7 +352,9 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         "expectedBlastRadius": impact,
         "healthChecks": ["canonical revision recheck", "workload health policy check"],
         "rollbackBehavior": rollback,
-        "confirmationPhrase": confirmation_phrase(workload_id, operation_type, parameters),
+        "confirmationPhrase": confirmation_phrase(
+            workload_id, operation_type, parameters, domain
+        ),
     }
     if operation_type == "logs.preview" and result["allowed"]:
         log_result = logs_preview(workload_id, max_lines=int(parameters.get("maxLines", 100)))
