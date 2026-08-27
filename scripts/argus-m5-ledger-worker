@@ -310,7 +310,7 @@ ensure_worker_user() {
 }
 
 copy_legacy_ledger() {
-  [[ -e "$LEGACY_LEDGER" ]] || return
+  [[ -e "$LEGACY_LEDGER" ]] || return 0
   python3 - "$LEGACY_LEDGER" "$CONTROL_LEDGER" <<'PY'
 import os
 import sqlite3
