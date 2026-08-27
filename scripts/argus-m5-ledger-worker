@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the reviewed M5 durable operation ledger and separate worker.
-set -euo pipefail
+set -Eeuo pipefail
 
 readonly ROOT="/srv/argus"
 readonly ACK="--acknowledge-m5-ledger-worker"
@@ -37,6 +37,10 @@ PRIOR_SANDBOX_AGENT_ACTIVE=false
 PRIOR_WORK_SANDBOX_AGENT_ACTIVE=false
 PRIOR_LIFECYCLE_AGENT_ACTIVE=false
 PRIOR_LIFECYCLE_AGENT_ENABLED=false
+ERROR_LINE=0
+
+capture_error() { ERROR_LINE="$1"; }
+trap 'capture_error "$LINENO"' ERR
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -176,15 +180,17 @@ rollback_worker() {
   else
     systemctl disable "$LIFECYCLE_AGENT_SERVICE" 2>/dev/null || true
   fi
-  restore_service_state "$LIFECYCLE_AGENT_SERVICE" "$PRIOR_LIFECYCLE_AGENT_ACTIVE" || failed=true
+  if [[ -e "$LIFECYCLE_AGENT_UNIT" ]]; then
+    restore_service_state "$LIFECYCLE_AGENT_SERVICE" "$PRIOR_LIFECYCLE_AGENT_ACTIVE" || failed=true
+  fi
 
   if [[ "$failed" == true ]]; then
     printf 'ERROR ledger-worker rollback was incomplete; inspect backup=%s\n' \
       "$ROLLBACK_BACKUP_DIR" >&2
     return 1
   fi
-  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s\n' \
-    "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" >&2
+  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s failedLine=%s\n' \
+    "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" "$ERROR_LINE" >&2
 }
 
 rollback_on_exit() {
