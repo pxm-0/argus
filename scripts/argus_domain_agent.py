@@ -195,7 +195,7 @@ class AgentService:
                 configured = self.run_compose(workload_id, "config", "--images", timeout=15)
                 if configured.returncode != 0 or parameters["targetRevision"] not in configured.stdout.splitlines():
                     raise PermissionError("target revision is not pinned by the reviewed Compose file")
-                arguments = ["up", "-d", "--pull", "always"]
+                arguments = ["up", "-d", "--pull", "never"]
             result = self.run_compose(workload_id, *arguments)
             if result.returncode != 0:
                 raise RuntimeError("typed lifecycle Compose command failed")

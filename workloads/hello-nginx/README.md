@@ -4,27 +4,26 @@ Low-risk demo workload used for the first P1 migration.
 
 ## Status
 
-- Lifecycle: active
-- Migration: migrated
+- Lifecycle: admitted private-production pilot
+- Migration: personal-sandbox source, personal-managed canonical target
 - Runtime: Docker Compose
 - Compose project: `hello-nginx`
 - Service: `web`
-- Health: internal target validation only until a domain-local agent is available
-- Access: none effective, Cloudflare protected planned
+- Health: container health plus loopback HTTP validation
+- Access: private Tailscale Serve on port 8447; public exposure prohibited
 
-## Cloudflare Protected Demo Plan
+## Public Exposure Policy
 
-`hello-nginx` is the approved low-risk P1 demo workload for protected
-Cloudflare planning. The route uses the intentionally non-routable hostname:
+Public exposure remains deferred. The historical non-routable hostname is
+retained only as inert planning metadata:
 
 ```text
 hello-nginx.argus.invalid
 ```
 
-The desired access state is `cloudflare-protected`, but effective access is
-`none`. M4 retired the legacy loopback endpoint and did not add a replacement
-route. No Cloudflare tunnel, DNS record, public route, or `cloudflared` service
-is enabled by this plan.
+No Cloudflare tunnel, DNS record, public route, Funnel, or `cloudflared`
+service is enabled. The production pilot exposes only a loopback listener and
+a tailnet-only Tailscale Serve route.
 
 ## Layout
 
@@ -35,8 +34,11 @@ is enabled by this plan.
 └── source/
 ```
 
-`source/` is ignored by Argus Git. The migrated source contains the
-workload Compose file and is intentionally not tracked here.
+The repository normally ignores workload source trees. This stateless pilot
+tracks only `source/docker-compose.yml` as a narrow exception so admission is
+bound to the exact pinned image, loopback listener, health check, and Compose
+project. No application source, runtime state, credential, or database is
+tracked.
 
 ## Migration Notes
 
@@ -61,11 +63,11 @@ The migrated Compose file binds Nginx to localhost only:
 
 ## Rollback
 
-Stop the migrated stack:
+Use the linked typed operation:
 
 ```bash
-docker compose -p hello-nginx -f /srv/argus/workloads/hello-nginx/source/docker-compose.yml down
+rollback migration hello-nginx
 ```
 
-Remove the compatibility symlink and restore the backup directory recorded in
-`manifest.json`.
+For production rollback, use `rollback production hello-nginx`. Both paths
+fence the managed target before restoring the proven personal-sandbox source.

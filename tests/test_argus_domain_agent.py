@@ -158,12 +158,12 @@ class DomainAgentServiceTests(unittest.TestCase):
             else:
                 os.environ["DOCKER_HOST"] = previous
 
-    def test_agent_denies_cross_domain_and_unapproved_tailnet_route(self) -> None:
+    def test_domain_agent_cannot_mutate_the_promotion_owned_tailnet_route(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             service, _signer = self.service(Path(directory))
             allowed, reason = service.policy_check("hello-nginx", "access.apply", {"desired": "tailnet"})
             self.assertFalse(allowed)
-            self.assertIn("approved Tailscale Serve route", reason)
+            self.assertEqual("operation-not-capable", reason)
 
     def test_agent_shares_dependency_unavailable_denial(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:

@@ -44,7 +44,20 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
         with (
             patch.object(service, "require_private_target") as private,
             patch.object(service, "compose", return_value=completed) as compose,
-            patch.object(service, "running", side_effect=[False, True]),
+            patch.object(service, "running", side_effect=[False, True, False]),
+            patch.object(service, "healthy", return_value=True),
+            patch(
+                "argus_privileged_lifecycle_agent.apply_tailscale_access",
+                return_value={"summary": "Tailnet access applied and verified."},
+            ),
+            patch(
+                "argus_privileged_lifecycle_agent.by_id",
+                return_value={"demo": {}},
+            ),
+            patch(
+                "argus_privileged_lifecycle_agent.load_manifest",
+                return_value={"runtime": {"composeProject": "demo"}},
+            ),
         ):
             result = service.execute_typed(
                 "production.promote", "demo",
@@ -62,8 +75,14 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
         service.ledger.get.return_value = {"trust_domain": "personal-sandbox"}
         with (
             patch.object(service, "require_private_target"),
-            patch.object(service, "compose", side_effect=[Mock(returncode=0), Mock(returncode=1), Mock(returncode=1)]),
-            patch.object(service, "running", side_effect=[False, False]),
+            patch.object(
+                service, "compose",
+                side_effect=[
+                    Mock(returncode=0), Mock(returncode=1),
+                    Mock(returncode=0), Mock(returncode=1),
+                ],
+            ),
+            patch.object(service, "running", return_value=False),
         ):
             with self.assertRaises(IndeterminateOperation):
                 service.execute_typed(
@@ -74,6 +93,19 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
     def test_private_gate_rejects_ports_host_network_privilege_and_docker_socket(self) -> None:
         service = self.service()
         unsafe = '{"services":{"app":{"ports":["8080:80"],"volumes":["/var/run/docker.sock:/x"]}}}'
+        with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=unsafe)):
+            with self.assertRaises(PermissionError):
+                service.require_private_target("managed-production", "demo")
+
+    def test_private_gate_allows_only_explicit_loopback_ports(self) -> None:
+        service = self.service()
+        safe = '{"services":{"app":{"ports":[{"host_ip":"127.0.0.1","published":"18080","target":80}]}}}'
+        with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=safe)):
+            service.require_private_target("managed-production", "demo")
+
+    def test_private_gate_rejects_host_path_mounts(self) -> None:
+        service = self.service()
+        unsafe = '{"services":{"app":{"volumes":[{"type":"bind","source":"/srv/private","target":"/data"}]}}}'
         with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=unsafe)):
             with self.assertRaises(PermissionError):
                 service.require_private_target("managed-production", "demo")

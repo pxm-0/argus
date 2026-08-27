@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_common import by_id, load_manifest
+from argus_access_runtime import apply_tailscale_access
 from argus_domain_agent import AgentService, IndeterminateOperation
 from argus_ipc import receive_frame, send_frame
 from argus_operations import PRIVILEGED_MUTATIONS
@@ -45,45 +46,164 @@ class LifecycleAgent(AgentService):
             raise PermissionError("target Compose configuration is unavailable")
         config = json.loads(result.stdout)
         for service in config.get("services", {}).values():
-            mounts = json.dumps(service.get("volumes", []))
-            if service.get("ports") or service.get("network_mode") == "host" or service.get("privileged") is True or "docker.sock" in mounts:
+            volumes = service.get("volumes", [])
+            mounts = json.dumps(volumes)
+            if not isinstance(volumes, list) or any(
+                not isinstance(volume, dict) or volume.get("type") == "bind"
+                for volume in volumes
+            ):
+                raise PermissionError("host-path or malformed target mount refused")
+            ports = service.get("ports", [])
+            if not isinstance(ports, list):
+                raise PermissionError("target port configuration is malformed")
+            if any(
+                not isinstance(port, dict)
+                or port.get("host_ip") not in {"127.0.0.1", "::1"}
+                for port in ports
+            ):
+                raise PermissionError("target listeners must be loopback-only")
+            if service.get("network_mode") == "host" or service.get("privileged") is True or "docker.sock" in mounts:
                 raise PermissionError("public, host, privileged, or Docker-socket target refused")
 
     def running(self, domain: str, workload_id: str) -> bool:
         result = self.compose(domain, workload_id, "ps", "--status", "running", "--quiet", timeout=15)
         return result.returncode == 0 and bool(result.stdout.strip())
 
+    def healthy(self, domain: str, workload_id: str) -> bool:
+        result = self.compose(domain, workload_id, "ps", "--format", "json", timeout=15)
+        if result.returncode != 0:
+            return False
+        try:
+            rows = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return False
+        if isinstance(rows, dict):
+            rows = [rows]
+        return bool(rows) and all(
+            isinstance(row, dict)
+            and str(row.get("State", "")).lower() == "running"
+            and str(row.get("Health", "")).lower() in {"", "healthy"}
+            for row in rows
+        )
+
+    def promote_between_domains(
+        self, source_domain: str, target_domain: str, workload_id: str, *,
+        apply_private_route: bool = False,
+    ) -> dict[str, Any]:
+        if source_domain == target_domain:
+            raise PermissionError("source and target trust domains must differ")
+        self.require_private_target(target_domain, workload_id)
+        stopped = self.compose(source_domain, workload_id, "stop")
+        if stopped.returncode != 0 or self.running(source_domain, workload_id):
+            raise RuntimeError("source fence could not be proven")
+        started = self.compose(target_domain, workload_id, "up", "-d")
+        target_ready = (
+            started.returncode == 0
+            and self.running(target_domain, workload_id)
+            and self.healthy(target_domain, workload_id)
+            and not self.running(source_domain, workload_id)
+        )
+        route_result: dict[str, Any] = {}
+        if target_ready and apply_private_route:
+            try:
+                route_result = apply_tailscale_access(
+                    self.root, by_id()[workload_id], workload_id, "tailnet"
+                )
+            except (KeyError, OSError, PermissionError, RuntimeError, ValueError):
+                target_ready = False
+        if target_ready:
+            manifest = load_manifest(workload_id)
+            return {
+                "sourceTrustDomain": source_domain,
+                "targetTrustDomain": target_domain,
+                "composeProject": str(manifest.get("runtime", {}).get("composeProject", "")),
+                "privateTailnetRoute": bool(
+                    not apply_private_route or "Tailnet access" in str(route_result.get("summary", ""))
+                ),
+                "publicExposure": False,
+            }
+        self.compose(target_domain, workload_id, "down")
+        restored = self.compose(source_domain, workload_id, "up", "-d")
+        if (
+            restored.returncode == 0
+            and self.running(source_domain, workload_id)
+            and self.healthy(source_domain, workload_id)
+            and not self.running(target_domain, workload_id)
+        ):
+            raise RuntimeError("target start or health gate failed; source placement restored")
+        raise IndeterminateOperation("target failed and one safe healthy placement could not be proven")
+
+    def rollback_between_domains(
+        self, source_domain: str, target_domain: str, workload_id: str
+    ) -> dict[str, Any]:
+        target_stop = self.compose(target_domain, workload_id, "down")
+        source_start = self.compose(source_domain, workload_id, "up", "-d")
+        if (
+            target_stop.returncode == 0
+            and source_start.returncode == 0
+            and self.running(source_domain, workload_id)
+            and self.healthy(source_domain, workload_id)
+            and not self.running(target_domain, workload_id)
+        ):
+            manifest = load_manifest(workload_id)
+            return {
+                "sourceTrustDomain": source_domain,
+                "targetTrustDomain": target_domain,
+                "composeProject": str(manifest.get("runtime", {}).get("composeProject", "")),
+                "publicExposure": False,
+            }
+        raise IndeterminateOperation("rollback could not prove exactly one healthy source placement")
+
     def execute_typed(self, operation_type: str, workload_id: str, parameters: dict[str, Any]) -> dict[str, Any]:
         if operation_type in {"migration.cutover", "migration.rollback"}:
-            action = "--apply" if operation_type.endswith("cutover") else "--rollback"
-            acknowledgement = "--acknowledge-m5-workload-cutover" if action == "--apply" else "--acknowledge-m5-workload-cutover-rollback"
+            field = "preflightOperationId" if operation_type == "migration.cutover" else "cutoverOperationId"
+            evidence = self.ledger.get(str(parameters[field]))
+            if evidence is None:
+                raise PermissionError("migration evidence disappeared")
+            if operation_type == "migration.cutover":
+                source_domain = str(evidence["trust_domain"])
+                target_domain = self.domain
+                if source_domain != "legacy-rootful":
+                    result = self.promote_between_domains(source_domain, target_domain, workload_id)
+                    return {"summary": "Sealed-domain migration cut over after source fencing and target health.", **result}
+                action, acknowledgement = "--apply", "--acknowledge-m5-workload-cutover"
+            else:
+                placement = evidence.get("redactedResult", {})
+                source_domain = str(
+                    placement.get("sourceTrustDomain", "legacy-rootful")
+                )
+                target_domain = str(
+                    placement.get("targetTrustDomain", self.domain)
+                )
+                if source_domain and source_domain != "legacy-rootful":
+                    result = self.rollback_between_domains(source_domain, target_domain, workload_id)
+                    return {"summary": "Sealed-domain migration rollback restored the proven source.", **result}
+                action, acknowledgement = "--rollback", "--acknowledge-m5-workload-cutover-rollback"
             try:
-                result = subprocess.run(
+                helper = subprocess.run(
                     [str(self.root / "scripts" / "argus-m5-workload-cutover"), "--workload", workload_id, action, acknowledgement],
                     text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=600,
                 )
             except subprocess.TimeoutExpired as exc:
                 raise IndeterminateOperation("migration helper timed out; reconcile without retry") from exc
-            if result.returncode != 0:
+            if helper.returncode != 0:
                 raise RuntimeError("fenced migration helper failed")
-            return {"summary": f"{operation_type} completed through the fixed root helper."}
+            return {
+                "summary": f"{operation_type} completed through the fixed root helper.",
+                "sourceTrustDomain": source_domain,
+                "targetTrustDomain": target_domain,
+                "publicExposure": False,
+            }
         if operation_type == "production.promote":
             source = self.ledger.get(str(parameters["sourceOperationId"]))
             if source is None:
                 raise PermissionError("promotion source disappeared")
             source_domain = str(source["trust_domain"])
             target_domain = str(parameters["targetTrustDomain"])
-            self.require_private_target(target_domain, workload_id)
-            stopped = self.compose(source_domain, workload_id, "stop")
-            if stopped.returncode != 0 or self.running(source_domain, workload_id):
-                raise RuntimeError("source fence could not be proven")
-            started = self.compose(target_domain, workload_id, "up", "-d")
-            if started.returncode == 0 and self.running(target_domain, workload_id):
-                return {"summary": "Private production target promoted after source fencing.", "sourceTrustDomain": source_domain, "targetTrustDomain": target_domain, "publicExposure": False}
-            restored = self.compose(source_domain, workload_id, "up", "-d")
-            if restored.returncode == 0 and self.running(source_domain, workload_id) and not self.running(target_domain, workload_id):
-                raise RuntimeError("promotion failed; source placement restored")
-            raise IndeterminateOperation("promotion failed and one safe placement could not be proven")
+            result = self.promote_between_domains(
+                source_domain, target_domain, workload_id, apply_private_route=True
+            )
+            return {"summary": "Private production target promoted after source fencing and health.", **result}
         if operation_type == "production.rollback":
             promotion = self.ledger.get(str(parameters["promotionOperationId"]))
             if promotion is None:
@@ -93,11 +213,8 @@ class LifecycleAgent(AgentService):
             target_domain = str(evidence.get("targetTrustDomain", ""))
             if not source_domain or not target_domain:
                 raise PermissionError("promotion placement evidence is incomplete")
-            target_stop = self.compose(target_domain, workload_id, "down")
-            source_start = self.compose(source_domain, workload_id, "up", "-d")
-            if target_stop.returncode == 0 and source_start.returncode == 0 and self.running(source_domain, workload_id) and not self.running(target_domain, workload_id):
-                return {"summary": "Production promotion rolled back to the proven source placement.", "sourceTrustDomain": source_domain, "targetTrustDomain": target_domain, "publicExposure": False}
-            raise IndeterminateOperation("rollback could not prove exactly one healthy source placement")
+            result = self.rollback_between_domains(source_domain, target_domain, workload_id)
+            return {"summary": "Production promotion rolled back to the proven source placement.", **result}
         raise PermissionError("unsupported privileged lifecycle operation")
 
 

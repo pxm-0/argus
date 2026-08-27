@@ -46,7 +46,10 @@ def fixture_records(source_registry: SourceRegistry) -> list[dict]:
 class ObservationRegistryTests(unittest.TestCase):
     def test_canonical_domains_are_derived_and_empty_registry_is_not_configured(self) -> None:
         self.assertEqual(
-            ["legacy-rootful", "personal-sandbox", "work-sandbox"],
+            [
+                "legacy-rootful", "personal-managed", "personal-sandbox",
+                "work-sandbox",
+            ],
             canonical_trust_domains(ROOT),
         )
         empty = SourceRegistry({"schemaVersion": 1, "hostSources": [], "sources": []}, ["work-sandbox"])

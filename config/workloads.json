@@ -267,28 +267,29 @@
         "service": "web"
       },
       "network": {
-        "localUrl": "",
+        "localUrl": "http://127.0.0.1:18080",
         "internalPort": 80,
         "observedBindings": []
       },
       "health": {
-        "enabled": false,
-        "url": "",
+        "enabled": true,
+        "url": "http://127.0.0.1:18080/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
       "actions": {
-        "open": false,
-        "health": false,
-        "logs": false,
-        "restart": false,
-        "deploy": false,
+        "open": true,
+        "health": true,
+        "logs": true,
+        "restart": true,
+        "deploy": true,
         "accessToggle": false,
         "privacyToggle": true
       },
       "migration": {
         "status": "migrated",
-        "targetTrustDomain": "personal-sandbox",
+        "targetTrustDomain": "personal-managed",
+        "runtimeTrustDomain": "personal-sandbox",
         "originalPath": "/srv/apps/hello-nginx",
         "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
         "compatibilitySymlink": true,
@@ -297,8 +298,8 @@
         "bindMountRisks": [],
         "namedVolumeRisks": [],
         "notes": [
-          "M4 moved the stateless service into personal-sandbox with no published port, host mount, or public route.",
-          "M5 routine operations execute through the personal-sandbox typed agent."
+          "M4 moved the stateless service into personal-sandbox with a loopback-only listener and no public route.",
+          "M5 routine operations follow proven runtime placement while personal-managed is the canonical production target."
         ]
       }
     }

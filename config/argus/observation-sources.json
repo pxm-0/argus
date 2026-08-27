@@ -4,6 +4,7 @@
     "oreochiserver.rootful-docker",
     "oreochiserver.personal-sandbox.rootless-docker",
     "oreochiserver.work-sandbox.rootless-docker",
+    "oreochiserver.personal-managed.rootless-docker",
     "oreochiserver.system-schedules",
     "oreochiserver.user-schedules-oreo",
     "oreochiserver.user-schedules-personal-sandbox",
@@ -294,6 +295,102 @@
         "socketGid": 981,
         "socketMode": "0660",
         "peerUid": 1003,
+        "peerGid": 981,
+        "protocolVersions": [
+          1,
+          2
+        ]
+      }
+    },
+    {
+      "sourceId": "oreochiserver.personal-managed.rootless-docker",
+      "hostId": "oreochiserver",
+      "owner": "argus-operator",
+      "trustDomain": "personal-managed",
+      "scope": "personal-managed rootless Docker containers, images, networks, and volumes",
+      "privilege": "domain-read-only",
+      "freshnessSloSeconds": 300,
+      "schemaVersion": 2,
+      "protocolVersion": 2,
+      "executionIdentity": {
+        "uid": 1004,
+        "gid": 981
+      },
+      "allowlist": {
+        "commands": [],
+        "apis": [
+          "docker-engine:GET:/version",
+          "docker-engine:v1.40:GET:/containers/json?all=1&size=0",
+          "docker-engine:v1.40:GET:/containers/{listed-id}/json?size=0",
+          "docker-engine:v1.40:GET:/images/json?all=1&digests=1",
+          "docker-engine:v1.40:GET:/networks",
+          "docker-engine:v1.40:GET:/volumes"
+        ]
+      },
+      "bounds": {
+        "timeoutMilliseconds": 5000,
+        "maxOutputBytes": 2097152,
+        "maxRecords": 1000,
+        "maxRecordBytes": 16384
+      },
+      "minimization": {
+        "resourceKinds": [
+          "container",
+          "image",
+          "network",
+          "volume"
+        ],
+        "attributeAllowlist": {
+          "container": [
+            "lifecycle",
+            "name",
+            "project",
+            "service",
+            "imageRef",
+            "health",
+            "restartPolicy",
+            "networkRefs",
+            "mounts",
+            "publishedPorts",
+            "privilegeFlags"
+          ],
+          "image": [
+            "createdEpoch",
+            "sizeBytes",
+            "referenceCount"
+          ],
+          "network": [
+            "name",
+            "driver",
+            "scope",
+            "internal",
+            "attachable",
+            "containerCount",
+            "project",
+            "network"
+          ],
+          "volume": [
+            "name",
+            "driver",
+            "project",
+            "volume"
+          ]
+        }
+      },
+      "bootstrap": "Install the reviewed argus-rootless-docker-collector@.service as personal-managed user 1004:981; it reads only the personal-managed rootless Docker socket and exposes only /run/argus/collectors/personal-managed-rootless-docker/collector.sock.",
+      "removal": "Stop and disable only argus-rootless-docker-collector@personal-managed.service, remove its reviewed source projection and environment, and retain observation history as inactive.",
+      "exclusion": null,
+      "transport": {
+        "kind": "unix-stream",
+        "socketPath": "/run/argus/collectors/personal-managed-rootless-docker/collector.sock",
+        "parentPath": "/run/argus/collectors/personal-managed-rootless-docker",
+        "parentUid": 1004,
+        "parentGid": 981,
+        "parentMode": "0750",
+        "socketUid": 1004,
+        "socketGid": 981,
+        "socketMode": "0660",
+        "peerUid": 1004,
         "peerGid": 981,
         "protocolVersions": [
           1,

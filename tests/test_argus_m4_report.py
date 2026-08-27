@@ -21,9 +21,9 @@ class M4ReportTest(unittest.TestCase):
         access = json.loads((ROOT / "config" / "access.json").read_text())["workloads"]["hello-nginx"]
         workload = next(item for item in workloads if item["id"] == "hello-nginx")
         self.assertEqual("none", access["effective"])
-        self.assertEqual("", access["urls"]["local"])
+        self.assertEqual("http://127.0.0.1:18080", access["urls"]["local"])
         self.assertEqual([], workload["network"]["observedBindings"])
-        self.assertFalse(workload["actions"]["restart"])
+        self.assertTrue(workload["actions"]["restart"])
 
     def test_report_fails_closed_for_registry_drift(self) -> None:
         report = classification_report([{"id":"a"},{"id":"b"}], {"workloads":{"a":dict(QUARANTINE)}})

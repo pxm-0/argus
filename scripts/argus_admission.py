@@ -465,13 +465,10 @@ def _operation_evidence_missing(
             missing.append("backup-approval")
         if not destination.startswith(f"/srv/argus/runtime/backups/{workload_id}"):
             missing.append("backup-destination")
-    if operation_type in {
-        "backup.restore",
-        "migration.cutover",
-        "production.promote",
-    }:
+    if operation_type in {"backup.restore", "migration.cutover", "production.promote"}:
         if not backup.get("restoreAllowed"):
             missing.append("restore-approval")
+    if operation_type in {"migration.cutover", "production.promote"}:
         if not backup.get("restoreTested"):
             missing.append("restore-test")
     if operation_type in {

@@ -26,20 +26,22 @@
   },
   "migration": {
     "status": "migrated",
-    "targetTrustDomain": "personal-sandbox",
+    "targetTrustDomain": "personal-managed",
+    "runtimeTrustDomain": "personal-sandbox",
     "originalPath": "/srv/apps/hello-nginx",
     "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
     "compatibilitySymlink": true,
     "migratedAt": "2026-06-30T18:20:44Z",
     "lastHealthCheck": "2026-07-20T06:51:23Z",
-    "rollback": "Use the fenced M4 rollback path: stop and fence the personal-sandbox target before restoring the legacy Compose source.",
+    "rollback": "Use the linked migration.rollback or production.rollback operation to stop personal-managed and restore the proven personal-sandbox placement.",
     "notes": [
       "Original host port 8080 conflicted with Intake OS.",
-      "M4 moved the service into personal-sandbox without a published port, host mount, or public route."
+      "M4 moved the service into personal-sandbox with a loopback-only listener and no public route.",
+      "M5 declares personal-managed as the desired production target while runtimeTrustDomain records the proven source placement until cutover."
     ]
   },
   "health": {
-    "url": "",
+    "url": "http://127.0.0.1:18080/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -53,22 +55,49 @@
     "restart": {
       "allowed": true
     },
+    "deploy": {
+      "allowed": true
+    },
+    "start": {
+      "allowed": true
+    },
+    "stop": {
+      "allowed": true
+    },
     "backup": {
       "allowed": true
     },
-    "access": {
+    "restore": {
       "allowed": true
+    },
+    "migrationPreflight": {
+      "allowed": true
+    },
+    "migrationCutover": {
+      "allowed": true
+    },
+    "migrationRollback": {
+      "allowed": true
+    },
+    "productionPromote": {
+      "allowed": true
+    },
+    "productionRollback": {
+      "allowed": true
+    },
+    "access": {
+      "allowed": false
     },
     "logsAllowed": true,
     "restartAllowed": true,
     "backupAllowed": true,
     "dashboardActionsAllowed": true,
-    "approvedForCloudflareProtectedDemo": true,
+    "approvedForCloudflareProtectedDemo": false,
     "requiresConfirmation": true
   },
   "backup": {
     "backupAllowed": true,
-    "restoreAllowed": false,
+    "restoreAllowed": true,
     "status": "configured",
     "source": true,
     "env": false,

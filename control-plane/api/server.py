@@ -191,6 +191,43 @@ def trust_domain(workload_id: str) -> str:
     return "legacy-rootful"
 
 
+def runtime_domain(workload_id: str) -> str:
+    """Resolve effective placement from canonical seed plus fenced outcomes."""
+    fallback = trust_domain(workload_id)
+    manifest_path = ROOT / "workloads" / workload_id / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        migration = manifest.get("migration", {})
+        seeded = migration.get("runtimeTrustDomain")
+        if isinstance(seeded, str) and seeded:
+            fallback = seeded
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return LEDGER.runtime_domain(workload_id, fallback)
+
+
+def operation_domain(
+    workload_id: str, operation_type: str, parameters: dict[str, Any]
+) -> str:
+    domain = runtime_domain(workload_id)
+    if operation_type == "production.promote":
+        return str(parameters.get("targetTrustDomain", domain))
+    if operation_type == "migration.cutover":
+        reference = LEDGER.get(str(parameters.get("preflightOperationId", "")))
+        if reference:
+            return str(reference.get("parameters", {}).get("targetTrustDomain", domain))
+    if operation_type in {"migration.rollback", "production.rollback"}:
+        field = (
+            "cutoverOperationId"
+            if operation_type == "migration.rollback"
+            else "promotionOperationId"
+        )
+        reference = LEDGER.get(str(parameters.get(field, "")))
+        if reference:
+            return str(reference.get("trust_domain", domain))
+    return domain
+
+
 def agent_available(domain: str) -> bool:
     socket_root = Path(
         os.environ.get(
@@ -269,7 +306,10 @@ def private_dashboard_state() -> dict[str, Any]:
     for node in state.get("topology", {}).get("nodes", []):
         if node.get("kind") != "workload":
             continue
-        domain = str(node.get("trustDomain", "legacy-rootful"))
+        declared = str(node.get("trustDomain", "legacy-rootful"))
+        domain = runtime_domain(str(node.get("id", "")))
+        node["runtimeTrustDomain"] = domain
+        node["placementDrift"] = domain != declared
         if domain not in domain_availability:
             domain_availability[domain] = agent_available(domain)
         available = domain_availability[domain]
@@ -288,17 +328,11 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         if admission.decision_code in {"dependency-unavailable", "unknown-workload"}
         else workload(workload_id)
     )
-    domain = trust_domain(workload_id)
-    if operation_type == "production.promote":
-        domain = str(parameters.get("targetTrustDomain", domain))
-    elif operation_type == "migration.cutover":
-        reference = LEDGER.get(str(parameters.get("preflightOperationId", "")))
-        if reference:
-            domain = str(reference.get("parameters", {}).get("targetTrustDomain", domain))
-    elif operation_type == "production.rollback":
-        reference = LEDGER.get(str(parameters.get("promotionOperationId", "")))
-        if reference:
-            domain = str(reference.get("trust_domain", domain))
+    domain = (
+        "legacy-rootful"
+        if admission.decision_code == "dependency-unavailable"
+        else operation_domain(workload_id, operation_type, parameters)
+    )
     revision = admission.revision
     allowed, reason = operation_policy(
         workload_id,
@@ -403,7 +437,15 @@ def operation_policy(
     item = workload(workload_id)
     if item is None:
         return False, "unknown-workload"
-    domain = trust_domain(workload_id)
+    declared_domain = trust_domain(workload_id)
+    effective_domain = runtime_domain(workload_id)
+    domain = operation_domain(workload_id, operation_type, parameters)
+    if operation_type == "production.promote":
+        target = str(parameters.get("targetTrustDomain", ""))
+        if target != declared_domain or not target.endswith("-managed"):
+            return False, "target trust domain must match canonical managed classification"
+        if target == effective_domain:
+            return False, "workload is already placed in the canonical managed domain"
     available = privileged_agent_available(domain) if operation_type in PRIVILEGED_MUTATIONS else agent_available(domain)
     if not available:
         return False, f"{domain} domain agent unavailable"
@@ -414,7 +456,7 @@ def operation_policy(
         manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
         runtime = manifest.get("runtime", item.get("runtime", {}))
         allowed = bool(item.get("health", {}).get("enabled", False)) or (
-            trust_domain(workload_id) != "legacy-rootful" and runtime.get("type") == "docker-compose"
+            effective_domain != "legacy-rootful" and runtime.get("type") == "docker-compose"
         )
         return allowed, "health check not configured"
     if operation_type == "logs.preview":
@@ -423,6 +465,12 @@ def operation_policy(
     if operation_type == "migration.preflight":
         preview = migration_preflight(workload_id, record_audit=False)
         allowed = bool(preview.get("allowed"))
+        if allowed:
+            target = str(parameters.get("targetTrustDomain", ""))
+            if target != declared_domain or not target.endswith("-managed"):
+                return False, "target trust domain must match canonical managed classification"
+            if target == effective_domain:
+                return False, "workload is already placed in the canonical managed domain"
         return allowed, (
             "migration preflight enabled by manifest"
             if allowed

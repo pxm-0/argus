@@ -52,6 +52,8 @@ workloads/*/*.crt
 !workloads/*/README.md
 !workloads/*/manifest.json
 !workloads/*/compose.template.yml
+!workloads/hello-nginx/source/
+!workloads/hello-nginx/source/docker-compose.yml
 
 # Secrets and env
 .env

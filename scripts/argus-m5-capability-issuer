@@ -174,7 +174,7 @@ rollback() {
   restore_sqlite \
     "$WORK_SANDBOX_REPLAY_DB" "$ROLLBACK_DIR/work-sandbox-capabilities.sqlite3" ||
     failed=true
-  for domain in legacy-rootful personal-sandbox work-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox personal-managed; do
     restore_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$ROLLBACK_DIR/$domain-issuer.pub" || failed=true
@@ -326,7 +326,7 @@ ensure_issuer_user() {
 install_key_material() {
   local temporary
   install -d -o "$ISSUER_USER" -g root -m 0700 "$PRIVATE_DIR"
-  for domain in legacy-rootful personal-sandbox work-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox personal-managed; do
     install -d -o root -g root -m 0755 "$DOMAIN_KEYS/$domain"
   done
   if [[ ! -f "$PRIVATE_KEY" ]]; then
@@ -340,7 +340,7 @@ install_key_material() {
   chmod 0600 "$PRIVATE_KEY"
   temporary="$(mktemp "$PRIVATE_DIR/.issuer-pub.XXXXXX")"
   openssl pkey -in "$PRIVATE_KEY" -pubout -out "$temporary"
-  for domain in legacy-rootful personal-sandbox work-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox personal-managed; do
     install -o root -g root -m 0444 \
       "$temporary" "$DOMAIN_KEYS/$domain/issuer.pub"
   done
@@ -351,7 +351,7 @@ validate_capability_runtime() {
   [[ "$(stat -c '%U:%G:%a' /run/argus/capability-issuer.sock)" == \
     "$ISSUER_USER:$CONTROL_GROUP:660" ]] ||
     return 1
-  for domain in legacy-rootful personal-sandbox work-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox personal-managed; do
     local expected_owner
     if [[ "$domain" == legacy-rootful ]]; then
       expected_owner="oreo"
@@ -377,7 +377,7 @@ import sys
 sys.path.insert(0, f"{sys.argv[1]}/scripts")
 from argus_ipc import request
 
-for domain in ("legacy-rootful", "personal-sandbox", "work-sandbox"):
+for domain in ("legacy-rootful", "personal-sandbox", "work-sandbox", "personal-managed"):
     result = request(
         f"/run/argus/domains/{domain}/agent.sock",
         {"method": "agent.status"},
@@ -465,7 +465,7 @@ apply_issuer() {
   backup_file "$PRIVATE_KEY" "$backup_dir/ed25519.key"
   backup_sqlite \
     "$WORK_SANDBOX_REPLAY_DB" "$backup_dir/work-sandbox-capabilities.sqlite3"
-  for domain in legacy-rootful personal-sandbox work-sandbox; do
+  for domain in legacy-rootful personal-sandbox work-sandbox personal-managed; do
     backup_file \
       "$DOMAIN_KEYS/$domain/issuer.pub" \
       "$backup_dir/$domain-issuer.pub"

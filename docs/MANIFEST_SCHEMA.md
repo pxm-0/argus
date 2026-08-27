@@ -46,6 +46,7 @@ schemaVersion: 1
 runtime.type: docker-compose | external | static | unknown
 migration.status: planned | migrated | external | rolled-back | skipped
 migration.targetTrustDomain (optional): personal-sandbox | personal-managed | work-sandbox | work-managed
+migration.runtimeTrustDomain (optional): proven effective placement used until a successful fenced cutover or rollback supersedes it in the operation ledger
 privacyCompatibility: unclassified | personal | internal | sensitive | restricted
 accessCompatibility: none | local | tailnet | cloudflare-protected | cloudflare-public
 ```

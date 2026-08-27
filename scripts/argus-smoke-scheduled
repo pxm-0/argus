@@ -14,7 +14,7 @@ from argus_common import audit, now, root
 
 SUMMARY = re.compile(r"Smoke summary: (?P<failures>\d+) failure\(s\), (?P<warnings>\d+) warning\(s\)")
 ROOTLESS_PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
-ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox")
+ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
 ROOTLESS_PROBE_MAX_AGE_SECONDS = 900
 
 

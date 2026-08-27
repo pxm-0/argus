@@ -599,7 +599,9 @@ def load_runtime_source(path: Path, *, source_id: str, uid: int, gid: int, mode:
         raise OptionalEvidenceError("collector-runtime-source-unavailable") from exc
     if not isinstance(payload, dict):
         raise OptionalEvidenceError("collector-runtime-source-invalid")
-    registry = SourceRegistry(payload, ["legacy-rootful", "personal-sandbox", "work-sandbox"])
+    registry = SourceRegistry(
+        payload, ["legacy-rootful", "personal-sandbox", "work-sandbox", "personal-managed"]
+    )
     if set(registry.sources) != {source_id} or registry.host_sources != (source_id,):
         raise OptionalEvidenceError("collector-source-registry-invalid")
     if source_id not in SOURCE_IDS:

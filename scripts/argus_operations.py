@@ -750,6 +750,48 @@ class OperationLedger:
         if health.get("ok") is not True:
             raise OperationValidationError("promotion source health evidence is unhealthy")
 
+    def runtime_domain(self, workload_id: str, fallback: str) -> str:
+        """Return the latest proven runtime placement for one workload.
+
+        Desired classification and effective placement intentionally diverge
+        during a reviewed migration.  Placement changes are derived only from
+        successful fenced lifecycle results; callers cannot supply an
+        arbitrary execution domain.
+        """
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", fallback):
+            raise OperationValidationError("fallback runtime domain is invalid")
+        with self._connect() as connection:
+            rows = connection.execute(
+                """
+                SELECT operation_type, redacted_result_json
+                FROM operations
+                WHERE workload_id = ?
+                  AND operation_type IN (
+                    'migration.cutover', 'migration.rollback',
+                    'production.promote', 'production.rollback'
+                  )
+                  AND state = 'succeeded'
+                ORDER BY finished_at DESC, rowid DESC
+                """,
+                (workload_id,),
+            ).fetchall()
+        for row in rows:
+            try:
+                result = json.loads(str(row["redacted_result_json"]))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                continue
+            field = (
+                "sourceTrustDomain"
+                if str(row["operation_type"]).endswith("rollback")
+                else "targetTrustDomain"
+            )
+            domain = result.get(field) if isinstance(result, dict) else None
+            if isinstance(domain, str) and re.fullmatch(
+                r"[a-z0-9][a-z0-9-]{0,62}", domain
+            ):
+                return domain
+        return fallback
+
     def create(
         self, *, workload_id: str, trust_domain: str, operation_type: str,
         requested_by: str, parameters: dict[str, Any], preview_digest: str,

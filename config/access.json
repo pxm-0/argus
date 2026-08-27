@@ -35,8 +35,8 @@
       "desired": "none",
       "effective": "none",
       "urls": {
-        "local": "",
-        "tailnet": "",
+        "local": "http://127.0.0.1:18080",
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8447",
         "cloudflare": "https://hello-nginx.argus.invalid"
       },
       "lastAppliedAt": "2026-07-29T03:55:13Z",

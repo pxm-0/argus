@@ -69,6 +69,13 @@ class AdmissionDecisionTests(unittest.TestCase):
         expected = hashlib.sha256(canonical_json(ordered).encode()).hexdigest()
         self.assertEqual(expected, canonical_revision(self.root, "hello-nginx"))
 
+    def test_first_isolated_restore_is_allowed_but_cutover_requires_restore_evidence(self) -> None:
+        restore = self.decision("backup.restore")
+        self.assertTrue(restore.allowed)
+        cutover = self.decision("migration.cutover")
+        self.assertEqual("evidence-missing", cutover.decision_code)
+        self.assertIn("restore-test", cutover.required_evidence)
+
     def test_unknown_manifest_and_capability_fail_closed(self) -> None:
         unknown = evaluate(
             self.root,
@@ -76,7 +83,11 @@ class AdmissionDecisionTests(unittest.TestCase):
         )
         self.assertEqual("unknown-workload", unknown.decision_code)
 
-        manifest = self.load("workloads/hello-nginx/manifest.json")
+        manifest = json.loads(
+            (ROOT / "workloads" / "hello-nginx" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
         manifest.pop("name")
         self.save("workloads/hello-nginx/manifest.json", manifest)
         invalid = self.decision()
@@ -104,9 +115,16 @@ class AdmissionDecisionTests(unittest.TestCase):
         )
         self.assertEqual("manifest-invalid", malformed.decision_code)
 
+        manifest = json.loads(
+            (ROOT / "workloads" / "hello-nginx" / "manifest.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        manifest["operations"].pop("deploy")
+        self.save("workloads/hello-nginx/manifest.json", manifest)
         capable = evaluate(
-            ROOT,
-            current_request(ROOT, "hello-nginx", "workload.deploy"),
+            self.root,
+            current_request(self.root, "hello-nginx", "workload.deploy"),
         )
         self.assertEqual("operation-not-capable", capable.decision_code)
 
@@ -139,9 +157,9 @@ class AdmissionDecisionTests(unittest.TestCase):
             request,
             target=Classification(
                 "personal",
-                "managed",
-                "production",
-                "personal-managed",
+                "sandbox",
+                "none",
+                "personal-sandbox",
                 "workload",
             ),
         )

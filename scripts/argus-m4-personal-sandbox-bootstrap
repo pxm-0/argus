@@ -3,7 +3,8 @@
 set -euo pipefail
 
 readonly CELL_DOMAIN="${ARGUS_SANDBOX_DOMAIN:-personal-sandbox}"
-[[ "$CELL_DOMAIN" == personal-sandbox || "$CELL_DOMAIN" == work-sandbox ]] || {
+[[ "$CELL_DOMAIN" == personal-sandbox || "$CELL_DOMAIN" == work-sandbox ||
+   "$CELL_DOMAIN" == personal-managed || "$CELL_DOMAIN" == work-managed ]] || {
   echo "refusing apply: unsupported sandbox domain" >&2
   exit 2
 }
@@ -129,7 +130,7 @@ restore_enabled_state() {
 
 remove_new_storage() {
   case "$CELL_STORAGE" in
-    /var/lib/argus/personal-sandbox|/var/lib/argus/work-sandbox) ;;
+    /var/lib/argus/personal-sandbox|/var/lib/argus/work-sandbox|/var/lib/argus/personal-managed|/var/lib/argus/work-managed) ;;
     *) echo "refusing rollback: invalid storage path" >&2; return 1 ;;
   esac
   rm -rf --one-file-system -- "$CELL_STORAGE"
@@ -478,7 +479,7 @@ if [[ "$mode" == plan ]]; then
 Argus sealed $CELL_DOMAIN target-cell plan
 - create only the $CELL_USER identity with a dedicated subordinate-ID range
 - install a separate rootless Docker daemon, storage root, socket, namespace, and default-deny firewall policy
-- prohibit workload mounts, Docker-socket mounts, host networking, published ports, public routes, and cross-domain routes
+- prohibit workload mounts, Docker-socket mounts, host networking, non-loopback published ports, public routes, and cross-domain routes
 - do not deploy or migrate any workload
 EOF
   exit 0

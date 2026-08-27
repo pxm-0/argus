@@ -21,7 +21,7 @@ loader.exec_module(module)
 
 
 class ScheduledSmokeTest(unittest.TestCase):
-    def test_rootless_probe_requires_fresh_root_owned_success_for_both_domains(
+    def test_rootless_probe_requires_fresh_root_owned_success_for_all_domains(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
@@ -64,7 +64,7 @@ class ScheduledSmokeTest(unittest.TestCase):
                 module.Path.lstat = original_lstat
                 module.time.time = original_time
         self.assertTrue(result["ok"])
-        self.assertEqual(2, len(result["domains"]))
+        self.assertEqual(3, len(result["domains"]))
 
     def test_systemd_preflights_are_privileged_but_sockets_stay_private(self) -> None:
         unit = (ROOT / "systemd" / "argus-smoke.service").read_text()

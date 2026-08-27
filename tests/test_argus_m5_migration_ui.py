@@ -101,7 +101,10 @@ class MigrationUiTests(unittest.TestCase):
             result = migration_preflight("hello-nginx")
 
         self.assertFalse(result["allowed"])
-        self.assertEqual("operation-not-capable", result["reason"])
+        self.assertEqual(
+            "migration status migrated is not a migration candidate",
+            result["reason"],
+        )
 
     def test_migration_preflight_requires_an_explicit_target_domain(self) -> None:
         self.assertIn("migration.preflight", TYPED_OPERATIONS)
