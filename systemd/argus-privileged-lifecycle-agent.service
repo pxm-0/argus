@@ -1,0 +1,32 @@
+[Unit]
+Description=Argus capability-gated privileged lifecycle broker
+Requires=argus-operation-worker.service argus-capability-issuer.service
+After=network.target argus-operation-worker.service argus-capability-issuer.service
+
+[Service]
+Type=simple
+User=root
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+Environment=ARGUS_RUNTIME=/srv/argus/runtime/argus/m5
+Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
+Environment=ARGUS_LEDGER_REQUIRE_EXISTING=1
+Environment=ARGUS_ISSUER_SOCKET=/run/argus/capability-issuer.sock
+Environment=ARGUS_PRIVILEGED_LIFECYCLE_SOCKET=/run/argus/privileged-lifecycle/agent.sock
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_privileged_lifecycle_agent.py
+Restart=on-failure
+RestartSec=3
+UMask=0007
+RuntimeDirectory=argus/privileged-lifecycle
+RuntimeDirectoryMode=0770
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadOnlyPaths=/srv/argus
+ReadWritePaths=/var/lib/argus /run/argus /srv/argus/runtime
+RestrictAddressFamilies=AF_UNIX
+
+[Install]
+WantedBy=multi-user.target

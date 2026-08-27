@@ -1293,9 +1293,12 @@ document.addEventListener("click", async (event) => {
             ? "migration.preflight"
             : "backup.create";
     try {
+      const parameters = operationType === "migration.preflight"
+        ? {targetTrustDomain: "personal-sandbox"}
+        : {};
       const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
         operationType,
-        parameters: {}
+        parameters
       });
       if (
         !action.endsWith("-apply")
@@ -1310,7 +1313,7 @@ document.addEventListener("click", async (event) => {
       }
       const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, {
         operationType,
-        parameters: {},
+        parameters,
         previewDigest: previewResult.payload.previewDigest,
         expectedRevision: previewResult.payload.expectedRevision,
         policyVersion: previewResult.payload.policyVersion

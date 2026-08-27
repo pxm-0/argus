@@ -228,6 +228,28 @@ operation state cannot rely on color alone.
 
 ## Phase 2: full lifecycle and protected-public view
 
+Lifecycle operations are implemented as ledger schema v2. Public exposure is
+still deferred: the implementation adds no protected-public route, provider
+activation, DNS, Funnel, or router change.
+
+The lifecycle contract accepts only these parameter shapes:
+
+- `workload.deploy`: immutable `targetRevision` (`sha256:<64 hex>`)
+- `workload.start` / `workload.stop`: no parameters
+- `backup.restore`: exact `artifactId`, restored only into an isolated recovery candidate
+- `migration.preflight`: exact `targetTrustDomain`
+- `migration.cutover`: successful ready `preflightOperationId`
+- `migration.rollback`: successful `cutoverOperationId`
+- `production.promote`: successful `sourceOperationId` plus private `targetTrustDomain`
+- `production.rollback`: successful `promotionOperationId`
+
+Cutover and production placement changes run through a root-owned local Unix
+socket broker. The broker accepts operation IDs only, reuses capability,
+admission, revision, replay, and ledger checks, and calls only fixed lifecycle
+executors. Its target Compose gate rejects published ports, host networking,
+privileged containers, and Docker-socket mounts. Timeouts and unprovable
+recovery are recorded as `indeterminate` and are never automatically retried.
+
 ### Additional operation types
 
 Add typed preview, apply, and rollback flows for:

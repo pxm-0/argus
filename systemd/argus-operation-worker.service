@@ -11,6 +11,7 @@ WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
 Environment=ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3
 Environment=ARGUS_AGENT_SOCKET_DIR=/run/argus/domains
+Environment=ARGUS_PRIVILEGED_LIFECYCLE_SOCKET=/run/argus/privileged-lifecycle/agent.sock
 ExecStart=/usr/bin/python3 /srv/argus/scripts/argus_operation_worker.py
 Restart=on-failure
 RestartSec=3

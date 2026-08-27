@@ -291,16 +291,19 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertIn("--acknowledge-m5-ledger-worker", script)
         self.assertIn("/var/backups/argus-m5-phase1/ledger-worker", script)
         self.assertIn("backup_sqlite_if_present", script)
+        self.assertIn('[[ -e "$LEGACY_LEDGER" ]] || return 0', script)
         self.assertIn("unresolved operation(s)", script)
         self.assertIn("trap rollback_on_exit EXIT", script)
         self.assertIn("LEDGER_WORKER_ROLLED_BACK", script)
         self.assertIn("wait_for_api_fail_closed", script)
+        self.assertIn("wait_for_lifecycle_agent", script)
+        self.assertIn("LIFECYCLE_AGENT_READY", script)
         self.assertIn("LEDGER_API_READY", script)
         self.assertIn("control API did not become ready within 10 seconds", script)
         self.assertIn("wait_for_ledger_schema", script)
         self.assertIn("LEDGER_SCHEMA_OK", script)
         self.assertIn(
-            "operation ledger did not reach schema version 1 within 10 seconds",
+            "operation ledger did not reach schema version 2 within 10 seconds",
             script,
         )
         self.assertIn(

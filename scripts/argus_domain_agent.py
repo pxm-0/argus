@@ -39,6 +39,10 @@ from argus_operations import (
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
+class IndeterminateOperation(RuntimeError):
+    """The executor timed out after dispatch and must never be silently retried."""
+
+
 class AgentService:
     def __init__(
         self,
@@ -81,8 +85,6 @@ class AgentService:
         )
         self.active_operations: set[str] = set()
         self.active_lock = threading.Lock()
-        if domain != "legacy-rootful":
-            os.environ["DOCKER_HOST"] = f"unix:///var/lib/argus/{domain}/docker.sock"
 
     def policy_check(self, workload_id: str, operation_type: str, parameters: dict[str, Any]) -> tuple[bool, str]:
         admission = evaluate_current(self.root, workload_id, operation_type)
@@ -110,6 +112,8 @@ class AgentService:
                 if allowed
                 else str(preview.get("reason", "migration preflight disabled by manifest"))
             )
+        if operation_type in {"workload.deploy", "workload.start", "workload.stop", "backup.restore"}:
+            return self.domain != "legacy-rootful", "lifecycle operations require a sealed trust domain"
         if operation_type == "workload.restart":
             return True, "admission allowed"
         if operation_type == "backup.create":
@@ -139,8 +143,21 @@ class AgentService:
         compose_project = str(runtime.get("composeProject", ""))
         if not compose_path.startswith(f"/srv/argus/workloads/{workload_id}/") or not compose_project:
             raise ValueError("Compose runtime is outside the canonical workload root")
-        command = ["docker", "compose", "-f", compose_path, "-p", compose_project, *arguments]
+        command = [
+            "docker", "--host", f"unix:///var/lib/argus/{self.domain}/docker.sock",
+            "compose", "-f", compose_path, "-p", compose_project, *arguments,
+        ]
         return command
+
+    def run_compose(self, workload_id: str, *arguments: str, timeout: int = 60) -> subprocess.CompletedProcess[str]:
+        try:
+            return subprocess.run(
+                self.compose_command(workload_id, *arguments), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+                timeout=timeout,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise IndeterminateOperation("runtime command timed out; outcome requires reconciliation") from exc
 
     def compose_service(self, workload_id: str) -> str:
         item = by_id()[workload_id]
@@ -172,6 +189,33 @@ class AgentService:
         }
 
     def execute_typed(self, operation_type: str, workload_id: str, parameters: dict[str, Any]) -> dict[str, Any]:
+        if operation_type in {"workload.start", "workload.stop", "workload.deploy"}:
+            arguments = ["up", "-d"] if operation_type != "workload.stop" else ["stop"]
+            if operation_type == "workload.deploy":
+                configured = self.run_compose(workload_id, "config", "--images", timeout=15)
+                if configured.returncode != 0 or parameters["targetRevision"] not in configured.stdout.splitlines():
+                    raise PermissionError("target revision is not pinned by the reviewed Compose file")
+                arguments = ["up", "-d", "--pull", "always"]
+            result = self.run_compose(workload_id, *arguments)
+            if result.returncode != 0:
+                raise RuntimeError("typed lifecycle Compose command failed")
+            if operation_type != "workload.stop":
+                health = self.domain_health(workload_id)
+                if not health["ok"]:
+                    raise RuntimeError("post-lifecycle domain health failed")
+            return {"summary": f"{operation_type} completed in the sealed domain."}
+        if operation_type == "backup.restore":
+            try:
+                result = subprocess.run(
+                    [sys.executable, str(self.root / "scripts" / "argus-backup-restore"), "--workload", workload_id,
+                     "--artifact-id", str(parameters["artifactId"]), "--acknowledge-isolated-restore"],
+                    text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=120,
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise IndeterminateOperation("restore timed out; isolated outcome requires reconciliation") from exc
+            if result.returncode != 0:
+                raise RuntimeError("isolated restore verification failed")
+            return json.loads(result.stdout)
         if operation_type == "health.refresh":
             item = by_id().get(workload_id)
             if not item:
@@ -313,6 +357,11 @@ class AgentService:
                 operation_id, {"running"}, "succeeded", finished_at=int(time.time()),
                 redacted_summary=str(result.get("summary", "Operation succeeded."))[:1000],
                 redacted_result_json=canonical_json(result),
+            )
+        except IndeterminateOperation as exc:
+            return self.ledger.transition(
+                operation_id, {"running"}, "indeterminate", finished_at=int(time.time()),
+                error_class="execution-timeout", redacted_summary=str(exc)[:1000],
             )
         except PermissionError as exc:
             return self.ledger.transition(

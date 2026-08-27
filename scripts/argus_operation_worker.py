@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_ipc import request as ipc_request
-from argus_operations import OperationConflict, OperationLedger
+from argus_operations import OperationConflict, OperationLedger, PRIVILEGED_MUTATIONS
 
 
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -22,14 +22,18 @@ class OperationWorker:
         agent_socket_dir: Path,
         *,
         dispatch_timeout_seconds: float = 10,
+        privileged_socket: Path = Path("/run/argus/privileged-lifecycle/agent.sock"),
     ) -> None:
         self.ledger = ledger
         self.agent_socket_dir = agent_socket_dir
         self.dispatch_timeout_seconds = dispatch_timeout_seconds
+        self.privileged_socket = privileged_socket
 
-    def socket_path(self, trust_domain: str) -> Path:
+    def socket_path(self, trust_domain: str, operation_type: str = "") -> Path:
         if not DOMAIN_ID.fullmatch(trust_domain):
             raise ValueError("invalid trust domain")
+        if operation_type in PRIVILEGED_MUTATIONS:
+            return self.privileged_socket
         return self.agent_socket_dir / trust_domain / "agent.sock"
 
     @staticmethod
@@ -38,13 +42,16 @@ class OperationWorker:
 
     def dispatch(self, operation: dict[str, Any]) -> bool:
         operation_id = str(operation["operation_id"])
-        socket_path = self.socket_path(str(operation["trust_domain"]))
+        operation_type = str(operation["operation_type"])
+        trust_domain = str(operation["trust_domain"])
+        socket_path = self.socket_path(trust_domain, operation_type)
         try:
             response = ipc_request(
                 str(socket_path),
                 {
                     "method": "operation.execute",
                     "operationId": operation_id,
+                    **({"trustDomain": trust_domain} if operation_type in PRIVILEGED_MUTATIONS else {}),
                 },
                 timeout_seconds=self.dispatch_timeout_seconds,
             )
@@ -60,11 +67,12 @@ class OperationWorker:
                 pass
             return False
 
-    def agent_available(self, trust_domain: str) -> bool:
+    def agent_available(self, trust_domain: str, operation_type: str = "") -> bool:
         try:
-            socket_path = self.socket_path(trust_domain)
+            privileged = operation_type in PRIVILEGED_MUTATIONS
+            socket_path = self.socket_path(trust_domain, operation_type)
             metadata = socket_path.stat()
-            expected_uid = pwd.getpwnam(self.expected_owner(trust_domain)).pw_uid
+            expected_uid = pwd.getpwnam("root" if privileged else self.expected_owner(trust_domain)).pw_uid
             expected_gid = grp.getgrnam("argus-control").gr_gid
             if (
                 not stat.S_ISSOCK(metadata.st_mode)
@@ -75,7 +83,7 @@ class OperationWorker:
                 return False
             response = ipc_request(
                 str(socket_path),
-                {"method": "agent.status"},
+                {"method": "agent.status", **({"trustDomain": trust_domain} if privileged else {})},
                 timeout_seconds=self.dispatch_timeout_seconds,
             )
         except (KeyError, OSError, ValueError, RuntimeError):
@@ -91,7 +99,7 @@ class OperationWorker:
         accepted = 0
         indeterminate = 0
         for queued in self.ledger.list_queued():
-            if not self.agent_available(str(queued["trust_domain"])):
+            if not self.agent_available(str(queued["trust_domain"]), str(queued["operation_type"])):
                 continue
             operation = self.ledger.claim(str(queued["operation_id"]))
             if operation is None:
@@ -133,8 +141,9 @@ def main() -> int:
             "/run/argus/domains",
         )
     )
+    privileged_socket = Path(os.environ.get("ARGUS_PRIVILEGED_LIFECYCLE_SOCKET", "/run/argus/privileged-lifecycle/agent.sock"))
     ledger = OperationLedger(ledger_path)
-    worker = OperationWorker(ledger, socket_dir)
+    worker = OperationWorker(ledger, socket_dir, privileged_socket=privileged_socket)
 
     if args.once:
         accepted, indeterminate, recovered = worker.run_once()

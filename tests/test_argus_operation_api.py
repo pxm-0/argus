@@ -34,6 +34,36 @@ def load_server(runtime: Path):
 
 
 class OperationApiTests(unittest.TestCase):
+    def test_lifecycle_confirmation_phrases_bind_exact_operation_intent(self) -> None:
+        self.assertEqual(
+            "deploy demo sha256:" + "a" * 64,
+            self.server.confirmation_phrase(
+                "demo", "workload.deploy", {"targetRevision": "sha256:" + "a" * 64}
+            ),
+        )
+        self.assertEqual(
+            "restore demo run-1",
+            self.server.confirmation_phrase("demo", "backup.restore", {"artifactId": "run-1"}),
+        )
+        self.assertEqual(
+            "promote demo to production",
+            self.server.confirmation_phrase("demo", "production.promote", {}),
+        )
+        self.assertEqual(
+            "migrate demo to managed-production",
+            self.server.confirmation_phrase(
+                "demo", "migration.cutover", {}, "managed-production"
+            ),
+        )
+        self.assertEqual(
+            "rollback migration demo",
+            self.server.confirmation_phrase("demo", "migration.rollback", {}),
+        )
+        self.assertEqual(
+            "rollback production demo",
+            self.server.confirmation_phrase("demo", "production.rollback", {}),
+        )
+
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
         self.runtime = Path(self.directory.name)
@@ -186,7 +216,7 @@ class OperationApiTests(unittest.TestCase):
             preview = self.server.operation_preview(
                 "hastur",
                 "migration.preflight",
-                {},
+                {"targetTrustDomain": "personal-sandbox"},
             )
             access_policy = self.server.operation_policy(
                 "hastur",

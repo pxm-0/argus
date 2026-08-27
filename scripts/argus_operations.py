@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import sqlite3
 import time
 import tempfile
@@ -12,7 +13,16 @@ from pathlib import Path
 from typing import Any, Callable
 
 
-MUTATIONS = {"workload.restart", "backup.create", "access.apply"}
+LIFECYCLE_MUTATIONS = {
+    "workload.deploy", "workload.start", "workload.stop", "backup.restore",
+    "migration.cutover", "migration.rollback", "production.promote",
+    "production.rollback",
+}
+PRIVILEGED_MUTATIONS = {
+    "migration.cutover", "migration.rollback", "production.promote",
+    "production.rollback",
+}
+MUTATIONS = {"workload.restart", "backup.create", "access.apply", *LIFECYCLE_MUTATIONS}
 TYPED_OPERATIONS = {"health.refresh", "logs.preview", "migration.preflight", *MUTATIONS}
 TERMINAL_STATES = {"succeeded", "failed", "rolled-back", "denied", "expired", "indeterminate"}
 ALLOWED_STATES = {
@@ -27,7 +37,7 @@ ALLOWED_TRANSITIONS = {
     "failed": {"rollback-running", "indeterminate"},
     "rollback-running": {"rolled-back", "indeterminate"},
 }
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 STALE_HEARTBEAT_SECONDS = 30
 EVENT_RETENTION_SECONDS = 365 * 24 * 60 * 60
 TIMESTAMP_FIELDS = {"approved_at", "started_at", "heartbeat_at", "finished_at"}
@@ -85,9 +95,17 @@ def validate_typed_parameters(
     schemas: dict[str, set[str]] = {
         "health.refresh": set(),
         "logs.preview": {"maxLines"},
-        "migration.preflight": set(),
+        "migration.preflight": {"targetTrustDomain"},
         "workload.restart": {"healthTimeoutSeconds"},
         "backup.create": {"planRevision"},
+        "workload.deploy": {"targetRevision"},
+        "workload.start": set(),
+        "workload.stop": set(),
+        "backup.restore": {"artifactId"},
+        "migration.cutover": {"preflightOperationId"},
+        "migration.rollback": {"cutoverOperationId"},
+        "production.promote": {"sourceOperationId", "targetTrustDomain"},
+        "production.rollback": {"promotionOperationId"},
         "access.apply": {"desired"},
     }
     if operation_type not in schemas:
@@ -125,6 +143,37 @@ def validate_typed_parameters(
             raise OperationValidationError(
                 "planRevision must be a lowercase SHA-256 digest"
             )
+    if operation_type == "workload.deploy":
+        revision = parameters.get("targetRevision")
+        if not isinstance(revision, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", revision):
+            raise OperationValidationError("targetRevision must be an immutable sha256 digest")
+    required_strings = {
+        "migration.preflight": "targetTrustDomain",
+        "backup.restore": "artifactId",
+        "production.promote": "targetTrustDomain",
+    }
+    required = required_strings.get(operation_type)
+    if required and (not isinstance(parameters.get(required), str) or not parameters[required].strip()):
+        raise OperationValidationError(f"{required} must be a non-empty string")
+    for field in {"targetTrustDomain"} & set(parameters):
+        if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", str(parameters[field])):
+            raise OperationValidationError(f"{field} must be a canonical trust-domain id")
+    if operation_type == "backup.restore" and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", str(parameters["artifactId"])
+    ):
+        raise OperationValidationError("artifactId must be a canonical artifact id")
+    references = {
+        "migration.cutover": "preflightOperationId",
+        "migration.rollback": "cutoverOperationId",
+        "production.promote": "sourceOperationId",
+        "production.rollback": "promotionOperationId",
+    }
+    reference = references.get(operation_type)
+    if reference:
+        try:
+            uuid.UUID(str(parameters.get(reference, "")))
+        except ValueError as exc:
+            raise OperationValidationError(f"{reference} must be a UUID") from exc
     if operation_type == "access.apply":
         if parameters.get("desired") not in {"none", "local", "tailnet"}:
             raise OperationValidationError(
@@ -244,7 +293,10 @@ class OperationLedger:
             CREATE UNIQUE INDEX one_mutation_per_workload
               ON operations(workload_id)
               WHERE operation_type IN (
-                  'workload.restart', 'backup.create', 'access.apply'
+                  'workload.restart', 'backup.create', 'access.apply',
+                  'workload.deploy', 'workload.start', 'workload.stop',
+                  'backup.restore', 'migration.cutover', 'migration.rollback',
+                  'production.promote', 'production.rollback'
               )
                 AND state IN (
                     'awaiting-approval', 'queued', 'running',
@@ -302,12 +354,16 @@ class OperationLedger:
         }
         if required.issubset(columns):
             connection.execute("DROP INDEX IF EXISTS one_active_mutation_per_workload")
+            connection.execute("DROP INDEX IF EXISTS one_mutation_per_workload")
             connection.execute(
                 """
                 CREATE UNIQUE INDEX IF NOT EXISTS one_mutation_per_workload
                   ON operations(workload_id)
                   WHERE operation_type IN (
-                      'workload.restart', 'backup.create', 'access.apply'
+                      'workload.restart', 'backup.create', 'access.apply',
+                      'workload.deploy', 'workload.start', 'workload.stop',
+                      'backup.restore', 'migration.cutover', 'migration.rollback',
+                      'production.promote', 'production.rollback'
                   )
                     AND state IN (
                         'awaiting-approval', 'queued', 'running',
@@ -621,6 +677,79 @@ class OperationLedger:
             connection.commit()
         return len(rows)
 
+    def _validate_dependency(
+        self,
+        workload_id: str,
+        trust_domain: str,
+        operation_type: str,
+        expected_revision: str,
+        parameters: dict[str, Any],
+    ) -> None:
+        reference_fields = {
+            "migration.cutover": ("preflightOperationId", "migration.preflight"),
+            "migration.rollback": ("cutoverOperationId", "migration.cutover"),
+            "production.rollback": ("promotionOperationId", "production.promote"),
+        }
+        if operation_type in reference_fields:
+            field, required_type = reference_fields[operation_type]
+            try:
+                source = self.get(str(parameters[field]))
+            except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                raise OperationValidationError("referenced lifecycle evidence is malformed") from exc
+            if (
+                source is None
+                or source["state"] != "succeeded"
+                or source["operation_type"] != required_type
+                or source["workload_id"] != workload_id
+                or source["expected_revision"] != expected_revision
+            ):
+                raise OperationValidationError("referenced lifecycle evidence is not eligible")
+            linked = source.get("rollback_operation_id")
+            if linked:
+                replacement = self.get(str(linked))
+                if replacement is None or replacement["state"] not in {"failed", "denied", "expired"}:
+                    raise OperationValidationError("referenced operation already has a rollback")
+            if operation_type == "migration.cutover":
+                result = source.get("redactedResult")
+                if not isinstance(result, dict) or result.get("readyForCutover") is not True:
+                    raise OperationValidationError("migration preflight did not prove cutover readiness")
+                if source["parameters"].get("targetTrustDomain") != trust_domain:
+                    raise OperationValidationError("migration preflight target does not match")
+            return
+        if operation_type != "production.promote":
+            return
+        try:
+            source = self.get(str(parameters["sourceOperationId"]))
+        except (json.JSONDecodeError, TypeError, ValueError) as exc:
+            raise OperationValidationError("promotion source evidence is malformed") from exc
+        target = str(parameters["targetTrustDomain"])
+        if (
+            source is None
+            or source["state"] != "succeeded"
+            or source["workload_id"] != workload_id
+            or source["expected_revision"] != expected_revision
+            or source["trust_domain"] == target
+        ):
+            raise OperationValidationError("promotion source evidence is not eligible")
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT redacted_result_json, finished_at FROM operations
+                WHERE workload_id = ? AND trust_domain = ?
+                  AND operation_type = 'health.refresh' AND state = 'succeeded'
+                ORDER BY finished_at DESC LIMIT 1
+                """,
+                (workload_id, source["trust_domain"]),
+            ).fetchone()
+        if row is None or self._now() - parse_timestamp(str(row["finished_at"])) > 300:
+            raise OperationValidationError("promotion requires fresh source health evidence")
+        try:
+            health = json.loads(str(row["redacted_result_json"])).get("health", {})
+        except (json.JSONDecodeError, AttributeError):
+            health = {}
+        if health.get("ok") is not True:
+            raise OperationValidationError("promotion source health evidence is unhealthy")
+
     def create(
         self, *, workload_id: str, trust_domain: str, operation_type: str,
         requested_by: str, parameters: dict[str, Any], preview_digest: str,
@@ -641,6 +770,9 @@ class OperationLedger:
             "expectedRevision": expected_revision,
             "policyVersion": policy_version,
         }
+        self._validate_dependency(
+            workload_id, trust_domain, operation_type, expected_revision, parameters
+        )
         try:
             with self._connect() as connection:
                 connection.execute("BEGIN IMMEDIATE")
@@ -681,6 +813,26 @@ class OperationLedger:
                         policy_version, state, created_at,
                     ),
                 )
+                rollback_reference = {
+                    "migration.rollback": "cutoverOperationId",
+                    "production.rollback": "promotionOperationId",
+                }.get(operation_type)
+                if rollback_reference:
+                    updated = connection.execute(
+                        """
+                        UPDATE operations SET rollback_operation_id = ?
+                        WHERE operation_id = ?
+                          AND (
+                            rollback_operation_id IS NULL OR rollback_operation_id IN (
+                              SELECT operation_id FROM operations
+                              WHERE state IN ('failed', 'denied', 'expired')
+                            )
+                          )
+                        """,
+                        (operation_id, str(parameters[rollback_reference])),
+                    )
+                    if updated.rowcount != 1:
+                        raise OperationConflict("referenced operation already has a rollback")
                 self._event(connection, operation_id, state, created_at, "Operation intent persisted.")
                 connection.commit()
         except sqlite3.IntegrityError as exc:
@@ -708,7 +860,10 @@ class OperationLedger:
                         SELECT 1 FROM operations
                         WHERE workload_id = ?
                           AND operation_type IN (
-                              'workload.restart', 'backup.create', 'access.apply'
+                              'workload.restart', 'backup.create', 'access.apply',
+                              'workload.deploy', 'workload.start', 'workload.stop',
+                              'backup.restore', 'migration.cutover', 'migration.rollback',
+                              'production.promote', 'production.rollback'
                           )
                           AND state IN (
                               'awaiting-approval', 'queued', 'running',

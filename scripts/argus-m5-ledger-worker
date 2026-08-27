@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Install the reviewed M5 durable operation ledger and separate worker.
-set -euo pipefail
+set -Eeuo pipefail
 
 readonly ROOT="/srv/argus"
 readonly ACK="--acknowledge-m5-ledger-worker"
@@ -12,11 +12,13 @@ readonly API_UNIT="/etc/systemd/system/argus-control-api.service"
 readonly WORKER_UNIT="/etc/systemd/system/argus-operation-worker.service"
 readonly LEGACY_AGENT_UNIT="/etc/systemd/system/argus-domain-agent-legacy-rootful.service"
 readonly DOMAIN_AGENT_UNIT="/etc/systemd/system/argus-domain-agent@.service"
+readonly LIFECYCLE_AGENT_UNIT="/etc/systemd/system/argus-privileged-lifecycle-agent.service"
 readonly API_SERVICE="argus-control-api.service"
 readonly WORKER_SERVICE="argus-operation-worker.service"
 readonly LEGACY_AGENT_SERVICE="argus-domain-agent-legacy-rootful.service"
 readonly SANDBOX_AGENT_SERVICE="argus-domain-agent@personal-sandbox.service"
 readonly WORK_SANDBOX_AGENT_SERVICE="argus-domain-agent@work-sandbox.service"
+readonly LIFECYCLE_AGENT_SERVICE="argus-privileged-lifecycle-agent.service"
 readonly API_USER="oreo"
 readonly WORKER_USER="argus-worker"
 readonly WORK_SANDBOX_USER="argus-work-sandbox"
@@ -33,6 +35,12 @@ PRIOR_WORKER_ACTIVE=false
 PRIOR_LEGACY_AGENT_ACTIVE=false
 PRIOR_SANDBOX_AGENT_ACTIVE=false
 PRIOR_WORK_SANDBOX_AGENT_ACTIVE=false
+PRIOR_LIFECYCLE_AGENT_ACTIVE=false
+PRIOR_LIFECYCLE_AGENT_ENABLED=false
+ERROR_LINE=0
+
+capture_error() { ERROR_LINE="$1"; }
+trap 'capture_error "$LINENO"' ERR
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -67,6 +75,22 @@ wait_for_api_fail_closed() {
     sleep 0.25
   done
   fail "control API did not become ready within 10 seconds"
+}
+
+wait_for_lifecycle_agent() {
+  local attempt
+  for attempt in {1..40}; do
+    if [[ -S /run/argus/privileged-lifecycle/agent.sock ]] &&
+      [[ "$(stat -c '%U:%G:%a' /run/argus/privileged-lifecycle/agent.sock)" == "root:$CONTROL_GROUP:660" ]]; then
+      printf 'LIFECYCLE_AGENT_READY attempts=%s socketOwner=root:%s:660\n' \
+        "$attempt" "$CONTROL_GROUP"
+      return
+    fi
+    service_active "$LIFECYCLE_AGENT_SERVICE" ||
+      fail "privileged lifecycle agent stopped while waiting for its socket"
+    sleep 0.25
+  done
+  fail "privileged lifecycle socket did not become ready within 10 seconds"
 }
 
 backup_if_present() {
@@ -137,12 +161,14 @@ rollback_worker() {
     "$LEGACY_AGENT_SERVICE" \
     "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE" || failed=true
+  systemctl stop "$LIFECYCLE_AGENT_SERVICE" 2>/dev/null || true
   systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
 
   restore_file "$API_UNIT" "$ROLLBACK_BACKUP_DIR/argus-control-api.service" || failed=true
   restore_file "$WORKER_UNIT" "$ROLLBACK_BACKUP_DIR/argus-operation-worker.service" || failed=true
   restore_file "$LEGACY_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent-legacy-rootful.service" || failed=true
   restore_file "$DOMAIN_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent@.service" || failed=true
+  restore_file "$LIFECYCLE_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-privileged-lifecycle-agent.service" || failed=true
   restore_sqlite "$LEGACY_LEDGER" "$ROLLBACK_BACKUP_DIR/legacy-operations.sqlite3" \
     "$API_USER" "$CONTROL_GROUP" 0660 || failed=true
   restore_sqlite "$CONTROL_LEDGER" "$ROLLBACK_BACKUP_DIR/control-operations.sqlite3" \
@@ -165,14 +191,22 @@ rollback_worker() {
     "$WORK_SANDBOX_AGENT_SERVICE" "$PRIOR_WORK_SANDBOX_AGENT_ACTIVE" ||
     failed=true
   restore_service_state "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
+  if [[ "$PRIOR_LIFECYCLE_AGENT_ENABLED" == true ]]; then
+    systemctl enable "$LIFECYCLE_AGENT_SERVICE" || failed=true
+  else
+    systemctl disable "$LIFECYCLE_AGENT_SERVICE" 2>/dev/null || true
+  fi
+  if [[ -e "$LIFECYCLE_AGENT_UNIT" ]]; then
+    restore_service_state "$LIFECYCLE_AGENT_SERVICE" "$PRIOR_LIFECYCLE_AGENT_ACTIVE" || failed=true
+  fi
 
   if [[ "$failed" == true ]]; then
     printf 'ERROR ledger-worker rollback was incomplete; inspect backup=%s\n' \
       "$ROLLBACK_BACKUP_DIR" >&2
     return 1
   fi
-  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s\n' \
-    "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" >&2
+  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s failedLine=%s\n' \
+    "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" "$ERROR_LINE" >&2
 }
 
 rollback_on_exit() {
@@ -251,7 +285,8 @@ preflight() {
     "$ROOT/systemd/argus-operation-worker.service" \
     "$ROOT/systemd/argus-control-api.service" \
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
-    "$ROOT/systemd/argus-domain-agent@.service"; do
+    "$ROOT/systemd/argus-domain-agent@.service" \
+    "$ROOT/systemd/argus-privileged-lifecycle-agent.service"; do
     [[ -f "$source" ]] || fail "reviewed source is missing"
   done
   [[ ! -e "$LEGACY_LEDGER" || ! -e "$CONTROL_LEDGER" ]] ||
@@ -262,7 +297,8 @@ preflight() {
     "$ROOT/systemd/argus-operation-worker.service" \
     "$ROOT/systemd/argus-control-api.service" \
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
-    "$ROOT/systemd/argus-domain-agent@.service"
+    "$ROOT/systemd/argus-domain-agent@.service" \
+    "$ROOT/systemd/argus-privileged-lifecycle-agent.service"
   grep -Fq 'InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock' \
     "$ROOT/systemd/argus-operation-worker.service" ||
     fail "worker unit must deny rootful Docker sockets"
@@ -290,7 +326,7 @@ ensure_worker_user() {
 }
 
 copy_legacy_ledger() {
-  [[ -e "$LEGACY_LEDGER" ]] || return
+  [[ -e "$LEGACY_LEDGER" ]] || return 0
   python3 - "$LEGACY_LEDGER" "$CONTROL_LEDGER" <<'PY'
 import os
 import sqlite3
@@ -337,8 +373,8 @@ try:
     }
     if not required.issubset(columns):
         raise SystemExit("operation ledger schema is incomplete")
-    if connection.execute("PRAGMA user_version").fetchone()[0] != 1:
-        raise SystemExit("operation ledger schema version is not 1")
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
+        raise SystemExit("operation ledger schema version is not 2")
     if connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_events'"
     ).fetchone() is None:
@@ -354,7 +390,7 @@ try:
     ).fetchone()[0]
     if unresolved:
         raise SystemExit("operation ledger gained unresolved work during activation")
-    print("LEDGER_SCHEMA_OK version=1 unresolved=0 events=true")
+    print("LEDGER_SCHEMA_OK version=2 unresolved=0 events=true lifecycleIndex=true")
 finally:
     connection.close()
 PY
@@ -372,7 +408,7 @@ wait_for_ledger_schema() {
     sleep 0.25
   done
   validate_installed_ledger ||
-    fail "operation ledger did not reach schema version 1 within 10 seconds"
+    fail "operation ledger did not reach schema version 2 within 10 seconds"
 }
 
 apply_worker() {
@@ -384,6 +420,7 @@ apply_worker() {
   backup_if_present "$WORKER_UNIT" "$backup_dir/argus-operation-worker.service"
   backup_if_present "$LEGACY_AGENT_UNIT" "$backup_dir/argus-domain-agent-legacy-rootful.service"
   backup_if_present "$DOMAIN_AGENT_UNIT" "$backup_dir/argus-domain-agent@.service"
+  backup_if_present "$LIFECYCLE_AGENT_UNIT" "$backup_dir/argus-privileged-lifecycle-agent.service"
   backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
   backup_sqlite_if_present "$CONTROL_LEDGER" "$backup_dir/control-operations.sqlite3"
 
@@ -393,7 +430,9 @@ apply_worker() {
   service_active "$SANDBOX_AGENT_SERVICE" && PRIOR_SANDBOX_AGENT_ACTIVE=true
   service_active "$WORK_SANDBOX_AGENT_SERVICE" &&
     PRIOR_WORK_SANDBOX_AGENT_ACTIVE=true
+  service_active "$LIFECYCLE_AGENT_SERVICE" && PRIOR_LIFECYCLE_AGENT_ACTIVE=true
   systemctl is-enabled --quiet "$WORKER_SERVICE" && PRIOR_WORKER_ENABLED=true
+  systemctl is-enabled --quiet "$LIFECYCLE_AGENT_SERVICE" && PRIOR_LIFECYCLE_AGENT_ENABLED=true
   ROLLBACK_BACKUP_DIR="$backup_dir"
   ROLLBACK_REQUIRED=true
   trap rollback_on_exit EXIT
@@ -402,6 +441,7 @@ apply_worker() {
   systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
   systemctl stop "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE"
+  systemctl stop "$LIFECYCLE_AGENT_SERVICE" 2>/dev/null || true
   inspect_ledger "$LEGACY_LEDGER"
   inspect_ledger "$CONTROL_LEDGER"
   backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
@@ -418,13 +458,16 @@ apply_worker() {
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" "$LEGACY_AGENT_UNIT"
   install -o root -g root -m 0644 \
     "$ROOT/systemd/argus-domain-agent@.service" "$DOMAIN_AGENT_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-privileged-lifecycle-agent.service" "$LIFECYCLE_AGENT_UNIT"
 
   "$ROOT/scripts/argus-m5-runtime-permissions"
   systemctl daemon-reload
-  systemctl enable "$WORKER_SERVICE"
+  systemctl enable "$WORKER_SERVICE" "$LIFECYCLE_AGENT_SERVICE"
   systemctl start "$WORKER_SERVICE"
   systemctl restart "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE"
+  systemctl restart "$LIFECYCLE_AGENT_SERVICE"
   systemctl restart "$API_SERVICE"
 
   for service in \
@@ -432,6 +475,7 @@ apply_worker() {
     "$LEGACY_AGENT_SERVICE" \
     "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE" \
+    "$LIFECYCLE_AGENT_SERVICE" \
     "$API_SERVICE"; do
     systemctl is-active --quiet "$service" || fail "$service is not active"
   done
@@ -446,6 +490,9 @@ apply_worker() {
   done
   [[ "$(stat -c '%U:%G:%a' "$CONTROL_LEDGER")" == "$WORKER_USER:$CONTROL_GROUP:660" ]] ||
     fail "operation ledger ownership or mode is incorrect"
+  wait_for_lifecycle_agent
+  [[ "$(stat -c '%U:%G:%a' /run/argus/privileged-lifecycle/agent.sock)" == "root:$CONTROL_GROUP:660" ]] ||
+    fail "privileged lifecycle socket ownership or mode is incorrect"
   wait_for_ledger_schema
   wait_for_api_fail_closed
 
@@ -457,7 +504,7 @@ apply_worker() {
 
   ROLLBACK_REQUIRED=false
   trap - EXIT
-  printf 'LEDGER_WORKER_APPLIED backup=%s workerActive=true schemaVersion=1 unresolved=0\n' \
+  printf 'LEDGER_WORKER_APPLIED backup=%s workerActive=true lifecycleAgentActive=true schemaVersion=2 unresolved=0\n' \
     "$backup_dir"
   printf 'legacyLedgerRetired=%s publicExposureChanged=false routesChanged=false secretsPrinted=false\n' \
     "$LEGACY_LEDGER_RETIRED"
