@@ -262,8 +262,6 @@ workload.start
 migration.preflight
 migration.cutover
 migration.rollback
-access.cloudflare-protected.plan
-access.cloudflare-protected.apply
 ```
 
 Each operation requires an explicit manifest capability and workload-specific
@@ -736,7 +734,6 @@ All payloads reject unknown keys.
 {"type":"backup.restore","parameters":{"artifactId":"opaque-id"}}
 {"type":"migration.cutover","parameters":{"planDigest":"sha256:..."}}
 {"type":"migration.rollback","parameters":{"cutoverOperationId":"uuid"}}
-{"type":"access.cloudflare-protected.apply","parameters":{"planDigest":"sha256:..."}}
 ```
 
 `logs.preview` is non-mutating, capped at 100 lines, 65,536 bytes, and 600

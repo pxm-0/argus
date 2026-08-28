@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "workloads": [
+    "dozzle",
+    "hello-nginx",
+    "locigraph",
+    "publication-archive-live",
+    "review-ui",
+    "uptime-kuma"
+  ]
+}

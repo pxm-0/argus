@@ -268,15 +268,15 @@ class OperationApiTests(unittest.TestCase):
                 {"operationType", "parameters"},
             )
 
-    def test_preview_exposes_the_shared_admission_decision(self) -> None:
+    def test_preview_fails_closed_for_retired_workload(self) -> None:
         with patch.object(self.server, "agent_available", return_value=True):
             preview = self.server.operation_preview(
                 "hello-nginx",
                 "workload.restart",
                 {},
             )
-        self.assertTrue(preview["allowed"])
-        self.assertEqual("allowed", preview["admission"]["decisionCode"])
+        self.assertFalse(preview["allowed"])
+        self.assertEqual("unknown-workload", preview["admission"]["decisionCode"])
         self.assertEqual(
             preview["expectedRevision"],
             preview["admission"]["revision"],

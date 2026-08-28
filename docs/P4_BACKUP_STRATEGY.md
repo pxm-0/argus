@@ -41,8 +41,9 @@ Each manifest records backup requirements and exclusions while keeping:
 }
 ```
 
-`hello-nginx` remains the only backup-enabled workload, and it already has a
-source-only backup and restore drill pattern.
+The former `hello-nginx` source-only backup and restore drill are historical
+evidence only; the workload is retired and no active workload is
+backup-enabled.
 
 ## Workload Strategy
 
@@ -53,7 +54,6 @@ source-only backup and restore drill pattern.
 | `uptime-kuma` | `uptime-kuma_uptime-kuma-data` volume | Planned but disabled until volume backup consistency is proven. | Restore into isolated volume and confirm app starts without exposing routes. |
 | `hastur` | `/home/oreo/hastur/data`; auth/SSH paths excluded | Planned but disabled; sensitive paths require explicit approval. | Restore into isolated paths and never overwrite live SSH/auth data. |
 | `intake-os` | PostgreSQL volume, Caddy data/config volumes | Planned but disabled; requires explicit re-scope. | Database dump/restore and volume restore must be proven in isolation. |
-| `hello-nginx` | source compose only | Configured and enabled. | Existing non-destructive restore drill pattern applies. |
 
 ## Exclusions
 

@@ -31,17 +31,6 @@
       "lastAppliedAt": "2026-07-29T13:23:54Z",
       "lastError": ""
     },
-    "hello-nginx": {
-      "desired": "none",
-      "effective": "none",
-      "urls": {
-        "local": "http://127.0.0.1:18080",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8447",
-        "cloudflare": "https://hello-nginx.argus.invalid"
-      },
-      "lastAppliedAt": "2026-07-29T03:55:13Z",
-      "lastError": ""
-    },
     "kadath": {
       "desired": "tailnet",
       "effective": "tailnet",

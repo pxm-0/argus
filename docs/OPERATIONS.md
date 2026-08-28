@@ -93,17 +93,15 @@ sudo ./scripts/argus-collector-deploy --rollback /var/backups/argus-estate-colle
 
 `server-mutation` — `scripts/argus-workload-source-materialize`
 
-Git stores only a reviewed Compose template. Before a workload can run or move,
-the root-owned materializer verifies the template's immutable image, loopback
-port contract, health check, and secret-free fields, then writes the ignored
-runtime source plus a digest-bound journal. Do not add a workload's generated
-`source/` directory to Git.
+Git stores reviewed Compose templates rather than generated runtime sources.
+Before an approved workload can run or move, the root-owned materializer
+verifies its immutable image, loopback-port contract, health check, and
+secret-free fields, then writes the ignored runtime source plus a digest-bound
+journal. Do not add a workload's generated `source/` directory to Git.
 
-```bash
-sudo ./scripts/argus-workload-source-materialize --workload hello-nginx --preflight
-sudo ./scripts/argus-workload-source-materialize --workload hello-nginx --apply \
-  --acknowledge-source-materialization
-```
+No active workload currently requires source materialization. The prior
+`hello-nginx` materialization is retired; see
+[`RETIRED_HELLO_NGINX.md`](RETIRED_HELLO_NGINX.md).
 
 ## Workloads
 

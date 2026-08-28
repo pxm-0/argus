@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -69,10 +69,10 @@ class DomainAgentServiceTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             root = Path(directory)
             service, signer = self.service(root)
-            revision = canonical_revision(ROOT, "hello-nginx")
-            policy = canonical_policy_version(ROOT, "hello-nginx")
+            revision = canonical_revision(ROOT, "hastur")
+            policy = canonical_policy_version(ROOT, "hastur")
             preview = {
-                "workloadId": "hello-nginx",
+                "workloadId": "hastur",
                 "trustDomain": "personal-sandbox",
                 "operationType": "health.refresh",
                 "parameters": {},
@@ -80,7 +80,7 @@ class DomainAgentServiceTests(unittest.TestCase):
                 "policyVersion": policy,
             }
             operation, _ = service.ledger.create(
-                workload_id="hello-nginx",
+                workload_id="hastur",
                 trust_domain="personal-sandbox",
                 operation_type="health.refresh",
                 requested_by="operator@example.com",
@@ -101,6 +101,15 @@ class DomainAgentServiceTests(unittest.TestCase):
                         "signedCapability": signed,
                     },
                 ),
+                patch(
+                    "argus_domain_agent.evaluate_current",
+                    return_value=Mock(allowed=True, decision_code="allowed"),
+                ),
+                patch.object(
+                    service,
+                    "policy_check",
+                    return_value=(True, "admission allowed"),
+                ),
                 patch.object(service, "execute_typed", return_value=result),
             ):
                 return service.run_operation(str(operation["operation_id"]))
@@ -112,11 +121,17 @@ class DomainAgentServiceTests(unittest.TestCase):
                 service, _signer = self.service(Path(directory))
                 self.assertNotIn("DOCKER_HOST", os.environ)
                 self.assertEqual(
-                    service.compose_command("hello-nginx", "ps")[:3],
+                    service.compose_command("hastur", "ps")[:3],
                     ["docker", "--host", "unix:///var/lib/argus/personal-sandbox/docker.sock"],
                 )
-                self.assertEqual(service.policy_check("hello-nginx", "logs.preview", {}), (True, "admission allowed"))
-                self.assertEqual(service.policy_check("hello-nginx", "workload.restart", {}), (True, "admission allowed"))
+                self.assertEqual(
+                    service.policy_check("hastur", "logs.preview", {}),
+                    (False, "operation-not-capable"),
+                )
+                self.assertEqual(
+                    service.policy_check("hastur", "workload.restart", {}),
+                    (False, "operation-not-capable"),
+                )
                 self.assertEqual(
                     service.policy_check("hastur", "migration.preflight", {}),
                     (False, "migration status migrated is not a migration candidate"),
@@ -149,8 +164,8 @@ class DomainAgentServiceTests(unittest.TestCase):
                     "hastur",
                     actor="oreo@example.test",
                 )
-                command = service.compose_command("hello-nginx", "restart", "web")
-                self.assertEqual(command[-2:], ["restart", "web"])
+                command = service.compose_command("hastur", "restart", "hastur")
+                self.assertEqual(command[-2:], ["restart", "hastur"])
                 self.assertNotIn("/var/run/docker.sock", " ".join(command))
         finally:
             if previous is None:
@@ -161,7 +176,7 @@ class DomainAgentServiceTests(unittest.TestCase):
     def test_domain_agent_cannot_mutate_the_promotion_owned_tailnet_route(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             service, _signer = self.service(Path(directory))
-            allowed, reason = service.policy_check("hello-nginx", "access.apply", {"desired": "tailnet"})
+            allowed, reason = service.policy_check("hastur", "access.apply", {"desired": "tailnet"})
             self.assertFalse(allowed)
             self.assertEqual("operation-not-capable", reason)
 
@@ -180,7 +195,7 @@ class DomainAgentServiceTests(unittest.TestCase):
             service, _signer = self.service(base, repository=repository)
             self.assertEqual(
                 (False, "dependency-unavailable"),
-                service.policy_check("hello-nginx", "workload.restart", {}),
+                service.policy_check("hastur", "workload.restart", {}),
             )
 
     def test_unavailable_health_evidence_fails_operation_and_is_preserved(self) -> None:

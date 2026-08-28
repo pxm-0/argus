@@ -650,7 +650,7 @@ function renderTopology() {
   const nodes = new Map(workloadNodes.map((node) => [node.id, node]));
   const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
   if (!selectedTopologyId || !nodes.has(selectedTopologyId)) {
-    selectedTopologyId = nodes.has("hello-nginx") ? "hello-nginx" : workloadNodes[0]?.id;
+    selectedTopologyId = workloadNodes[0]?.id;
   }
   const selected = nodes.get(selectedTopologyId) || {};
   const domainRows = domains.map((domain) => {

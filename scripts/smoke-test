@@ -322,7 +322,12 @@ def check_action_api_boundaries(repo: Path, smoke: Smoke) -> None:
                     "X-Argus-CSRF": csrf,
                 },
             )
-            smoke.check(status == 200 and "previewDigest" in preview, "typed operation preview is revision-bound")
+            smoke.check(
+                status == 200
+                and "previewDigest" in preview
+                and preview.get("reason") == "unknown-workload",
+                "retired workload operation preview is revision-bound and fails closed",
+            )
             smoke.check("docker compose" not in text and "compose -f" not in text, "dashboard action responses omit raw shell commands")
         finally:
             process.terminate()
@@ -798,21 +803,6 @@ def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
         smoke.pass_("Cloudflare plan excludes blocked workloads")
 
 
-def check_cloudflare_activation_guard(repo: Path, smoke: Smoke) -> None:
-    preview = run([str(repo / "scripts" / "argus-cloudflare-activate-preview"), "--json"], repo)
-    try:
-        payload = json.loads(preview.stdout)
-    except json.JSONDecodeError:
-        smoke.fail("Cloudflare activation preview JSON valid")
-        return
-    blockers = payload.get("blockers", [])
-    invalid_blocker = any(".invalid" in str(item) for item in blockers)
-    smoke.check(preview.returncode == 2 and invalid_blocker, "Cloudflare activation blocks placeholder hostname")
-    smoke.check(payload.get("allowQuickTunnels") is False, "Cloudflare activation refuses quick tunnel mode")
-    rollback = run([str(repo / "scripts" / "argus-cloudflare-rollback")], repo)
-    smoke.check(rollback.returncode == 0, "Cloudflare rollback preview works")
-
-
 def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
     result = run([str(repo / "scripts" / "argus-access-reconcile"), "--offline", "--json"], repo)
     try:
@@ -832,6 +822,7 @@ def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
         "P3_CLOUDFLARE_ACTIVATION.md",
         "P3_CLOUDFLARE_ROLLBACK.md",
         "P3_NEXT_WORKLOAD_DISCOVERY.md",
+        "RETIRED_HELLO_NGINX.md",
     ]
     missing = [name for name in required_docs if not (repo / "docs" / name).is_file()]
     smoke.check(not missing, "P3 evidence docs exist")
@@ -845,23 +836,16 @@ def check_p3_evidence(repo: Path, smoke: Smoke) -> None:
         )
 
     activation_doc = repo / "docs" / "P3_CLOUDFLARE_ACTIVATION.md"
-    access = load_json_file(repo / "config" / "access.json")
-    exposure = load_json_file(repo / "config" / "exposure.json")
-    placements = load_json_file(repo / "config" / "argus" / "workload-classification.json")
-    hello = access.get("workloads", {}).get("hello-nginx", {})
-    hello_placement = placements.get("workloads", {}).get("hello-nginx")
-    cloudflare = exposure.get("providers", {}).get("cloudflare", {})
-    expected_effective = "none" if hello_placement else "local"
-    deferred = (
-        hello.get("effective") == expected_effective
-        and str(hello.get("urls", {}).get("cloudflare", "")).endswith(".invalid")
-        and cloudflare.get("enabled") is False
-        and cloudflare.get("provisioned") is False
-    )
-    smoke.check(deferred, "P3 Cloudflare activation remains deferred")
     if activation_doc.exists():
         content = activation_doc.read_text()
         smoke.check("Decision: `defer`" in content and "effective access remains `local`" in content, "P3 historical deferral evidence recorded")
+    retirement_doc = repo / "docs" / "RETIRED_HELLO_NGINX.md"
+    if retirement_doc.exists():
+        content = retirement_doc.read_text()
+        smoke.check(
+            "permanently retired" in content and "not active runtime controls" in content,
+            "hello-nginx retirement evidence recorded",
+        )
 
 
 def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
@@ -891,7 +875,7 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
             bad_backup_state.append(workload_id)
     smoke.check(not bad_backup_state, "P4 stateful backup execution remains disabled")
 
-    retired = {"review-ui", "dozzle", "uptime-kuma"}
+    retired = {"review-ui", "dozzle", "uptime-kuma", "locigraph", "hello-nginx"}
     tracked = set(workload_map(repo))
     smoke.check(not (retired & tracked), "P4-deferred workloads retired from active inventory")
 
@@ -916,9 +900,9 @@ def check_p5_evidence(repo: Path, smoke: Smoke) -> None:
     except json.JSONDecodeError:
         smoke.fail("backup prune preview JSON valid")
         return
-    hello = next((item for item in payload.get("workloads", []) if item.get("workloadId") == "hello-nginx"), {})
     smoke.check(prune.returncode == 0 and payload.get("confirmationPhrase") == "prune argus backups", "backup prune previews by default")
-    smoke.check(hello.get("destinationOk") is True and hello.get("keepLast") == 5, "backup retention policy recognized")
+    enabled = [item for item in payload.get("workloads", []) if item.get("backupAllowed")]
+    smoke.check(not enabled, "backup retention has no active enabled workload")
 
 
 def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
@@ -1043,7 +1027,6 @@ def main() -> int:
     check_metrics(repo, smoke)
     check_cloudflare_plan(repo, smoke)
     check_cloudflare_policy(repo, smoke)
-    check_cloudflare_activation_guard(repo, smoke)
     check_access_reconcile(repo, smoke)
     check_p3_evidence(repo, smoke)
     check_p4_evidence(repo, smoke)

@@ -244,64 +244,6 @@
           "Stateless rollback was rehearsed successfully before the accepted cutover was reapplied."
         ]
       }
-    },
-    {
-      "id": "hello-nginx",
-      "name": "Hello Nginx",
-      "description": "Low-risk demo workload migrated during P1 to prove the canonical layout.",
-      "lifecycle": "active",
-      "kind": "web-app",
-      "paths": {
-        "root": "/srv/argus/workloads/hello-nginx",
-        "source": "/srv/argus/workloads/hello-nginx/source",
-        "manifest": "/srv/argus/workloads/hello-nginx/manifest.json",
-        "legacy": "/srv/apps/hello-nginx"
-      },
-      "runtime": {
-        "type": "docker-compose",
-        "composePath": "/srv/argus/workloads/hello-nginx/source/docker-compose.yml",
-        "legacyComposePaths": [
-          "/srv/apps/hello-nginx/docker-compose.yml"
-        ],
-        "composeProject": "hello-nginx",
-        "service": "web"
-      },
-      "network": {
-        "localUrl": "http://127.0.0.1:18080",
-        "internalPort": 80,
-        "observedBindings": []
-      },
-      "health": {
-        "enabled": true,
-        "url": "http://127.0.0.1:18080/",
-        "expectedStatus": 200,
-        "timeoutSeconds": 3
-      },
-      "actions": {
-        "open": true,
-        "health": true,
-        "logs": true,
-        "restart": true,
-        "deploy": true,
-        "accessToggle": false,
-        "privacyToggle": true
-      },
-      "migration": {
-        "status": "migrated",
-        "targetTrustDomain": "personal-managed",
-        "runtimeTrustDomain": "personal-sandbox",
-        "originalPath": "/srv/apps/hello-nginx",
-        "backupPath": "/srv/argus/runtime/migration-backups/hello-nginx.20260630-182044",
-        "compatibilitySymlink": true,
-        "migratedAt": "2026-06-30T18:20:44Z",
-        "lastHealthCheck": "2026-07-20T06:51:23Z",
-        "bindMountRisks": [],
-        "namedVolumeRisks": [],
-        "notes": [
-          "M4 moved the stateless service into personal-sandbox with a loopback-only listener and no public route.",
-          "M5 routine operations follow proven runtime placement while personal-managed is the canonical production target."
-        ]
-      }
     }
   ]
 }

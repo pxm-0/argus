@@ -122,7 +122,6 @@ verify() {
   "$NEW_ROOT/scripts/install-operator-links" --check
   python3 "$NEW_ROOT/scripts/argus-m1-reconcile-identity" --apply --acknowledge-identity-reconciliation
   python3 "$NEW_ROOT/scripts/argus-m1-verify"
-  python3 "$NEW_ROOT/scripts/argus-m4-hello-nginx-persistence-verify"
   printf 'ARGUS_IDENTITY_CUTOVER_VERIFIED\n'
 }
 

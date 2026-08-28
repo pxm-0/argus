@@ -9,14 +9,6 @@
       "status": "classified",
       "admission": "allowed"
     },
-    "hello-nginx": {
-      "realm": "personal",
-      "zone": "managed",
-      "stage": "production",
-      "trustDomain": "personal-managed",
-      "status": "classified",
-      "admission": "allowed"
-    },
     "intake-os": {
       "realm": "work",
       "zone": "sandbox",

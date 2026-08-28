@@ -172,7 +172,7 @@ class OnboardingManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(OnboardingError, "changed after preview"):
             self.manager.apply(plan_digest=plan["planDigest"], confirm="reviewed-demo")
 
-        second = dict(ONBOARDING, workload_id="another-demo", name="Another Demo", compose_project="hello-nginx")
+        second = dict(ONBOARDING, workload_id="another-demo", name="Another Demo", compose_project="hastur")
         with self.assertRaisesRegex(OnboardingError, "Compose project already exists"):
             self.manager.preview(**second)
         adopted = self.root / "workloads" / "existing-source"

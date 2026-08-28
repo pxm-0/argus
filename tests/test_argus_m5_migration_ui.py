@@ -96,15 +96,12 @@ class MigrationUiTests(unittest.TestCase):
         self.assertEqual("operation-not-capable", decision["reason"])
         self.assertEqual("tailnet", decision["effective"])
 
-    def test_non_candidate_workload_preflight_fails_closed(self) -> None:
+    def test_retired_workload_preflight_fails_closed(self) -> None:
         with patch("argus_actions.audit"):
             result = migration_preflight("hello-nginx")
 
         self.assertFalse(result["allowed"])
-        self.assertEqual(
-            "migration status migrated is not a migration candidate",
-            result["reason"],
-        )
+        self.assertEqual(404, result["status"])
 
     def test_migration_preflight_requires_an_explicit_target_domain(self) -> None:
         self.assertIn("migration.preflight", TYPED_OPERATIONS)

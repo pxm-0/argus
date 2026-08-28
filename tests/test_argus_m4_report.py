@@ -14,16 +14,10 @@ class M4ReportTest(unittest.TestCase):
         report = classification_report(workloads, legacy, placements)
         self.assertTrue(report["complete"])
         self.assertEqual(
-            ["hastur", "hello-nginx", "intake-os", "kadath", "nodens"],
+            ["hastur", "intake-os", "kadath", "nodens"],
             report["supersededLegacyClassification"],
         )
-
-        access = json.loads((ROOT / "config" / "access.json").read_text())["workloads"]["hello-nginx"]
-        workload = next(item for item in workloads if item["id"] == "hello-nginx")
-        self.assertEqual("none", access["effective"])
-        self.assertEqual("http://127.0.0.1:18080", access["urls"]["local"])
-        self.assertEqual([], workload["network"]["observedBindings"])
-        self.assertTrue(workload["actions"]["restart"])
+        self.assertNotIn("hello-nginx", {item["id"] for item in workloads})
 
     def test_report_fails_closed_for_registry_drift(self) -> None:
         report = classification_report([{"id":"a"},{"id":"b"}], {"workloads":{"a":dict(QUARANTINE)}})
