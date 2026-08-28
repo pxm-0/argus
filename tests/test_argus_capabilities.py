@@ -320,6 +320,12 @@ class CapabilityTests(unittest.TestCase):
         self.assertIn("secretsPrinted=false", script)
         self.assertNotIn("cloudflared", script.lower())
         self.assertNotIn("tailscale funnel", script.lower())
+        issuer_unit = (ROOT / "systemd" / "argus-capability-issuer.service").read_text()
+        issuer_source = (ROOT / "scripts" / "argus_capability_issuer.py").read_text()
+        self.assertIn("personal-managed/issuer.pub", issuer_unit)
+        self.assertIn("ReadWritePaths=/var/lib/argus/control /run/argus", issuer_unit)
+        self.assertNotIn("ReadOnlyPaths=/var/lib/argus/control", issuer_unit)
+        self.assertIn("read_only=True", issuer_source)
 
 
 if __name__ == "__main__":

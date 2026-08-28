@@ -603,6 +603,7 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
         unit = worker_unit.read_text()
         coordinator = coordinator_unit.read_text()
         issuer = issuer_unit.read_text()
+        issuer_source = issuer_script.read_text()
         architecture_ok = (
             "User=argus-worker" in unit
             and "ARGUS_OPERATIONS_DB=/var/lib/argus/control/operations.sqlite3" in unit
@@ -617,7 +618,8 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
             and "DOCKER_HOST" not in coordinator
             and "dispatch_operation" not in api_source
             and "User=argus-issuer" in issuer
-            and "ReadOnlyPaths=/var/lib/argus/control" in issuer
+            and "ReadWritePaths=/var/lib/argus/control /run/argus" in issuer
+            and "read_only=True" in issuer_source
             and "ARGUS_ISSUER_PRIVATE_KEY" not in unit
             and "ARGUS_ISSUER_PRIVATE_KEY" not in api_source
         )

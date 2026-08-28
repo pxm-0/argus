@@ -329,6 +329,12 @@ preflight() {
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
     "$ROOT/systemd/argus-domain-agent@.service" ||
     fail "domain units still reference private per-domain signing keys"
+  grep -Fq 'ReadWritePaths=/var/lib/argus/control /run/argus' \
+    "$ROOT/systemd/argus-capability-issuer.service" ||
+    fail "issuer unit must permit SQLite WAL sidecars"
+  grep -Fq 'personal-managed/issuer.pub' \
+    "$ROOT/systemd/argus-capability-issuer.service" ||
+    fail "issuer unit is missing the personal-managed public key"
   printf 'CAPABILITY_ISSUER_PREFLIGHT commit=%s unresolved=0 publicExposureChanged=false\n' \
     "$(git -C "$ROOT" rev-parse --short HEAD)"
 }
@@ -413,22 +419,31 @@ print("CAPABILITY_AGENT_STATUS_OK domains=4")
 PY
 }
 
+capability_services_active() {
+  local service
+  for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
+    "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE"; do
+    systemctl is-active --quiet "$service" || return 1
+  done
+}
+
 wait_for_capability_runtime() {
-  local attempt result service
+  local attempt result
   for attempt in {1..40}; do
-    if result="$(validate_capability_runtime 2>/dev/null)"; then
+    if result="$(validate_capability_runtime 2>/dev/null)" && capability_services_active; then
       printf '%s attempts=%s\n' "$result" "$attempt"
       return
     fi
-    for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
-      "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE"; do
-      systemctl is-active --quiet "$service" ||
-        fail "$service stopped while waiting for capability runtime readiness"
-    done
     sleep 0.25
   done
-  validate_capability_runtime ||
-    fail "capability runtime did not become ready within 10 seconds"
+  if ! capability_services_active; then
+    printf 'ERROR capability service did not become active within 10 seconds\n' >&2
+    return 1
+  fi
+  if ! validate_capability_runtime; then
+    printf 'ERROR capability runtime did not become ready within 10 seconds\n' >&2
+    return 1
+  fi
 }
 
 validate_shared_writer_runtime() {

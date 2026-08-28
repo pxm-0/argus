@@ -200,6 +200,10 @@ The API and worker never read the signing key. Messages are canonical JSON in a
 four-byte length-prefixed frame capped at 64 KiB; arbitrary shell, Compose
 arguments, and Docker API requests remain impossible.
 
+The issuer opens the operation ledger in SQLite read-only mode. Its service may
+write only the control-ledger directory and `/run/argus`, because SQLite WAL
+readers must create short-lived lock/shared-memory sidecars beside the ledger.
+
 ## Private workload inspector activation
 
 After the reviewed workload-inspector branch is staged on `oreochiserver`, and

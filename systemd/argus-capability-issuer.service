@@ -29,8 +29,9 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX
-ReadOnlyPaths=/var/lib/argus/control
-ReadWritePaths=/run/argus
+# The issuer opens the ledger with SQLite mode=ro. SQLite WAL readers still
+# need a writable parent for transient lock/shared-memory sidecars.
+ReadWritePaths=/var/lib/argus/control /run/argus
 InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
 
 [Install]

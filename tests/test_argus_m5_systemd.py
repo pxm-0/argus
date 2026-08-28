@@ -25,11 +25,13 @@ class PhaseOneSystemdTests(unittest.TestCase):
         self.assertIn("RuntimeDirectory=argus/domains/%i", unit)
         self.assertNotIn("ARGUS_CAPABILITY_KEY_FILE", unit)
 
-    def test_issuer_is_separate_read_only_and_has_no_runtime_socket(self) -> None:
+    def test_issuer_is_separate_wal_scoped_and_has_no_runtime_socket(self) -> None:
         unit = (ROOT / "systemd" / "argus-capability-issuer.service").read_text()
+        source = (ROOT / "scripts" / "argus_capability_issuer.py").read_text()
         self.assertIn("User=argus-issuer", unit)
         self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
-        self.assertIn("ReadOnlyPaths=/var/lib/argus/control", unit)
+        self.assertIn("ReadWritePaths=/var/lib/argus/control /run/argus", unit)
+        self.assertIn("read_only=True", source)
         self.assertIn("InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock", unit)
         self.assertNotIn("DOCKER_HOST", unit)
         self.assertIn("/etc/argus/domains/work-sandbox/issuer.pub", unit)
