@@ -22,6 +22,8 @@ APPLY_ACKNOWLEDGEMENT = "--acknowledge-source-materialization"
 ROLLBACK_ACKNOWLEDGEMENT = "--acknowledge-source-materialization-rollback"
 RUNTIME_MODE = 0o640
 RUNTIME_DIRECTORY_MODE = 0o750
+JOURNAL_MODE = 0o640
+JOURNAL_DIRECTORY_MODE = 0o2710
 
 
 class MaterializationError(ValueError):
@@ -32,7 +34,7 @@ def digest_path(path: Path) -> str:
     return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
 
 
-def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+def _atomic_json(path: Path, value: dict[str, Any], *, owner: tuple[int, int] | None) -> None:
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
@@ -40,8 +42,13 @@ def _atomic_json(path: Path, value: dict[str, Any]) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        os.chmod(temporary, 0o600)
+        os.chmod(temporary, JOURNAL_MODE)
+        if owner is not None:
+            os.chown(temporary, *owner)
         os.replace(temporary, path)
+        os.chmod(path, JOURNAL_MODE)
+        if owner is not None:
+            os.chown(path, *owner)
     finally:
         if os.path.exists(temporary):
             os.unlink(temporary)
@@ -180,8 +187,13 @@ def apply(root: Path, workload_id: str, *, owner: tuple[int, int] | None) -> dic
     if owner is not None:
         os.chown(target.parent, *owner)
     backup_root = root / "runtime" / "argus" / "source-materialization" / workload_id
-    backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    backup_root.mkdir(mode=JOURNAL_DIRECTORY_MODE, parents=True, exist_ok=True)
     _safe_child(root, backup_root, "materialization backup directory")
+    # The control-plane group needs to traverse to the known journal name for
+    # migration preflight. It cannot list or read the source backup files.
+    os.chmod(backup_root, JOURNAL_DIRECTORY_MODE)
+    if owner is not None:
+        os.chown(backup_root, *owner)
     prior_absent = not target.exists()
     backup = ""
     if not prior_absent:
@@ -206,7 +218,7 @@ def apply(root: Path, workload_id: str, *, owner: tuple[int, int] | None) -> dic
         "appliedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
         "state": "materialized",
     }
-    _atomic_json(journal, record)
+    _atomic_json(journal, record, owner=owner)
     return {**result, "backup": backup, "priorAbsent": prior_absent, "targetDigest": record["targetDigest"]}
 
 
@@ -246,7 +258,7 @@ def rollback(root: Path, workload_id: str, *, owner: tuple[int, int] | None) -> 
         _copy_atomic(backup, target, owner=owner)
     record["state"] = "rolled-back"
     record["rolledBackAt"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
-    _atomic_json(journal, record)
+    _atomic_json(journal, record, owner=owner)
     return {"schemaVersion": 1, "ok": True, "workloadId": workload_id, "restoredBackup": record.get("backup", ""), "priorAbsent": bool(record.get("priorAbsent"))}
 
 

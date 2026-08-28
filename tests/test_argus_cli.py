@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 from unittest import mock
 from pathlib import Path
 
@@ -354,6 +355,21 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual("not-started", status["phase"])
         self.assertEqual("workload.move.status", status["command"])
         self.assertEqual("argus workload move preview demo --json", status["recoveryCommand"])
+
+    def test_unreadable_migration_ledger_has_a_typed_preview(self) -> None:
+        ledger = self.root / "unreadable-operations.sqlite3"
+        ledger.touch()
+        with (
+            patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}, clear=False),
+            patch("argus_cli.OperationLedger", side_effect=sqlite3.OperationalError("permission denied")),
+        ):
+            code, output, error = self.invoke(["workload", "move", "preview", "demo", "--json"])
+        self.assertEqual(0, code)
+        payload = json.loads(output)
+        self.assertEqual("workload.move.preview", payload["data"]["command"])
+        self.assertIn("migration-ledger-unavailable", payload["data"]["blockers"])
+        self.assertNotIn("internal-error", output)
+        self.assertEqual("", error)
 
     def test_operation_show_is_read_only_and_recovery_is_typed(self) -> None:
         ledger = self.root / "operations.sqlite3"

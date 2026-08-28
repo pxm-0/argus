@@ -59,6 +59,10 @@ class SourceMaterializationTests(unittest.TestCase):
             self.assertTrue(applied["backup"])
             self.assertEqual(TEMPLATE, target.read_text(encoding="utf-8"))
             self.assertEqual(0o640, target.stat().st_mode & 0o777)
+            journal = root / "runtime" / "argus" / "source-materialization" / "demo" / "latest.json"
+            self.assertEqual(0o2710, journal.parent.stat().st_mode & 0o7777)
+            self.assertEqual(0o640, journal.stat().st_mode & 0o777)
+            self.assertEqual(0o600, Path(applied["backup"]).stat().st_mode & 0o777)
             rolled_back = module.rollback(root, "demo", owner=None)
             self.assertTrue(rolled_back["restoredBackup"])
             self.assertEqual("services: {old: {image: old}}\n", target.read_text(encoding="utf-8"))

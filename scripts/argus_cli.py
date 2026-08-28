@@ -454,7 +454,7 @@ def migration_ledger(repo: Path) -> OperationLedger | None:
             migrate_schema=False,
             read_only=True,
         )
-    except (OSError, RuntimeError, ValueError):
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
         return None
 
 
