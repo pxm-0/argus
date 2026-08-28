@@ -4,6 +4,9 @@ from __future__ import annotations
 import argparse
 import grp
 import json
+import os
+import pwd
+import shutil
 import stat
 import subprocess
 from pathlib import Path
@@ -257,7 +260,26 @@ def host_health_checks(checks: list[dict[str, Any]]) -> None:
 
 
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
-    result = run([str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"])
+    command = [str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
+    if os.geteuid() == 0:
+        # Host mode needs root for service and ownership checks, while the
+        # deterministic boundary audit intentionally refuses root.  Run only
+        # that read-only audit as the owner of the reviewed checkout.
+        try:
+            owner = pwd.getpwuid(root().stat().st_uid).pw_name
+        except (KeyError, OSError):
+            add(checks, False, "deterministic core boundary audit available")
+            return
+        runuser = shutil.which("runuser")
+        if not owner or owner == "root" or runuser is None:
+            add(checks, False, "deterministic core boundary audit available")
+            return
+        command = [runuser, "-u", owner, "--", *command]
+    try:
+        result = run(command)
+    except OSError:
+        add(checks, False, "deterministic core boundary audit available")
+        return
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
