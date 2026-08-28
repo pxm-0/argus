@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import grp
 import json
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -219,6 +221,41 @@ def reconcile_check(checks: list[dict[str, Any]]) -> None:
     add(checks, result.returncode == 0 and payload.get("ok") is True, "effective access reconcile clean", failures=payload.get("failures"))
 
 
+def host_health_checks(checks: list[dict[str, Any]]) -> None:
+    """Check host prerequisites that cannot be inferred from repository files."""
+    try:
+        ssl_cert_group = grp.getgrnam("ssl-cert").gr_gid
+    except KeyError:
+        add(checks, False, "ssl-cert group available")
+        return
+    expectations = (
+        (Path("/etc/ssl/certs"), 0, 0, 0o755, "SSL certificates directory ownership"),
+        (Path("/etc/ssl/private"), 0, ssl_cert_group, 0o710, "SSL private directory ownership"),
+    )
+    for path, uid, gid, mode, message in expectations:
+        try:
+            metadata = path.lstat()
+        except OSError:
+            add(checks, False, message)
+            continue
+        add(
+            checks,
+            stat.S_ISDIR(metadata.st_mode)
+            and metadata.st_uid == uid
+            and metadata.st_gid == gid
+            and stat.S_IMODE(metadata.st_mode) == mode,
+            message,
+        )
+    try:
+        cluster = run(["systemctl", "is-active", "--quiet", "postgresql@18-main.service"])
+        readiness = run(["pg_isready", "-h", "127.0.0.1", "-p", "5432"])
+    except OSError:
+        add(checks, False, "PostgreSQL 18 health checks available")
+        return
+    add(checks, cluster.returncode == 0, "PostgreSQL 18 cluster active")
+    add(checks, readiness.returncode == 0, "PostgreSQL accepts loopback readiness probe")
+
+
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
     result = run([str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"])
     try:
@@ -238,7 +275,7 @@ def core_boundary_check(checks: list[dict[str, Any]]) -> None:
     )
 
 
-def audit() -> dict[str, Any]:
+def audit(*, include_host: bool = False) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     config_valid(checks)
     argus_quarantine_checks(checks)
@@ -246,6 +283,8 @@ def audit() -> dict[str, Any]:
     exposure_checks(checks)
     cloudflare_ingress_checks(checks)
     reconcile_check(checks)
+    if include_host:
+        host_health_checks(checks)
     core_boundary_check(checks)
     failures = [check for check in checks if not check["ok"]]
     return {"ok": not failures, "failures": len(failures), "checks": checks}
@@ -259,9 +298,10 @@ def print_text(result: dict[str, Any]) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run Argus security and exposure audit checks.")
     parser.add_argument("--json", action="store_true")
+    parser.add_argument("--host", action="store_true", help="include live host ownership and PostgreSQL checks")
     args = parser.parse_args()
 
-    result = audit()
+    result = audit(include_host=args.host)
     if args.json:
         print_json(result)
     else:

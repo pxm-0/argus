@@ -24,15 +24,28 @@ RuntimeDirectoryMode=0750
 NoNewPrivileges=true
 PrivateTmp=true
 PrivateDevices=true
+# This source intentionally observes the host listener table through AF_NETLINK;
+# it has no AF_INET/AF_INET6 capability and no route or mutation surface.
 ProtectSystem=strict
 ProtectHome=true
 ProtectKernelTunables=true
 ProtectKernelModules=true
+ProtectKernelLogs=true
 ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
 RestrictAddressFamilies=AF_UNIX AF_NETLINK
-ReadOnlyPaths=/srv/argus/config /srv/argus/workloads
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+ReadOnlyPaths=/srv/argus/scripts /srv/argus/config /srv/argus/workloads /etc/argus/collectors/optional/%i.json
 ReadWritePaths=/run/argus/collectors/optional/%i
-InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
+InaccessiblePaths=/var/run/docker.sock /run/docker.sock /etc/argus/operators.json /etc/argus/control-token /etc/argus/operator-proxy-token /srv/argus/control-plane /srv/argus/runtime /srv/argus/tests /srv/argus/docs /run/argus/domains
 
 [Install]
 WantedBy=multi-user.target

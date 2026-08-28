@@ -17,10 +17,12 @@ from argus_operations import (  # noqa: E402
     OperationConflict,
     OperationLedger,
     OperationValidationError,
+    SCHEMA_VERSION,
     digest,
     validate_typed_parameters,
 )
 from argus_sessions import SessionStore  # noqa: E402
+from argus_sqlite import ClosingConnection  # noqa: E402
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -301,11 +303,24 @@ class OperationLedgerTests(unittest.TestCase):
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(2, connection.execute("PRAGMA synchronous").fetchone()[0])
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
-            self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(
+                SCHEMA_VERSION,
+                connection.execute("PRAGMA user_version").fetchone()[0],
+            )
+            self.assertEqual(
+                {"migrations", "migration_events", "migration_children"},
+                {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name LIKE 'migration%'"
+                    )
+                },
+            )
 
     def test_state_change_and_event_are_one_transaction(self) -> None:
         operation, _ = self.create()
-        with sqlite3.connect(self.path) as connection:
+        with sqlite3.connect(self.path, factory=ClosingConnection) as connection:
             connection.execute(
                 """
                 CREATE TRIGGER reject_queued_event
@@ -352,7 +367,7 @@ class OperationLedgerTests(unittest.TestCase):
 
     def test_legacy_schema_is_backed_up_and_migrated(self) -> None:
         legacy_path = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy_path) as connection:
+        with sqlite3.connect(legacy_path, factory=ClosingConnection) as connection:
             connection.execute(
                 """
                 CREATE TABLE operations (
@@ -399,7 +414,7 @@ class OperationLedgerTests(unittest.TestCase):
 
     def test_declared_current_schema_must_be_structurally_complete(self) -> None:
         incomplete_path = Path(self.directory.name) / "incomplete.sqlite3"
-        with sqlite3.connect(incomplete_path) as connection:
+        with sqlite3.connect(incomplete_path, factory=ClosingConnection) as connection:
             connection.execute(
                 "CREATE TABLE operations (operation_id TEXT PRIMARY KEY)"
             )

@@ -1,0 +1,44 @@
+#!/usr/bin/env python3
+"""Run queued or scheduled Argus configured-estate observation refreshes."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+
+from argus_estate_refresh import EstateRefreshError, create_request, read_status, run_pending, run_refresh, status_summary
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--request", action="store_true", help="queue a non-executing refresh request")
+    mode.add_argument("--timer", action="store_true", help="run queued work or one scheduled refresh")
+    mode.add_argument("--run-id", help="run one exact queued refresh ID")
+    mode.add_argument("--status", action="store_true", help="print the latest refresh status")
+    parser.add_argument("--show", help="print one exact refresh status")
+    parser.add_argument("--requested-by", default="local-cli")
+    args = parser.parse_args()
+    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus"))
+    try:
+        if args.request:
+            result = create_request(root, requested_by=args.requested_by)
+        elif args.timer:
+            result = {"schemaVersion": 1, "runs": run_pending(root, timer=True)}
+        elif args.run_id:
+            result = run_refresh(root, args.run_id)
+        elif args.show:
+            result = read_status(root, args.show) or {"schemaVersion": 1, "state": "not-found"}
+        else:
+            result = status_summary(root)
+    except EstateRefreshError as exc:
+        print(json.dumps({"schemaVersion": 1, "ok": False, "error": str(exc)}, sort_keys=True))
+        return 3
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

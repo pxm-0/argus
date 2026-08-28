@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Argus configured-estate observations every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+Persistent=true
+Unit=argus-estate-refresh.service
+
+[Install]
+WantedBy=timers.target

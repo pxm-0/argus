@@ -40,6 +40,18 @@ class D6DashboardCompletenessTests(unittest.TestCase):
             self.assertIn(f'label: "{label}"', JS)
         for marker in ("reconciliationState", "renderEvidenceState", "renderWorkloadReconciliation", "reconciliationBlockerLabel", "Mutation authority", "Review coverage", "escapeHtml"):
             self.assertIn(marker, JS)
+        self.assertIn('apiPost("/api/estate/refresh", {})', JS)
+        self.assertIn("pollEstateRefresh", JS)
+        self.assertIn("/api/estate/refresh/${encodeURIComponent(runId)}", JS)
+        for marker in (
+            "/migration/preview",
+            "data-migration-create",
+            "migrationStatus",
+            "pollMigration",
+            "/api/workloads/${encodeURIComponent(workload)}/migrations",
+            "/api/migrations/${encodeURIComponent(created.payload.migrationId)}/approve",
+        ):
+            self.assertIn(marker, JS)
         self.assertEqual(1, html.count('class="primary-action"'))
         self.assertIn('href="#estate-coverage"', JS)
         self.assertIn("source ${safeEvidenceToken", JS)

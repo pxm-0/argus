@@ -12,6 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_observations import load_registry  # noqa: E402
+from argus_optional_evidence_collector import collect_process_listeners  # noqa: E402
 
 
 SOURCE_IDS = {
@@ -68,6 +69,26 @@ class OptionalEvidenceCollectorTests(unittest.TestCase):
         )
         self.assertNotIn("enabled", result.stderr)
         self.assertNotIn("127.0.0.1", result.stderr)
+
+    def test_kernel_threads_are_outside_the_minimized_process_scope_not_a_coverage_gap(self) -> None:
+        registry = load_registry(ROOT / "config/argus/observation-sources.json", ROOT)
+        source = registry.sources["oreochiserver.process-listeners"]
+
+        def runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            payloads = {
+                ("ps", "-eo", "comm=,state="): b"[kthreadd] I\nsystemd S\nnginx S\n",
+                ("ss", "-H", "-lntu", "-n"): b"tcp LISTEN 0 511 127.0.0.1:8080 0.0.0.0:*\n",
+            }
+            return subprocess.CompletedProcess(argv, 0, payloads[tuple(argv)], b"")
+
+        records, gap, state = collect_process_listeners(
+            source,
+            {"explicitClock": "2026-08-28T00:00:00Z"},
+            runner=runner,
+        )
+        self.assertEqual("completed", state)
+        self.assertIsNone(gap)
+        self.assertEqual({"process-summary", "listener"}, {item["resourceKind"] for item in records})
 
 
 if __name__ == "__main__":

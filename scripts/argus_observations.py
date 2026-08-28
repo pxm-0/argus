@@ -539,26 +539,30 @@ class ObservationRepository:
         if read_only:
             if not path.is_file():
                 raise ObservationError("observation repository does not exist")
-            self.connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
+            connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(path, timeout=30.0)
-            if not existed:
+            connection = sqlite3.connect(path, timeout=30.0)
+        self.connection = connection
+        try:
+            if not read_only and not existed:
                 path.chmod(0o600)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        version = self._detect_version()
-        if version is None:
-            if read_only:
-                raise ObservationError("observation repository is uninitialized")
-            self._create(PREVIOUS_REPOSITORY_VERSION)
-            self.migrate()
-            version = REPOSITORY_VERSION
-        if version not in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys=ON")
+            version = self._detect_version()
+            if version is None:
+                if read_only:
+                    raise ObservationError("observation repository is uninitialized")
+                self._create(PREVIOUS_REPOSITORY_VERSION)
+                self.migrate()
+                version = REPOSITORY_VERSION
+            if version not in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+                raise ObservationError(f"unsupported observation repository version: {version}")
+            self.version = version
+            self._enforce_size()
+        except BaseException:
             self.connection.close()
-            raise ObservationError(f"unsupported observation repository version: {version}")
-        self.version = version
-        self._enforce_size()
+            raise
 
     def __enter__(self) -> "ObservationRepository":
         return self

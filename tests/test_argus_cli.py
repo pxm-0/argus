@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_cli import run  # noqa: E402
 from argus_common import APPROVED_OPERATOR_LINKS  # noqa: E402
+from argus_operations import OperationLedger, digest  # noqa: E402
 
 
 class ArgusCliTests(unittest.TestCase):
@@ -244,7 +245,7 @@ class StableCliContractTests(unittest.TestCase):
         code = run(arguments, repo=self.root, stdout=stdout, stderr=stderr, **kwargs)
         return code, stdout.getvalue(), stderr.getvalue()
 
-    def test_estate_truth_is_success_but_refresh_refuses_incomplete_scope(self) -> None:
+    def test_estate_truth_is_success_and_refresh_queues_an_inert_request(self) -> None:
         code, output, error = self.invoke(["estate", "coverage", "--json"])
         self.assertEqual(0, code)
         coverage = json.loads(output)["data"]["coverage"]
@@ -254,10 +255,10 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual("", error)
 
         code, output, error = self.invoke(["estate", "refresh", "--json"])
-        self.assertEqual(3, code)
+        self.assertEqual(0, code)
         payload = json.loads(output)
-        self.assertEqual("estate-refresh-contract-incomplete", payload["error"]["code"])
-        self.assertFalse(payload["error"]["retrySafe"])
+        self.assertEqual("queued", payload["data"]["request"]["state"])
+        self.assertFalse(payload["data"]["safeToMoveWorkloads"])
         self.assertEqual("", error)
 
     def test_workload_list_and_show_are_sanitized_and_deterministic(self) -> None:
@@ -336,14 +337,14 @@ class StableCliContractTests(unittest.TestCase):
         unconfirmed = json.loads(output)
         self.assertEqual("workload-move-confirmation-required", unconfirmed["error"]["code"])
         self.assertEqual("not-started", unconfirmed["data"]["phase"])
-        self.assertFalse(unconfirmed["data"]["retrySafe"])
+        self.assertTrue(unconfirmed["data"]["retrySafe"])
 
         code, output, _ = self.invoke(
             ["workload", "move", "apply", "demo", "--confirm", "demo", "--json"]
         )
-        self.assertEqual(4, code)
+        self.assertEqual(3, code)
         unavailable = json.loads(output)
-        self.assertEqual("workload-move-kernel-unavailable", unavailable["error"]["code"])
+        self.assertEqual("workload-move-preflight-blocked", unavailable["error"]["code"])
         self.assertIsNone(unavailable["data"]["migrationId"])
         self.assertEqual("personal-sandbox", unavailable["data"]["currentAuthority"])
 
@@ -356,25 +357,28 @@ class StableCliContractTests(unittest.TestCase):
 
     def test_operation_show_is_read_only_and_recovery_is_typed(self) -> None:
         ledger = self.root / "operations.sqlite3"
-        connection = sqlite3.connect(ledger)
-        connection.execute("PRAGMA user_version=1")
-        connection.execute(
-            """
-            CREATE TABLE operations (
-                operation_id TEXT, workload_id TEXT, trust_domain TEXT,
-                operation_type TEXT, state TEXT, created_at INTEGER,
-                started_at INTEGER, finished_at INTEGER, error_class TEXT,
-                redacted_summary TEXT
-            )
-            """
-        )
+        durable = OperationLedger(ledger)
         operation_id = "00000000-0000-0000-0000-000000000001"
-        connection.execute(
-            "INSERT INTO operations VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-            (operation_id, "demo", "personal-sandbox", "health.refresh", "succeeded", 1, 2, 3, None, "Healthy."),
+        operation, _ = durable.create(
+            workload_id="demo",
+            trust_domain="personal-sandbox",
+            operation_type="health.refresh",
+            requested_by="operator@example.com",
+            parameters={},
+            preview_digest="preview",
+            expected_revision="revision",
+            policy_version="1",
+            idempotency_key="cli-operation-show",
         )
-        connection.commit()
-        connection.close()
+        operation_id = str(operation["operation_id"])
+        durable.transition(operation_id, {"queued"}, "running", started_at=1)
+        durable.transition(
+            operation_id,
+            {"running"},
+            "succeeded",
+            finished_at=2,
+            redacted_summary="Healthy.",
+        )
         before = ledger.read_bytes()
         with mock.patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}):
             code, output, _ = self.invoke(["operation", "show", operation_id, "--json"])
@@ -390,6 +394,105 @@ class StableCliContractTests(unittest.TestCase):
         )
         self.assertEqual(4, code)
         self.assertEqual("operation-recovery-unavailable", json.loads(output)["error"]["code"])
+
+    def test_completed_migration_remains_available_for_an_inert_rollback_draft(self) -> None:
+        ledger_path = self.root / "operations.sqlite3"
+        ledger = OperationLedger(ledger_path)
+        payload = {
+            "schemaVersion": 1,
+            "workloadId": "demo",
+            "sourceTrustDomain": "personal-sandbox",
+            "targetTrustDomain": "personal-managed",
+            "currentAuthority": "personal-sandbox",
+            "eligibleTargets": ["personal-managed"],
+            "eligible": True,
+            "blockers": [],
+            "expectedRevision": "revision",
+            "policyVersion": "1",
+            "observationDigest": "sha256:" + "a" * 64,
+            "sourceMaterialization": {"state": "verified"},
+            "statelessContract": {"state": "stateless"},
+            "observation": {"state": "verified"},
+            "retrySafe": True,
+            "phase": "not-started",
+            "confirmationPhrase": "migrate demo to personal-managed",
+            "rollbackConfirmationPhrase": "rollback migration demo",
+        }
+        preview = {**payload, "previewDigest": digest(payload)}
+        parent, _ = ledger.create_migration(
+            workload_id="demo",
+            source_trust_domain="personal-sandbox",
+            target_trust_domain="personal-managed",
+            requested_by="operator@example.com",
+            originating_session_hash="b" * 64,
+            preview=preview,
+            preview_digest=preview["previewDigest"],
+            expected_revision="revision",
+            policy_version="1",
+            observation_digest="sha256:" + "a" * 64,
+            idempotency_key="completed-migration",
+        )
+        migration_id = str(parent["migration_id"])
+        ledger.approve_migration(
+            migration_id,
+            requested_by="operator@example.com",
+            originating_session_hash="b" * 64,
+        )
+        phase = "source-fencing"
+        for next_phase in (
+            "source-fenced", "target-preparing", "target-starting",
+            "target-verified", "route-switching", "authority-committed",
+            "canonical-committed", "verifying", "succeeded",
+        ):
+            ledger.transition_migration(migration_id, {phase}, next_phase)
+            phase = next_phase
+        with mock.patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger_path)}):
+            code, output, _ = self.invoke(
+                ["workload", "move", "rollback", "demo", "--confirm", "demo", "--json"]
+            )
+        self.assertEqual(0, code)
+        result = json.loads(output)["data"]
+        self.assertEqual("rollback-drafted", result["phase"])
+        self.assertEqual("none", result["authority"])
+        self.assertEqual(migration_id, result["draft"]["migrationId"])
+
+    def test_eligible_apply_creates_only_an_inert_dashboard_handoff_draft(self) -> None:
+        ledger_path = self.root / "operations.sqlite3"
+        ledger = OperationLedger(ledger_path)
+        preview_payload = {
+            "schemaVersion": 1,
+            "workloadId": "demo",
+            "sourceTrustDomain": "personal-sandbox",
+            "targetTrustDomain": "personal-managed",
+            "currentAuthority": "personal-sandbox",
+            "eligibleTargets": ["personal-managed"],
+            "eligible": True,
+            "blockers": [],
+            "expectedRevision": "revision",
+            "policyVersion": "1",
+            "observationDigest": "sha256:" + "a" * 64,
+            "sourceMaterialization": {"state": "verified"},
+            "statelessContract": {"state": "stateless"},
+            "observation": {"state": "verified"},
+            "retrySafe": True,
+            "phase": "not-started",
+            "confirmationPhrase": "migrate demo to personal-managed",
+            "rollbackConfirmationPhrase": "rollback migration demo",
+        }
+        preview = {**preview_payload, "previewDigest": digest(preview_payload)}
+        with (
+            mock.patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger_path)}),
+            mock.patch("argus_cli.migration_preview", return_value=preview),
+        ):
+            code, output, _ = self.invoke(
+                ["workload", "move", "apply", "demo", "--confirm", "demo", "--json"]
+            )
+        self.assertEqual(0, code)
+        result = json.loads(output)["data"]
+        self.assertEqual("workload.move.apply-draft", result["command"])
+        self.assertEqual("drafted", result["phase"])
+        self.assertEqual("none", result["authority"])
+        self.assertEqual([], ledger.list_migrations_for_workload("demo"))
 
     def test_operation_missing_is_unavailable_not_not_found(self) -> None:
         operation_id = "00000000-0000-0000-0000-000000000001"
@@ -457,10 +560,9 @@ class StableCliContractTests(unittest.TestCase):
 
     def test_human_failure_is_stderr_only_and_actionable(self) -> None:
         code, output, error = self.invoke(["estate", "refresh"])
-        self.assertEqual(3, code)
-        self.assertEqual("", output)
-        for marker in ("ERROR estate-refresh-contract-incomplete", "AUTHORITY", "RETRY_SAFE", "NEXT"):
-            self.assertIn(marker, error)
+        self.assertEqual(0, code)
+        self.assertIn("estate.refresh", output)
+        self.assertEqual("", error)
 
         code, output, error = self.invoke(["workload", "move", "preflight", "demo"])
         self.assertEqual(3, code)

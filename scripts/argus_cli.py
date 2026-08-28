@@ -15,7 +15,10 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
+from argus_estate_refresh import EstateRefreshError, create_request, status_summary
+from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
 
 
@@ -26,7 +29,7 @@ SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 OPERATION_ID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
 MAX_JSON_BYTES = 65536
 MAX_JSON_DEPTH = 128
-OPERATIONS_SCHEMA_VERSION = 1
+OPERATIONS_SCHEMA_VERSION = SCHEMA_VERSION
 REQUIRED_ESTATE_SOURCES = (
     "rootful-docker",
     "rootless-docker",
@@ -327,18 +330,31 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
             })
         ]
     if action == "refresh":
-        return _error(
-            "estate-refresh-contract-incomplete",
-            "The legacy refresh only scans rootful Compose containers and cannot claim whole-estate completeness.",
-            "Use argus estate coverage; implement the approved D1-D5 collectors before enabling refresh.",
-            exit_code=EXIT_REFUSAL,
-            authority="repository-read-only",
+        try:
+            request = create_request(repo, requested_by="local-cli")
+        except (EstateRefreshError, OSError):
+            return _error(
+                "estate-refresh-request-unavailable",
+                "The configured-estate refresh request could not be queued safely.",
+                "Check the local Argus runtime directory and the estate-refresh service.",
+                exit_code=EXIT_UNAVAILABLE,
+                authority="estate-refresh-coordinator",
+                retry_safe=True,
+            )
+        return _success(
+            "estate.refresh",
+            request=request,
+            coverage=coverage,
+            observationState=(reconciliation or {}).get("observationState", "incomplete"),
+            safeToMoveWorkloads=False,
         )
+    refresh = status_summary(repo)
     return _success(
         f"estate.{action}",
         coverage=coverage,
         observationState=(reconciliation or {}).get("observationState", "incomplete"),
         safeToMoveWorkloads=(reconciliation or {}).get("safeToMoveWorkloads", False),
+        refresh=refresh,
         **({"reconciliation": reconciliation} if reconciliation is not None else {}),
     )
 
@@ -418,38 +434,120 @@ def workload_show(repo: Path, workload_id: str) -> dict[str, Any]:
     return _success("workload.show", workload={**item, "capabilities": capabilities})
 
 
+def operation_ledger_path(repo: Path) -> Path:
+    configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
+    if configured:
+        return Path(configured)
+    if repo.resolve() == Path("/srv/argus"):
+        return Path("/var/lib/argus/control/operations.sqlite3")
+    return repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
+
+
+def migration_ledger(repo: Path) -> OperationLedger | None:
+    path = operation_ledger_path(repo)
+    if not path.is_file():
+        return None
+    try:
+        return OperationLedger(
+            path,
+            require_existing=True,
+            migrate_schema=False,
+            read_only=True,
+        )
+    except (OSError, RuntimeError, ValueError):
+        return None
+
+
 def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
     shown = workload_show(repo, workload_id)
     if not shown["ok"]:
         return shown
     workload = shown["data"]["workload"]
+    ledger = migration_ledger(repo)
+    if ledger is None:
+        return _success(
+            "workload.move.preview",
+            workloadId=workload_id,
+            migrationId=None,
+            phase="not-started",
+            currentAuthority=workload.get("trustDomain") or "unknown",
+            eligibleTargets=[],
+            eligible=False,
+            blockers=["migration-ledger-unavailable"],
+            retrySafe=True,
+            statusCommand=f"argus workload move status {workload_id} --json",
+            recoveryCommand=f"argus workload move preview {workload_id} --json",
+            nextAction="Run the reviewed migration coordinator on oreochiserver before creating a dashboard-approved move.",
+        )
+    active = ledger.list_active_migrations()
+    parent = next(
+        (item for item in active if item.get("workload_id") == workload_id), None
+    )
+    completed = False
+    if parent is None:
+        history = ledger.list_migrations_for_workload(workload_id)
+        if history and history[0].get("phase") == "succeeded":
+            parent = history[0]
+            completed = True
+    if parent is not None:
+        phase = str(parent.get("phase", "unknown"))
+        try:
+            authority = ledger.runtime_domain(
+                workload_id, str(parent.get("source_trust_domain", "legacy-rootful"))
+            )
+        except (OSError, ValueError):
+            authority = str(parent.get("source_trust_domain", "unknown"))
+        return _success(
+            "workload.move.preview",
+            workloadId=workload_id,
+            migrationId=parent.get("migration_id"),
+            phase=phase,
+            currentAuthority=authority,
+            eligibleTargets=[] if completed else [parent.get("target_trust_domain")],
+            eligible=False,
+            rollbackEligible=phase
+            in {
+                "source-fenced", "target-preparing", "target-starting",
+                "target-verified", "route-switching", "authority-committed",
+                "canonical-committed", "verifying", "succeeded",
+            },
+            blockers=["migration-completed"] if completed else ["migration-already-active"],
+            retrySafe=phase not in {"indeterminate"},
+            previewDigest=parent.get("preview_digest", ""),
+            expectedRevision=parent.get("expected_revision", ""),
+            policyVersion=parent.get("policy_version", ""),
+            observationDigest=parent.get("observation_digest", ""),
+            sourceTrustDomain=parent.get("source_trust_domain", ""),
+            targetTrustDomain=parent.get("target_trust_domain", ""),
+            statusCommand=f"argus workload move status {workload_id} --json",
+            recoveryCommand=f"argus workload move status {workload_id} --json",
+            nextAction=(
+                "Use the private dashboard to inspect the completed migration or approve its fenced rollback; the CLI cannot grant authority."
+                if completed
+                else "Use the private dashboard to inspect, approve, or roll back the active migration; the CLI cannot grant authority."
+            ),
+        )
+    preview = migration_preview(repo, ledger, workload_id)
     return _success(
         "workload.move.preview",
-        workloadId=workload_id,
         migrationId=None,
-        phase="not-started",
-        currentAuthority=workload.get("trustDomain") or "unknown",
-        eligibleTargets=[],
-        eligible=False,
-        blockers=["configured-source-coverage-incomplete", "migration-kernel-unavailable"],
-        retrySafe=True,
         statusCommand=f"argus workload move status {workload_id} --json",
         recoveryCommand=f"argus workload move preview {workload_id} --json",
-        nextAction="Run argus estate coverage and wait for the approved D5/M2 gates.",
+        nextAction=(
+            "Create an inert draft, then use the private dashboard for step-up approval."
+            if preview.get("eligible")
+            else "Resolve the listed preflight blockers and run preview again."
+        ),
+        **preview,
     )
 
 
 def migration_context(action: str, workload_id: str, preview: dict[str, Any], *, retry_safe: bool) -> dict[str, Any]:
+    data = preview["data"]
     return {
-        "blockers": list(preview["data"]["blockers"]),
+        **data,
         "command": f"workload.move.{action}",
-        "currentAuthority": preview["data"]["currentAuthority"],
-        "eligibleTargets": list(preview["data"]["eligibleTargets"]),
-        "migrationId": None,
-        "phase": "not-started",
-        "recoveryCommand": f"argus workload move preview {workload_id} --json",
         "retrySafe": retry_safe,
-        "statusCommand": f"argus workload move status {workload_id} --json",
         "workloadId": workload_id,
     }
 
@@ -458,42 +556,135 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
     preview = move_preview(repo, workload_id)
     if not preview["ok"]:
         return preview
+    data = migration_context(action, workload_id, preview, retry_safe=True)
     if action == "preview":
         return preview
     if action == "status":
-        return {"data": migration_context(action, workload_id, preview, retry_safe=True), "ok": True, "schemaVersion": 1}
+        return {"data": data, "ok": True, "schemaVersion": 1}
     if action == "preflight":
+        if data.get("eligible"):
+            return {"data": data, "ok": True, "schemaVersion": 1}
         return _error(
             "workload-move-preflight-blocked",
-            "Fresh configured-source coverage and the migration eligibility contract are unavailable.",
+            "Fresh configured-source coverage or the migration eligibility contract is unavailable.",
             "Run argus workload move preview and argus estate coverage.",
             exit_code=EXIT_REFUSAL,
-            authority=str(preview["data"]["currentAuthority"]),
+            authority=str(data["currentAuthority"]),
             retry_safe=True,
-            data=migration_context(action, workload_id, preview, retry_safe=True),
+            data=data,
         )
     if confirmation != workload_id:
         return _error(
             "workload-move-confirmation-required",
-            "The authority-changing operation lacks the exact workload confirmation.",
-            f"Review the preview, then pass --confirm {workload_id} only when an approved kernel is available.",
+            "The inert migration draft lacks the exact workload confirmation.",
+            f"Review the preview, then pass --confirm {workload_id} to create an inert dashboard handoff draft.",
             exit_code=EXIT_REFUSAL,
-            authority=str(preview["data"]["currentAuthority"]),
-            data=migration_context(action, workload_id, preview, retry_safe=False),
+            authority=str(data["currentAuthority"]),
+            data=migration_context(action, workload_id, preview, retry_safe=True),
         )
+    if action == "apply":
+        if data.get("migrationId"):
+            return _error(
+                (
+                    "workload-move-already-managed"
+                    if data.get("phase") == "succeeded"
+                    else "workload-move-already-active"
+                ),
+                (
+                    "The workload is already in its managed target; use the private dashboard for a fenced rollback if needed."
+                    if data.get("phase") == "succeeded"
+                    else "A durable migration already owns this workload; the CLI cannot replace it."
+                ),
+                (
+                    "Use the private dashboard to inspect the completed migration or approve its rollback."
+                    if data.get("phase") == "succeeded"
+                    else "Use the private dashboard to inspect the active migration."
+                ),
+                exit_code=EXIT_REFUSAL,
+                authority=str(data["currentAuthority"]),
+                retry_safe=True,
+                data=data,
+            )
+        if not data.get("eligible"):
+            return _error(
+                "workload-move-preflight-blocked",
+                "The migration is not eligible for an inert dashboard handoff draft.",
+                "Resolve the listed preview blockers and retry.",
+                exit_code=EXIT_REFUSAL,
+                authority=str(data["currentAuthority"]),
+                retry_safe=True,
+                data=data,
+            )
+        try:
+            draft = create_draft(repo, data, action="apply")
+        except MigrationError:
+            return _error(
+                "workload-move-draft-unavailable",
+                "The inert migration handoff draft could not be persisted.",
+                "Check local Argus runtime permissions and retry; no authority was granted.",
+                exit_code=EXIT_UNAVAILABLE,
+                authority=str(data["currentAuthority"]),
+                retry_safe=True,
+                data=data,
+            )
+        result = {
+            **data,
+            "authority": "none",
+            "draft": draft,
+            "migrationId": None,
+            "phase": "drafted",
+            "nextAction": "Open the private dashboard, adopt this draft, and give step-up approval with the exact preview confirmation.",
+        }
+        result.pop("command", None)
+        return _success("workload.move.apply-draft", **result)
+    if action == "rollback":
+        migration_id = data.get("migrationId")
+        if not data.get("rollbackEligible") or not isinstance(migration_id, str):
+            return _error(
+                "workload-move-rollback-unavailable",
+                "No rollback-eligible durable migration is active for this workload.",
+                "Inspect workload move status and reconcile any indeterminate parent in the private dashboard.",
+                exit_code=EXIT_REFUSAL,
+                authority=str(data["currentAuthority"]),
+                retry_safe=True,
+                data=data,
+            )
+        try:
+            draft = create_draft(
+                repo, {**data, "eligible": True}, action="rollback", migration_id=migration_id
+            )
+        except MigrationError:
+            return _error(
+                "workload-move-draft-unavailable",
+                "The inert rollback handoff draft could not be persisted.",
+                "Check local Argus runtime permissions and retry; no authority was granted.",
+                exit_code=EXIT_UNAVAILABLE,
+                authority=str(data["currentAuthority"]),
+                retry_safe=True,
+                data=data,
+            )
+        result = {
+            **data,
+            "authority": "none",
+            "draft": draft,
+            "phase": "rollback-drafted",
+            "nextAction": "Open the private dashboard, adopt this rollback draft, then give step-up approval with the exact rollback confirmation.",
+        }
+        result.pop("command", None)
+        return _success("workload.move.rollback-draft", **result)
     return _error(
-        "workload-move-kernel-unavailable",
-        "No approved parent/child migration kernel is installed; no authority was changed.",
-        "Do not use milestone migration scripts; complete the approved M1-M3 gates.",
-        exit_code=EXIT_UNAVAILABLE,
-        authority=str(preview["data"]["currentAuthority"]),
-        retry_safe=False,
-        data=migration_context(action, workload_id, preview, retry_safe=False),
+        "workload-move-command-invalid",
+        "The workload move action is invalid.",
+        "Run argus workload move --help.",
+        exit_code=EXIT_INVOCATION,
+        authority=str(data.get("currentAuthority", "unknown")),
+        retry_safe=True,
+        data=data,
     )
 
 
 def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
-    ledger = Path(os.environ.get("ARGUS_OPERATIONS_DB", repo / "runtime" / "argus" / "m5" / "operations.sqlite3"))
+    ledger = operation_ledger_path(repo)
     if not ledger.is_file():
         return _error(
             "operation-ledger-unavailable",
@@ -713,7 +904,7 @@ def build_parser() -> argparse.ArgumentParser:
     estate = commands.add_parser("estate", help="configured-estate status and coverage")
     estate_sub = estate.add_subparsers(dest="estate_command", required=True, parser_class=ArgusArgumentParser)
     for action in ("status", "coverage", "refresh"):
-        privilege = "server read-only" if action == "refresh" else "unprivileged, read-only"
+        privilege = "local refresh request" if action == "refresh" else "unprivileged, read-only"
         leaf(
             estate_sub,
             action,
@@ -722,7 +913,7 @@ def build_parser() -> argparse.ArgumentParser:
                 f"{action.title()} configured-estate evidence without claiming missing sources.",
                 privilege,
                 "reviewed workload registry",
-                "none; refresh currently refuses until D1-D5 collectors exist",
+                "refresh queues an inert request; it cannot change workload authority",
                 "coverage, blockers, and exact next action",
                 f"argus estate {action} --json",
                 "inspect argus estate coverage and complete the named collector gate",

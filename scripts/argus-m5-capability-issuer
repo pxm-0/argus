@@ -15,6 +15,8 @@ readonly API_SERVICE="argus-control-api.service"
 readonly LEGACY_SERVICE="argus-domain-agent-legacy-rootful.service"
 readonly SANDBOX_SERVICE="argus-domain-agent@personal-sandbox.service"
 readonly WORK_SANDBOX_SERVICE="argus-domain-agent@work-sandbox.service"
+readonly MANAGED_SERVICE="argus-domain-agent@personal-managed.service"
+readonly COORDINATOR_SERVICE="argus-migration-coordinator.service"
 readonly ISSUER_UNIT="/etc/systemd/system/$ISSUER_SERVICE"
 readonly WORKER_UNIT="/etc/systemd/system/$WORKER_SERVICE"
 readonly LEGACY_UNIT="/etc/systemd/system/$LEGACY_SERVICE"
@@ -28,6 +30,7 @@ readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
 readonly DASHBOARD_PUBLIC="$ROOT/control-plane/dashboard/public"
 readonly SANDBOX_USER="argus-personal-sandbox"
 readonly WORK_SANDBOX_USER="argus-work-sandbox"
+readonly MANAGED_USER="argus-personal-managed"
 readonly WORK_SANDBOX_REPLAY_DB="/var/lib/argus/work-sandbox/capabilities.sqlite3"
 
 ROLLBACK_REQUIRED=false
@@ -40,6 +43,9 @@ PRIOR_LEGACY_ACTIVE=false
 PRIOR_SANDBOX_ACTIVE=false
 PRIOR_WORK_SANDBOX_ACTIVE=false
 PRIOR_WORK_SANDBOX_ENABLED=false
+PRIOR_MANAGED_ACTIVE=false
+PRIOR_MANAGED_ENABLED=false
+PRIOR_COORDINATOR_ACTIVE=false
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -161,8 +167,10 @@ restore_service() {
 rollback() {
   local failed=false
   set +e
+  systemctl stop "$COORDINATOR_SERVICE" 2>/dev/null || true
   systemctl stop "$API_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
     "$WORK_SANDBOX_SERVICE" \
+    "$MANAGED_SERVICE" \
     "$ISSUER_SERVICE" ||
     failed=true
   systemctl stop "$WORKER_SERVICE" || failed=true
@@ -211,6 +219,13 @@ rollback() {
   else
     systemctl disable "$WORK_SANDBOX_SERVICE" 2>/dev/null || true
   fi
+  restore_service "$MANAGED_SERVICE" "$PRIOR_MANAGED_ACTIVE" || failed=true
+  if [[ "$PRIOR_MANAGED_ENABLED" == true ]]; then
+    systemctl enable "$MANAGED_SERVICE" || failed=true
+  else
+    systemctl disable "$MANAGED_SERVICE" 2>/dev/null || true
+  fi
+  restore_service "$COORDINATOR_SERVICE" "$PRIOR_COORDINATOR_ACTIVE" || failed=true
   restore_service "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
   if [[ "$failed" == true ]]; then
     printf 'ERROR capability issuer rollback incomplete backup=%s\n' \
@@ -266,6 +281,8 @@ preflight() {
     fail "personal-sandbox runtime user is missing"
   getent passwd "$WORK_SANDBOX_USER" >/dev/null ||
     fail "work-sandbox runtime user is missing"
+  getent passwd "$MANAGED_USER" >/dev/null ||
+    fail "personal-managed runtime user is missing"
   systemctl is-active --quiet "$WORKER_SERVICE" ||
     fail "durable operation worker must be active first"
   systemctl is-active --quiet "$API_SERVICE" ||
@@ -371,6 +388,9 @@ validate_capability_runtime() {
   [[ "$(stat -c '%U:%G:%a' /var/lib/argus/work-sandbox/capabilities.sqlite3)" == \
     "argus-work-sandbox:$CONTROL_GROUP:600" ]] ||
     return 1
+  [[ "$(stat -c '%U:%G:%a' /var/lib/argus/personal-managed/capabilities.sqlite3)" == \
+    "argus-personal-managed:$CONTROL_GROUP:600" ]] ||
+    return 1
   python3 - "$ROOT" <<'PY'
 import sys
 
@@ -389,7 +409,7 @@ for domain in ("legacy-rootful", "personal-sandbox", "work-sandbox", "personal-m
     }
     if result != expected:
         raise SystemExit(f"{domain} typed status failed")
-print("CAPABILITY_AGENT_STATUS_OK domains=3")
+print("CAPABILITY_AGENT_STATUS_OK domains=4")
 PY
 }
 
@@ -401,7 +421,7 @@ wait_for_capability_runtime() {
       return
     fi
     for service in "$ISSUER_SERVICE" "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
-      "$WORK_SANDBOX_SERVICE"; do
+      "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE"; do
       systemctl is-active --quiet "$service" ||
         fail "$service stopped while waiting for capability runtime readiness"
     done
@@ -434,7 +454,7 @@ validate_shared_writer_runtime() {
     [[ "$(stat -c '%U:%G:%a' "$DASHBOARD_PUBLIC/$path")" == \
       "$API_USER:$CONTROL_GROUP:664" ]] || return 1
   done
-  for agent_user in "$SANDBOX_USER" "$WORK_SANDBOX_USER"; do
+  for agent_user in "$SANDBOX_USER" "$WORK_SANDBOX_USER" "$MANAGED_USER"; do
     runuser -u "$agent_user" -g "$CONTROL_GROUP" -- \
       test -w "$ROOT/config" || return 1
     for path in \
@@ -450,7 +470,7 @@ validate_shared_writer_runtime() {
         test -w "$path" || return 1
     done
   done
-  printf 'M5_SHARED_WRITER_OK agents=2 accessMode=0664 runtimeMode=0660 dashboardMode=0664\n'
+  printf 'M5_SHARED_WRITER_OK agents=3 accessMode=0664 runtimeMode=0660 dashboardMode=0664\n'
 }
 
 apply_issuer() {
@@ -490,8 +510,12 @@ apply_issuer() {
   service_active "$LEGACY_SERVICE" && PRIOR_LEGACY_ACTIVE=true
   service_active "$SANDBOX_SERVICE" && PRIOR_SANDBOX_ACTIVE=true
   service_active "$WORK_SANDBOX_SERVICE" && PRIOR_WORK_SANDBOX_ACTIVE=true
+  service_active "$MANAGED_SERVICE" && PRIOR_MANAGED_ACTIVE=true
+  service_active "$COORDINATOR_SERVICE" && PRIOR_COORDINATOR_ACTIVE=true
   systemctl is-enabled --quiet "$WORK_SANDBOX_SERVICE" &&
     PRIOR_WORK_SANDBOX_ENABLED=true
+  systemctl is-enabled --quiet "$MANAGED_SERVICE" &&
+    PRIOR_MANAGED_ENABLED=true
   systemctl is-enabled --quiet "$ISSUER_SERVICE" &&
     PRIOR_ISSUER_ENABLED=true
   ROLLBACK_DIR="$backup_dir"
@@ -499,9 +523,10 @@ apply_issuer() {
   trap rollback_on_exit EXIT
 
   systemctl stop "$API_SERVICE"
+  systemctl stop "$COORDINATOR_SERVICE" 2>/dev/null || true
   systemctl stop "$WORKER_SERVICE"
   systemctl stop "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
-    "$WORK_SANDBOX_SERVICE" 2>/dev/null || true
+    "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE" 2>/dev/null || true
   systemctl stop "$ISSUER_SERVICE" 2>/dev/null || true
   verify_no_unresolved_operations
   "$ROOT/scripts/argus-m5-runtime-permissions"
@@ -518,14 +543,19 @@ apply_issuer() {
   systemctl daemon-reload
   systemctl enable "$ISSUER_SERVICE"
   systemctl enable "$WORK_SANDBOX_SERVICE"
+  systemctl enable "$MANAGED_SERVICE"
   systemctl restart "$WORKER_SERVICE"
   systemctl start "$ISSUER_SERVICE"
   systemctl restart "$LEGACY_SERVICE" "$SANDBOX_SERVICE" \
-    "$WORK_SANDBOX_SERVICE"
+    "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE"
+  if [[ "$PRIOR_COORDINATOR_ACTIVE" == true ]]; then
+    systemctl restart "$COORDINATOR_SERVICE"
+  fi
   systemctl restart "$API_SERVICE"
 
   for service in "$WORKER_SERVICE" "$ISSUER_SERVICE" "$LEGACY_SERVICE" \
-    "$SANDBOX_SERVICE" "$WORK_SANDBOX_SERVICE" "$API_SERVICE"; do
+    "$SANDBOX_SERVICE" "$WORK_SANDBOX_SERVICE" "$MANAGED_SERVICE" \
+    "$API_SERVICE"; do
     systemctl is-active --quiet "$service" || fail "$service is not active"
   done
   [[ "$(stat -c '%U:%G:%a' "$PRIVATE_KEY")" == "$ISSUER_USER:root:600" ]] ||
@@ -541,7 +571,7 @@ apply_issuer() {
 
   ROLLBACK_REQUIRED=false
   trap - EXIT
-  printf 'CAPABILITY_ISSUER_APPLIED backup=%s issuerActive=true domains=3\n' \
+  printf 'CAPABILITY_ISSUER_APPLIED backup=%s issuerActive=true domains=4\n' \
     "$backup_dir"
   printf 'privateKeysInManagement=false publicExposureChanged=false secretsPrinted=false\n'
 }

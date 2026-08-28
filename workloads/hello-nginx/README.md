@@ -10,7 +10,7 @@ Low-risk demo workload used for the first P1 migration.
 - Compose project: `hello-nginx`
 - Service: `web`
 - Health: container health plus loopback HTTP validation
-- Access: private Tailscale Serve on port 8447; public exposure prohibited
+- Access: tailnet-only routing is approved for the pilot but remains ineffective until a verified promotion; public exposure is prohibited
 
 ## Public Exposure Policy
 
@@ -31,14 +31,14 @@ a tailnet-only Tailscale Serve route.
 /srv/argus/workloads/hello-nginx/
 ├── README.md
 ├── manifest.json
-└── source/
+├── compose.template.yml
+└── source/                 # ignored runtime materialization
 ```
 
-The repository normally ignores workload source trees. This stateless pilot
-tracks only `source/docker-compose.yml` as a narrow exception so admission is
-bound to the exact pinned image, loopback listener, health check, and Compose
-project. No application source, runtime state, credential, or database is
-tracked.
+The repository tracks the reviewed `compose.template.yml` only. A root-owned
+materialization helper verifies its digest and private Compose contract before
+copying it to the ignored runtime source path. No application source, runtime
+state, credential, or database is tracked.
 
 ## Migration Notes
 

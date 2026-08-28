@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 from argus_state import AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 from argus_m1_verify import VerificationError, verify_m1_state  # noqa: E402
 from argus_m1_reconcile import ReconcileError, reconcile  # noqa: E402
+from argus_sqlite import ClosingConnection  # noqa: E402
 
 
 def legacy() -> Classification:
@@ -158,7 +159,7 @@ class ArgusStateTest(unittest.TestCase):
             ledger.append(payload)
             ledger.append({**payload, "operation": "reconcile"})
             self.assertTrue(ledger.verify())
-            with sqlite3.connect(path) as connection:
+            with sqlite3.connect(path, factory=ClosingConnection) as connection:
                 connection.execute("UPDATE audit_events SET payload_json = ? WHERE sequence = 1", ('{}',))
             self.assertFalse(ledger.verify())
 

@@ -11,6 +11,7 @@ WorkingDirectory=/srv/argus
 # runner emit one complete failed status instead of retaining yesterday's log.
 ExecStartPre=-+/usr/local/lib/argus/argus-m5-rootless-gid-repair --domain personal-sandbox --probe
 ExecStartPre=-+/usr/local/lib/argus/argus-m5-rootless-gid-repair --domain work-sandbox --probe
+ExecStartPre=-+/usr/local/lib/argus/argus-m5-rootless-gid-repair --domain personal-managed --probe
 ExecStart=/srv/argus/scripts/argus-smoke-scheduled
 User=oreo
 Group=oreo

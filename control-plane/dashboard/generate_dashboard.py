@@ -209,6 +209,8 @@ let selectedTopologyId = null;
 let lastCommandTrigger = null;
 const activeOperationPolls = new Set();
 const operationCache = new Map();
+const activeMigrationPolls = new Set();
+const migrationCache = new Map();
 
 function setTheme(theme) {
   const light = theme === "light";
@@ -462,7 +464,7 @@ async function apiPost(endpoint, body, extraHeaders = {}) {
     };
   }
   if (cookieCsrf && endpoint !== "/api/session/exchange") headers["X-Argus-CSRF"] = cookieCsrf;
-  if (/\/api\/workloads\/[^/]+\/operations$/.test(endpoint)) headers["Idempotency-Key"] = crypto.randomUUID();
+  if (/\/api\/workloads\/[^/]+\/(operations|migrations)$/.test(endpoint)) headers["Idempotency-Key"] = crypto.randomUUID();
   const response = await fetch(endpoint, {
     method: "POST",
     credentials: "same-origin",
@@ -742,15 +744,15 @@ function operationBlockers({
   restartAllowed,
   backupAllowed,
   migrationAllowed,
-  migrationStatus
+  migrationCandidate
 }) {
   const blockers = [];
   if (!agentAvailable) blockers.push("All commands: the trust-domain agent is unavailable.");
   if (!logsAllowed) blockers.push("Logs preview: disabled by the workload manifest.");
   if (!restartAllowed) blockers.push("Restart: disabled by the workload manifest.");
   if (!backupAllowed) blockers.push("Backup: no approved backup plan in the workload manifest.");
-  if (!["planned", "rolled-back"].includes(migrationStatus)) {
-    blockers.push(`Migration preflight: status ${migrationStatus || "unknown"} is not a migration candidate.`);
+  if (!migrationCandidate) {
+    blockers.push("Migration: the proven runtime placement does not require a managed-domain move.");
   } else if (!migrationAllowed) {
     blockers.push("Migration preflight: disabled by the workload manifest.");
   }
@@ -797,7 +799,11 @@ function renderWorkload(workload) {
     || operations.migrationPreflight?.allowed === true
   );
   const migrationStatus = String(migration.status || "");
-  const migrationCandidate = ["planned", "rolled-back"].includes(migrationStatus);
+  const declaredDomain = String(topologyNode.trustDomain || "");
+  const runtimeDomain = String(topologyNode.runtimeTrustDomain || "");
+  const migrationCandidate = Boolean(
+    runtimeDomain && declaredDomain && runtimeDomain !== declaredDomain && declaredDomain.endsWith("-managed")
+  );
   const desiredAccess = access.desired || "-";
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
@@ -808,7 +814,7 @@ function renderWorkload(workload) {
     restartAllowed,
     backupAllowed,
     migrationAllowed,
-    migrationStatus
+    migrationCandidate
   });
   return `
     <article
@@ -899,7 +905,7 @@ function renderWorkload(workload) {
           <div class="operation-row">
             <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
             <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
-            <button type="button" data-operation="migration-preflight" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate && agentAvailable ? "" : "disabled"}>Run migration preflight</button>
+            <button type="button" data-operation="migration-plan" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Review managed move</button>
           </div>
         </details>
         ${blockers.length ? `<details class="operation-blockers"><summary>${blockers.length} blocking ${blockers.length === 1 ? "condition" : "conditions"}</summary><ul aria-label="Disabled operation reasons">${blockers.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}
@@ -915,6 +921,10 @@ function renderWorkload(workload) {
         <button type="button" data-apply="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Apply</button>
         <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
         <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
+        <button type="button" data-migration-create="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Approve managed move</button>
+      </div>
+      <div class="operation-history" data-migration-history="${escapeHtml(id)}" aria-live="polite">
+        <div class="history-head"><strong>Migration parent</strong><span>Loading</span></div>
       </div>
       </div>
     </article>
@@ -1089,6 +1099,77 @@ async function pollOperation(operationId, workload, { present = true } = {}) {
   }
 }
 
+async function migrationStatus(migrationId) {
+  const response = await fetch(`/api/migrations/${encodeURIComponent(migrationId)}`, {
+    cache: "no-store",
+    credentials: "same-origin"
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `migration status ${response.status}`);
+  return payload;
+}
+
+function renderMigrationHistory(workloadId, migrations) {
+  const target = document.querySelector(`[data-migration-history="${CSS.escape(workloadId)}"]`);
+  if (!target) return;
+  const latest = migrations[0];
+  if (!latest) {
+    target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>None</span></div><p class="history-empty">No durable migration parent recorded.</p>';
+    return;
+  }
+  migrationCache.set(latest.migrationId, latest);
+  target.innerHTML = `
+    <div class="history-head"><strong>Migration parent</strong><span>${escapeHtml(latest.phase || "unknown")}</span></div>
+    <p class="history-empty">${escapeHtml(latest.summary || "Parent migration is durably coordinating one phase at a time.")}</p>
+    <div class="command-actions"><button type="button" data-view-migration="${escapeHtml(latest.migrationId)}" data-workload="${escapeHtml(workloadId)}">Migration details</button></div>
+  `;
+}
+
+async function pollMigration(migrationId, workloadId) {
+  if (activeMigrationPolls.has(migrationId)) return;
+  activeMigrationPolls.add(migrationId);
+  try {
+    while (activeMigrationPolls.has(migrationId)) {
+      const migration = await migrationStatus(migrationId);
+      migrationCache.set(migrationId, migration);
+      showCommandResult(`${workloadId} migration`, migration);
+      await loadMigrationHistory(workloadId);
+      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase)) return;
+      const delay = document.visibilityState === "hidden" ? 10000 : 2000;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  } catch (error) {
+    showCommandResult(`${workloadId} migration progress unavailable`, error.message);
+  } finally {
+    activeMigrationPolls.delete(migrationId);
+  }
+}
+
+async function loadMigrationHistory(workloadId = "") {
+  const workloads = (state?.workloads || []).filter((item) => !workloadId || item.id === workloadId);
+  await Promise.all(workloads.map(async (item) => {
+    const target = document.querySelector(`[data-migration-history="${CSS.escape(item.id)}"]`);
+    if (!target) return;
+    try {
+      const response = await fetch(`/api/workloads/${encodeURIComponent(item.id)}/migrations`, {
+        cache: "no-store",
+        credentials: "same-origin"
+      });
+      if (!response.ok) {
+        target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">Authenticate to inspect migration state.</p>';
+        return;
+      }
+      const payload = await response.json();
+      const migrations = payload.migrations || [];
+      renderMigrationHistory(item.id, migrations);
+      const active = migrations.find((migration) => !["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase));
+      if (active) void pollMigration(active.migrationId, item.id);
+    } catch {
+      target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">Migration history temporarily unavailable.</p>';
+    }
+  }));
+}
+
 async function loadOperationHistory(workloadId = "") {
   const workloads = (state?.workloads || []).filter((item) => !workloadId || item.id === workloadId);
   await Promise.all(workloads.map(async (item) => {
@@ -1117,6 +1198,31 @@ async function loadOperationHistory(workloadId = "") {
       target.innerHTML = '<div class="history-head"><strong>Durable history</strong><span>Unavailable</span></div><p class="history-empty">History temporarily unavailable.</p>';
     }
   }));
+  await loadMigrationHistory(workloadId);
+}
+
+async function estateRefreshStatus(runId) {
+  const response = await fetch(`/api/estate/refresh/${encodeURIComponent(runId)}`, {
+    cache: "no-store",
+    credentials: "same-origin"
+  });
+  const payload = await response.json();
+  if (!response.ok) throw new Error(payload.error || `estate refresh status ${response.status}`);
+  return payload;
+}
+
+async function pollEstateRefresh(runId) {
+  for (let attempt = 0; attempt < 65; attempt += 1) {
+    const payload = await estateRefreshStatus(runId);
+    showCommandResult("Estate refresh", payload);
+    if (["completed", "partial", "failed"].includes(payload.state)) {
+      await loadDashboardState();
+      return payload;
+    }
+    const delay = document.visibilityState === "hidden" ? 10000 : 2000;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+  }
+  throw new Error("The refresh is still queued. Open its status from the command result after the next scheduled pass.");
 }
 
 function fillAdminControls() {
@@ -1146,9 +1252,12 @@ workloadDiscoverButton.addEventListener("click", async () => {
   workloadDiscoverButton.disabled = true;
   workloadDiscoverButton.textContent = "Refreshing...";
   try {
-    const result = await apiPost("/api/workloads/discover", {});
-    showCommandResult("Workload discovery", result.payload);
-    renderDiscoveryCandidates(result.payload.newComposeProjects);
+    const result = await apiPost("/api/estate/refresh", {});
+    if (!result.ok) throw new Error(result.payload.error || `estate refresh ${result.status}`);
+    const request = result.payload.request || {};
+    showCommandResult("Estate refresh", request);
+    if (!request.runId) throw new Error("The refresh request did not return a durable run ID.");
+    await pollEstateRefresh(request.runId);
   } catch (error) {
     showCommandResult("Refresh failed", error.message);
   } finally {
@@ -1178,6 +1287,8 @@ adminToggle.addEventListener("click", async () => {
     adminTokenInput.value = "";
     operationCache.clear();
     activeOperationPolls.clear();
+    migrationCache.clear();
+    activeMigrationPolls.clear();
     setOperatorSessionState("unauthenticated", { reason: "cookie-missing" });
     renderDashboard();
     showCommandResult("Operator session", "Logged out.");
@@ -1263,6 +1374,59 @@ document.addEventListener("click", async (event) => {
     await loadOperationHistory();
     return;
   }
+  const viewMigration = event.target.closest("[data-view-migration]");
+  if (viewMigration) {
+    const migrationId = viewMigration.dataset.viewMigration;
+    const workloadId = viewMigration.dataset.workload;
+    try {
+      const migration = migrationCache.get(migrationId) || await migrationStatus(migrationId);
+      migrationCache.set(migrationId, migration);
+      showCommandResult(`${workloadId} migration`, migration);
+    } catch (error) {
+      showCommandResult(`${workloadId} migration unavailable`, error.message);
+    }
+    return;
+  }
+  const createMigration = event.target.closest("[data-migration-create]");
+  if (createMigration) {
+    const workload = createMigration.dataset.migrationCreate;
+    const row = createMigration.closest(".workload");
+    if (!csrfToken) {
+      showCommandResult("Operator session required", "Authenticate before approving a managed-domain move.");
+      return;
+    }
+    try {
+      const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/migration/preview`, {});
+      const preview = previewResult.payload;
+      if (!previewResult.ok || !preview.eligible) {
+        showCommandResult(`${workload} migration blocked`, preview);
+        return;
+      }
+      const confirmation = row?.querySelector("[data-confirm]")?.value || "";
+      if (confirmation !== preview.confirmationPhrase) {
+        showCommandResult("Confirmation required", `Type ${preview.confirmationPhrase} in the confirmation field before approving this move.`);
+        return;
+      }
+      if (!(await ensureStepUp())) return;
+      const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/migrations`, {
+        targetTrustDomain: preview.targetTrustDomain,
+        previewDigest: preview.previewDigest,
+        expectedRevision: preview.expectedRevision,
+        policyVersion: preview.policyVersion,
+        observationDigest: preview.observationDigest
+      });
+      if (!created.ok) {
+        showCommandResult(`${workload} migration intent`, created.payload);
+        return;
+      }
+      const approved = await apiPost(`/api/migrations/${encodeURIComponent(created.payload.migrationId)}/approve`, { confirmation });
+      showCommandResult(`${workload} migration`, approved.payload);
+      if (approved.ok) void pollMigration(created.payload.migrationId, workload);
+    } catch (error) {
+      showCommandResult("Migration approval failed", error.message);
+    }
+    return;
+  }
   const register = event.target.closest("[data-register]");
   if (register) {
     showCommandResult("Registration unavailable", "Workload admission is outside the Phase 1 routine-operation surface.");
@@ -1275,6 +1439,15 @@ document.addEventListener("click", async (event) => {
     const row = operation.closest(".workload");
     if (!csrfToken) {
       showCommandResult("Operator session required", "Authenticate before running operations.");
+      return;
+    }
+    if (action === "migration-plan") {
+      try {
+        const result = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/migration/preview`, {});
+        showCommandResult(`${workload} managed move preview`, result.payload);
+      } catch (error) {
+        showCommandResult("Migration preview failed", error.message);
+      }
       return;
     }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";

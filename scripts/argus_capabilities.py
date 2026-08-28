@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from argus_operations import canonical_json, digest, format_timestamp, parse_timestamp
+from argus_sqlite import ClosingConnection
 
 
 CAPABILITY_SCHEMA_VERSION = 1
@@ -163,7 +164,7 @@ class ReplayStore:
         self.path = path
         self.clock = clock
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        with sqlite3.connect(self.path) as connection:
+        with sqlite3.connect(self.path, factory=ClosingConnection) as connection:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute(
@@ -186,7 +187,7 @@ class ReplayStore:
     ) -> bool:
         now = int(self.clock())
         retention_cutoff = format_timestamp(now - REPLAY_RETENTION_SECONDS)
-        with sqlite3.connect(self.path, timeout=5) as connection:
+        with sqlite3.connect(self.path, timeout=5, factory=ClosingConnection) as connection:
             connection.execute("PRAGMA synchronous=FULL")
             connection.execute("BEGIN IMMEDIATE")
             connection.execute(

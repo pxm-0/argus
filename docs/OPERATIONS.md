@@ -38,18 +38,59 @@ argus dashboard url --json
 
 `local-read-only` — `argus estate status`
 
-`server-read-only` — `argus estate refresh`
+`local-refresh-request` — `argus estate refresh`
 
 `local-read-only` — `argus estate coverage`
 
-Status and coverage truthfully report that the current legacy refresh is
-rootful-Compose-container-only. Refresh refuses until the approved D1-D5 source
-registry and collectors can report whole configured-estate completeness.
+Refresh queues an inert, status-addressable request for the D1–D5 coordinator;
+it cannot change workload authority. Status and coverage report the last
+completed whole-estate reconciliation, including any missing or stale source.
 
 ```bash
 argus estate status --json
 argus estate coverage --json
 argus estate refresh --json
+```
+
+### Server collector activation
+
+`server-mutation` — `scripts/argus-collector-deploy`
+
+The D1–D5 collector estate is installed only from the reviewed `/srv/argus`
+checkout. It writes one-source, root-owned registry projections and the
+reviewed systemd units, creates the dedicated rootful read-only account only if
+needed, and then starts a bounded refresh. It never grants a collector access
+to a mutation agent, operation ledger, capability issuer, or workload Docker
+socket outside its assigned source.
+
+```bash
+sudo ./scripts/argus-collector-deploy --preflight
+sudo ./scripts/argus-collector-deploy --apply --acknowledge-estate-collectors
+sudo ./scripts/argus-collector-deploy --status
+```
+
+If the controlled activation must be reversed, use the exact backup path
+reported by `--apply`; rollback restores only files and service states captured
+by that activation.
+
+```bash
+sudo ./scripts/argus-collector-deploy --rollback /var/backups/argus-estate-collectors/<timestamp> --acknowledge-estate-collectors-rollback
+```
+
+### Reviewed source materialization
+
+`server-mutation` — `scripts/argus-workload-source-materialize`
+
+Git stores only a reviewed Compose template. Before a workload can run or move,
+the root-owned materializer verifies the template's immutable image, loopback
+port contract, health check, and secret-free fields, then writes the ignored
+runtime source plus a digest-bound journal. Do not add a workload's generated
+`source/` directory to Git.
+
+```bash
+sudo ./scripts/argus-workload-source-materialize --workload hello-nginx --preflight
+sudo ./scripts/argus-workload-source-materialize --workload hello-nginx --apply \
+  --acknowledge-source-materialization
 ```
 
 ## Workloads
@@ -112,10 +153,19 @@ scripts/argus-admission-doctor --json
 Preview and status always name current authority, phase, blockers, and retry
 safety, plus the migration ID (or explicit `null` before creation), derived
 eligible-target list, and exact status/recovery commands. The current CLI
-returns no eligible targets and refuses preflight and mutation because fresh
-configured-source coverage and the approved parent/child migration kernel do
-not exist yet. After those gates land, apply/rollback will additionally require
-an exact `--confirm <id>` at the final reviewed boundary.
+recomputes the bounded preview against fresh configured-source coverage. `apply`
+and `rollback` require exact confirmation but create only a 15-minute inert
+dashboard handoff draft; they have no mutation authority and cannot bypass the
+private operator session.
+
+The private dashboard recomputes the same preview, requires step-up and the
+exact migration phrase, then creates and approves one durable parent. The
+coordinator advances its fenced child sequence: source fence, private target
+prepare/start/health, desired-route reconciliation, final verification, and—on
+a known forward failure—target stop, source restore, and source verification.
+An unproven acknowledgement becomes `indeterminate`; it is never retried
+automatically. Generic `production.promote` and historical direct-cutover
+scripts are deliberately refused.
 
 ```bash
 argus workload move preview nodens --json
@@ -123,7 +173,7 @@ argus workload move preflight nodens --json
 argus workload move status nodens --json
 ```
 
-Do not run an old migration script after this refusal.
+Do not run an old migration script instead of this workflow.
 
 ## Durable operations
 

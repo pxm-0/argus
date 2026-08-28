@@ -133,6 +133,9 @@ The API persists intent and approval but never opens an agent socket or starts
 a dispatch thread. `argus-operation-worker.service`, running as the locked
 `argus-worker` identity, is the only process that claims queued work. It sends
 only an operation ID to the matching domain agent and has no Docker socket.
+`argus-migration-coordinator.service` has the same constrained identity but
+only advances durable parent records and queues their already-authorized child
+operations; it has neither an agent socket nor Docker access.
 
 After the reviewed ledger/worker PR is staged, run the read-only preflight:
 
@@ -158,11 +161,17 @@ The apply path:
   became unresolved, and takes the final consistent SQLite backups;
 - creates `argus-worker` as a locked system identity if absent;
 - migrates the ledger under SQLite `BEGIN IMMEDIATE` with a pre-version backup;
-- installs and starts the worker before the API and agents;
+- migrates the ledger to schema version 3 and installs the worker plus the
+  migration coordinator before the API and agents;
 - verifies schema version, events, ownership, service state, socket denial,
   unresolved-operation count, and direct-API rejection;
 - retires the old runtime ledger into the root-only backup directory;
-- restores prior units, databases, enablement, and service states on failure.
+- restores prior units, enablement, and service states on failure while keeping
+  the forward schema needed by the deployed code.
+
+Schema migration is forward-only. The root-only pre-v3 SQLite snapshot is
+preserved for a deliberate paired source-and-data recovery, but the automatic
+installer rollback must not restore it under schema-v3-aware services.
 
 It does not change Caddy, Tailscale Serve, Funnel, a route, listener, workload,
 DNS record, or firewall rule.
@@ -180,8 +189,9 @@ sudo /srv/argus/scripts/argus-m5-capability-issuer \
 The apply path backs up affected units and key paths, stops the API before the
 worker and agents, refuses unresolved operations, creates a locked
 `argus-issuer` identity, generates or preserves the Ed25519 private key,
-distributes only its public key, and restarts the worker, issuer, agents, and
-API in dependency order. Agent sockets move to the deterministic
+distributes only its public key to `legacy-rootful`, `personal-sandbox`,
+`work-sandbox`, and `personal-managed`, and restarts the worker, issuer,
+coordinator, agents, and API in dependency order. Agent sockets move to the deterministic
 `/run/argus/domains/<domain>/agent.sock` contract with exact owner, group, mode,
 and typed `agent.status` verification. Agents persist capability IDs and nonces
 in domain-local mode-`0600` SQLite before executing.
@@ -218,9 +228,12 @@ python3 -m unittest discover -s tests -v
 python3 -m json.tool config/operators.json
 systemctl is-active argus-control-api.service
 systemctl is-active argus-operation-worker.service
+systemctl is-active argus-migration-coordinator.service
 systemctl is-active argus-capability-issuer.service
 systemctl is-active argus-domain-agent-legacy-rootful.service
 systemctl is-active argus-domain-agent@personal-sandbox.service
+systemctl is-active argus-domain-agent@work-sandbox.service
+systemctl is-active argus-domain-agent@personal-managed.service
 ss -ltn
 tailscale serve status --json
 tailscale funnel status
@@ -246,7 +259,7 @@ record the blocker rather than claiming Phase 1 complete.
 
 ## Retained workload staging
 
-After both sealed sandbox runtimes and all three domain agents are active, use
+After both sealed sandbox runtimes and all four domain agents are active, use
 the reviewed procedure in `docs/ARGUS_M5_WORKLOAD_STAGING.md`. Stage one
 workload at a time. A successful stage proves immutable image transfer,
 checksummed source backup, isolated state/database restore parity, and a

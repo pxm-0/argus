@@ -70,9 +70,10 @@ class ScheduledSmokeTest(unittest.TestCase):
         unit = (ROOT / "systemd" / "argus-smoke.service").read_text()
         template = (ROOT / "templates" / "systemd" / "argus-smoke.service").read_text()
         self.assertEqual(unit, template)
-        self.assertEqual(2, unit.count("ExecStartPre=-+"))
+        self.assertEqual(3, unit.count("ExecStartPre=-+"))
         self.assertIn("--domain personal-sandbox --probe", unit)
         self.assertIn("--domain work-sandbox --probe", unit)
+        self.assertIn("--domain personal-managed --probe", unit)
         self.assertIn(
             "/usr/local/lib/argus/argus-m5-rootless-gid-repair", unit
         )

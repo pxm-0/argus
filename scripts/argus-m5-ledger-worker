@@ -13,12 +13,14 @@ readonly WORKER_UNIT="/etc/systemd/system/argus-operation-worker.service"
 readonly LEGACY_AGENT_UNIT="/etc/systemd/system/argus-domain-agent-legacy-rootful.service"
 readonly DOMAIN_AGENT_UNIT="/etc/systemd/system/argus-domain-agent@.service"
 readonly LIFECYCLE_AGENT_UNIT="/etc/systemd/system/argus-privileged-lifecycle-agent.service"
+readonly COORDINATOR_UNIT="/etc/systemd/system/argus-migration-coordinator.service"
 readonly API_SERVICE="argus-control-api.service"
 readonly WORKER_SERVICE="argus-operation-worker.service"
 readonly LEGACY_AGENT_SERVICE="argus-domain-agent-legacy-rootful.service"
 readonly SANDBOX_AGENT_SERVICE="argus-domain-agent@personal-sandbox.service"
 readonly WORK_SANDBOX_AGENT_SERVICE="argus-domain-agent@work-sandbox.service"
 readonly LIFECYCLE_AGENT_SERVICE="argus-privileged-lifecycle-agent.service"
+readonly COORDINATOR_SERVICE="argus-migration-coordinator.service"
 readonly API_USER="oreo"
 readonly WORKER_USER="argus-worker"
 readonly WORK_SANDBOX_USER="argus-work-sandbox"
@@ -37,6 +39,8 @@ PRIOR_SANDBOX_AGENT_ACTIVE=false
 PRIOR_WORK_SANDBOX_AGENT_ACTIVE=false
 PRIOR_LIFECYCLE_AGENT_ACTIVE=false
 PRIOR_LIFECYCLE_AGENT_ENABLED=false
+PRIOR_COORDINATOR_ACTIVE=false
+PRIOR_COORDINATOR_ENABLED=false
 ERROR_LINE=0
 
 capture_error() { ERROR_LINE="$1"; }
@@ -133,16 +137,6 @@ restore_file() {
   fi
 }
 
-restore_sqlite() {
-  local destination="$1" backup="$2" owner="$3" group="$4" mode="$5"
-  rm -f -- "$destination-wal" "$destination-shm"
-  if [[ -f "$backup.absent" ]]; then
-    rm -f -- "$destination"
-  else
-    install -o "$owner" -g "$group" -m "$mode" "$backup" "$destination"
-  fi
-}
-
 restore_service_state() {
   local service="$1" was_active="$2"
   if [[ "$was_active" == true ]]; then
@@ -156,6 +150,7 @@ rollback_worker() {
   local failed=false
   set +e
   printf 'LEDGER_WORKER_ROLLBACK_STARTED backup=%s\n' "$ROLLBACK_BACKUP_DIR" >&2
+  systemctl stop "$COORDINATOR_SERVICE" 2>/dev/null || true
   systemctl stop \
     "$API_SERVICE" \
     "$LEGACY_AGENT_SERVICE" \
@@ -169,10 +164,12 @@ rollback_worker() {
   restore_file "$LEGACY_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent-legacy-rootful.service" || failed=true
   restore_file "$DOMAIN_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-domain-agent@.service" || failed=true
   restore_file "$LIFECYCLE_AGENT_UNIT" "$ROLLBACK_BACKUP_DIR/argus-privileged-lifecycle-agent.service" || failed=true
-  restore_sqlite "$LEGACY_LEDGER" "$ROLLBACK_BACKUP_DIR/legacy-operations.sqlite3" \
-    "$API_USER" "$CONTROL_GROUP" 0660 || failed=true
-  restore_sqlite "$CONTROL_LEDGER" "$ROLLBACK_BACKUP_DIR/control-operations.sqlite3" \
-    "$WORKER_USER" "$CONTROL_GROUP" 0660 || failed=true
+  restore_file "$COORDINATOR_UNIT" "$ROLLBACK_BACKUP_DIR/argus-migration-coordinator.service" || failed=true
+  # The checkout has already advanced to schema-v3-aware code.  SQLite schema
+  # migration is deliberately forward-only: restoring a v2 snapshot here would
+  # make the recovered API and agents fail to start.  The snapshots remain in
+  # the backup directory for a paired source-and-data recovery, but automatic
+  # service rollback retains (or completes) the forward schema.
 
   systemctl daemon-reload || failed=true
   if [[ "$PRIOR_WORKER_ENABLED" == true ]]; then
@@ -182,6 +179,7 @@ rollback_worker() {
   fi
   if [[ "$PRIOR_WORKER_ACTIVE" == true ]]; then
     systemctl restart "$WORKER_SERVICE" || failed=true
+    wait_for_ledger_schema || failed=true
   else
     systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
   fi
@@ -190,7 +188,6 @@ rollback_worker() {
   restore_service_state \
     "$WORK_SANDBOX_AGENT_SERVICE" "$PRIOR_WORK_SANDBOX_AGENT_ACTIVE" ||
     failed=true
-  restore_service_state "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
   if [[ "$PRIOR_LIFECYCLE_AGENT_ENABLED" == true ]]; then
     systemctl enable "$LIFECYCLE_AGENT_SERVICE" || failed=true
   else
@@ -199,13 +196,22 @@ rollback_worker() {
   if [[ -e "$LIFECYCLE_AGENT_UNIT" ]]; then
     restore_service_state "$LIFECYCLE_AGENT_SERVICE" "$PRIOR_LIFECYCLE_AGENT_ACTIVE" || failed=true
   fi
+  if [[ "$PRIOR_COORDINATOR_ENABLED" == true ]]; then
+    systemctl enable "$COORDINATOR_SERVICE" || failed=true
+  else
+    systemctl disable "$COORDINATOR_SERVICE" 2>/dev/null || true
+  fi
+  if [[ -e "$COORDINATOR_UNIT" ]]; then
+    restore_service_state "$COORDINATOR_SERVICE" "$PRIOR_COORDINATOR_ACTIVE" || failed=true
+  fi
+  restore_service_state "$API_SERVICE" "$PRIOR_API_ACTIVE" || failed=true
 
   if [[ "$failed" == true ]]; then
     printf 'ERROR ledger-worker rollback was incomplete; inspect backup=%s\n' \
       "$ROLLBACK_BACKUP_DIR" >&2
     return 1
   fi
-  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s failedLine=%s\n' \
+  printf 'LEDGER_WORKER_ROLLED_BACK backup=%s workerUserCreated=%s schemaRecovery=forward-only failedLine=%s\n' \
     "$ROLLBACK_BACKUP_DIR" "$WORKER_USER_CREATED" "$ERROR_LINE" >&2
 }
 
@@ -282,11 +288,14 @@ preflight() {
   fi
   for source in \
     "$ROOT/scripts/argus_operation_worker.py" \
+    "$ROOT/scripts/argus_migration_coordinator.py" \
+    "$ROOT/scripts/argus_migrations.py" \
     "$ROOT/systemd/argus-operation-worker.service" \
     "$ROOT/systemd/argus-control-api.service" \
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
     "$ROOT/systemd/argus-domain-agent@.service" \
-    "$ROOT/systemd/argus-privileged-lifecycle-agent.service"; do
+    "$ROOT/systemd/argus-privileged-lifecycle-agent.service" \
+    "$ROOT/systemd/argus-migration-coordinator.service"; do
     [[ -f "$source" ]] || fail "reviewed source is missing"
   done
   [[ ! -e "$LEGACY_LEDGER" || ! -e "$CONTROL_LEDGER" ]] ||
@@ -298,7 +307,8 @@ preflight() {
     "$ROOT/systemd/argus-control-api.service" \
     "$ROOT/systemd/argus-domain-agent-legacy-rootful.service" \
     "$ROOT/systemd/argus-domain-agent@.service" \
-    "$ROOT/systemd/argus-privileged-lifecycle-agent.service"
+    "$ROOT/systemd/argus-privileged-lifecycle-agent.service" \
+    "$ROOT/systemd/argus-migration-coordinator.service"
   grep -Fq 'InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock' \
     "$ROOT/systemd/argus-operation-worker.service" ||
     fail "worker unit must deny rootful Docker sockets"
@@ -308,6 +318,12 @@ preflight() {
   ! grep -Eq 'DOCKER_HOST|docker\.sock.*ReadWritePaths' \
     "$ROOT/systemd/argus-operation-worker.service" ||
     fail "worker unit unexpectedly references a workload runtime socket"
+  grep -Fq 'RestrictAddressFamilies=AF_UNIX' \
+    "$ROOT/systemd/argus-migration-coordinator.service" ||
+    fail "migration coordinator must be Unix-socket-only"
+  grep -Fq 'InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock' \
+    "$ROOT/systemd/argus-migration-coordinator.service" ||
+    fail "migration coordinator must deny rootful Docker sockets"
   printf 'LEDGER_WORKER_PREFLIGHT commit=%s unresolved=0 publicExposureChanged=false\n' \
     "$(git -C "$ROOT" rev-parse --short HEAD)"
 }
@@ -373,12 +389,17 @@ try:
     }
     if not required.issubset(columns):
         raise SystemExit("operation ledger schema is incomplete")
-    if connection.execute("PRAGMA user_version").fetchone()[0] != 2:
-        raise SystemExit("operation ledger schema version is not 2")
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 3:
+        raise SystemExit("operation ledger schema version is not 3")
     if connection.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='operation_events'"
     ).fetchone() is None:
         raise SystemExit("operation event table is missing")
+    for table in ("migrations", "migration_events", "migration_children"):
+        if connection.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone() is None:
+            raise SystemExit(f"migration ledger table is missing: {table}")
     unresolved = connection.execute(
         """
         SELECT COUNT(*) FROM operations
@@ -390,7 +411,7 @@ try:
     ).fetchone()[0]
     if unresolved:
         raise SystemExit("operation ledger gained unresolved work during activation")
-    print("LEDGER_SCHEMA_OK version=2 unresolved=0 events=true lifecycleIndex=true")
+    print("LEDGER_SCHEMA_OK version=3 unresolved=0 events=true migrationParents=true lifecycleIndex=true")
 finally:
     connection.close()
 PY
@@ -403,12 +424,16 @@ wait_for_ledger_schema() {
       printf '%s attempts=%s\n' "$result" "$attempt"
       return
     fi
-    systemctl is-active --quiet "$WORKER_SERVICE" ||
-      fail "operation worker stopped while waiting for schema migration"
+    if ! systemctl is-active --quiet "$WORKER_SERVICE"; then
+      printf 'ERROR operation worker stopped while waiting for schema migration\n' >&2
+      return 1
+    fi
     sleep 0.25
   done
-  validate_installed_ledger ||
-    fail "operation ledger did not reach schema version 2 within 10 seconds"
+  if ! validate_installed_ledger; then
+    printf 'ERROR operation ledger did not reach schema version 3 within 10 seconds\n' >&2
+    return 1
+  fi
 }
 
 apply_worker() {
@@ -421,6 +446,7 @@ apply_worker() {
   backup_if_present "$LEGACY_AGENT_UNIT" "$backup_dir/argus-domain-agent-legacy-rootful.service"
   backup_if_present "$DOMAIN_AGENT_UNIT" "$backup_dir/argus-domain-agent@.service"
   backup_if_present "$LIFECYCLE_AGENT_UNIT" "$backup_dir/argus-privileged-lifecycle-agent.service"
+  backup_if_present "$COORDINATOR_UNIT" "$backup_dir/argus-migration-coordinator.service"
   backup_sqlite_if_present "$LEGACY_LEDGER" "$backup_dir/legacy-operations.sqlite3"
   backup_sqlite_if_present "$CONTROL_LEDGER" "$backup_dir/control-operations.sqlite3"
 
@@ -431,13 +457,16 @@ apply_worker() {
   service_active "$WORK_SANDBOX_AGENT_SERVICE" &&
     PRIOR_WORK_SANDBOX_AGENT_ACTIVE=true
   service_active "$LIFECYCLE_AGENT_SERVICE" && PRIOR_LIFECYCLE_AGENT_ACTIVE=true
+  service_active "$COORDINATOR_SERVICE" && PRIOR_COORDINATOR_ACTIVE=true
   systemctl is-enabled --quiet "$WORKER_SERVICE" && PRIOR_WORKER_ENABLED=true
   systemctl is-enabled --quiet "$LIFECYCLE_AGENT_SERVICE" && PRIOR_LIFECYCLE_AGENT_ENABLED=true
+  systemctl is-enabled --quiet "$COORDINATOR_SERVICE" && PRIOR_COORDINATOR_ENABLED=true
   ROLLBACK_BACKUP_DIR="$backup_dir"
   ROLLBACK_REQUIRED=true
   trap rollback_on_exit EXIT
 
   systemctl stop "$API_SERVICE"
+  systemctl stop "$COORDINATOR_SERVICE" 2>/dev/null || true
   systemctl stop "$WORKER_SERVICE" 2>/dev/null || true
   systemctl stop "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE"
@@ -460,14 +489,18 @@ apply_worker() {
     "$ROOT/systemd/argus-domain-agent@.service" "$DOMAIN_AGENT_UNIT"
   install -o root -g root -m 0644 \
     "$ROOT/systemd/argus-privileged-lifecycle-agent.service" "$LIFECYCLE_AGENT_UNIT"
+  install -o root -g root -m 0644 \
+    "$ROOT/systemd/argus-migration-coordinator.service" "$COORDINATOR_UNIT"
 
   "$ROOT/scripts/argus-m5-runtime-permissions"
   systemctl daemon-reload
-  systemctl enable "$WORKER_SERVICE" "$LIFECYCLE_AGENT_SERVICE"
+  systemctl enable "$WORKER_SERVICE" "$LIFECYCLE_AGENT_SERVICE" "$COORDINATOR_SERVICE"
   systemctl start "$WORKER_SERVICE"
+  wait_for_ledger_schema
   systemctl restart "$LEGACY_AGENT_SERVICE" "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE"
   systemctl restart "$LIFECYCLE_AGENT_SERVICE"
+  systemctl start "$COORDINATOR_SERVICE"
   systemctl restart "$API_SERVICE"
 
   for service in \
@@ -476,6 +509,7 @@ apply_worker() {
     "$SANDBOX_AGENT_SERVICE" \
     "$WORK_SANDBOX_AGENT_SERVICE" \
     "$LIFECYCLE_AGENT_SERVICE" \
+    "$COORDINATOR_SERVICE" \
     "$API_SERVICE"; do
     systemctl is-active --quiet "$service" || fail "$service is not active"
   done
@@ -483,7 +517,11 @@ apply_worker() {
     fail "worker service identity is incorrect"
   [[ "$(systemctl show "$WORKER_SERVICE" -p Group --value)" == "$CONTROL_GROUP" ]] ||
     fail "worker service group is incorrect"
-  for service in "$WORKER_SERVICE" "$API_SERVICE"; do
+  [[ "$(systemctl show "$COORDINATOR_SERVICE" -p User --value)" == "$WORKER_USER" ]] ||
+    fail "migration coordinator service identity is incorrect"
+  [[ "$(systemctl show "$COORDINATOR_SERVICE" -p Group --value)" == "$CONTROL_GROUP" ]] ||
+    fail "migration coordinator service group is incorrect"
+  for service in "$WORKER_SERVICE" "$API_SERVICE" "$COORDINATOR_SERVICE"; do
     systemctl show "$service" -p InaccessiblePaths --value |
       grep -Fq '/var/run/docker.sock' ||
       fail "$service does not deny the rootful Docker socket"
@@ -493,7 +531,6 @@ apply_worker() {
   wait_for_lifecycle_agent
   [[ "$(stat -c '%U:%G:%a' /run/argus/privileged-lifecycle/agent.sock)" == "root:$CONTROL_GROUP:660" ]] ||
     fail "privileged lifecycle socket ownership or mode is incorrect"
-  wait_for_ledger_schema
   wait_for_api_fail_closed
 
   if [[ -e "$LEGACY_LEDGER" ]]; then
@@ -504,7 +541,7 @@ apply_worker() {
 
   ROLLBACK_REQUIRED=false
   trap - EXIT
-  printf 'LEDGER_WORKER_APPLIED backup=%s workerActive=true lifecycleAgentActive=true schemaVersion=2 unresolved=0\n' \
+  printf 'LEDGER_WORKER_APPLIED backup=%s workerActive=true lifecycleAgentActive=true migrationCoordinatorActive=true schemaVersion=3 unresolved=0\n' \
     "$backup_dir"
   printf 'legacyLedgerRetired=%s publicExposureChanged=false routesChanged=false secretsPrinted=false\n' \
     "$LEGACY_LEDGER_RETIRED"

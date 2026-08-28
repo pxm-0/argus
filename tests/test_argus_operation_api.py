@@ -4,6 +4,7 @@ import importlib.util
 import shutil
 import os
 import sqlite3
+import sys
 import tempfile
 import time
 import unittest
@@ -12,6 +13,9 @@ from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+from argus_sqlite import ClosingConnection  # noqa: E402
 
 
 def load_server(runtime: Path):
@@ -86,6 +90,30 @@ class OperationApiTests(unittest.TestCase):
             "previewDigest": "preview",
             "confirmationPhrase": "hello-nginx",
         }
+        migration_payload = {
+            "schemaVersion": 1,
+            "workloadId": "hello-nginx",
+            "sourceTrustDomain": "personal-sandbox",
+            "targetTrustDomain": "personal-managed",
+            "currentAuthority": "personal-sandbox",
+            "eligibleTargets": ["personal-managed"],
+            "eligible": True,
+            "blockers": [],
+            "expectedRevision": "revision",
+            "policyVersion": "1",
+            "observationDigest": "sha256:" + "a" * 64,
+            "sourceMaterialization": {"state": "verified"},
+            "statelessContract": {"state": "stateless"},
+            "observation": {"state": "verified"},
+            "retrySafe": True,
+            "phase": "not-started",
+            "confirmationPhrase": "migrate hello-nginx to personal-managed",
+            "rollbackConfirmationPhrase": "rollback migration hello-nginx",
+        }
+        self.migration_preview = {
+            **migration_payload,
+            "previewDigest": self.server.digest(migration_payload),
+        }
 
     def tearDown(self) -> None:
         self.directory.cleanup()
@@ -159,6 +187,75 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual("revision", operation["expected_revision"])
         self.assertEqual("1", operation["policy_version"])
         self.assertEqual(self.preview, operation["preview"])
+
+    def test_migration_parent_needs_dashboard_step_up_before_any_child_is_queued(self) -> None:
+        body = {
+            key: self.migration_preview[key]
+            for key in (
+                "targetTrustDomain",
+                "previewDigest",
+                "expectedRevision",
+                "policyVersion",
+                "observationDigest",
+            )
+        }
+        self.handler.headers = {"Idempotency-Key": "migration-parent"}
+        with (
+            patch.object(
+                self.server, "migration_preview", return_value=self.migration_preview
+            ),
+            patch.object(self.server, "audit"),
+        ):
+            self.handler.handle_migration_create("hello-nginx", self.session, body)
+        self.assertEqual(202, self.responses[-1][0])
+        created = self.responses[-1][1]
+        self.assertEqual("awaiting-approval", created["phase"])
+        self.assertEqual([], created["children"])
+        migration_id = str(created["migrationId"])
+        with (
+            patch.object(
+                self.server, "migration_preview", return_value=self.migration_preview
+            ),
+            patch.object(self.server, "audit"),
+        ):
+            self.handler.handle_migration_approve(
+                migration_id,
+                self.session,
+                {"confirmation": "migrate hello-nginx to personal-managed"},
+            )
+        self.assertEqual(202, self.responses[-1][0])
+        approved = self.responses[-1][1]
+        self.assertEqual("source-fencing", approved["phase"])
+        self.assertEqual([], approved["children"])
+
+    def test_migration_approval_requires_the_originating_session(self) -> None:
+        body = {
+            key: self.migration_preview[key]
+            for key in (
+                "targetTrustDomain",
+                "previewDigest",
+                "expectedRevision",
+                "policyVersion",
+                "observationDigest",
+            )
+        }
+        self.handler.headers = {"Idempotency-Key": "migration-session"}
+        with patch.object(
+            self.server, "migration_preview", return_value=self.migration_preview
+        ):
+            self.handler.handle_migration_create("hello-nginx", self.session, body)
+        migration_id = str(self.responses[-1][1]["migrationId"])
+        replacement = self.server.SESSIONS.create(self.session.identity)
+        self.handler.handle_migration_approve(
+            migration_id,
+            replacement,
+            {"confirmation": "migrate hello-nginx to personal-managed"},
+        )
+        self.assertEqual(403, self.responses[-1][0])
+        self.assertEqual(
+            "migration approval requires the originating session",
+            self.responses[-1][1]["error"],
+        )
 
     def test_request_shapes_reject_unknown_fields(self) -> None:
         with self.assertRaises(self.server.OperationValidationError):
@@ -311,7 +408,7 @@ class OperationApiTests(unittest.TestCase):
 
     def test_reservation_allows_approval_after_pre_binding_api_crash(self) -> None:
         operation = self.create_operation()
-        with sqlite3.connect(self.server.SESSION_DB) as connection:
+        with sqlite3.connect(self.server.SESSION_DB, factory=ClosingConnection) as connection:
             connection.execute(
                 "DELETE FROM operation_session_bindings WHERE operation_id = ?",
                 (operation["operation_id"],),
@@ -409,6 +506,41 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual(200, self.responses[-1][0])
         history = self.responses[-1][1]["operations"]
         self.assertEqual([operation_id], [item["operation_id"] for item in history])
+
+    def test_estate_refresh_request_is_inert_and_status_is_session_bound(self) -> None:
+        with (
+            patch.object(self.server, "ROOT", self.runtime),
+            patch.object(self.server, "audit"),
+        ):
+            self.handler.handle_estate_refresh_create(self.session)
+        self.assertEqual(202, self.responses[-1][0])
+        request = self.responses[-1][1]["request"]
+        self.assertEqual("queued", request["state"])
+        self.assertTrue((self.runtime / "runtime" / "argus" / "estate-refresh" / "requests" / f"{request['runId']}.json").is_file())
+
+        self.handler.path = request["statusUrl"]
+        self.handler.require_session = lambda: self.session
+        with patch.object(self.server, "ROOT", self.runtime):
+            self.handler.handle_get()
+        self.assertEqual(200, self.responses[-1][0])
+        self.assertEqual("queued", self.responses[-1][1]["state"])
+
+    def test_estate_coverage_returns_sanitized_reconciliation_only(self) -> None:
+        self.handler.path = "/api/estate/coverage"
+        self.handler.require_session = lambda: self.session
+        reconciliation = {
+            "schemaVersion": 1,
+            "status": "incomplete",
+            "safeToMoveWorkloads": False,
+        }
+        with (
+            patch.object(self.server, "estate_reconciliation", return_value=reconciliation),
+            patch.object(self.server, "estate_refresh_status", return_value={"state": "never-run"}),
+        ):
+            self.handler.handle_get()
+        self.assertEqual(200, self.responses[-1][0])
+        self.assertEqual(reconciliation, self.responses[-1][1]["reconciliation"])
+        self.assertEqual({"state": "never-run"}, self.responses[-1][1]["refresh"])
 
     def test_compatibility_idempotency_returns_existing_queued_operation(self) -> None:
         self.handler.headers = {"Idempotency-Key": "compat-repeat"}

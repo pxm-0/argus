@@ -340,6 +340,7 @@ class AgentService:
                 raise ValueError("replayed capability")
             execution_parameters = dict(operation["parameters"])
             execution_parameters["_operator"] = str(operation["requested_by"])
+            execution_parameters["_operation_id"] = operation_id
             result = self.execute_typed(
                 str(operation["operation_type"]),
                 workload_id,

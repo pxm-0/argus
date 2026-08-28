@@ -302,7 +302,8 @@ class CapabilityTests(unittest.TestCase):
             'for domain in legacy-rootful personal-sandbox work-sandbox',
             script,
         )
-        self.assertIn("CAPABILITY_AGENT_STATUS_OK domains=3", script)
+        self.assertIn("argus-domain-agent@personal-managed.service", script)
+        self.assertIn("CAPABILITY_AGENT_STATUS_OK domains=4", script)
         self.assertIn("work-sandbox-capabilities.sqlite3", script)
         self.assertIn("restore_sqlite", script)
         self.assertIn(

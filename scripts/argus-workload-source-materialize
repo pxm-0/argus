@@ -1,0 +1,289 @@
+#!/usr/bin/env python3
+"""Materialize a reviewed Compose template into an ignored workload source path."""
+
+from __future__ import annotations
+
+import argparse
+import grp
+import hashlib
+import json
+import os
+import re
+import shutil
+import stat
+import tempfile
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+
+WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+APPLY_ACKNOWLEDGEMENT = "--acknowledge-source-materialization"
+ROLLBACK_ACKNOWLEDGEMENT = "--acknowledge-source-materialization-rollback"
+RUNTIME_MODE = 0o640
+RUNTIME_DIRECTORY_MODE = 0o750
+
+
+class MaterializationError(ValueError):
+    pass
+
+
+def digest_path(path: Path) -> str:
+    return "sha256:" + hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _atomic_json(path: Path, value: dict[str, Any]) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(value, handle, sort_keys=True, separators=(",", ":"))
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def _require_regular(path: Path, label: str) -> None:
+    try:
+        metadata = path.lstat()
+    except OSError as exc:
+        raise MaterializationError(f"{label} is unavailable") from exc
+    if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
+        raise MaterializationError(f"{label} must be a regular non-symlink file")
+
+
+def _safe_child(root: Path, path: Path, label: str) -> None:
+    try:
+        relative = path.relative_to(root)
+    except ValueError as exc:
+        raise MaterializationError(f"{label} is outside the Argus root") from exc
+    current = root
+    for component in relative.parts:
+        current = current / component
+        if current.exists() and current.is_symlink():
+            raise MaterializationError(f"{label} contains a symlink")
+
+
+def _load_contract(root: Path, workload_id: str) -> tuple[Path, Path, Path, dict[str, Any]]:
+    if not WORKLOAD_ID.fullmatch(workload_id):
+        raise MaterializationError("workload ID is invalid")
+    root = root.resolve()
+    workload_root = root / "workloads" / workload_id
+    manifest_path = workload_root / "manifest.json"
+    template = workload_root / "compose.template.yml"
+    target = workload_root / "source" / "docker-compose.yml"
+    for path, label in ((workload_root, "workload root"), (manifest_path, "manifest"), (template, "Compose template")):
+        _safe_child(root, path, label)
+    _require_regular(manifest_path, "manifest")
+    _require_regular(template, "Compose template")
+    try:
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MaterializationError("manifest is malformed") from exc
+    runtime = manifest.get("runtime", {}) if isinstance(manifest, dict) else {}
+    compose = runtime.get("compose", {}) if isinstance(runtime, dict) else {}
+    declared = compose.get("path", runtime.get("composePath", "")) if isinstance(compose, dict) else ""
+    canonical_target = Path("/srv/argus") / "workloads" / workload_id / "source" / "docker-compose.yml"
+    if declared not in {str(target), str(canonical_target)}:
+        raise MaterializationError("manifest does not declare the canonical ignored source path")
+    security = manifest.get("security", {}) if isinstance(manifest, dict) else {}
+    if not isinstance(security, dict) or security.get("trackedByArgusGit") is not False:
+        raise MaterializationError("materialization requires untracked workload source")
+    return workload_root, template, target, manifest
+
+
+def _validate_compose_template(template: Path) -> None:
+    content = template.read_text(encoding="utf-8")
+    if not content.endswith("\n"):
+        raise MaterializationError("Compose template must end with a newline")
+    forbidden = (
+        "volumes:", "secrets:", "env_file:", "environment:", "network_mode:",
+        "privileged:", "docker.sock", "${", "./", "../",
+    )
+    lowered = content.lower()
+    found = [token for token in forbidden if token in lowered]
+    if found:
+        raise MaterializationError("Compose template has a forbidden private-runtime field")
+    images = re.findall(r"(?m)^\s*image:\s*([^\s#]+)\s*$", content)
+    if not images or any(not re.fullmatch(r"[^\s@]+@sha256:[0-9a-f]{64}", image) for image in images):
+        raise MaterializationError("Compose template must use only immutable image digests")
+    if "healthcheck:" not in content:
+        raise MaterializationError("Compose template requires a healthcheck")
+    ports = re.findall(r"(?m)^\s*-\s*[\"']?([^\"'#\s]+)[\"']?\s*$", content)
+    port_values = [item for item in ports if ":" in item]
+    if not port_values:
+        raise MaterializationError("Compose template requires a loopback listener")
+    for value in port_values:
+        if not re.fullmatch(r"127\.0\.0\.1:[1-9][0-9]{0,4}:[1-9][0-9]{0,4}(?:/(?:tcp|udp))?", value):
+            raise MaterializationError("Compose template listeners must be loopback-only")
+
+
+def _runtime_owner() -> tuple[int, int]:
+    try:
+        group = grp.getgrnam("argus-control")
+    except KeyError as exc:
+        raise MaterializationError("argus-control group is unavailable") from exc
+    return 0, group.gr_gid
+
+
+def _copy_atomic(source: Path, destination: Path, *, owner: tuple[int, int] | None) -> None:
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{destination.name}.", dir=destination.parent)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(source.read_bytes())
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temporary, RUNTIME_MODE)
+        if owner is not None:
+            os.chown(temporary, *owner)
+        os.replace(temporary, destination)
+        os.chmod(destination, RUNTIME_MODE)
+        if owner is not None:
+            os.chown(destination, *owner)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def preflight(root: Path, workload_id: str) -> dict[str, Any]:
+    workload_root, template, target, _manifest = _load_contract(root, workload_id)
+    _validate_compose_template(template)
+    _safe_child(root.resolve(), target, "runtime source")
+    target_exists = target.exists()
+    if target_exists:
+        _require_regular(target, "runtime source")
+    return {
+        "schemaVersion": 1,
+        "ok": True,
+        "workloadId": workload_id,
+        "templateDigest": digest_path(template),
+        "targetExists": target_exists,
+        "targetDigest": digest_path(target) if target_exists else "",
+        "targetPath": str(target),
+        "workloadRoot": str(workload_root),
+    }
+
+
+def apply(root: Path, workload_id: str, *, owner: tuple[int, int] | None) -> dict[str, Any]:
+    result = preflight(root, workload_id)
+    root = root.resolve()
+    _workload_root, template, target, _manifest = _load_contract(root, workload_id)
+    target.parent.mkdir(mode=RUNTIME_DIRECTORY_MODE, parents=True, exist_ok=True)
+    _safe_child(root, target.parent, "runtime source directory")
+    if target.parent.is_symlink():
+        raise MaterializationError("runtime source directory must not be a symlink")
+    os.chmod(target.parent, RUNTIME_DIRECTORY_MODE)
+    if owner is not None:
+        os.chown(target.parent, *owner)
+    backup_root = root / "runtime" / "argus" / "source-materialization" / workload_id
+    backup_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    _safe_child(root, backup_root, "materialization backup directory")
+    prior_absent = not target.exists()
+    backup = ""
+    if not prior_absent:
+        _require_regular(target, "runtime source")
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = backup_root / f"{stamp}-docker-compose.yml"
+        shutil.copyfile(target, backup_path)
+        os.chmod(backup_path, 0o600)
+        backup = str(backup_path)
+    _copy_atomic(template, target, owner=owner)
+    if digest_path(target) != digest_path(template):
+        raise MaterializationError("materialized source digest does not match reviewed template")
+    journal = backup_root / "latest.json"
+    record = {
+        "schemaVersion": 1,
+        "workloadId": workload_id,
+        "templateDigest": digest_path(template),
+        "targetDigest": digest_path(target),
+        "targetPath": str(target),
+        "backup": backup,
+        "priorAbsent": prior_absent,
+        "appliedAt": datetime.now(UTC).isoformat().replace("+00:00", "Z"),
+        "state": "materialized",
+    }
+    _atomic_json(journal, record)
+    return {**result, "backup": backup, "priorAbsent": prior_absent, "targetDigest": record["targetDigest"]}
+
+
+def status(root: Path, workload_id: str) -> dict[str, Any]:
+    result = preflight(root, workload_id)
+    journal = root.resolve() / "runtime" / "argus" / "source-materialization" / workload_id / "latest.json"
+    if journal.is_file() and not journal.is_symlink():
+        try:
+            result["journal"] = json.loads(journal.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            result["journal"] = {"state": "malformed"}
+    else:
+        result["journal"] = {"state": "absent"}
+    return result
+
+
+def rollback(root: Path, workload_id: str, *, owner: tuple[int, int] | None) -> dict[str, Any]:
+    root = root.resolve()
+    _workload_root, _template, target, _manifest = _load_contract(root, workload_id)
+    journal = root / "runtime" / "argus" / "source-materialization" / workload_id / "latest.json"
+    _safe_child(root, journal, "materialization journal")
+    _require_regular(journal, "materialization journal")
+    try:
+        record = json.loads(journal.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise MaterializationError("materialization journal is malformed") from exc
+    if record.get("state") != "materialized" or record.get("targetPath") != str(target):
+        raise MaterializationError("materialization journal does not describe this source")
+    if target.exists():
+        _require_regular(target, "runtime source")
+    if record.get("priorAbsent") is True:
+        target.unlink(missing_ok=True)
+    else:
+        backup = Path(str(record.get("backup", "")))
+        _safe_child(root, backup, "source backup")
+        _require_regular(backup, "source backup")
+        _copy_atomic(backup, target, owner=owner)
+    record["state"] = "rolled-back"
+    record["rolledBackAt"] = datetime.now(UTC).isoformat().replace("+00:00", "Z")
+    _atomic_json(journal, record)
+    return {"schemaVersion": 1, "ok": True, "workloadId": workload_id, "restoredBackup": record.get("backup", ""), "priorAbsent": bool(record.get("priorAbsent"))}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--workload", required=True)
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--preflight", action="store_true")
+    mode.add_argument("--apply", action="store_true")
+    mode.add_argument("--status", action="store_true")
+    mode.add_argument("--rollback", action="store_true")
+    parser.add_argument("--acknowledge")
+    args = parser.parse_args()
+    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus"))
+    try:
+        if args.preflight:
+            result = preflight(root, args.workload)
+        elif args.status:
+            result = status(root, args.workload)
+        elif args.apply:
+            if args.acknowledge != APPLY_ACKNOWLEDGEMENT:
+                raise MaterializationError("apply requires the exact source-materialization acknowledgement")
+            if os.geteuid() != 0:
+                raise MaterializationError("apply must run as root")
+            result = apply(root, args.workload, owner=_runtime_owner())
+        else:
+            if args.acknowledge != ROLLBACK_ACKNOWLEDGEMENT:
+                raise MaterializationError("rollback requires the exact source-materialization rollback acknowledgement")
+            if os.geteuid() != 0:
+                raise MaterializationError("rollback must run as root")
+            result = rollback(root, args.workload, owner=_runtime_owner())
+    except MaterializationError as exc:
+        print(json.dumps({"schemaVersion": 1, "ok": False, "error": str(exc)}, sort_keys=True))
+        return 3
+    print(json.dumps(result, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

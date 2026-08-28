@@ -110,6 +110,66 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 service.require_private_target("managed-production", "demo")
 
+    def test_migration_source_fence_revalidates_bound_evidence_before_stopping(self) -> None:
+        service = self.service()
+        parent = {
+            "migration_id": "00000000-0000-4000-8000-000000000001",
+            "source_trust_domain": "personal-sandbox",
+            "target_trust_domain": "personal-managed",
+        }
+        service.ledger.migration_child_authorized.return_value = parent
+        with (
+            patch(
+                "argus_privileged_lifecycle_agent.fresh_preview_matches",
+                return_value=(False, {"eligible": False}),
+            ),
+            patch.object(service, "compose") as compose,
+        ):
+            with self.assertRaisesRegex(PermissionError, "evidence changed"):
+                service.execute_typed(
+                    "migration.source-fence",
+                    "demo",
+                    {
+                        "_operation_id": "00000000-0000-4000-8000-000000000002",
+                        "migrationId": parent["migration_id"],
+                        "authorityEpoch": "00000000-0000-4000-8000-000000000003",
+                        "sourceTrustDomain": "personal-sandbox",
+                        "targetTrustDomain": "personal-managed",
+                    },
+        )
+        compose.assert_not_called()
+
+    def test_migration_source_fence_stops_only_the_bound_source_after_revalidation(self) -> None:
+        service = self.service()
+        parent = {
+            "migration_id": "00000000-0000-4000-8000-000000000001",
+            "source_trust_domain": "personal-sandbox",
+            "target_trust_domain": "personal-managed",
+        }
+        service.ledger.migration_child_authorized.return_value = parent
+        with (
+            patch(
+                "argus_privileged_lifecycle_agent.fresh_preview_matches",
+                return_value=(True, {"eligible": True}),
+            ),
+            patch.object(service, "compose", return_value=Mock(returncode=0)) as compose,
+            patch.object(service, "proven_running", return_value=False),
+        ):
+            result = service.execute_typed(
+                "migration.source-fence",
+                "demo",
+                {
+                    "_operation_id": "00000000-0000-4000-8000-000000000002",
+                    "migrationId": parent["migration_id"],
+                    "authorityEpoch": "00000000-0000-4000-8000-000000000003",
+                    "sourceTrustDomain": "personal-sandbox",
+                    "targetTrustDomain": "personal-managed",
+                },
+            )
+        compose.assert_called_once_with("personal-sandbox", "demo", "stop")
+        self.assertEqual("personal-sandbox", result["sourceTrustDomain"])
+        self.assertFalse(result["publicExposure"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -131,6 +131,16 @@ class ArgusCheckTests(unittest.TestCase):
         self.assertIn("non-root", message)
         self.assertIn("./scripts/argus-check", message)
 
+    def test_unit_suite_treats_resource_warnings_as_failures(self) -> None:
+        source = SCRIPT.read_text(encoding="utf-8")
+        self.assertIn("error::ResourceWarning", source)
+        self.assertIn('"ResourceWarning" in unit.stdout', source)
+
+    def test_live_smoke_requests_host_health_checks_only_for_production_root(self) -> None:
+        source = (ROOT / "scripts" / "smoke-test").read_text(encoding="utf-8")
+        self.assertIn('repo == Path("/srv/argus")', source)
+        self.assertIn('command.append("--host")', source)
+
 
 if __name__ == "__main__":
     unittest.main()

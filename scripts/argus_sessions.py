@@ -11,6 +11,8 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from argus_sqlite import ClosingConnection
+
 
 SESSION_IDLE_TTL_SECONDS = 30 * 60
 SESSION_ABSOLUTE_TTL_SECONDS = 8 * 60 * 60
@@ -87,7 +89,7 @@ class SessionStore:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = sqlite3.connect(self.path, timeout=5, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA busy_timeout=5000")
         connection.execute("PRAGMA foreign_keys=ON")

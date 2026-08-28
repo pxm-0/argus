@@ -586,17 +586,22 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
 
     worker_script = repo / "scripts" / "argus_operation_worker.py"
     worker_unit = repo / "systemd" / "argus-operation-worker.service"
+    coordinator_script = repo / "scripts" / "argus_migration_coordinator.py"
+    coordinator_unit = repo / "systemd" / "argus-migration-coordinator.service"
     issuer_script = repo / "scripts" / "argus_capability_issuer.py"
     issuer_unit = repo / "systemd" / "argus-capability-issuer.service"
     api_source = (repo / "control-plane" / "api" / "server.py").read_text()
     architecture_ok = (
         worker_script.is_file()
         and worker_unit.is_file()
+        and coordinator_script.is_file()
+        and coordinator_unit.is_file()
         and issuer_script.is_file()
         and issuer_unit.is_file()
     )
     if architecture_ok:
         unit = worker_unit.read_text()
+        coordinator = coordinator_unit.read_text()
         issuer = issuer_unit.read_text()
         architecture_ok = (
             "User=argus-worker" in unit
@@ -604,6 +609,12 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
             and "ARGUS_AGENT_SOCKET_DIR=/run/argus/domains" in unit
             and "InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock" in unit
             and "DOCKER_HOST" not in unit
+            and "Requires=argus-operation-worker.service" in coordinator
+            and "User=argus-worker" in coordinator
+            and "ReadOnlyPaths=/srv/argus" in coordinator
+            and "ReadWritePaths=/var/lib/argus/control" in coordinator
+            and "InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock" in coordinator
+            and "DOCKER_HOST" not in coordinator
             and "dispatch_operation" not in api_source
             and "User=argus-issuer" in issuer
             and "ReadOnlyPaths=/var/lib/argus/control" in issuer
@@ -612,7 +623,7 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
         )
     smoke.check(
         architecture_ok,
-        "worker, issuer, API, and runtime sockets have separate authority",
+        "worker, coordinator, issuer, API, and runtime sockets have separate authority",
     )
 
     with tempfile.TemporaryDirectory() as directory:
@@ -688,9 +699,10 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
                 "Effective access",
                 "Disabled operation reasons",
                 "Durable history",
-                "Run migration preflight",
-                "migration.preflight",
-                "Migration readiness",
+                "Review managed move",
+                "/migration/preview",
+                "data-migration-create",
+                "migrationStatus",
                 "activeOperationPolls",
                 "document.visibilityState",
             )
@@ -926,8 +938,11 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
     smoke.check(result.returncode == 0 and payload.get("ok") is True, "productization templates valid")
 
 
-def check_doctor(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "argus-doctor"), "--json"], repo)
+def check_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
+    command = [str(repo / "scripts" / "argus-doctor"), "--json"]
+    if not offline and repo == Path("/srv/argus"):
+        command.append("--host")
+    result = run(command, repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -1036,7 +1051,7 @@ def main() -> int:
     check_cloudflared(repo, smoke, args.offline)
     check_tracked_secrets(repo, smoke)
     check_admission_doctor(repo, smoke, args.offline)
-    check_doctor(repo, smoke)
+    check_doctor(repo, smoke, args.offline)
     check_cli(repo, smoke, args.offline)
     check_caddy(repo, smoke, args.offline)
 
