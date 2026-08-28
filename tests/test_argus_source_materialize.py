@@ -4,8 +4,10 @@ import importlib.machinery
 import importlib.util
 import json
 from pathlib import Path
+import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -87,6 +89,30 @@ class SourceMaterializationTests(unittest.TestCase):
             target.symlink_to(outside)
             with self.assertRaisesRegex(module.MaterializationError, "symlink"):
                 module.preflight(root, "demo")
+
+    def test_apply_uses_the_documented_named_acknowledgement_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            self.fixture(root)
+            with (
+                patch.object(module, "apply", return_value={"ok": True}) as apply,
+                patch.object(module, "_runtime_owner", return_value=None),
+                patch.object(module.os, "geteuid", return_value=0),
+                patch.dict(module.os.environ, {"ARGUS_ROOT": str(root)}),
+                patch.object(
+                    sys,
+                    "argv",
+                    [
+                        str(SCRIPT),
+                        "--workload",
+                        "demo",
+                        "--apply",
+                        "--acknowledge-source-materialization",
+                    ],
+                ),
+            ):
+                self.assertEqual(0, module.main())
+            apply.assert_called_once_with(root, "demo", owner=None)
 
 
 if __name__ == "__main__":

@@ -258,7 +258,8 @@ def main() -> int:
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--status", action="store_true")
     mode.add_argument("--rollback", action="store_true")
-    parser.add_argument("--acknowledge")
+    parser.add_argument(APPLY_ACKNOWLEDGEMENT, action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument(ROLLBACK_ACKNOWLEDGEMENT, action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args()
     root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus"))
     try:
@@ -267,13 +268,13 @@ def main() -> int:
         elif args.status:
             result = status(root, args.workload)
         elif args.apply:
-            if args.acknowledge != APPLY_ACKNOWLEDGEMENT:
+            if not args.acknowledge_source_materialization:
                 raise MaterializationError("apply requires the exact source-materialization acknowledgement")
             if os.geteuid() != 0:
                 raise MaterializationError("apply must run as root")
             result = apply(root, args.workload, owner=_runtime_owner())
         else:
-            if args.acknowledge != ROLLBACK_ACKNOWLEDGEMENT:
+            if not args.acknowledge_source_materialization_rollback:
                 raise MaterializationError("rollback requires the exact source-materialization rollback acknowledgement")
             if os.geteuid() != 0:
                 raise MaterializationError("rollback must run as root")
