@@ -349,6 +349,19 @@ class MigrationLedgerTests(unittest.TestCase):
                         },
                         "provenance": {"adapter": "fixture", "adapterVersion": "1", "ordinal": 0},
                     }]
+                elif source_id == "oreochiserver.rootful-docker":
+                    # Retained terminal history must not be mistaken for a
+                    # live foreign placement during migration preflight.
+                    records = [{
+                        "schemaVersion": 2,
+                        "resourceKind": "container",
+                        "nativeId": "demo-history",
+                        "observedAt": "2026-08-05T00:00:01Z",
+                        "attributes": {
+                            "lifecycle": "exited", "name": "demo-history", "project": "demo",
+                        },
+                        "provenance": {"adapter": "fixture", "adapterVersion": "1", "ordinal": 0},
+                    }]
                 repository.ingest(
                     registry,
                     run_id=f"run-{index}",
@@ -371,6 +384,7 @@ class MigrationLedgerTests(unittest.TestCase):
         self.assertEqual("personal-sandbox", ready["sourceTrustDomain"])
         self.assertEqual("personal-managed", ready["targetTrustDomain"])
         self.assertEqual("stateless", ready["statelessContract"]["state"])
+        self.assertEqual(0, ready["observation"]["foreignContainerCount"])
         journal.write_text(json.dumps({
             "schemaVersion": 1, "state": "materialized", "workloadId": "demo",
             "templateDigest": template_digest, "targetDigest": template_digest,

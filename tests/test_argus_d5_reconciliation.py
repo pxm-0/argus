@@ -135,6 +135,47 @@ class D5ReconciliationTests(unittest.TestCase):
         self.assertFalse(first["safeToMoveWorkloads"])
         self.assertEqual(digest(first), digest(second_result))
 
+    def test_explicitly_terminal_history_does_not_conflict_with_current_authority(self) -> None:
+        payload = registry_payload()
+        second = copy.deepcopy(payload["sources"][0])
+        second["sourceId"] = "oreochiserver.work.reference-compose"
+        second["hostId"] = "oreochiserver"
+        second["trustDomain"] = "work-sandbox"
+        payload["hostSources"].append(second["sourceId"])
+        payload["sources"].append(second)
+        registry, repository = self.setup_repository(payload)
+        self.ingest(registry, repository, records=[record("demo", "current")])
+        historical = record("demo", "historical")
+        historical["attributes"]["lifecycle"] = "exited"
+        repository.ingest(
+            registry,
+            run_id="run-work-history",
+            source_id="oreochiserver.work.reference-compose",
+            sequence=None,
+            state="completed",
+            started_at="2026-08-05T00:00:00Z",
+            terminal_at="2026-08-05T00:00:01Z",
+            records=[historical],
+        )
+        result = reconcile(self.root, repository, registry, explicit_clock="2026-08-05T00:01:00Z")
+        self.assertEqual("known", result["workloads"][0]["state"])
+        self.assertEqual([SOURCE_ID], result["workloads"][0]["matchedSourceIds"])
+
+        transitional = record("demo", "transitional")
+        transitional["attributes"]["lifecycle"] = "created"
+        repository.ingest(
+            registry,
+            run_id="run-work-transitional",
+            source_id="oreochiserver.work.reference-compose",
+            sequence=None,
+            state="completed",
+            started_at="2026-08-05T00:00:00Z",
+            terminal_at="2026-08-05T00:00:01Z",
+            records=[transitional],
+        )
+        conflict = reconcile(self.root, repository, registry, explicit_clock="2026-08-05T00:01:00Z")
+        self.assertEqual("conflicting", conflict["workloads"][0]["state"])
+
     def test_cli_exposes_only_the_sanitized_reconciliation_view(self) -> None:
         registry, repository = self.setup_repository()
         self.ingest(registry, repository, records=[record("demo")])

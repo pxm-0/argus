@@ -16,6 +16,7 @@ SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 PROJECT_ID = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 WORKLOAD_STATES = {"known", "unknown", "stale", "conflicting", "failed", "incomplete"}
 SOURCE_STATES = {"never_observed", "fresh", "stale", "failed", "excluded"}
+TERMINAL_CONTAINER_LIFECYCLES = {"exited", "dead"}
 
 
 def _load_json(path: Path) -> dict[str, Any]:
@@ -136,6 +137,12 @@ def _candidate_records(
             continue
         attributes = record.get("attributes")
         if not isinstance(attributes, dict):
+            continue
+        # Retained Docker history is valuable evidence, but a container that is
+        # explicitly terminal no longer owns a running workload placement.
+        # Treat a missing or unfamiliar lifecycle as live/conflicting instead
+        # of silently excluding it.
+        if attributes.get("lifecycle") in TERMINAL_CONTAINER_LIFECYCLES:
             continue
         project = attributes.get("project")
         if isinstance(project, str) and PROJECT_ID.fullmatch(project):

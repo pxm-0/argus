@@ -36,7 +36,7 @@ from argus_operations import (
     format_timestamp,
     parse_timestamp,
 )
-from argus_reconciliation import reconcile
+from argus_reconciliation import TERMINAL_CONTAINER_LIFECYCLES, reconcile
 
 
 WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
@@ -152,7 +152,11 @@ def _container_records(repository: ObservationRepository, source_ids: list[str],
             if record.get("resourceKind") != "container":
                 continue
             attributes = record.get("attributes")
-            if isinstance(attributes, dict) and attributes.get("project") == project:
+            if (
+                isinstance(attributes, dict)
+                and attributes.get("project") == project
+                and attributes.get("lifecycle") not in TERMINAL_CONTAINER_LIFECYCLES
+            ):
                 records.append(record)
     return records
 
