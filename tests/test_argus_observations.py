@@ -469,6 +469,7 @@ class ObservationRepositoryTests(unittest.TestCase):
             self.ingest(repo, 6, state="partial", records=self.records[:1], gap="disconnect")
             self.ingest(repo, 7, state="failed", records=[], gap="timeout")
             self.assertEqual(4, repo.prune(keep_completed=2, keep_failed=1))
+            self.assertEqual(0, repo.connection.execute("PRAGMA freelist_count").fetchone()[0])
             remaining = [row[0] for row in repo.connection.execute(
                 "SELECT run_id FROM collection_runs ORDER BY sequence"
             )]

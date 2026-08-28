@@ -64,6 +64,7 @@ class EstateRefreshCoordinatorTests(unittest.TestCase):
             repository.__enter__.return_value = repository
             repository.__exit__.return_value = False
             repository.recover_interrupted.return_value = 0
+            repository.prune.return_value = 0
             scheduler = MagicMock()
             scheduler.refresh.return_value = {"schemaVersion": 1, "refreshId": run_id, "status": "completed", "sources": []}
             reconciliation = {
@@ -81,9 +82,11 @@ class EstateRefreshCoordinatorTests(unittest.TestCase):
                 result = refresh.run_refresh(root, run_id, explicit_clock="2026-08-28T00:00:00Z")
             self.assertEqual("completed", result["state"])
             self.assertTrue(result["safeToMoveWorkloads"])
+            self.assertEqual(0, result["prunedRuns"])
             stored = refresh.read_status(root, run_id)
             self.assertEqual(run_id, stored["runId"])
             repository.recover_interrupted.assert_called_once_with(terminal_at="2026-08-28T00:00:00Z")
+            repository.prune.assert_called_once_with()
 
 
 if __name__ == "__main__":

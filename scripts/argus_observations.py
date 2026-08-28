@@ -26,7 +26,7 @@ REGISTRY_VERSION = 2
 PREVIOUS_REGISTRY_VERSION = 1
 NORMALIZED_RECORD_VERSION = 2
 PREVIOUS_NORMALIZED_RECORD_VERSION = 1
-DEFAULT_DATABASE_CEILING_BYTES = 8 * 1024 * 1024
+DEFAULT_DATABASE_CEILING_BYTES = 32 * 1024 * 1024
 DEFAULT_KEEP_COMPLETED_RUNS = 20
 DEFAULT_KEEP_FAILED_RUNS = 20
 SOURCE_STATES = {"never_observed", "fresh", "stale", "failed", "excluded"}
@@ -1246,12 +1246,17 @@ class ObservationRepository:
             row[0] for row in self.connection.execute("SELECT DISTINCT run_id FROM reconciliation_links")
         }
         delete_ids = [run_id for run_id in delete_ids if run_id not in linked]
+        deleted = sorted(set(delete_ids))
         with self.connection:
-            for run_id in sorted(set(delete_ids)):
+            for run_id in deleted:
                 self.connection.execute("DELETE FROM collection_runs WHERE run_id=?", (run_id,))
-        self.connection.execute("PRAGMA incremental_vacuum")
+        if deleted:
+            # The production database uses SQLite's default non-incremental
+            # auto-vacuum mode. A full vacuum is therefore required to return
+            # retired snapshot pages to the fixed-size capacity budget.
+            self.connection.execute("VACUUM")
         self._enforce_size()
-        return len(set(delete_ids))
+        return len(deleted)
 
 
 def _sync_directory(path: Path) -> None:

@@ -197,6 +197,7 @@ def run_refresh(
             )
             outcome = scheduler.refresh(refresh_id=run_id, explicit_clock=now)
             reconciliation = reconcile(root, repository, registry, explicit_clock=now)
+            pruned_runs = repository.prune()
         _database_mode(directories["database"])
         result = {
             "schemaVersion": STATUS_VERSION,
@@ -210,6 +211,7 @@ def run_refresh(
             "reconciliationStatus": reconciliation["status"],
             "safeToMoveWorkloads": reconciliation["safeToMoveWorkloads"],
             "evidenceDigest": reconciliation["evidenceDigest"],
+            "prunedRuns": pruned_runs,
         }
     except (CollectorError, ObservationError, EstateRefreshError, OSError, ValueError) as exc:
         result = {
