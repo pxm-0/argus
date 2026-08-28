@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_observations import load_registry  # noqa: E402
-from argus_optional_evidence_collector import collect_process_listeners  # noqa: E402
+from argus_optional_evidence_collector import collect_process_listeners, collect_proxy_overlay  # noqa: E402
 
 
 SOURCE_IDS = {
@@ -89,6 +89,33 @@ class OptionalEvidenceCollectorTests(unittest.TestCase):
         self.assertEqual("completed", state)
         self.assertIsNone(gap)
         self.assertEqual({"process-summary", "listener"}, {item["resourceKind"] for item in records})
+
+    def test_absent_optional_cloudflare_unit_does_not_create_a_coverage_gap(self) -> None:
+        registry = load_registry(ROOT / "config/argus/observation-sources.json", ROOT)
+        source = registry.sources["oreochiserver.proxy-overlay"]
+
+        def runner(argv: list[str], **_kwargs: object) -> subprocess.CompletedProcess[bytes]:
+            payloads = {
+                ("tailscale", "serve", "status", "--json"): (0, b"{}"),
+                ("tailscale", "funnel", "status", "--json"): (0, b"{}"),
+                ("systemctl", "is-active", "caddy"): (0, b"active\n"),
+                ("systemctl", "is-active", "cloudflared"): (4, b""),
+            }
+            returncode, stdout = payloads[tuple(argv)]
+            return subprocess.CompletedProcess(argv, returncode, stdout, b"")
+
+        records, gap, state = collect_proxy_overlay(
+            source,
+            {"explicitClock": "2026-08-28T00:00:00Z"},
+            runner=runner,
+        )
+        cloudflare = next(item for item in records if item["attributes"]["provider"] == "cloudflared")
+        self.assertEqual("completed", state)
+        self.assertIsNone(gap)
+        self.assertEqual(
+            {"provider": "cloudflared", "available": False, "configured": False, "active": False, "state": "absent"},
+            {key: cloudflare["attributes"][key] for key in ("provider", "available", "configured", "active", "state")},
+        )
 
 
 if __name__ == "__main__":

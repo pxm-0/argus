@@ -8,7 +8,15 @@ import json
 import os
 from pathlib import Path
 
-from argus_estate_refresh import EstateRefreshError, create_request, read_status, run_pending, run_refresh, status_summary
+from argus_estate_refresh import (
+    EstateRefreshError,
+    create_request,
+    read_status,
+    require_runner_identity,
+    run_pending,
+    run_refresh,
+    status_summary,
+)
 
 
 def main() -> int:
@@ -24,10 +32,13 @@ def main() -> int:
     root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus"))
     try:
         if args.request:
+            require_runner_identity()
             result = create_request(root, requested_by=args.requested_by)
         elif args.timer:
+            require_runner_identity()
             result = {"schemaVersion": 1, "runs": run_pending(root, timer=True)}
         elif args.run_id:
+            require_runner_identity()
             result = run_refresh(root, args.run_id)
         elif args.show:
             result = read_status(root, args.show) or {"schemaVersion": 1, "state": "not-found"}

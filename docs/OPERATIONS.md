@@ -52,6 +52,15 @@ argus estate coverage --json
 argus estate refresh --json
 ```
 
+The installed `argus-estate-refresh.service` is the only supported way to run
+the timer worker manually, because it uses the pinned `oreo` collector identity
+required by peer-authenticated source sockets. Do not invoke its `--timer` mode
+with `sudo` directly.
+
+```bash
+sudo systemctl start argus-estate-refresh.service
+```
+
 ### Server collector activation
 
 `server-mutation` — `scripts/argus-collector-deploy`

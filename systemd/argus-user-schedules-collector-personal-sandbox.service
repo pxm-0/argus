@@ -6,6 +6,7 @@ After=argus-control-api.service
 Type=simple
 User=argus-personal-sandbox
 Group=argus-control
+SupplementaryGroups=crontab
 WorkingDirectory=/srv/argus
 Environment=ARGUS_SOURCE_ID=oreochiserver.user-schedules-personal-sandbox
 Environment=ARGUS_SOURCE_REGISTRY=/etc/argus/collectors/user-schedules-personal-sandbox-source.json

@@ -59,6 +59,8 @@ class CollectorDeploymentPlanTests(unittest.TestCase):
             self.assertIn(f"User={account}", content)
             self.assertIn(f"Environment=XDG_RUNTIME_DIR=/run/user/{uid}", content)
             self.assertIn(f"ARGUS_SOURCE_ID=oreochiserver.user-schedules-{name}", content)
+            self.assertIn("SupplementaryGroups=crontab", content)
+            self.assertIn("NoNewPrivileges=true", content)
             self.assertNotIn("User=%i", content)
 
 

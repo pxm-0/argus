@@ -22,10 +22,17 @@ from argus_reconciliation import reconcile
 RUN_ID = re.compile(r"^refresh-[0-9a-f-]{36}$")
 STATUS_VERSION = 1
 MAX_PENDING_REQUESTS = 8
+RUNNER_UID = 1000
 
 
 class EstateRefreshError(ValueError):
     pass
+
+
+def require_runner_identity() -> None:
+    """Prevent privileged ad-hoc refreshes from breaking collector peer auth."""
+    if os.geteuid() != RUNNER_UID:
+        raise EstateRefreshError("estate refresh runner must execute as uid 1000")
 
 
 def utc_now() -> str:

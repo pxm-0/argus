@@ -286,12 +286,19 @@ def collect_proxy_overlay(
                     state = "active" if active else ("configured" if configured else "disabled")
         else:
             text = _text(result.stdout).strip().casefold() if result.stdout else ""
-            available = result.returncode in {0, 3}
             configured = False
-            active = result.returncode == 0 and text == "active"
-            state = "active" if active else ("inactive" if available else "unavailable")
-            if not available:
-                unavailable = True
+            if provider == "cloudflared" and result.returncode == 4:
+                # systemctl uses 4 when a unit is not installed.  Cloudflare
+                # ingress is optional, so preserve that explicit absence
+                # without turning the whole reviewed proxy source into a gap.
+                available = active = False
+                state = "absent"
+            else:
+                available = result.returncode in {0, 3}
+                active = result.returncode == 0 and text == "active"
+                state = "active" if active else ("inactive" if available else "unavailable")
+                if not available:
+                    unavailable = True
         records.append(_record(
             source,
             "provider-state",

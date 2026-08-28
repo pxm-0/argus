@@ -14,6 +14,17 @@ import argus_estate_refresh as refresh  # noqa: E402
 
 
 class EstateRefreshCoordinatorTests(unittest.TestCase):
+    def test_runner_identity_is_pinned_to_the_collector_peer_identity(self) -> None:
+        with patch("argus_estate_refresh.os.geteuid", return_value=0):
+            with self.assertRaisesRegex(refresh.EstateRefreshError, "uid 1000"):
+                refresh.require_runner_identity()
+        with patch("argus_estate_refresh.os.geteuid", return_value=1000):
+            refresh.require_runner_identity()
+
+    def test_wrapper_uses_identity_guard_for_each_mutating_mode(self) -> None:
+        wrapper = (ROOT / "scripts" / "argus-estate-refresh").read_text(encoding="utf-8")
+        self.assertEqual(3, wrapper.count("require_runner_identity()"))
+
     def test_request_and_status_are_inert_and_bounded(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
