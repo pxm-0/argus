@@ -510,12 +510,14 @@ def checksum_valid(path: Path) -> bool:
 def check_latest_backup_artifact(repo: Path, smoke: Smoke, offline: bool) -> None:
     ok = True
     checked = False
+    required = False
     for workload_id in workload_map(repo):
         manifest = load_manifest(repo, workload_id)
         backup = manifest.get("backup", {}) if manifest else {}
         operations = manifest.get("operations", {}) if manifest else {}
         if not (backup.get("backupAllowed") or operations.get("backupAllowed")):
             continue
+        required = True
         destination = Path(str(backup.get("destination", "")))
         if not destination.exists():
             if offline:
@@ -560,6 +562,8 @@ def check_latest_backup_artifact(repo: Path, smoke: Smoke, offline: bool) -> Non
     if ok:
         if checked:
             smoke.pass_("latest approved backup artifact valid")
+        elif not required:
+            smoke.pass_("no active workload requires an approved backup artifact")
         elif not offline:
             smoke.fail("latest approved backup artifact valid")
 
