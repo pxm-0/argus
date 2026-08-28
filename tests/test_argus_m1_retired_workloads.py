@@ -117,6 +117,32 @@ class RetiredM1WorkloadReconcileTests(unittest.TestCase):
         with sqlite3.connect(root / "runtime" / "argus" / "entity-store.sqlite3", factory=ClosingConnection) as connection:
             self.assertEqual(1, connection.execute("SELECT COUNT(*) FROM entities WHERE entity_id = 'retired-a'").fetchone()[0])
 
+    def test_present_active_projection_drift_is_reprojected_to_reviewed_config(self) -> None:
+        root = self.fixture()
+        with sqlite3.connect(root / "runtime" / "argus" / "entity-store.sqlite3", factory=ClosingConnection) as connection:
+            connection.execute(
+                "UPDATE entities SET state_json = ? WHERE entity_id = 'project-a'",
+                (json.dumps({"invalid": True}),),
+            )
+        with sqlite3.connect(root / "runtime" / "argus" / "m1" / "state.sqlite3", factory=ClosingConnection) as connection:
+            connection.execute(
+                "UPDATE privacy_projection SET entry_json = ? WHERE workload_id = 'project-a'",
+                (json.dumps({"privacy": "internal", "reason": "stale"}),),
+            )
+            connection.execute(
+                "UPDATE access_projection SET entry_json = ? WHERE workload_id = 'project-a'",
+                (json.dumps({"desired": "none", "effective": "none", "lastError": "stale", "lastAppliedAt": ""}),),
+            )
+        preview = reconcile_retired_workloads(root, apply=False)
+        self.assertEqual(1, preview["entityUpdates"])
+        self.assertEqual(1, preview["privacyProjectionUpdates"])
+        self.assertEqual(1, preview["accessProjectionUpdates"])
+        result = reconcile_retired_workloads(root, apply=True)
+        self.assertTrue(result["reconciled"])
+        self.assertTrue(verify_m1_state(root)["verified"])
+        with sqlite3.connect(root / "runtime" / "argus" / "entity-store.sqlite3", factory=ClosingConnection) as connection:
+            self.assertEqual(8, connection.execute("SELECT revision FROM entities WHERE entity_id = 'project-a'").fetchone()[0])
+
     def test_active_registry_overlap_with_retired_registry_is_rejected(self) -> None:
         root = self.fixture()
         path = root / "config" / "argus" / "retired-workloads.json"

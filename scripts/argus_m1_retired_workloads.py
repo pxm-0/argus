@@ -1,4 +1,4 @@
-"""Fail-closed reconciliation of formally retired workloads from M1 state."""
+"""Fail-closed reconciliation of deployed inventory into private M1 state."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from argus_state import AuditLedger, legacy_workload_snapshot
 
 
 SCHEMA_VERSION = 1
-OPERATION = "retired-workloads.reconcile"
+OPERATION = "inventory.reconcile"
 TABLES = {
     "privacy": ("privacy_projection", "workload_id"),
     "access": ("access_projection", "workload_id"),
@@ -30,22 +30,35 @@ class RetirementReconcileError(ValueError):
 
 @dataclass(frozen=True)
 class RetirementPlan:
-    """A fully validated set of stale M1 records eligible for deletion."""
+    """A fully validated, reviewed M1 inventory convergence plan."""
 
     config_digest: str
     entities: tuple[str, ...]
+    entity_updates: tuple[str, ...]
     privacy: tuple[str, ...]
+    privacy_updates: tuple[str, ...]
     access: tuple[str, ...]
+    access_updates: tuple[str, ...]
 
     @property
     def has_changes(self) -> bool:
-        return bool(self.entities or self.privacy or self.access)
+        return bool(
+            self.entities
+            or self.entity_updates
+            or self.privacy
+            or self.privacy_updates
+            or self.access
+            or self.access_updates
+        )
 
     def summary(self) -> dict[str, int]:
         return {
             "entityRemovals": len(self.entities),
+            "entityUpdates": len(self.entity_updates),
             "privacyProjectionRemovals": len(self.privacy),
+            "privacyProjectionUpdates": len(self.privacy_updates),
             "accessProjectionRemovals": len(self.access),
+            "accessProjectionUpdates": len(self.access_updates),
         }
 
 
@@ -184,15 +197,17 @@ def _read_projection(path: Path, table: str) -> dict[str, Any]:
     return result
 
 
-def _stale_ids(actual: dict[str, Any], expected: dict[str, Any], retired_ids: set[str], store: str) -> tuple[str, ...]:
+def _changes(
+    actual: dict[str, Any], expected: dict[str, Any], retired_ids: set[str], store: str,
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
     missing = set(expected) - set(actual)
-    changed = {workload_id for workload_id in expected if actual.get(workload_id) != expected[workload_id]}
-    if missing or changed:
-        raise RetirementReconcileError(f"M1 {store} differs for an active workload")
+    if missing:
+        raise RetirementReconcileError(f"M1 {store} is missing an active workload")
+    changed = tuple(sorted(workload_id for workload_id in expected if actual.get(workload_id) != expected[workload_id]))
     stale = set(actual) - set(expected)
     if stale - retired_ids:
         raise RetirementReconcileError(f"M1 {store} contains an unapproved stale workload")
-    return tuple(sorted(stale))
+    return tuple(sorted(stale)), changed
 
 
 def _plan(root: Path) -> RetirementPlan:
@@ -202,11 +217,17 @@ def _plan(root: Path) -> RetirementPlan:
     state_path = runtime / "m1" / "state.sqlite3"
     privacy_rows = _read_projection(state_path, TABLES["privacy"][0])
     access_rows = _read_projection(state_path, TABLES["access"][0])
+    entity_removals, entity_updates = _changes(entity_rows, entities, retired_ids, "entity store")
+    privacy_removals, privacy_updates = _changes(privacy_rows, privacy, retired_ids, "privacy projection")
+    access_removals, access_updates = _changes(access_rows, access, retired_ids, "access projection")
     return RetirementPlan(
         config_digest=config_digest,
-        entities=_stale_ids(entity_rows, entities, retired_ids, "entity store"),
-        privacy=_stale_ids(privacy_rows, privacy, retired_ids, "privacy projection"),
-        access=_stale_ids(access_rows, access, retired_ids, "access projection"),
+        entities=entity_removals,
+        entity_updates=entity_updates,
+        privacy=privacy_removals,
+        privacy_updates=privacy_updates,
+        access=access_removals,
+        access_updates=access_updates,
     )
 
 
@@ -288,23 +309,70 @@ def _create_backups(root: Path, correlation_id: str) -> dict[str, str]:
     return backups
 
 
-def _delete_rows(path: Path, table: str, column: str, workload_ids: tuple[str, ...]) -> None:
+def _delete_rows(connection: sqlite3.Connection, table: str, column: str, workload_ids: tuple[str, ...]) -> None:
     if not workload_ids:
         return
     if (table, column) not in {("entities", "entity_id"), *TABLES.values()}:
         raise RetirementReconcileError("unknown M1 retirement deletion target")
     placeholders = ", ".join("?" for _ in workload_ids)
+    deleted = connection.execute(
+        f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
+        workload_ids,
+    ).rowcount
+    if deleted != len(workload_ids):
+        raise RetirementReconcileError("M1 state changed during retired workload reconciliation")
+
+
+def _reconcile_entities(path: Path, plan: RetirementPlan, expected: dict[str, dict[str, Any]]) -> None:
+    if not plan.entities and not plan.entity_updates:
+        return
     try:
         with sqlite3.connect(path, factory=ClosingConnection) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            deleted = connection.execute(
-                f"DELETE FROM {table} WHERE {column} IN ({placeholders})",
-                workload_ids,
-            ).rowcount
-            if deleted != len(workload_ids):
-                raise RetirementReconcileError("M1 state changed during retired workload reconciliation")
+            _delete_rows(connection, "entities", "entity_id", plan.entities)
+            for workload_id in plan.entity_updates:
+                entry = expected[workload_id]
+                updated = connection.execute(
+                    "UPDATE entities SET entity_kind = ?, revision = revision + 1, state_json = ? WHERE entity_id = ?",
+                    (entry["kind"], _canonical(entry["state"]), workload_id),
+                ).rowcount
+                if updated != 1:
+                    raise RetirementReconcileError("M1 state changed during deployed inventory reconciliation")
     except sqlite3.Error as exc:
-        raise RetirementReconcileError("M1 retirement deletion failed") from exc
+        raise RetirementReconcileError("M1 entity reconciliation failed") from exc
+
+
+def _reconcile_projections(
+    path: Path,
+    plan: RetirementPlan,
+    privacy: dict[str, Any],
+    access: dict[str, Any],
+) -> None:
+    if not (plan.privacy or plan.privacy_updates or plan.access or plan.access_updates):
+        return
+    try:
+        with sqlite3.connect(path, factory=ClosingConnection) as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            privacy_table, privacy_column = TABLES["privacy"]
+            access_table, access_column = TABLES["access"]
+            _delete_rows(connection, privacy_table, privacy_column, plan.privacy)
+            _delete_rows(connection, access_table, access_column, plan.access)
+            for workload_id in plan.privacy_updates:
+                updated = connection.execute(
+                    f"UPDATE {privacy_table} SET entry_json = ? WHERE {privacy_column} = ?",
+                    (_canonical(privacy[workload_id]), workload_id),
+                ).rowcount
+                if updated != 1:
+                    raise RetirementReconcileError("M1 state changed during deployed inventory reconciliation")
+            for workload_id in plan.access_updates:
+                updated = connection.execute(
+                    f"UPDATE {access_table} SET entry_json = ? WHERE {access_column} = ?",
+                    (_canonical(access[workload_id]), workload_id),
+                ).rowcount
+                if updated != 1:
+                    raise RetirementReconcileError("M1 state changed during deployed inventory reconciliation")
+    except sqlite3.Error as exc:
+        raise RetirementReconcileError("M1 projection reconciliation failed") from exc
 
 
 def _intent_present(ledger: AuditLedger, correlation_id: str) -> bool:
@@ -317,7 +385,7 @@ def _intent_present(ledger: AuditLedger, correlation_id: str) -> bool:
 
 
 def reconcile_retired_workloads(root: Path, *, apply: bool) -> dict[str, Any]:
-    """Delete only declared retired records after exact active-state parity checks."""
+    """Converge private M1 stores to the reviewed active and retired inventory."""
     root = root.resolve()
     plan = _plan(root)
     result = {"schemaVersion": SCHEMA_VERSION, "ready": True, **plan.summary()}
@@ -352,15 +420,17 @@ def reconcile_retired_workloads(root: Path, *, apply: bool) -> dict[str, Any]:
                 "actor": "argus-retired-workload-reconciler",
                 "operation": OPERATION,
                 "outcome": "intent",
-                "target": "m1-retired-workload-state",
+                "target": "m1-deployed-inventory-state",
                 "trustDomain": "management",
                 "correlationId": correlation_id,
             }
         )
 
-    _delete_rows(runtime / "entity-store.sqlite3", "entities", "entity_id", plan.entities)
-    _delete_rows(runtime / "m1" / "state.sqlite3", *TABLES["privacy"], plan.privacy)
-    _delete_rows(runtime / "m1" / "state.sqlite3", *TABLES["access"], plan.access)
+    entities, privacy, access, _, config_digest = _expected(root)
+    if config_digest != plan.config_digest:
+        raise RetirementReconcileError("reviewed inventory changed during M1 reconciliation")
+    _reconcile_entities(runtime / "entity-store.sqlite3", plan, entities)
+    _reconcile_projections(runtime / "m1" / "state.sqlite3", plan, privacy, access)
 
     final_plan = _plan(root)
     if final_plan.config_digest != plan.config_digest or final_plan.has_changes:
@@ -371,7 +441,7 @@ def reconcile_retired_workloads(root: Path, *, apply: bool) -> dict[str, Any]:
                 "actor": "argus-retired-workload-reconciler",
                 "operation": OPERATION,
                 "outcome": "accepted",
-                "target": "m1-retired-workload-state",
+                "target": "m1-deployed-inventory-state",
                 "trustDomain": "management",
                 "correlationId": correlation_id,
                 **plan.summary(),

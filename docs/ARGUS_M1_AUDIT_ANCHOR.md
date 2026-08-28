@@ -27,9 +27,10 @@ sudo python3 scripts/argus-m1-verify
 
 If a workload is formally retired from the active inventory, reconcile its
 private M1 rows only through the retirement registry. The preview returns
-counts only. Apply refuses any missing, changed, or undeclared stale active
-record, checkpoints both SQLite stores first, and records a hash-chained audit
-intent and outcome.
+counts only. Apply refuses any missing or undeclared stale record, checkpoints
+both SQLite stores first, and records a hash-chained audit intent and outcome.
+It removes only declared retired rows and reprojects an already-present active
+row only to the exact reviewed configuration.
 
 ```bash
 sudo python3 scripts/argus-m1-reconcile-retired-workloads
@@ -38,8 +39,8 @@ sudo python3 scripts/argus-m1-reconcile-retired-workloads \
 sudo python3 scripts/argus-m1-verify
 ```
 
-`config/argus/retired-workloads.json` is the explicit allowlist for that
-operation. It is not an admission mechanism and cannot remove an active
+`config/argus/retired-workloads.json` is the explicit deletion allowlist for
+that operation. It is not an admission mechanism and cannot remove an active
 workload or alter routes, runtime, or configuration.
 
 If verification reports missing explicit legacy quarantine records, reconcile
