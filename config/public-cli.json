@@ -18,8 +18,6 @@
     {"command": "argus operation show <operation-id>", "privilege": "server-read-only"},
     {"command": "argus op preview <workload> <type>", "privilege": "api-session", "where": "api"},
     {"command": "argus op create <workload> <type>", "privilege": "api-session", "where": "api"},
-    {"command": "argus op approve <operation-id>", "privilege": "api-session", "where": "api"},
-    {"command": "argus op cancel <operation-id>", "privilege": "api-session", "where": "api"},
     {"command": "argus op show <operation-id>", "privilege": "api-session", "where": "api"},
     {"command": "argus op watch <operation-id>", "privilege": "api-session", "where": "api"},
     {"command": "argus workload deploy <id>", "privilege": "api-session", "where": "api"},

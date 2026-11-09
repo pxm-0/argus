@@ -620,8 +620,6 @@ class StableCliContractTests(unittest.TestCase):
             ["operation", "show"],
             ["op", "preview"],
             ["op", "create"],
-            ["op", "approve"],
-            ["op", "cancel"],
             ["op", "show"],
             ["op", "watch"],
             ["workload", "deploy"],

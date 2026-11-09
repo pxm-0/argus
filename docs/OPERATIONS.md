@@ -198,10 +198,6 @@ Do not run an old migration script instead of this workflow.
 
 `api-session` — `argus op create <workload> <type>`
 
-`api-session` — `argus op approve <operation-id>`
-
-`api-session` — `argus op cancel <operation-id>`
-
 `api-session` — `argus op show <operation-id>`
 
 `api-session` — `argus op watch <operation-id>`
@@ -221,8 +217,9 @@ bootstrap-token step-up as the dashboard. The token is read only from
 requires the typed workload ID (or `--yes-digest <digest>` matching the
 previewed digest), then steps up, creates, approves and watches to a terminal
 state. Exit: succeeded 0; denied/expired 3; failed/rolled-back 4;
-indeterminate or unobservable 5. The server binds approval to the originating
-session, so run `create` rather than `approve` from a new process.
+indeterminate or unobservable 5. The server binds approval and cancel to the
+originating session, so there are no standalone `approve`/`cancel` verbs.
+`--base-url` is accepted only for a `*.ts.net` https URL or loopback http.
 
 ```bash
 argus op preview nodens workload.deploy --revision sha256:... --json

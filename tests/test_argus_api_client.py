@@ -110,8 +110,6 @@ class FakeHandler(BaseHTTPRequestHandler):
                 self.reply(403, {"error": "exact preview confirmation required"})
             else:
                 self.reply(202, {"state": "queued"})
-        elif self.path == f"/api/operations/{OP_ID}/cancel":
-            self.reply(200, {"operation_id": OP_ID, "state": "denied"})
         else:
             self.reply(404, {"error": "not found"})
 
@@ -267,9 +265,7 @@ class OpCommandTests(unittest.TestCase):
         self.assertEqual("op-step-up-rejected", json.loads(out)["error"]["code"])
         self.assertNotIn("/api/workloads/demo/operations", self.paths())
 
-    def test_cancel_and_show(self) -> None:
-        code, out, _ = self.invoke(["op", "cancel", OP_ID], FakeTty())
-        self.assertEqual(0, code, out)
+    def test_show(self) -> None:
         code, out, _ = self.invoke(["op", "show", OP_ID], FakeTty())
         self.assertEqual(0, code, out)
         self.assertEqual("op.show", json.loads(out)["data"]["command"])
@@ -281,6 +277,20 @@ class OpCommandTests(unittest.TestCase):
         with mock.patch.object(argus_cli_op, "open_tty", return_value=FakeTty()):
             code = run(["op", "show", OP_ID, "--base-url", "http://example.com", "--json"], repo=ROOT, stdout=stdout, stderr=io.StringIO())
         self.assertEqual(2, code)
+
+    def test_foreign_https_base_url_refused_before_any_prompt(self) -> None:
+        for bad in ("https://evil.example", "https://evil.example:8448", "https://h.ts.net.evil.example"):
+            tty = FakeTty()
+            stdout = io.StringIO()
+            with mock.patch.object(argus_cli_op, "open_tty", return_value=tty):
+                code = run(["op", "show", OP_ID, "--base-url", bad, "--json"], repo=ROOT, stdout=stdout, stderr=io.StringIO())
+            self.assertEqual(2, code, bad)
+            self.assertEqual([], tty.secrets_asked, bad)
+
+    def test_approve_and_cancel_verbs_do_not_exist(self) -> None:
+        for verb in ("approve", "cancel"):
+            code = run(["op", verb, OP_ID], repo=ROOT, stdout=io.StringIO(), stderr=io.StringIO())
+            self.assertEqual(2, code, verb)
 
     def test_token_never_reaches_output_headers_or_paths(self) -> None:
         captured = ""

@@ -5,7 +5,8 @@ approval stay separate steps: the operator confirms the previewed digest (typed
 workload ID on a TTY, or --yes-digest) before anything is created.
 The server binds approval to the originating session, so `create` carries the
 whole preview -> confirm -> step-up -> create -> approve -> watch flow in one
-process; `approve` and `cancel` from a new process are refused by the server.
+process. There are no standalone approve/cancel verbs: the server refuses both
+from any other session.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from argus_api_client import TERMINAL_STATES, ApiClient, ApiResponse, ApiUnavailable
+from argus_api_client import TERMINAL_STATES, ApiClient, ApiResponse, ApiUnavailable, is_loopback_http
 
 SHORTCUTS = ("deploy", "start", "stop", "restart")
 TYPE_PATTERN = re.compile(r"^[a-z][a-z.-]{0,63}$")
@@ -117,6 +118,8 @@ class _Flow:
             if not routes["ok"]:
                 raise _Stop(routes)
             url = routes["data"]["url"]
+        if self.args.base_url and not (url.startswith("https://") and self.cli.TAILSCALE_HTTPS_URL.fullmatch(url) or is_loopback_http(url)):
+            raise self.stop("op-base-url-invalid", "--base-url must be the tailnet https URL (*.ts.net) or loopback http.", "Pass the URL printed by argus dashboard url.", self.cli.EXIT_INVOCATION)
         try:
             self.client = ApiClient(url)
         except ValueError as exc:
@@ -235,17 +238,7 @@ class _Flow:
             return self.outcome("op.create", self.watch(operation_id))
         if verb == "show":
             return self.outcome_show(self.operation_summary(args.operation_id))
-        if verb == "watch":
-            return self.outcome("op.watch", self.watch(args.operation_id))
-        operation = self.operation_summary(args.operation_id)
-        if verb == "cancel":
-            cancelled = self.call("cancel", lambda: self.client.cancel(args.operation_id))
-            return self.cli._success("op.cancel", operationId=args.operation_id, state=cancelled.get("state"))
-        preview = operation.get("preview") if isinstance(operation.get("preview"), dict) else {}
-        self.confirm({"workloadId": operation.get("workload_id"), "operationType": operation.get("operation_type"), "previewDigest": operation.get("preview_digest"), "expectedRevision": operation.get("expected_revision"), "targetRevision": (operation.get("parameters") or {}).get("targetRevision"), "effects": preview.get("expectedBlastRadius")})
-        self.authenticate("step-up", lambda client, token: client.step_up(token))
-        self.approve(args.operation_id, str(preview.get("confirmationPhrase", "")))
-        return self.outcome("op.approve", self.watch(args.operation_id))
+        return self.outcome("op.watch", self.watch(args.operation_id))
 
     def outcome_show(self, operation: dict[str, Any]) -> dict[str, Any]:
         keys = ("operation_id", "workload_id", "operation_type", "state", "error_class", "redacted_summary", "created_at", "approved_at", "finished_at")
@@ -302,14 +295,14 @@ def register(commands: Any, workload_sub: Any, leaf: Callable[..., Any], descrip
         if target:
             item.add_argument("--revision", default="", help="target revision, e.g. sha256:...")
 
-    op = commands.add_parser("op", help="preview, create, approve and watch operations through the API")
+    op = commands.add_parser("op", help="preview, create and watch operations through the API")
     sub = op.add_subparsers(dest="op_command", required=True, parser_class=type(op))
     for verb, effects in (("preview", "none"), ("create", "creates and approves one audited operation after confirmation")):
         item = leaf(sub, verb, help_text=f"{verb} a typed workload operation", contract=contract(f"{verb.title()} a typed workload operation.", effects, f"argus op {verb} nodens workload.deploy --revision sha256:abc"))
         item.add_argument("workload_id")
         item.add_argument("operation_type", help="e.g. workload.deploy (or the short form deploy)")
         common(item, target=True, confirm=verb == "create", timeout=verb == "create")
-    for verb, effects, confirm, timeout in (("approve", "approves one existing operation (same session only)", True, True), ("cancel", "cancels one operation before execution", False, False), ("show", "none", False, False), ("watch", "none", False, True)):
+    for verb, effects, confirm, timeout in (("show", "none", False, False), ("watch", "none", False, True)):
         item = leaf(sub, verb, help_text=f"{verb} an existing operation", contract=contract(f"{verb.title()} an existing operation.", effects, f"argus op {verb} 00000000-0000-0000-0000-000000000000"))
         item.add_argument("operation_id")
         common(item, target=False, confirm=confirm, timeout=timeout)

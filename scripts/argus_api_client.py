@@ -36,6 +36,14 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def is_loopback_http(url: str) -> bool:
+    try:
+        parts = urlsplit(url)
+        return parts.scheme == "http" and parts.hostname in LOOPBACK_HOSTS
+    except ValueError:
+        return False
+
+
 def normalize_base_url(url: str) -> str:
     """Return the exact scheme://host[:port] origin; plain http only for loopback."""
     try:
@@ -158,8 +166,6 @@ class ApiClient:
     def approve(self, operation_id: str, confirmation: str) -> ApiResponse:
         return self.request("POST", f"/api/operations/{quote(operation_id, safe='')}/approve", {"confirmation": confirmation})
 
-    def cancel(self, operation_id: str) -> ApiResponse:
-        return self.request("POST", f"/api/operations/{quote(operation_id, safe='')}/cancel", {})
 
     def operation(self, operation_id: str) -> ApiResponse:
         return self.request("GET", f"/api/operations/{quote(operation_id, safe='')}")
