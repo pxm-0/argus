@@ -149,6 +149,13 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertEqual(result["data"]["unitFiles"], ["templates/systemd/gone-backup.timer"])
         self.assertIn("templates/systemd/gone-backup.timer", result["data"]["runbook"])
 
+    def test_unit_matching_ignores_longer_workload_ids(self) -> None:
+        write(self.root, "systemd/argus-gone.service", "[Service]\n")
+        write(self.root, "systemd/argus-gone-staging.service", "[Service]\n")
+        write(self.root, "systemd/argus-gonesome.service", "[Service]\n")
+        code, result = self.invoke(FakeRunner(self.root), "gone", "--dry-run")
+        self.assertEqual(result["data"]["unitFiles"], ["systemd/argus-gone.service"])
+
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)
         code, result = self.invoke(runner, "gone")

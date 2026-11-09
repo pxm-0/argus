@@ -97,15 +97,24 @@ def text_references(repo: Path, files: list[Path], workload_id: str, skip: set[P
     return dict(sorted(found.items()))
 
 
-def unit_files(files: list[Path], workload_id: str) -> list[str]:
-    return sorted(str(p) for p in files if "systemd" in p.parts and workload_id in p.name)
+def unit_files(files: list[Path], workload_id: str, all_ids: tuple[str, ...] = ()) -> list[str]:
+    # Match the id as a whole token, and ignore longer ids that contain it (nodens vs nodens-staging).
+    longer = sorted((i for i in all_ids if i != workload_id and workload_id in i), key=len, reverse=True)
+    token = re.compile(rf"(?<![A-Za-z0-9]){re.escape(workload_id)}(?![A-Za-z0-9])")
+
+    def owned(name: str) -> bool:
+        for other in longer:
+            name = name.replace(other, "\0")
+        return bool(token.search(name))
+
+    return sorted(str(p) for p in files if "systemd" in p.parts and owned(p.name))
 
 
-def teardown_runbook(repo: Path, workload: dict[str, Any], workload_id: str, files: list[Path]) -> str:
+def teardown_runbook(repo: Path, workload: dict[str, Any], workload_id: str, files: list[Path], all_ids: tuple[str, ...] = ()) -> str:
     paths = workload.get("paths", {})
     runtime = workload.get("runtime", {})
     domain = workload.get("migration", {}).get("targetTrustDomain", "unknown")
-    units = unit_files(files, workload_id)
+    units = unit_files(files, workload_id, all_ids)
     routes = _load(repo / "config/routes.json").get("workloadRoutes", {}).get(workload_id, {})
     tailnet_url = routes.get("tailnet", {}).get("url", "")
     steps = [
@@ -196,7 +205,8 @@ def retire(repo: Path, workload_id: str, *, dry_run: bool, reason: str, runner: 
     changes = json_changes(repo, files, workload_id)
     source_dir = [p for p in files if p.parts[:2] == ("workloads", workload_id)]
     doc = f"docs/RETIRED_{workload_id.upper().replace('-', '_')}.md"
-    runbook = teardown_runbook(repo, workload, workload_id, files)
+    all_ids = tuple(w.get("id", "") for w in workloads)
+    runbook = teardown_runbook(repo, workload, workload_id, files, all_ids)
     review = text_references(repo, files, workload_id, set(changes))
     plan = {
         "command": "workload.retire",
@@ -206,7 +216,7 @@ def retire(repo: Path, workload_id: str, *, dry_run: bool, reason: str, runner: 
         "deletions": sorted(str(p) for p in source_dir),
         "generatedDoc": doc,
         "textReferencesToReview": review,
-        "unitFiles": unit_files(files, workload_id),
+        "unitFiles": unit_files(files, workload_id, all_ids),
         "runbook": runbook,
     }
     if dry_run:
