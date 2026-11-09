@@ -151,6 +151,26 @@ class D6DashboardCompletenessTests(unittest.TestCase):
         self.assertIn("targetTrustDomain: context.targetTrustDomain", operations)
 
     @unittest.skipUnless(shutil.which("node"), "requires node")
+    def test_migration_preflight_parameters_resolve_declared_domain(self) -> None:
+        stages = (DASHBOARD / "assets" / "stages.js").read_text()
+        operations = (DASHBOARD / "assets" / "operations.js").read_text()
+        helper = stages[stages.index("function declaredTrustDomain"):stages.index("// One family per staging")]
+        ops = operations[operations.index("const NO_PARAMETERS"):operations.index("const OPERATIONS")]
+        table = operations[operations.index("const OPERATIONS"):]
+        table = table[:table.index("\n};") + 3]
+        script = (
+            'const state = {topology: {nodes: [{id: "a-managed", trustDomain: "personal-managed"}, {id: "old", trustDomain: "legacy-rootful"}]}};\n'
+            + helper + ops + table + "\n"
+            "const p = OPERATIONS['migration-preflight'].parameters;\n"
+            "console.log(JSON.stringify(['a-managed', 'old', 'missing'].map((w) => p({ targetTrustDomain: declaredTrustDomain(w) }))));"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(
+            json.loads(out),
+            [{"targetTrustDomain": "personal-managed"}, {"targetTrustDomain": "legacy-rootful"}, {"targetTrustDomain": ""}],
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "requires node")
     def test_stage_families_pair_by_promotes_to_then_name(self) -> None:
         stages = (ROOT / "control-plane" / "dashboard" / "assets" / "stages.js").read_text()
         harness = "const state = null; const escapeHtml = String; " + stages.replace("const TERMINAL_STATES", "var TERMINAL_STATES") + r"""
