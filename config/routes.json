@@ -71,6 +71,32 @@
         "mode": "disabled",
         "requiresAuth": true
       }
+    },
+    "nodens-staging": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8450"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
+    },
+    "nodens-production": {
+      "tailnet": {
+        "enabled": true,
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8451"
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
     }
   }
 }

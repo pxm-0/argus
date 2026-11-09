@@ -48,7 +48,7 @@ class SourceMaterializationTests(unittest.TestCase):
 
     def test_preflight_materialize_and_rollback_restore_prior_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             _workload, target = self.fixture(root)
             target.parent.mkdir()
             target.write_text("services: {old: {image: old}}\n", encoding="utf-8")
@@ -69,7 +69,7 @@ class SourceMaterializationTests(unittest.TestCase):
 
     def test_rejects_tracked_source_or_unsafe_template(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             workload, _target = self.fixture(root)
             manifest_path = workload / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -85,7 +85,7 @@ class SourceMaterializationTests(unittest.TestCase):
 
     def test_refuses_a_symlinked_runtime_source(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             _workload, target = self.fixture(root)
             target.parent.mkdir()
             outside = root / "outside.yml"
@@ -96,7 +96,7 @@ class SourceMaterializationTests(unittest.TestCase):
 
     def test_apply_uses_the_documented_named_acknowledgement_flag(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
+            root = Path(directory).resolve()
             self.fixture(root)
             with (
                 patch.object(module, "apply", return_value={"ok": True}) as apply,
