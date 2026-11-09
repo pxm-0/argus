@@ -3,7 +3,7 @@
 const NO_PARAMETERS = () => ({});
 const OPERATIONS = {
   "health-preview": { operationType: "health.refresh", parameters: NO_PARAMETERS, executes: true, requiresConfirm: false, requiresStepUp: false, pollable: true, queuedLabel: "health queued" },
-  "migration-preflight": { operationType: "migration.preflight", parameters: () => ({ targetTrustDomain: "personal-sandbox" }), executes: true, requiresConfirm: false, requiresStepUp: false, pollable: true, queuedLabel: "migration preflight queued" },
+  "migration-preflight": { operationType: "migration.preflight", parameters: (context) => ({ targetTrustDomain: context.targetTrustDomain || "" }), executes: true, requiresConfirm: false, requiresStepUp: false, pollable: true, queuedLabel: "migration preflight queued" },
   "logs-preview": { operationType: "logs.preview", parameters: NO_PARAMETERS, executes: false },
   "restart-preview": { operationType: "workload.restart", parameters: NO_PARAMETERS, executes: false },
   "restart-apply": { operationType: "workload.restart", parameters: NO_PARAMETERS, executes: true, requiresConfirm: true, requiresStepUp: true, pollable: true },

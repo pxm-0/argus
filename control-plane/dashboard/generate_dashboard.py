@@ -120,11 +120,22 @@ def render_html() -> str:
         </div>
         <div id="metrics" class="metrics-grid"></div>
       </section>
+      <div id="active-operation" class="active-banner" role="status" hidden></div>
+      <section class="section-head" id="stages-heading">
+        <h2>Stages</h2>
+        <span>Staging versus production pinned images</span>
+      </section>
+      <section id="stages" aria-labelledby="stages-heading"></section>
       <section class="section-head" id="workloads-heading">
         <h2>Workloads</h2>
         <span>Placement, health, access, and evidence freshness</span>
       </section>
       <section class="workloads" id="workloads"></section>
+      <section class="section-head" id="activity-heading">
+        <h2>Activity</h2>
+        <span>Recent operations across all workloads</span>
+      </section>
+      <section id="activity" aria-labelledby="activity-heading"></section>
       <section class="instrument-head" id="estate-coverage">
         <div><h2>Estate coverage</h2></div>
         <p>Compare trust-domain placement and access evidence. This view remains read-only.</p>
@@ -148,7 +159,7 @@ def render_html() -> str:
         </article>
         <article>
           <h2>Events</h2>
-          <pre id="events">loading events</pre>
+          <ol id="events" class="history-list"><li>loading events</li></ol>
         </article>
         <article id="system-plan">
           <h2>System</h2>
@@ -975,13 +986,14 @@ function renderPlans() {
 
 function renderEvents() {
   const events = state?.events || [];
-  eventsEl.textContent = events.slice(-8).map((event) => `${event.timestamp || ""} ${event.workloadId || ""} ${event.action || ""} ${event.result || ""}`.trim()).join("\n") || "No audit events loaded.";
+  eventsEl.innerHTML = events.slice(-8).map((event) => `<li>${escapeHtml(`${event.timestamp || ""} ${event.workloadId || ""} ${event.action || ""} ${event.result || ""}`.trim())}</li>`).join("") || "<li>No audit events loaded.</li>";
 }
 
 function renderDashboard() {
   renderEvidenceState();
   renderSummary();
   renderTopology();
+  renderStages();
   workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
   renderPlans();
   renderEvents();
@@ -1021,13 +1033,16 @@ async function loadDashboardState() {
     if (!response.ok) throw new Error(`dashboard state ${response.status}`);
     state = await response.json();
     renderDashboard();
-    if (csrfToken) await loadOperationHistory();
+    if (csrfToken) {
+      await loadOperationHistory();
+      await loadActivity();
+    }
   } catch (error) {
     routeSummary.textContent = "dashboard state unavailable";
     summaryEl.innerHTML = `<div><strong>!</strong><span>${escapeHtml(error.message)}</span></div>`;
     renderEvidenceState({ status: "unavailable" });
     workloadsEl.innerHTML = "";
-    eventsEl.textContent = "No dashboard state loaded.";
+    eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
   }
 }
 
@@ -1104,6 +1119,7 @@ function renderOperationHistory(workloadId, operations) {
 }
 
 // @include operations.js
+// @include stages.js
 async function pollOperation(operationId, workload, { present = true } = {}) {
   if (activeOperationPolls.has(operationId)) return;
   activeOperationPolls.add(operationId);
@@ -1111,6 +1127,7 @@ async function pollOperation(operationId, workload, { present = true } = {}) {
     while (activeOperationPolls.has(operationId)) {
       const operation = await operationStatus(operationId);
       operationCache.set(operationId, operation);
+      updateActiveOperation(operation, workload);
       if (present) showCommandResult(`${workload} operation`, operation);
       await loadOperationHistory(workload);
       if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) return;
@@ -1328,6 +1345,7 @@ adminToggle.addEventListener("click", async () => {
     const session = await authenticateOperator();
     showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
     await loadOperationHistory();
+    await loadActivity();
   } catch (error) {
     showCommandResult("Authentication failed", error.message);
   }
@@ -1412,6 +1430,11 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
+  const stageAction = event.target.closest("[data-stage-action]");
+  if (stageAction) {
+    await handleStageAction(stageAction);
+    return;
+  }
   const createMigration = event.target.closest("[data-migration-create]");
   if (createMigration) {
     const workload = createMigration.dataset.migrationCreate;
@@ -1481,7 +1504,7 @@ document.addEventListener("click", async (event) => {
       await runOperation({
         workload,
         operationType: definition.operationType,
-        parameters: definition.parameters({ targetRevision: operation.dataset.targetRevision }),
+        parameters: definition.parameters({ targetRevision: operation.dataset.targetRevision, targetTrustDomain: declaredTrustDomain(workload) }),
         confirm: definition.requiresConfirm ? confirmation : null,
         stepUp: Boolean(definition.requiresStepUp),
         executes: definition.executes,
@@ -1602,6 +1625,7 @@ restoreOperatorSession();
 
 
 JS = JS.replace("// @include operations.js\n", (Path(__file__).resolve().parent / "assets" / "operations.js").read_text())
+JS = JS.replace("// @include stages.js\n", (Path(__file__).resolve().parent / "assets" / "stages.js").read_text())
 
 
 def main() -> int:
