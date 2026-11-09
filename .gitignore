@@ -53,6 +53,15 @@ workloads/*/*.crt
 !workloads/*/manifest.json
 !workloads/*/compose.template.yml
 
+# Managed pinned-image workloads track only their reviewed Compose file
+# (manifest security.trackedByArgusGit=true); the rest of source/ stays ignored.
+!workloads/nodens-staging/source/
+workloads/nodens-staging/source/*
+!workloads/nodens-staging/source/compose.yml
+!workloads/nodens-production/source/
+workloads/nodens-production/source/*
+!workloads/nodens-production/source/compose.yml
+
 # Secrets and env
 .env
 .env.*

@@ -1,0 +1,50 @@
+# Reviewed runtime for the nodens-staging workload in personal-managed.
+# Both images are domain-local IDs printed by scripts/argus-image-import; a
+# workload.deploy targetRevision must equal one of these lines exactly. Until
+# the first import, the PENDING pins fail closed (no deploy can match them).
+name: nodens-staging
+
+services:
+  nodens:
+    image: sha256:PENDING-nodens-image-id-from-argus-image-import
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /run
+      - /tmp
+      - /var/cache/nginx
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - internal
+
+  argus-ingress:
+    image: sha256:PENDING-caddy-image-id-from-argus-image-import
+    command: ["caddy", "run", "--config", "/etc/caddy/ingress.json"]
+    depends_on:
+      nodens:
+        condition: service_started
+    restart: unless-stopped
+    # Not read_only: Compose refuses inline config content on read-only services.
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    configs:
+      - source: ingress
+        target: /etc/caddy/ingress.json
+    volumes:
+      - type: bind
+        source: /var/lib/argus/managed-ingress/nodens-staging
+        target: /run/argus-ingress
+    networks:
+      - internal
+
+networks:
+  internal:
+    internal: true
+
+configs:
+  ingress:
+    content: |
+      {"apps":{"http":{"servers":{"ingress":{"listen":["unix//run/argus-ingress/upstream.sock|0666"],"routes":[{"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"nodens:80"}]}]}]}}}}}

@@ -266,3 +266,82 @@ sudo ./scripts/argus-m5-workload-cutover \
 Run workloads sequentially. The global lock refuses overlapping cutovers.
 Do not delete the stopped source containers or final stage artifacts until
 the final acceptance checkpoint is approved.
+
+## Managed-zone pilot: nodens staging and production
+
+`nodens-staging` and `nodens-production` are two separate workloads in
+`personal-managed` (realm `personal`, zone `managed`), each with its own
+Compose project, network, ingress socket, and tailnet route (BRIDGE §7.7).
+Both run the same image ID; production never receives a rebuilt artifact
+(BRIDGE §7.6). The reviewed runtime is the tracked
+`workloads/<id>/source/compose.yml` (`security.trackedByArgusGit: true`); the
+rest of `source/` stays ignored. The domain has no published ports and no
+default egress, and deploys use `--pull never`, so images reach it only through
+`argus-image-import`.
+
+| Workload | Compose project | Ingress socket | Tailnet route |
+| --- | --- | --- | --- |
+| `nodens-staging` | `nodens-staging` | `/var/lib/argus/managed-ingress/nodens-staging/upstream.sock` | `:8450` |
+| `nodens-production` | `nodens-production` | `/var/lib/argus/managed-ingress/nodens-production/upstream.sock` | `:8451` |
+
+Routes are tailnet-only. Never Funnel, Cloudflare, or a public listener.
+
+### One-time host setup
+
+`route_contract` accepts only loopback HTTP targets, so Argus cannot apply a
+Serve mapping to a Unix socket. Create the ingress directories and the Serve
+mappings by hand, once:
+
+```bash
+sudo install -d -m 0711 -o root -g root /var/lib/argus/managed-ingress
+sudo install -d -m 0700 -o argus-personal-managed -g argus-personal-managed \
+  /var/lib/argus/managed-ingress/nodens-staging \
+  /var/lib/argus/managed-ingress/nodens-production
+sudo ./scripts/argus-image-import --domain personal-managed \
+  --image docker.io/library/caddy@sha256:<caddy-digest>
+sudo tailscale serve --bg --https=8450 \
+  unix:/var/lib/argus/managed-ingress/nodens-staging/upstream.sock
+sudo tailscale serve --bg --https=8451 \
+  unix:/var/lib/argus/managed-ingress/nodens-production/upstream.sock
+tailscale serve status   # 8450 and 8451, tailnet only
+tailscale funnel status  # must be empty
+```
+
+Pin the Caddy ID the import prints as the `argus-ingress` image in both
+Compose files.
+
+### Release flow
+
+1. **Import.** After nodens CI publishes `ghcr.io/pxm-0/nodens@sha256:<D>`:
+   `sudo ./scripts/argus-image-import --domain personal-managed --image ghcr.io/pxm-0/nodens@sha256:<D>`.
+   It prints `imageId`, the ID the domain reports. Pin that ID, never `<D>`:
+   they can differ. On the first import, test that a container can be created
+   from it, to catch a rootless EOVERFLOW unpack failure.
+2. **Pin PR.** Replace the `nodens` image in
+   `workloads/nodens-staging/source/compose.yml` with `image: sha256:<ID>`.
+   Both workloads are admitted but every manifest capability starts denied
+   (`operation-not-capable`), so the first pin PR also allows `deploy`,
+   `start`, `stop`, and `health` in that workload's manifest `operations`.
+   Merge it.
+3. **Pull on the server.** `git -C /srv/argus pull --ff-only`. Never edit
+   `/srv/argus` by hand.
+4. **Deploy staging.** From the dashboard, run `workload.deploy` for
+   `nodens-staging` with `targetRevision=sha256:<ID>`. The domain agent refuses
+   any revision that is not an exact line of `docker compose config --images`,
+   then runs `up -d --pull never` and checks domain health.
+5. **Verify.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
+   succeeds, and the operation ledger records the deploy as succeeded.
+6. **Promotion PR.** Pin the same `sha256:<ID>` in
+   `workloads/nodens-production/source/compose.yml` (grant production
+   capabilities the same way on the first promotion). The two Compose files may differ only
+   in workload name and ingress path. Merge, then pull on the server.
+7. **Deploy production.** Run `workload.deploy` for `nodens-production` with the
+   same `targetRevision`, then check `:8451/healthz`.
+
+### Rollback
+
+Open a PR that reverts the production pin to the previous ID, which is still
+loaded in the domain. Merge it, pull on the server, and run `workload.deploy`
+for `nodens-production` with that previous ID. Check that `:8451` serves the
+previous build. Do not prune images in `personal-managed` while their IDs are
+still rollback targets.

@@ -244,6 +244,110 @@
           "Stateless rollback was rehearsed successfully before the accepted cutover was reapplied."
         ]
       }
+    },
+    {
+      "id": "nodens-staging",
+      "name": "Nodens Staging",
+      "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
+      "lifecycle": "discovered",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/argus/workloads/nodens-staging",
+        "source": "/srv/argus/workloads/nodens-staging/source",
+        "manifest": "/srv/argus/workloads/nodens-staging/manifest.json",
+        "legacy": ""
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/argus/workloads/nodens-staging/source/compose.yml",
+        "legacyComposePaths": [],
+        "composeProject": "nodens-staging",
+        "service": "nodens"
+      },
+      "network": {
+        "localUrl": "",
+        "internalPort": 0,
+        "observedBindings": []
+      },
+      "health": {
+        "enabled": false,
+        "url": "",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": false,
+        "health": false,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": false,
+        "sandboxReconcileOnly": false,
+        "privacyToggle": false
+      },
+      "migration": {
+        "status": "planned",
+        "targetTrustDomain": "personal-managed",
+        "originalPath": "",
+        "compatibilitySymlink": false,
+        "bindMountRisks": [],
+        "namedVolumeRisks": [],
+        "notes": [
+          "Admission and every mutation capability remain denied pending reviewed evidence."
+        ]
+      }
+    },
+    {
+      "id": "nodens-production",
+      "name": "Nodens Production",
+      "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
+      "lifecycle": "discovered",
+      "kind": "web-app",
+      "paths": {
+        "root": "/srv/argus/workloads/nodens-production",
+        "source": "/srv/argus/workloads/nodens-production/source",
+        "manifest": "/srv/argus/workloads/nodens-production/manifest.json",
+        "legacy": ""
+      },
+      "runtime": {
+        "type": "docker-compose",
+        "composePath": "/srv/argus/workloads/nodens-production/source/compose.yml",
+        "legacyComposePaths": [],
+        "composeProject": "nodens-production",
+        "service": "nodens"
+      },
+      "network": {
+        "localUrl": "",
+        "internalPort": 0,
+        "observedBindings": []
+      },
+      "health": {
+        "enabled": false,
+        "url": "",
+        "expectedStatus": 200,
+        "timeoutSeconds": 3
+      },
+      "actions": {
+        "open": false,
+        "health": false,
+        "logs": false,
+        "restart": false,
+        "deploy": false,
+        "accessToggle": false,
+        "sandboxReconcileOnly": false,
+        "privacyToggle": false
+      },
+      "migration": {
+        "status": "planned",
+        "targetTrustDomain": "personal-managed",
+        "originalPath": "",
+        "compatibilitySymlink": false,
+        "bindMountRisks": [],
+        "namedVolumeRisks": [],
+        "notes": [
+          "Admission and every mutation capability remain denied pending reviewed evidence."
+        ]
+      }
     }
   ]
 }

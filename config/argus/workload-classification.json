@@ -32,6 +32,22 @@
       "trustDomain": "personal-sandbox",
       "status": "classified",
       "admission": "allowed"
+    },
+    "nodens-staging": {
+      "realm": "personal",
+      "zone": "managed",
+      "stage": "staging",
+      "trustDomain": "personal-managed",
+      "status": "classified",
+      "admission": "allowed"
+    },
+    "nodens-production": {
+      "realm": "personal",
+      "zone": "managed",
+      "stage": "production",
+      "trustDomain": "personal-managed",
+      "status": "classified",
+      "admission": "allowed"
     }
   }
 }
