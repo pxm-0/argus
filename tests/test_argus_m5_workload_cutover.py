@@ -20,11 +20,9 @@ loader.exec_module(module)
 class WorkloadCutoverTests(unittest.TestCase):
     def test_reviewed_domain_and_tailnet_mapping(self) -> None:
         self.assertEqual("personal-sandbox", module.SPECS["hastur"]["domain"])
-        self.assertEqual("work-sandbox", module.SPECS["intake-os"]["domain"])
         self.assertEqual(8443, module.SPECS["kadath"]["tail_port"])
         self.assertEqual(8444, module.SPECS["nodens"]["tail_port"])
         self.assertEqual(8445, module.SPECS["hastur"]["tail_port"])
-        self.assertEqual(8446, module.SPECS["intake-os"]["tail_port"])
 
     def test_firewall_allows_only_sandbox_bridge_forwarding(self) -> None:
         networks = [
@@ -184,10 +182,6 @@ class WorkloadCutoverTests(unittest.TestCase):
     def test_all_stateful_writers_are_explicit(self) -> None:
         self.assertEqual(("hastur",), module.SPECS["hastur"]["writers"])
         self.assertEqual(("api", "web"), module.SPECS["kadath"]["writers"])
-        self.assertEqual(
-            ("api", "local-proxy", "web"),
-            module.SPECS["intake-os"]["writers"],
-        )
 
     def test_cron_source_resurrection_detection_is_secret_safe_and_scoped(self) -> None:
         source = "/home/oreo/intake-os"
@@ -435,7 +429,7 @@ class DeclaredEgressTest(unittest.TestCase):
             ["hastur"], sorted(module.domain_egress("personal-sandbox"))
         )
         self.assertEqual({}, module.domain_egress("work-sandbox"))
-        for workload in ("kadath", "nodens", "intake-os"):
+        for workload in ("kadath", "nodens"):
             self.assertIsNone(
                 module.validated_egress(workload, module.SPECS[workload]),
                 workload,

@@ -17,6 +17,7 @@ class WorkloadDispositionTests(unittest.TestCase):
             "publication-archive-live",
             "locigraph",
             "hello-nginx",
+            "intake-os",
         }
         workloads = {
             item["id"]
@@ -40,13 +41,11 @@ class WorkloadDispositionTests(unittest.TestCase):
             "hastur": "personal-sandbox",
             "kadath": "personal-sandbox",
             "nodens": "personal-sandbox",
-            "intake-os": "work-sandbox",
         }
         expected_projects = {
             "hastur": "hastur",
             "kadath": "kadath-live",
             "nodens": "nodens",
-            "intake-os": "intake-os",
         }
         admitted = json.loads(
             (ROOT / "config" / "argus" / "workload-classification.json").read_text()

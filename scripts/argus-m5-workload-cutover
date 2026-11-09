@@ -147,21 +147,6 @@ SPECS = {
         # Sealed: no egress declared. See #267.
         "egress": None,
     },
-    "intake-os": {
-        "domain": "work-sandbox",
-        "project": "intake-os",
-        "source": "/home/oreo/intake-os",
-        "compose": "docker-compose.server.yml",
-        "writers": ("api", "local-proxy", "web"),
-        "endpoint_service": "local-proxy",
-        "endpoint_port": 8080,
-        "health_path": "/",
-        "tail_port": 8446,
-        "stateful": True,
-        "ingress_image": "sha256:cfeb0b281bc44a5a51fecde39e9e577c60d863c0b6196e6bbdf58fd00960887f",
-        # Sealed: no egress declared. See #267.
-        "egress": None,
-    },
 }
 
 

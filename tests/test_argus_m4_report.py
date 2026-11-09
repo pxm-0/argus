@@ -14,7 +14,7 @@ class M4ReportTest(unittest.TestCase):
         report = classification_report(workloads, legacy, placements)
         self.assertTrue(report["complete"])
         self.assertEqual(
-            ["hastur", "intake-os", "kadath", "nodens", "nodens-production", "nodens-staging"],
+            ["hastur", "kadath", "nodens", "nodens-production", "nodens-staging"],
             report["supersededLegacyClassification"],
         )
         self.assertNotIn("hello-nginx", {item["id"] for item in workloads})
