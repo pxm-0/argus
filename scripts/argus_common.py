@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -218,6 +219,16 @@ def recent_events(limit: int = 50) -> list[dict[str, Any]]:
     return events
 
 
+def compose_image_pin(compose_path: str) -> str:
+    """Return the tracked compose file's single immutable image digest, or "" if absent or ambiguous."""
+    try:
+        text = Path(compose_path).read_text(encoding="utf-8") if compose_path else ""
+    except OSError:
+        return ""
+    digests = set(re.findall(r"^\s*image:\s*\S+@(sha256:[0-9a-f]{64})\s*$", text, re.MULTILINE))
+    return digests.pop() if len(digests) == 1 else ""
+
+
 def dashboard_state() -> dict[str, Any]:
     privacy = load_json("privacy.json")
     access = load_json("access.json")
@@ -236,6 +247,10 @@ def dashboard_state() -> dict[str, Any]:
         merged.append(
             {
                 **workload,
+                "runtime": {
+                    **(workload.get("runtime") or {}),
+                    "imagePin": compose_image_pin(str((workload.get("runtime") or {}).get("composePath", ""))),
+                },
                 "privacy": privacy["workloads"].get(workload_id, {}),
                 "access": access["workloads"].get(workload_id, {}),
                 "routes": routes["workloadRoutes"].get(workload_id, {}),
