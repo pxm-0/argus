@@ -1504,7 +1504,7 @@ document.addEventListener("click", async (event) => {
       await runOperation({
         workload,
         operationType: definition.operationType,
-        parameters: definition.parameters({ targetRevision: operation.dataset.targetRevision }),
+        parameters: definition.parameters({ targetRevision: operation.dataset.targetRevision, targetTrustDomain: declaredTrustDomain(workload) }),
         confirm: definition.requiresConfirm ? confirmation : null,
         stepUp: Boolean(definition.requiresStepUp),
         executes: definition.executes,

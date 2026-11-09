@@ -145,6 +145,11 @@ class D6DashboardCompletenessTests(unittest.TestCase):
             self.assertIn(marker, JS + html)
         self.assertNotIn("personal-sandbox", JS)
 
+    def test_migration_preflight_click_passes_declared_trust_domain(self) -> None:
+        self.assertIn("targetTrustDomain: declaredTrustDomain(workload)", JS)
+        operations = (DASHBOARD / "assets" / "operations.js").read_text()
+        self.assertIn("targetTrustDomain: context.targetTrustDomain", operations)
+
     @unittest.skipUnless(shutil.which("node"), "requires node")
     def test_stage_families_pair_by_promotes_to_then_name(self) -> None:
         stages = (ROOT / "control-plane" / "dashboard" / "assets" / "stages.js").read_text()
