@@ -10,6 +10,7 @@
     {"command": "argus estate coverage", "privilege": "local-read-only"},
     {"command": "argus workload list", "privilege": "local-read-only"},
     {"command": "argus workload show <id>", "privilege": "local-read-only"},
+    {"command": "argus workload retire <id>", "privilege": "local-write"},
     {"command": "argus workload move preview <id>", "privilege": "local-read-only"},
     {"command": "argus workload move preflight <id>", "privilege": "server-read-only"},
     {"command": "argus workload move apply <id>", "privilege": "server-mutation"},

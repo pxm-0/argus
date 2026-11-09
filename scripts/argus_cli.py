@@ -20,6 +20,7 @@ from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
+from argus_workload_retire import RetireError, retire
 
 
 TAILSCALE_HTTPS_URL = re.compile(
@@ -852,6 +853,14 @@ def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
     )
 
 
+def retire_command(repo: Path, args: argparse.Namespace, runner: Runner) -> dict[str, Any]:
+    try:
+        plan = retire(repo, args.workload_id, dry_run=args.dry_run, reason=args.reason, runner=runner)
+    except RetireError as exc:
+        return _error(exc.code, exc.message, exc.next_action, exit_code=EXIT_REFUSAL)
+    return _success("workload.retire", **{k: v for k, v in plan.items() if k != "command"})
+
+
 def description(
     purpose: str,
     privilege: str,
@@ -935,6 +944,15 @@ def build_parser() -> argparse.ArgumentParser:
         contract=description("Show one canonical workload.", "unprivileged, read-only", "exact workload ID", "none", "sanitized identity and capability summary", "argus workload show nodens --json", "run argus workload list"),
     )
     show.add_argument("workload_id")
+    retire_parser = leaf(
+        workload_sub,
+        "retire",
+        help_text="generate a reviewed PR that retires a workload",
+        contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire hello-nginx --dry-run --json", "inspect the printed plan; fix and rerun"),
+    )
+    retire_parser.add_argument("workload_id")
+    retire_parser.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
+    retire_parser.add_argument("--reason", default="Operator-approved retirement; record the reason and backup evidence before merge.")
     move = workload_sub.add_parser("move", help="preview and control reviewed workload moves")
     move_sub = move.add_subparsers(dest="move_command", required=True, parser_class=ArgusArgumentParser)
     for action in ("preview", "preflight", "status", "apply", "rollback"):
@@ -1031,6 +1049,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = workload_list(repo)
     elif command == "workload" and args.workload_command == "show":
         result = workload_show(repo, args.workload_id) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
+    elif command == "workload" and args.workload_command == "retire":
+        result = retire_command(repo, args, runner) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
     elif command == "workload" and args.workload_command == "move":
         result = move_command(repo, args.move_command, args.workload_id, getattr(args, "confirm", "")) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
     elif command == "operation" and args.operation_command == "show":

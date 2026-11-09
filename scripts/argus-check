@@ -426,6 +426,7 @@ def docs_parity_check(root: Path) -> bool:
             privilege not in {
                 "local-read-only",
                 "local-refresh-request",
+                "local-write",
                 "server-read-only",
                 "server-mutation",
             }
