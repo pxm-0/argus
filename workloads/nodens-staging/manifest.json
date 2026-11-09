@@ -37,7 +37,7 @@
   },
   "operations": {
     "health": {
-      "allowed": false
+      "allowed": true
     },
     "logs": {
       "allowed": false
@@ -46,13 +46,13 @@
       "allowed": false
     },
     "deploy": {
-      "allowed": false
+      "allowed": true
     },
     "start": {
-      "allowed": false
+      "allowed": true
     },
     "stop": {
-      "allowed": false
+      "allowed": true
     },
     "backup": {
       "allowed": false
