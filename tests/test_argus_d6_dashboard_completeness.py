@@ -130,6 +130,34 @@ class D6DashboardCompletenessTests(unittest.TestCase):
         self.assertEqual("", out["noPin"])
         self.assertEqual(("workload.stop", "workload.start"), (out["stop"], out["start"]))
 
+    def test_stages_activity_banner_and_stage_actions_are_present(self) -> None:
+        html = render_html()
+        for marker in ('id="stages"', 'id="activity"', 'id="active-operation" class="active-banner" role="status"', '<ol id="events"'):
+            self.assertIn(marker, html)
+        self.assertLess(html.index('id="stages"'), html.index('id="workloads"'))
+        self.assertNotIn('<pre id="events"', html)
+        for marker in (
+            "<table", 'scope="col"', 'scope="row"', "out of sync", "/api/operations?limit=25",
+            "updateActiveOperation(operation, workload)",
+            'data-stage-action="promote"', 'data-stage-action="rollback"',
+            "/migration/preview", "/migrations`", "/rollback`", "data-view-operation", "pinnedImageDelta",
+        ):
+            self.assertIn(marker, JS + html)
+        self.assertNotIn("personal-sandbox", JS)
+
+    @unittest.skipUnless(shutil.which("node"), "requires node")
+    def test_stage_families_pair_by_promotes_to_then_name(self) -> None:
+        stages = (ROOT / "control-plane" / "dashboard" / "assets" / "stages.js").read_text()
+        harness = "const state = null; const escapeHtml = String; " + stages.replace("const TERMINAL_STATES", "var TERMINAL_STATES") + r"""
+        const w = [{ id: "a-staging" }, { id: "a-production" }, { id: "b-stage", promotesTo: "b-live" }, { id: "b-live" }, { id: "c-staging" }, { id: "other" }];
+        console.log(JSON.stringify(stageFamilies(w).map((f) => [f.name, f.staging.id, f.production && f.production.id])));
+        """
+        out = subprocess.run(["node", "-e", harness], text=True, capture_output=True, check=True).stdout
+        self.assertEqual(
+            [["a", "a-staging", "a-production"], ["b-stage", "b-stage", "b-live"], ["c", "c-staging", None]],
+            json.loads(out),
+        )
+
     def test_acceptance_emits_the_allowlisted_three_run_summary(self) -> None:
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip()
         completed = subprocess.run(

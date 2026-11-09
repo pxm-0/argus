@@ -20,7 +20,7 @@ import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[2])).resolve()
@@ -320,6 +320,27 @@ def confirmation_phrase(
     return phrases.get(operation_type, "")
 
 
+def stage_runtime(workload: dict[str, Any]) -> dict[str, Any]:
+    """Add pinned/observed image and last-deploy facts to a workload without mutating the input."""
+    workload_id = str(workload.get("id", ""))
+    runtime = workload.get("runtime") or {}
+    last = LEDGER.list_recent(workload_id=workload_id, limit=1)
+    deploy = LEDGER.list_recent(
+        workload_id=workload_id, operation_type="workload.deploy", state="succeeded", limit=1
+    )
+    # observedImage is the digest of the last succeeded deploy; no live container inspection exists yet.
+    return {
+        **workload,
+        "runtime": {
+            **runtime,
+            "pinnedImage": runtime.get("imagePin", ""),
+            "observedImage": str(deploy[0]["parameters"].get("targetRevision", "")) if deploy else "",
+            "lastDeployedAt": (deploy[0].get("finished_at") or deploy[0].get("created_at", "")) if deploy else "",
+            "lastOperationState": last[0].get("state", "") if last else "",
+        },
+    }
+
+
 def private_dashboard_state() -> dict[str, Any]:
     state = dashboard_state()
     active_domains: set[str] = set()
@@ -338,6 +359,7 @@ def private_dashboard_state() -> dict[str, Any]:
         if available:
             active_domains.add(domain)
     state.get("topology", {}).get("summary", {})["domainAgentsAvailable"] = len(active_domains)
+    state["workloads"] = [stage_runtime(item) for item in state.get("workloads", [])]
     state["reconciliation"] = estate_reconciliation()
     state["estateRefresh"] = estate_refresh_status(ROOT)
     return state
@@ -678,6 +700,25 @@ class Handler(BaseHTTPRequestHandler):
                 return
             operation = LEDGER.get(operation_match.group(1))
             self.send_json(200 if operation else 404, operation or {"error": "not found"})
+        elif path == "/api/operations":
+            if not self.require_session():
+                return
+            query = parse_qs(urlparse(self.path).query)
+            try:
+                limit = max(1, min(int(query.get("limit", ["50"])[0]), 200))
+            except ValueError:
+                limit = 50
+            self.send_json(
+                200,
+                {
+                    "operations": LEDGER.list_recent(
+                        state=query.get("state", [""])[0],
+                        operation_type=query.get("type", [""])[0],
+                        domain=query.get("domain", [""])[0],
+                        limit=limit,
+                    )
+                },
+            )
         elif workload_operations_match:
             if not self.require_session():
                 return

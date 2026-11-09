@@ -507,6 +507,39 @@ class OperationApiTests(unittest.TestCase):
         history = self.responses[-1][1]["operations"]
         self.assertEqual([operation_id], [item["operation_id"] for item in history])
 
+    def test_global_operations_list_requires_session_filters_and_clamps(self) -> None:
+        first = self.create_operation()
+        self.handler.path = "/api/operations?limit=5000&state=queued"
+        self.handler.require_session = lambda: None
+        self.handler.handle_get()
+        self.assertEqual([], self.responses)
+
+        self.handler.require_session = lambda: self.session
+        self.handler.handle_get()
+        status, payload = self.responses[-1]
+        self.assertEqual(200, status)
+        self.assertEqual([], payload["operations"])  # created operation is not "queued"
+
+        self.handler.path = f"/api/operations?state={first['state']}&type=workload.restart&domain=personal-sandbox&limit=abc"
+        self.handler.handle_get()
+        self.assertEqual([first["operation_id"]], [o["operation_id"] for o in self.responses[-1][1]["operations"]])
+
+        self.handler.path = "/api/operations?type=backup.create"
+        self.handler.handle_get()
+        self.assertEqual([], self.responses[-1][1]["operations"])
+
+        self.assertEqual(1, len(self.server.LEDGER.list_recent(limit=-4)))
+        self.assertEqual(1, len(self.server.LEDGER.list_recent(limit=10**6)))
+
+    def test_stage_runtime_adds_pin_and_last_operation_without_mutating_input(self) -> None:
+        self.create_operation()
+        workload = {"id": "hello-nginx", "runtime": {"imagePin": "sha256:" + "a" * 64}}
+        result = self.server.stage_runtime(workload)
+        self.assertEqual({"imagePin": "sha256:" + "a" * 64}, workload["runtime"])
+        self.assertEqual("sha256:" + "a" * 64, result["runtime"]["pinnedImage"])
+        self.assertEqual("", result["runtime"]["observedImage"])
+        self.assertEqual("awaiting-approval", result["runtime"]["lastOperationState"])
+
     def test_estate_refresh_request_is_inert_and_status_is_session_bound(self) -> None:
         with (
             patch.object(self.server, "ROOT", self.runtime),
