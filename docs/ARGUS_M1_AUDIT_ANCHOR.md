@@ -38,6 +38,10 @@ returns counts only. Apply checkpoints both SQLite stores under
 intent and outcome. `argus-m1-verify` passes afterwards only once no declared
 retired rows remain, so run the retirement reconcile next when one is pending.
 
+`sudo argus m1 sync` runs both reconciles in one pass: it prints the plan and
+a digest, and `--apply --confirm <digest>` passes the acknowledgements
+internally only when the digest matches the freshly recomputed plan.
+
 ```bash
 sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
 sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \

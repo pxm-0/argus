@@ -135,10 +135,9 @@ scripts/argus-workload-onboard apply \
 ```
 
 Onboarding edits only tracked config. After the onboarding PR merges and the
-server pulls it, register the workload in private M1 with the insert-only
-`scripts/argus-m1-reconcile-onboarded-workloads` (preview, then `--apply
---acknowledge-onboarded-workload-registration`), then run
-`argus-m1-verify`. See `docs/ARGUS_M1_AUDIT_ANCHOR.md`.
+server pulls it, register the workload in private M1 with `sudo argus m1 sync`, then
+`sudo argus m1 sync --apply --confirm <plan-digest>`, then `argus m1 verify`
+(the legacy `scripts/argus-m1-reconcile-onboarded-workloads` still works). See `docs/ARGUS_M1_AUDIT_ANCHOR.md`.
 
 `scripts/argus-admission-doctor --json` is read-only. By default on the server
 it synchronously reuses the existing rootful Docker inventory helper and does
@@ -190,6 +189,27 @@ argus workload move status nodens --json
 ```
 
 Do not run an old migration script instead of this workflow.
+
+## M1 state sync
+
+`server-read-only` — `argus m1 sync`
+
+`server-mutation` — `argus m1 sync --apply`
+
+`server-read-only` — `argus m1 verify`
+
+Server-only (root, private state); elsewhere they print the exact `ssh`
+command to run. `sudo argus m1 sync` prints a diff-style plan (`+` add, `-`
+remove, `~` drift) and a plan digest. `sudo argus m1 sync --apply --confirm
+sha256:<digest>` applies it only if the digest matches the freshly recomputed
+plan; it replaces both `--acknowledge-*` flags (the legacy scripts remain).
+`argus doctor` reports `m1Drift` as a read-only warning.
+
+```bash
+sudo argus m1 sync
+sudo argus m1 sync --apply --confirm sha256:<digest>
+sudo argus m1 verify --json
+```
 
 ## Durable operations
 

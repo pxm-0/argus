@@ -18,7 +18,10 @@
     {"command": "argus operation show <operation-id>", "privilege": "server-read-only"},
     {"command": "argus operation recover <operation-id>", "privilege": "server-mutation"},
     {"command": "argus doctor", "privilege": "local-read-only"},
-    {"command": "argus check", "privilege": "local-read-only"}
+    {"command": "argus check", "privilege": "local-read-only"},
+    {"command": "argus m1 sync", "privilege": "server-read-only"},
+    {"command": "argus m1 sync --apply", "privilege": "server-mutation"},
+    {"command": "argus m1 verify", "privilege": "server-read-only"}
   ],
   "compatibility": {
     "argus health": "argus estate status",
