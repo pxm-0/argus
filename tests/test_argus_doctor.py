@@ -71,5 +71,21 @@ class DoctorBoundaryAuditTests(unittest.TestCase):
         self.assertTrue(checks[0]["ok"])
 
 
+class DoctorTrackedSourceTests(unittest.TestCase):
+    def test_only_opted_in_reviewed_compose_may_be_tracked(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts" / "argus-doctor"))
+        check = namespace["tracked_file_checks"]
+        files = [
+            "workloads/nodens-staging/source/compose.yml",
+            "workloads/nodens-staging/source/app.js",
+            "workloads/nodens/source/compose.yml",
+        ]
+        checks: list[dict] = []
+        with patch.dict(check.__globals__, {"tracked_files": lambda: files}):
+            check(checks)
+        row = next(item for item in checks if item["message"] == "no tracked workload source or runtime data")
+        self.assertEqual(files[1:], row["paths"])
+
+
 if __name__ == "__main__":
     unittest.main()

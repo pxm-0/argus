@@ -89,6 +89,16 @@ def argus_quarantine_checks(checks: list[dict[str, Any]]) -> None:
     add(checks, rules.get("requireLegacyUnclassifiedQuarantine") is True, "legacy quarantine required")
 
 
+def tracks_reviewed_compose(workload_id: str) -> bool:
+    """A manifest may opt in to tracking only its reviewed source/compose.yml."""
+    try:
+        manifest = json.loads((root() / "workloads" / workload_id / "manifest.json").read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    security = manifest.get("security") if isinstance(manifest, dict) else None
+    return isinstance(security, dict) and security.get("trackedByArgusGit") is True
+
+
 def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
     items = tracked_files()
     add(checks, bool(items), "tracked file inventory available")
@@ -98,6 +108,8 @@ def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
     for item in items:
         parts = Path(item).parts
         if len(parts) >= 3 and parts[0] == "workloads" and parts[2] in {"source", "app", "repo", "data", "backups", "runtime", "logs"}:
+            if parts[2:] == ("source", "compose.yml") and tracks_reviewed_compose(parts[1]):
+                continue
             workload_source.append(item)
     add(checks, not secret_like, "no tracked secrets or credentials", paths=secret_like)
     add(checks, not runtime, "no tracked runtime artifacts", paths=runtime)

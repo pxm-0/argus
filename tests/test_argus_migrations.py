@@ -56,7 +56,7 @@ def preview() -> dict[str, object]:
 class MigrationLedgerTests(unittest.TestCase):
     def setUp(self) -> None:
         self.directory = tempfile.TemporaryDirectory()
-        self.root = Path(self.directory.name)
+        self.root = Path(self.directory.name).resolve()
         self.ledger = OperationLedger(self.root / "operations.sqlite3")
         self.preview = preview()
 

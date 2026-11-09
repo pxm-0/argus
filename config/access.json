@@ -52,6 +52,28 @@
       },
       "lastAppliedAt": "2026-07-29T12:46:43Z",
       "lastError": ""
+    },
+    "nodens-staging": {
+      "desired": "none",
+      "effective": "none",
+      "urls": {
+        "local": "",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": ""
+    },
+    "nodens-production": {
+      "desired": "none",
+      "effective": "none",
+      "urls": {
+        "local": "",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": ""
     }
   }
 }
