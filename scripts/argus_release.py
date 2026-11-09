@@ -13,14 +13,15 @@ import difflib
 import json
 import os
 import re
-import urllib.error
-import urllib.request
+import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
 from argus_common import ALLOWED_IMAGES
+from argus_operations import OperationLedger
 
 EXIT_INTERNAL, EXIT_INVOCATION, EXIT_REFUSAL, EXIT_UNAVAILABLE = 1, 2, 3, 4
+REMOTE_REPO = re.compile(r"^/[A-Za-z0-9._/-]{0,200}$")
 SSH_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
 WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
@@ -136,7 +137,11 @@ def import_image(repo: Path, runner: Runner, domain: str, image: str) -> str:
     host = os.environ.get("ARGUS_SSH_HOST", "oreochiserver")
     if not SSH_HOST.fullmatch(host):
         raise ReleaseError("ssh-host-invalid", "ARGUS_SSH_HOST is not a plain host name.", "Unset it or use a bare host or user@host.", EXIT_INVOCATION)
-    result = runner(["ssh", host, "sudo", "-n", "argus-image-import", "--domain", domain, "--image", image], repo)
+    remote_repo = os.environ.get("ARGUS_REMOTE_REPO", "/srv/argus").rstrip("/")
+    if not REMOTE_REPO.fullmatch(remote_repo) or ".." in remote_repo.split("/"):
+        raise ReleaseError("remote-repo-invalid", "ARGUS_REMOTE_REPO is not a plain absolute path.", "Unset it or use e.g. /srv/argus.", EXIT_INVOCATION)
+    importer = f"{remote_repo}/scripts/argus-image-import"
+    result = runner(["ssh", host, "sudo", "-n", importer, "--domain", domain, "--image", image], repo)
     for line in reversed((result.stdout or "").splitlines()):
         try:
             payload = json.loads(line)
@@ -146,7 +151,7 @@ def import_image(repo: Path, runner: Runner, domain: str, image: str) -> str:
             return payload["imageId"]
         break
     raise ReleaseError("image-import-failed", f"argus-image-import on the server did not return an image ID (exit {result.returncode}).",
-                       "Check passwordless `sudo -n argus-image-import` and the ref, then retry.", EXIT_UNAVAILABLE)
+                       "Check passwordless `sudo -n` on the server importer (ARGUS_REMOTE_REPO) and the ref, then retry.", EXIT_UNAVAILABLE)
 
 
 def diff_text(path: str, before: str, after: str) -> str:
@@ -262,18 +267,22 @@ def release_pin(repo: Path, runner: Runner, workload_id: str, image: str, dry_ru
 
 
 def deploy_evidence(repo: Path, staging_id: str, image_id: str) -> bool:
-    """True when the API lists a succeeded workload.deploy of this image ID; refuses when the API cannot be read."""
-    base = os.environ.get("ARGUS_API_URL", "")
+    """True when the local read-only operations ledger lists a succeeded workload.deploy of this image ID."""
+    configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
+    if configured:
+        path = Path(configured)
+    elif repo.resolve() == Path("/srv/argus"):
+        path = Path("/var/lib/argus/control/operations.sqlite3")
+    else:
+        path = repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
     try:
-        base = base or json.loads((repo / "config" / "routes.json").read_text(encoding="utf-8"))["dashboard"]["url"]
-        with urllib.request.urlopen(f"{base.rstrip('/')}/api/workloads/{staging_id}/operations", timeout=5) as response:
-            operations = json.loads(response.read(1 << 20))["operations"]
-    except (OSError, KeyError, TypeError, ValueError, urllib.error.URLError) as exc:
-        raise ReleaseError("promote-evidence-unavailable", "Staging deploy evidence could not be read from the API.",
-                           "Confirm the staging deploy in the dashboard, then rerun with --skip-evidence-check.") from exc
+        operations = OperationLedger(path, require_existing=True, migrate_schema=False, read_only=True).list_for_workload(staging_id)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+        raise ReleaseError("promote-evidence-unavailable", "Staging deploy evidence could not be read from the operations ledger.",
+                           "Run on oreochiserver (or set ARGUS_OPERATIONS_DB), or confirm the staging deploy and rerun with --skip-evidence-check.") from exc
     return any(
-        isinstance(op, dict) and op.get("operation_type") == "workload.deploy" and op.get("state") == "succeeded"
-        and op.get("parameters", {}).get("targetRevision") == image_id
+        op.get("operation_type") == "workload.deploy" and op.get("state") == "succeeded"
+        and (op.get("parameters") or {}).get("targetRevision") == image_id
         for op in operations
     )
 
@@ -323,7 +332,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
                             ("import", "Import an image digest into the workload's trust domain.")):
         pin = action == "pin"
         item = leaf(sub, action, help_text=purpose, contract=description(
-            purpose, "server mutation", "ARGUS_SSH_HOST reachable, passwordless sudo -n argus-image-import" + (", gh logged in, clean checkout" if pin else ""),
+            purpose, "server mutation", "ARGUS_SSH_HOST reachable, passwordless sudo -n on the server importer" + (", gh logged in, clean checkout" if pin else ""),
             "image loaded in the trust domain" + ("; branch and PR" if pin else ""), "image ID" + (" and PR URL" if pin else ""),
             f"argus release {action} nodens-staging --image ghcr.io/pxm-0/nodens@sha256:<digest>", "retry; imports are idempotent. Never deploys"))
         item.add_argument("workload_id")

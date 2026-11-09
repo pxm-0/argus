@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
@@ -170,7 +170,7 @@ class CommandTests(unittest.TestCase):
         data = payload["data"]
         self.assertEqual(f"release/nodens-staging-{NEW_ID[7:19]}", data["branch"])
         self.assertEqual("https://github.com/pxm-0/argus/pull/999", data["prUrl"])
-        self.assertEqual([f"oreochiserver sudo -n argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
         branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
         self.assertEqual(data["branch"], branch)
         self.assertIn(f"image: {NEW_ID}", (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
@@ -256,7 +256,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(0, code, payload)
         text = (self.repo / "workloads/nodens-production/source/compose.yml").read_text()
         self.assertEqual(OLD_ID, release.read_pin(text, "nodens")[0])
-        self.assertEqual([f"oreochiserver sudo -n argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
         self.assertIn(f"nodens-production: image: {OLD_ID} (was sha256:PENDING-x)", (self.log / "gh").read_text())
 
     def test_promote_dry_run_prints_diff_only(self) -> None:
@@ -267,13 +267,29 @@ class CommandTests(unittest.TestCase):
 
     def test_deploy_evidence_matches_only_succeeded_deploys_of_the_id(self) -> None:
         def fetch(operations: list[dict]) -> bool:
-            body = io.BytesIO(json.dumps({"operations": operations}).encode())
-            with patch("urllib.request.urlopen", return_value=body), patch.object(body, "__enter__", lambda *_: body, create=True):
+            ledger = MagicMock()
+            ledger.list_for_workload.return_value = operations
+            with patch.object(release, "OperationLedger", return_value=ledger):
                 return release.deploy_evidence(self.repo, "nodens-staging", OLD_ID)
         deploy = {"operation_type": "workload.deploy", "state": "succeeded", "parameters": {"targetRevision": OLD_ID}}
         self.assertTrue(fetch([deploy]))
         self.assertFalse(fetch([{**deploy, "state": "failed"}]))
         self.assertFalse(fetch([{**deploy, "parameters": {"targetRevision": NEW_ID}}]))
+
+    def test_deploy_evidence_refuses_when_ledger_missing(self) -> None:
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
+            with self.assertRaises(release.ReleaseError) as caught:
+                release.deploy_evidence(self.repo, "nodens-staging", OLD_ID)
+        self.assertEqual("promote-evidence-unavailable", caught.exception.code)
+
+    def test_remote_repo_is_configurable_and_validated(self) -> None:
+        self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)
+        with patch.dict(os.environ, {"ARGUS_REMOTE_REPO": "/opt/argus/"}):
+            self.invoke("release", "import", "nodens-production", "--image", REF)
+        self.assertIn(" sudo -n /opt/argus/scripts/argus-image-import ", self.calls("ssh")[0])
+        with patch.dict(os.environ, {"ARGUS_REMOTE_REPO": "/srv/../x"}):
+            code, payload, _ = self.invoke("release", "import", "nodens-production", "--image", REF)
+        self.assertEqual("remote-repo-invalid", payload["error"]["code"])
 
 
 if __name__ == "__main__":
