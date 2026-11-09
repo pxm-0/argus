@@ -288,8 +288,44 @@ The reviewed runtime is the tracked `workloads/<id>/source/compose.yml`
 (`security.trackedByArgusGit: true`); the rest of `source/` stays ignored.
 Neither domain publishes ports and both deny default egress, and deploys use
 `--pull never`, so images reach a domain only through `argus-image-import`.
-The two Compose files may differ only in workload name, image pin, and
-ingress path.
+The two Compose files may differ only in workload name, image pin,
+ingress path, and pinned bridge name.
+
+### Typed-deploy projects in the sandbox firewall
+
+The domain firewall (`argus-sandbox-firewall`, cutover `--apply-egress` and
+re-runs, `argus-m5-egress-verify`, reconcile `egressPolicyDrift`) counts two
+kinds of project (#354):
+
+- **Cutover projects**: `lifecycle: active` with
+  `migration.targetTrustDomain` equal to the domain. Each must be running.
+  Rules, egress, connectivity, and the probe matrix are unchanged for them.
+- **Typed-deploy projects**: classification `trustDomain` equal to the
+  domain, `actions.sandboxReconcileOnly` not true, and manifest
+  `operations.deploy.allowed: true`. The manifest must declare
+  `runtime.compose.bridge` (`argus-` prefix, at most 15 characters), and the
+  Compose network must pin the same name in
+  `driver_opts.com.docker.network.bridge.name`. A typed project with no bridge
+  declaration refuses the whole domain.
+
+A typed project is optional at runtime. Its bridge always renders exactly one
+own-traffic rule, for example
+`iifname "argus-ndns-stg" oifname "argus-ndns-stg" accept;`, so the persisted
+policy does not change when staging is stopped or deployed. It gets no
+egress (an egress declaration naming it is refused), no cross-project
+connectivity (a policy naming it is refused), and it is not in the probe
+matrix. Discovery still refuses any project that is neither kind, any typed
+project on a bridge other than its declared one, and any missing cutover
+project.
+
+| Workload | Bridge |
+| --- | --- |
+| `nodens-staging` | `argus-ndns-stg` |
+| `nodens-production` | `argus-ndns-prd` (not yet deploy-enabled) |
+
+After this lands, regenerate and apply the `personal-sandbox` policy once (the
+only change is the `argus-ndns-stg` rule); until then reconciles report
+`egressPolicyDrift: true`.
 
 | Workload | Trust domain | Compose project | Ingress socket | Tailnet route |
 | --- | --- | --- | --- | --- |
@@ -384,13 +420,8 @@ workload between trust domains leaves M1 converged.
    exact line of `docker compose config --images`, then runs
    `up -d --pull never` and waits up to 60s for domain health.
 
-   While `nodens-staging` runs, sandbox egress tooling for `personal-sandbox`
-   refuses (#354): `--apply-egress`, a sandbox cutover re-run,
-   `argus-sandbox-firewall` and `argus-m5-egress-verify` fail, and the
-   hastur/kadath/nodens reconciles report `egressPolicyDrift: true`
-   (report-only). Running workloads and the installed firewall are unaffected.
-   To change sandbox egress before #354 lands, `workload.stop` staging first
-   and deploy it again afterwards.
+   Staging may run or be stopped without affecting sandbox egress tooling;
+   see [Typed-deploy projects in the sandbox firewall](#typed-deploy-projects-in-the-sandbox-firewall).
 5. **Verify staging.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
    succeeds, and the operation ledger records the deploy as succeeded.
 6. **Import the same image into production.**

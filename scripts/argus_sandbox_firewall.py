@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from argus_firewall import (
+    INTERFACE,
     FirewallPolicyError,
     canonical_digest,
     render_firewall,
@@ -142,6 +143,57 @@ def configured_projects(root: Path, domain: str) -> dict[str, str]:
     return dict(sorted(projects.items()))
 
 
+def typed_projects(root: Path, domain: str) -> dict[str, dict[str, str]]:
+    """Image-pinned typed-deploy projects that may run in the domain (#354).
+
+    They are optional at runtime, never get egress or connectivity, and must
+    declare a stable bridge (manifest runtime.compose.bridge) so the rendered
+    policy does not change across stop/deploy cycles.
+    """
+    cutover = configured_projects(root, domain)
+    payload = load_json(root / "config" / "workloads.json")
+    classification = load_json(root / "config" / "argus" / "workload-classification.json")
+    classes = classification.get("workloads") if isinstance(classification, dict) else None
+    if not isinstance(classes, dict):
+        raise FirewallOperationError("workload classification is invalid")
+    result: dict[str, dict[str, str]] = {}
+    for workload in payload["workloads"]:
+        workload_id = workload.get("id")
+        if workload_id in cutover:
+            continue
+        state = classes.get(workload_id)
+        actions = workload.get("actions")
+        if (
+            not isinstance(state, dict)
+            or state.get("trustDomain") != domain
+            or not isinstance(actions, dict)
+            or actions.get("sandboxReconcileOnly") is True
+        ):
+            continue
+        manifest = load_json(root / "workloads" / str(workload_id) / "manifest.json")
+        operations = manifest.get("operations") if isinstance(manifest, dict) else None
+        deploy = operations.get("deploy") if isinstance(operations, dict) else None
+        if not isinstance(deploy, dict) or deploy.get("allowed") is not True:
+            continue
+        runtime = workload.get("runtime")
+        compose = (manifest.get("runtime") or {}).get("compose")
+        project = runtime.get("composeProject") if isinstance(runtime, dict) else None
+        bridge = compose.get("bridge") if isinstance(compose, dict) else None
+        if (
+            not isinstance(project, str)
+            or not project
+            or compose.get("project") != project
+            or project in cutover.values()
+        ):
+            raise FirewallOperationError("typed-deploy workload project identity is invalid")
+        if not isinstance(bridge, str) or not bridge.startswith("argus-") or not INTERFACE.fullmatch(bridge):
+            raise FirewallOperationError("typed-deploy workload lacks a stable bridge declaration")
+        if any(item["project"] == project or item["bridge"] == bridge for item in result.values()):
+            raise FirewallOperationError("typed-deploy workload identity is duplicated")
+        result[str(workload_id)] = {"project": project, "bridge": bridge}
+    return dict(sorted(result.items()))
+
+
 def rootless_child_pid(domain: str, runner: Runner) -> int:
     user = f"argus-{domain}"
     try:
@@ -176,6 +228,8 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     if domain not in DOMAINS:
         raise FirewallOperationError("unsupported sandbox domain")
     expected_projects = configured_projects(root, domain)
+    typed = typed_projects(root, domain)
+    typed_bridges = {item["project"]: item["bridge"] for item in typed.values()}
     child = rootless_child_pid(domain, runner)
     network_ids = runner.text(_docker(domain, "network", "ls", "-q")).splitlines()
     if not network_ids:
@@ -218,8 +272,14 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     mappings = validate_networks(mappings)
     configured = set(expected_projects.values())
     observed = {item["project"] for item in mappings}
-    if observed != configured:
+    # Every cutover project must run; typed-deploy projects are optional.
+    if not configured <= observed or not observed <= configured | set(typed_bridges):
         raise FirewallOperationError("configured and observed sandbox projects differ")
+    if any(
+        item["project"] in typed_bridges and item["interface"] != typed_bridges[item["project"]]
+        for item in mappings
+    ):
+        raise FirewallOperationError("typed-deploy bridge does not match its declaration")
     raw_links = _runtime_json(
         runner.text(["nsenter", "-t", str(child), "-n", "ip", "-json", "link", "show"]),
         "sandbox interface inventory",
@@ -262,7 +322,7 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
             raise FirewallOperationError("running container labels are invalid")
         project = labels.get("com.docker.compose.project")
         service = labels.get("com.docker.compose.service")
-        if project not in configured or not isinstance(service, str) or not service:
+        if project not in observed or not isinstance(service, str) or not service:
             raise FirewallOperationError("running container lacks configured Compose identity")
         pid = state.get("Pid")
         if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
@@ -300,12 +360,18 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
             for key, addresses in endpoint_map.items()
         ]
     )
+    # Typed projects were validated above; downstream policy sees only cutover
+    # projects plus their declared bridges, so it is identical whether they run.
     return {
         "childPid": child,
         "configuredProjects": expected_projects,
-        "networks": mappings,
-        "endpoints": endpoints,
-        "containers": sorted(containers, key=lambda item: (item["project"], item["service"])),
+        "typedBridges": dict(sorted(typed_bridges.items())),
+        "networks": [item for item in mappings if item["project"] in configured],
+        "endpoints": [item for item in endpoints if item["project"] in configured],
+        "containers": sorted(
+            (item for item in containers if item["project"] in configured),
+            key=lambda item: (item["project"], item["service"]),
+        ),
     }
 
 
@@ -347,6 +413,7 @@ def build_plan(root: Path, domain: str, runner: Runner, *, now: datetime | None 
     rendered = render_firewall(
         domain,
         observed["networks"],
+        typed_bridges=observed["typedBridges"],
         egress=egress,
         connectivity=connectivity,
         endpoints=observed["endpoints"],

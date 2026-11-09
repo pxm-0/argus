@@ -13,6 +13,7 @@
       "path": "/srv/argus/workloads/nodens-production/source/compose.yml",
       "project": "nodens-production",
       "service": "nodens",
+      "bridge": "argus-ndns-prd",
       "legacyPaths": []
     },
     "composePath": "/srv/argus/workloads/nodens-production/source/compose.yml",

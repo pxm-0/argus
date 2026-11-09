@@ -631,11 +631,13 @@ def firewall_text(
     networks: list[dict] | None = None,
     connectivity: list[dict] | None = None,
     endpoints: list[dict] | None = None,
+    typed_bridges: dict[str, str] | None = None,
 ) -> str:
     """Compatibility adapter around the shared pure firewall renderer."""
     return render_firewall(
         domain,
         networks or [],
+        typed_bridges=typed_bridges or {},
         egress=renderer_egress(policies or {}),
         connectivity=connectivity or [],
         endpoints=endpoints or [],
@@ -654,6 +656,7 @@ def resolved_firewall_policy(domain: str) -> tuple[str, str, list[dict]]:
         observed["networks"],
         connectivity,
         observed["endpoints"],
+        observed["typedBridges"],
     )
     return rendered, str(observed["childPid"]), observed["networks"]
 
