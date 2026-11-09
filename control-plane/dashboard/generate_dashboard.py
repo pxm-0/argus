@@ -744,13 +744,21 @@ function operationBlockers({
   restartAllowed,
   backupAllowed,
   migrationAllowed,
-  migrationCandidate
+  migrationCandidate,
+  deployAllowed,
+  deployPin,
+  startAllowed,
+  stopAllowed
 }) {
   const blockers = [];
   if (!agentAvailable) blockers.push("All commands: the trust-domain agent is unavailable.");
   if (!logsAllowed) blockers.push("Logs preview: disabled by the workload manifest.");
   if (!restartAllowed) blockers.push("Restart: disabled by the workload manifest.");
   if (!backupAllowed) blockers.push("Backup: no approved backup plan in the workload manifest.");
+  if (!deployAllowed) blockers.push("Deploy: disabled by the workload manifest.");
+  else if (!deployPin) blockers.push("Deploy: no immutable image pin from the tracked compose file.");
+  if (!startAllowed) blockers.push("Start: disabled by the workload manifest.");
+  if (!stopAllowed) blockers.push("Stop: disabled by the workload manifest.");
   if (!migrationCandidate) {
     blockers.push("Migration: the proven runtime placement does not require a managed-domain move.");
   } else if (!migrationAllowed) {
@@ -794,6 +802,10 @@ function renderWorkload(workload) {
   const logsAllowed = Boolean(operations.logsAllowed || operations.logs?.allowed);
   const restartAllowed = Boolean(operations.restartAllowed || operations.restart?.allowed);
   const backupAllowed = Boolean(operations.backupAllowed || operations.backup?.allowed || backup.backupAllowed);
+  const deployAllowed = Boolean(operations.deployAllowed || operations.deploy?.allowed);
+  const startAllowed = Boolean(operations.startAllowed || operations.start?.allowed);
+  const stopAllowed = Boolean(operations.stopAllowed || operations.stop?.allowed);
+  const deployPin = composePinDigest(runtime);
   const migrationAllowed = (
     operations.migrationPreflightAllowed === true
     || operations.migrationPreflight?.allowed === true
@@ -814,7 +826,11 @@ function renderWorkload(workload) {
     restartAllowed,
     backupAllowed,
     migrationAllowed,
-    migrationCandidate
+    migrationCandidate,
+    deployAllowed,
+    deployPin,
+    startAllowed,
+    stopAllowed
   });
   return `
     <article
@@ -921,6 +937,14 @@ function renderWorkload(workload) {
         <button type="button" data-apply="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Apply</button>
         <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
         <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
+        <div class="operation-row" data-lifecycle="${escapeHtml(id)}">
+          <span class="control-label">Lifecycle</span>
+          <button type="button" data-operation="deploy-apply" data-workload="${escapeHtml(id)}" data-target-revision="${escapeHtml(deployPin)}" ${deployAllowed && deployPin && agentAvailable ? "" : "disabled"}>Deploy</button>
+          <button type="button" data-operation="start-apply" data-workload="${escapeHtml(id)}" ${startAllowed && agentAvailable ? "" : "disabled"}>Start</button>
+          <button type="button" data-operation="stop-apply" data-workload="${escapeHtml(id)}" ${stopAllowed && agentAvailable ? "" : "disabled"}>Stop</button>
+          <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart</button>
+          <small>${deployPin ? `Deploy target ${escapeHtml(deployPin)}` : "Deploy target unavailable"}. Run once to preview, type the shown phrase, run again to confirm.</small>
+        </div>
         <button type="button" data-migration-create="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Approve managed move</button>
       </div>
       <div class="operation-history" data-migration-history="${escapeHtml(id)}" aria-live="polite">
@@ -1079,6 +1103,7 @@ function renderOperationHistory(workloadId, operations) {
   }
 }
 
+// @include operations.js
 async function pollOperation(operationId, workload, { present = true } = {}) {
   if (activeOperationPolls.has(operationId)) return;
   activeOperationPolls.add(operationId);
@@ -1451,59 +1476,18 @@ document.addEventListener("click", async (event) => {
       return;
     }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";
-    if (action.endsWith("-apply") && confirmation !== workload) {
-      showCommandResult("Confirmation required", `Type ${workload} in the confirmation field before applying.`);
-      return;
-    }
-    if (action.endsWith("-apply") && !(await ensureStepUp())) return;
-    const operationType = action.startsWith("health")
-      ? "health.refresh"
-      : action.startsWith("logs")
-        ? "logs.preview"
-        : action.startsWith("restart")
-          ? "workload.restart"
-          : action.startsWith("migration")
-            ? "migration.preflight"
-            : "backup.create";
     try {
-      const parameters = operationType === "migration.preflight"
-        ? {targetTrustDomain: "personal-sandbox"}
-        : {};
-      const previewResult = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
-        operationType,
-        parameters
+      const definition = resolveOperation(action);
+      await runOperation({
+        workload,
+        operationType: definition.operationType,
+        parameters: definition.parameters({ targetRevision: operation.dataset.targetRevision }),
+        confirm: definition.requiresConfirm ? confirmation : null,
+        stepUp: Boolean(definition.requiresStepUp),
+        executes: definition.executes,
+        pollable: definition.pollable,
+        queuedLabel: definition.queuedLabel
       });
-      if (
-        !action.endsWith("-apply")
-        && !["health.refresh", "migration.preflight"].includes(operationType)
-      ) {
-        showCommandResult(`${workload} ${action}`, previewResult.payload);
-        return;
-      }
-      if (!previewResult.ok || !previewResult.payload.allowed) {
-        showCommandResult(`${workload} blocked`, previewResult.payload);
-        return;
-      }
-      const created = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations`, {
-        operationType,
-        parameters,
-        previewDigest: previewResult.payload.previewDigest,
-        expectedRevision: previewResult.payload.expectedRevision,
-        policyVersion: previewResult.payload.policyVersion
-      });
-      if (!created.ok) {
-        showCommandResult(`${workload} operation`, created.payload);
-        return;
-      }
-      if (["health.refresh", "migration.preflight"].includes(operationType)) {
-        const label = operationType === "migration.preflight" ? "migration preflight" : "health";
-        showCommandResult(`${workload} ${label} queued`, created.payload);
-        pollOperation(created.payload.operation_id, workload);
-        return;
-      }
-      const approved = await apiPost(`/api/operations/${created.payload.operation_id}/approve`, { confirmation });
-      showCommandResult(`${workload} operation queued`, approved.payload);
-      if (approved.ok) pollOperation(created.payload.operation_id, workload);
     } catch (error) {
       showCommandResult("Action failed", error.message);
     }
@@ -1615,6 +1599,9 @@ async function restoreOperatorSession() {
 }
 restoreOperatorSession();
 """
+
+
+JS = JS.replace("// @include operations.js\n", (Path(__file__).resolve().parent / "assets" / "operations.js").read_text())
 
 
 def main() -> int:
