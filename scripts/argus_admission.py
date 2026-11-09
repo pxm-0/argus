@@ -45,17 +45,22 @@ MUTATING_OPERATIONS = {
     "access.apply",
     "migration.cutover",
     "migration.rollback",
+    "migration.source-fence",
+    "migration.target-prepare",
+    "migration.target-start",
+    "migration.route-switch",
+    "migration.final-verify",
+    "migration.target-stop",
+    "migration.source-restore",
+    "migration.source-verify",
     "production.promote",
     "production.rollback",
-    "access.cloudflare-protected.apply",
-    "access.cloudflare-protected.rollback",
 }
 
 OBSERVATION_OPERATIONS = {
     "health.refresh",
     "logs.preview",
     "migration.preflight",
-    "access.cloudflare-protected.plan",
 }
 
 CAPABILITY_KEYS = {
@@ -71,11 +76,16 @@ CAPABILITY_KEYS = {
     "access.apply": "access",
     "migration.cutover": "migrationCutover",
     "migration.rollback": "migrationRollback",
+    "migration.source-fence": "migrationCutover",
+    "migration.target-prepare": "migrationCutover",
+    "migration.target-start": "migrationCutover",
+    "migration.route-switch": "migrationCutover",
+    "migration.final-verify": "migrationCutover",
+    "migration.target-stop": "migrationRollback",
+    "migration.source-restore": "migrationRollback",
+    "migration.source-verify": "migrationRollback",
     "production.promote": "productionPromote",
     "production.rollback": "productionRollback",
-    "access.cloudflare-protected.plan": "cloudflareProtectedPlan",
-    "access.cloudflare-protected.apply": "cloudflareProtectedApply",
-    "access.cloudflare-protected.rollback": "cloudflareProtectedRollback",
 }
 
 COMPATIBILITY_CAPABILITY_KEYS = {
@@ -91,6 +101,14 @@ COMPATIBILITY_CAPABILITY_KEYS = {
     "access.apply": "accessAllowed",
     "migration.cutover": "migrationCutoverAllowed",
     "migration.rollback": "migrationRollbackAllowed",
+    "migration.source-fence": "migrationCutoverAllowed",
+    "migration.target-prepare": "migrationCutoverAllowed",
+    "migration.target-start": "migrationCutoverAllowed",
+    "migration.route-switch": "migrationCutoverAllowed",
+    "migration.final-verify": "migrationCutoverAllowed",
+    "migration.target-stop": "migrationRollbackAllowed",
+    "migration.source-restore": "migrationRollbackAllowed",
+    "migration.source-verify": "migrationRollbackAllowed",
     "production.promote": "productionPromoteAllowed",
     "production.rollback": "productionRollbackAllowed",
 }
@@ -452,6 +470,14 @@ def _operation_evidence_missing(
         "logs.preview",
         "migration.cutover",
         "migration.rollback",
+        "migration.source-fence",
+        "migration.target-prepare",
+        "migration.target-start",
+        "migration.route-switch",
+        "migration.final-verify",
+        "migration.target-stop",
+        "migration.source-restore",
+        "migration.source-verify",
         "production.promote",
         "production.rollback",
     }:
@@ -465,13 +491,10 @@ def _operation_evidence_missing(
             missing.append("backup-approval")
         if not destination.startswith(f"/srv/argus/runtime/backups/{workload_id}"):
             missing.append("backup-destination")
-    if operation_type in {
-        "backup.restore",
-        "migration.cutover",
-        "production.promote",
-    }:
+    if operation_type in {"backup.restore", "migration.cutover", "production.promote"}:
         if not backup.get("restoreAllowed"):
             missing.append("restore-approval")
+    if operation_type in {"migration.cutover", "production.promote"}:
         if not backup.get("restoreTested"):
             missing.append("restore-test")
     if operation_type in {

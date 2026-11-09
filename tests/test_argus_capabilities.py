@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 import os
+import json
+import shutil
 import sys
 import tempfile
 import time
@@ -63,13 +65,20 @@ class CapabilityTests(unittest.TestCase):
         self.root = Path(self.directory.name)
         self.private_key, self.public_key = generate_keypair(self.root)
         self.ledger = OperationLedger(self.root / "operations.sqlite3")
+        self.repository = self.root / "repository"
+        shutil.copytree(ROOT / "config", self.repository / "config")
+        shutil.copytree(ROOT / "workloads", self.repository / "workloads")
+        manifest_path = self.repository / "workloads" / "hastur" / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["operations"]["restart"] = {"allowed": True}
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
         self.request = current_request(
-            ROOT,
-            "hello-nginx",
+            self.repository,
+            "hastur",
             "workload.restart",
         )
         preview = {
-            "workloadId": "hello-nginx",
+            "workloadId": "hastur",
             "trustDomain": "personal-sandbox",
             "operationType": "workload.restart",
             "parameters": {},
@@ -77,7 +86,7 @@ class CapabilityTests(unittest.TestCase):
             "policyVersion": self.request.policy_version,
         }
         self.operation, _ = self.ledger.create(
-            workload_id="hello-nginx",
+            workload_id="hastur",
             trust_domain="personal-sandbox",
             operation_type="workload.restart",
             requested_by="operator@example.com",
@@ -102,7 +111,7 @@ class CapabilityTests(unittest.TestCase):
         issuer = CapabilityIssuer(
             self.ledger,
             Ed25519Signer(self.private_key),
-            root=ROOT,
+            root=self.repository,
         )
         signed = issuer.issue(
             str(self.operation["operation_id"]),
@@ -120,7 +129,7 @@ class CapabilityTests(unittest.TestCase):
 
     def test_production_issuer_rechecks_canonical_admission(self) -> None:
         preview = {
-            "workloadId": "hello-nginx",
+            "workloadId": "hastur",
             "trustDomain": "personal-sandbox",
             "operationType": "workload.restart",
             "parameters": {},
@@ -130,7 +139,7 @@ class CapabilityTests(unittest.TestCase):
         issuer = CapabilityIssuer(
             self.ledger,
             Ed25519Signer(self.private_key),
-            root=ROOT,
+            root=self.repository,
         )
         signed = issuer.issue(
             str(self.operation["operation_id"]),
@@ -149,7 +158,7 @@ class CapabilityTests(unittest.TestCase):
 
         stale_preview = {**preview, "expectedRevision": "0" * 64}
         stale, _ = self.ledger.create(
-            workload_id="hello-nginx",
+            workload_id="hastur",
             trust_domain="personal-sandbox",
             operation_type="workload.restart",
             requested_by="operator@example.com",
@@ -279,7 +288,7 @@ class CapabilityTests(unittest.TestCase):
         issuer = CapabilityIssuer(
             self.ledger,
             Ed25519Signer(self.private_key),
-            root=ROOT,
+            root=self.repository,
         )
         with self.assertRaisesRegex(ValueError, "no persisted approval"):
             issuer.issue(str(unapproved["operation_id"]), "personal-sandbox")
@@ -302,7 +311,8 @@ class CapabilityTests(unittest.TestCase):
             'for domain in legacy-rootful personal-sandbox work-sandbox',
             script,
         )
-        self.assertIn("CAPABILITY_AGENT_STATUS_OK domains=3", script)
+        self.assertIn("argus-domain-agent@personal-managed.service", script)
+        self.assertIn("CAPABILITY_AGENT_STATUS_OK domains=4", script)
         self.assertIn("work-sandbox-capabilities.sqlite3", script)
         self.assertIn("restore_sqlite", script)
         self.assertIn(
@@ -319,6 +329,12 @@ class CapabilityTests(unittest.TestCase):
         self.assertIn("secretsPrinted=false", script)
         self.assertNotIn("cloudflared", script.lower())
         self.assertNotIn("tailscale funnel", script.lower())
+        issuer_unit = (ROOT / "systemd" / "argus-capability-issuer.service").read_text()
+        issuer_source = (ROOT / "scripts" / "argus_capability_issuer.py").read_text()
+        self.assertIn("personal-managed/issuer.pub", issuer_unit)
+        self.assertIn("ReadWritePaths=/var/lib/argus/control /run/argus", issuer_unit)
+        self.assertNotIn("ReadOnlyPaths=/var/lib/argus/control", issuer_unit)
+        self.assertIn("read_only=True", issuer_source)
 
 
 if __name__ == "__main__":

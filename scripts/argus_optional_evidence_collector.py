@@ -172,18 +172,19 @@ def _listener_records(source: SourceSpec, observed_at: str, payload: bytes) -> l
     return records
 
 
-def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> tuple[list[dict[str, Any]], bool]:
+def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     seen: set[tuple[str, str]] = set()
-    filtered = False
     for line in _text(payload).splitlines():
         fields = line.split()
         if len(fields) < 2:
-            filtered = True
             continue
         name, state = fields[0], fields[-1]
         if not SAFE_NAME.fullmatch(name) or not state or not state[0].isalpha():
-            filtered = True
+            # Kernel threads and transient process names are deliberately
+            # outside this minimized source's allowlist.  They are not an
+            # observation gap: only the stable daemon classes below are in
+            # scope, and no raw command/process detail is retained.
             continue
         # Deliberate minimization: transient shells, collectors, and operator
         # helpers are not durable runtime evidence and would make repeats
@@ -202,7 +203,7 @@ def _process_records(source: SourceSpec, observed_at: str, payload: bytes) -> tu
             {"name": identity[0], "state": identity[1]},
             len(records),
         ))
-    return records, filtered
+    return records
 
 
 def collect_process_listeners(
@@ -215,11 +216,10 @@ def collect_process_listeners(
     listeners = _run(source, ["ss", "-H", "-lntu", "-n"], runner=runner)
     if process.returncode != 0 or listeners.returncode != 0:
         raise OptionalEvidenceError("process-listener-command-failed")
-    records, filtered = _process_records(source, request["explicitClock"], process.stdout)
+    records = _process_records(source, request["explicitClock"], process.stdout)
     records.extend(_listener_records(source, request["explicitClock"], listeners.stdout))
     records.sort(key=lambda item: (item["resourceKind"], item["nativeId"]))
-    gap_code = "process-record-filtered" if filtered else None
-    return normalize_records(source, records)[0], gap_code, "partial" if gap_code else "completed"
+    return normalize_records(source, records)[0], None, "completed"
 
 
 def _json_payload(result: subprocess.CompletedProcess[bytes]) -> Any:
@@ -286,12 +286,19 @@ def collect_proxy_overlay(
                     state = "active" if active else ("configured" if configured else "disabled")
         else:
             text = _text(result.stdout).strip().casefold() if result.stdout else ""
-            available = result.returncode in {0, 3}
             configured = False
-            active = result.returncode == 0 and text == "active"
-            state = "active" if active else ("inactive" if available else "unavailable")
-            if not available:
-                unavailable = True
+            if provider == "cloudflared" and result.returncode == 4:
+                # systemctl uses 4 when a unit is not installed.  Cloudflare
+                # ingress is optional, so preserve that explicit absence
+                # without turning the whole reviewed proxy source into a gap.
+                available = active = False
+                state = "absent"
+            else:
+                available = result.returncode in {0, 3}
+                active = result.returncode == 0 and text == "active"
+                state = "active" if active else ("inactive" if available else "unavailable")
+                if not available:
+                    unavailable = True
         records.append(_record(
             source,
             "provider-state",
@@ -599,7 +606,9 @@ def load_runtime_source(path: Path, *, source_id: str, uid: int, gid: int, mode:
         raise OptionalEvidenceError("collector-runtime-source-unavailable") from exc
     if not isinstance(payload, dict):
         raise OptionalEvidenceError("collector-runtime-source-invalid")
-    registry = SourceRegistry(payload, ["legacy-rootful", "personal-sandbox", "work-sandbox"])
+    registry = SourceRegistry(
+        payload, ["legacy-rootful", "personal-sandbox", "work-sandbox", "personal-managed"]
+    )
     if set(registry.sources) != {source_id} or registry.host_sources != (source_id,):
         raise OptionalEvidenceError("collector-source-registry-invalid")
     if source_id not in SOURCE_IDS:

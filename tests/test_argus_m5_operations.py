@@ -17,10 +17,12 @@ from argus_operations import (  # noqa: E402
     OperationConflict,
     OperationLedger,
     OperationValidationError,
+    SCHEMA_VERSION,
     digest,
     validate_typed_parameters,
 )
 from argus_sessions import SessionStore  # noqa: E402
+from argus_sqlite import ClosingConnection  # noqa: E402
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -159,6 +161,64 @@ class OperationLedgerTests(unittest.TestCase):
                 idempotency_key="rollback-2",
             )
 
+    def test_runtime_domain_changes_only_from_successful_fenced_results(self) -> None:
+        self.assertEqual(
+            "personal-sandbox",
+            self.ledger.runtime_domain("demo", "personal-sandbox"),
+        )
+        preflight, _ = self.create(
+            operation_type="migration.preflight",
+            trust_domain="personal-sandbox",
+            parameters={"targetTrustDomain": "personal-managed"},
+            idempotency_key="placement-preflight",
+        )
+        preflight_id = str(preflight["operation_id"])
+        self.ledger.transition(preflight_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(
+            preflight_id, {"running"}, "succeeded", finished_at=int(time.time()),
+            redacted_result_json='{"readyForCutover":true}',
+        )
+        cutover, _ = self.create(
+            operation_type="migration.cutover",
+            trust_domain="personal-managed",
+            parameters={"preflightOperationId": preflight_id},
+            idempotency_key="placement-cutover",
+        )
+        cutover_id = str(cutover["operation_id"])
+        self.ledger.transition(cutover_id, {"awaiting-approval"}, "queued", approved_at=int(time.time()))
+        self.ledger.transition(cutover_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(
+            cutover_id, {"running"}, "succeeded", finished_at=int(time.time()),
+            redacted_result_json=(
+                '{"sourceTrustDomain":"personal-sandbox",'
+                '"targetTrustDomain":"personal-managed"}'
+            ),
+        )
+        self.assertEqual(
+            "personal-managed",
+            self.ledger.runtime_domain("demo", "personal-sandbox"),
+        )
+        rollback, _ = self.create(
+            operation_type="migration.rollback",
+            trust_domain="personal-managed",
+            parameters={"cutoverOperationId": cutover_id},
+            idempotency_key="placement-rollback",
+        )
+        rollback_id = str(rollback["operation_id"])
+        self.ledger.transition(rollback_id, {"awaiting-approval"}, "queued", approved_at=int(time.time()))
+        self.ledger.transition(rollback_id, {"queued"}, "running", started_at=int(time.time()))
+        self.ledger.transition(
+            rollback_id, {"running"}, "succeeded", finished_at=int(time.time()),
+            redacted_result_json=(
+                '{"sourceTrustDomain":"personal-sandbox",'
+                '"targetTrustDomain":"personal-managed"}'
+            ),
+        )
+        self.assertEqual(
+            "personal-sandbox",
+            self.ledger.runtime_domain("demo", "personal-managed"),
+        )
+
     def test_cutover_refuses_unready_or_mismatched_preflight(self) -> None:
         preflight, _ = self.create(
             operation_type="migration.preflight",
@@ -243,11 +303,24 @@ class OperationLedgerTests(unittest.TestCase):
             self.assertEqual("wal", connection.execute("PRAGMA journal_mode").fetchone()[0])
             self.assertEqual(2, connection.execute("PRAGMA synchronous").fetchone()[0])
             self.assertEqual(1, connection.execute("PRAGMA foreign_keys").fetchone()[0])
-            self.assertEqual(2, connection.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(
+                SCHEMA_VERSION,
+                connection.execute("PRAGMA user_version").fetchone()[0],
+            )
+            self.assertEqual(
+                {"migrations", "migration_events", "migration_children"},
+                {
+                    row["name"]
+                    for row in connection.execute(
+                        "SELECT name FROM sqlite_master WHERE type = 'table' "
+                        "AND name LIKE 'migration%'"
+                    )
+                },
+            )
 
     def test_state_change_and_event_are_one_transaction(self) -> None:
         operation, _ = self.create()
-        with sqlite3.connect(self.path) as connection:
+        with sqlite3.connect(self.path, factory=ClosingConnection) as connection:
             connection.execute(
                 """
                 CREATE TRIGGER reject_queued_event
@@ -294,7 +367,7 @@ class OperationLedgerTests(unittest.TestCase):
 
     def test_legacy_schema_is_backed_up_and_migrated(self) -> None:
         legacy_path = Path(self.directory.name) / "legacy.sqlite3"
-        with sqlite3.connect(legacy_path) as connection:
+        with sqlite3.connect(legacy_path, factory=ClosingConnection) as connection:
             connection.execute(
                 """
                 CREATE TABLE operations (
@@ -341,7 +414,7 @@ class OperationLedgerTests(unittest.TestCase):
 
     def test_declared_current_schema_must_be_structurally_complete(self) -> None:
         incomplete_path = Path(self.directory.name) / "incomplete.sqlite3"
-        with sqlite3.connect(incomplete_path) as connection:
+        with sqlite3.connect(incomplete_path, factory=ClosingConnection) as connection:
             connection.execute(
                 "CREATE TABLE operations (operation_id TEXT PRIMARY KEY)"
             )

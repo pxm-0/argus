@@ -15,14 +15,16 @@ grant. `config/argus/workload-classification.json` remains unchanged until the
 destination runtime, capacity, backup, isolated restore, source staging,
 health, rollback, and exact-revision cutover evidence all pass.
 
-LociGraph was permanently retired before the retained-workload cutover; see
-[`RETIRED_LOCIGRAPH.md`](RETIRED_LOCIGRAPH.md). The operator also approved
-permanent retirement of Uptime Kuma, Dozzle,
-Publication Archive, and Review UI. Their containers, approved source/data
-paths, workload-specific volumes, and unreferenced images were removed from
-`oreochiserver`. Their active Argus inventory, access, privacy, route, legacy
-classification, and manifest records are removed by this change. Historical
-documentation remains as immutable evidence of their earlier state.
+LociGraph and Hello Nginx were permanently retired before the retained-workload
+cutover; see [`RETIRED_LOCIGRAPH.md`](RETIRED_LOCIGRAPH.md) and
+[`RETIRED_HELLO_NGINX.md`](RETIRED_HELLO_NGINX.md). The operator also approved
+permanent retirement of Uptime Kuma, Dozzle, Publication Archive, and Review
+UI. Their containers, approved source/data paths, workload-specific volumes,
+and unreferenced images were removed from `oreochiserver`. Their active Argus
+inventory, access, privacy, route, legacy classification, and manifest records
+are removed by this change. `config/argus/retired-workloads.json` also records
+the approved M1 private-state cleanup set. Historical documentation remains as
+immutable evidence of their earlier state.
 
 No Compose project name changes are authorized:
 

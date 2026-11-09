@@ -91,12 +91,13 @@ backup is the last safe rollback point.
 
 Retention keeps at least the current and one prior completed snapshot per source
 plus one failed run. Defaults retain 20 completed and 20 partial/failed runs.
-Pruning never deletes the current pointer. The database ceiling is 8 MiB; ingest
-rolls back if SQLite page usage crosses it. The acceptance command measures three
-fresh migration/ingest/rollback runs on `oreochiserver`; the ceiling is the
-greater of a conservative 8 MiB floor or four times the measured fixture maximum.
-Live-collector PRs must repeat sizing with their bounded fixtures and lower
-per-source limits or raise the ceiling only through review.
+Pruning runs after every terminal refresh, never deletes the current pointer,
+and compacts released SQLite pages. The database ceiling is 32 MiB; ingest rolls
+back if SQLite page usage crosses it. The ceiling was raised through review after
+the 20-snapshot live collector set reached the former 8 MiB cap. The acceptance
+command measures three fresh migration/ingest/rollback runs on `oreochiserver`;
+future live-collector PRs must repeat sizing with their bounded fixtures and
+lower per-source limits or raise the ceiling only through review.
 
 ## Build versus integrate
 

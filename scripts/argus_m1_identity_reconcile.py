@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_state import AuditLedger
+from argus_sqlite import ClosingConnection
 
 
 class IdentityReconcileError(ValueError):
@@ -63,7 +64,7 @@ def reconcile_identity(root: Path, *, apply: bool) -> dict[str, Any]:
         "privacy_projection": _load_workloads(root / "config" / "privacy.json"),
         "access_projection": _load_workloads(root / "config" / "access.json"),
     }
-    with sqlite3.connect(state_path) as connection:
+    with sqlite3.connect(state_path, factory=ClosingConnection) as connection:
         actual = {table: _projection(connection, table) for table in expected}
     if actual == expected:
         if journal.is_file():
@@ -89,7 +90,7 @@ def reconcile_identity(root: Path, *, apply: bool) -> dict[str, Any]:
     journal.write_text(json.dumps({"schemaVersion": 1, "correlationId": correlation_id, "backup": str(backup)}, sort_keys=True) + "\n", encoding="utf-8")
     ledger.append({"actor": "argus-identity-cutover", "operation": "identity.reconcile", "outcome": "intent", "target": "m1-compatibility-projections", "trustDomain": "management", "correlationId": correlation_id})
     try:
-        with sqlite3.connect(state_path) as connection:
+        with sqlite3.connect(state_path, factory=ClosingConnection) as connection:
             connection.execute("BEGIN IMMEDIATE")
             for table, entries in expected.items():
                 connection.execute(f"DELETE FROM {table}")

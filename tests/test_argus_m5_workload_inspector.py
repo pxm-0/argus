@@ -42,9 +42,10 @@ class WorkloadInspectorTests(unittest.TestCase):
             "Effective access",
             "Health evidence",
             "Disabled operation reasons",
-            "Run migration preflight",
-            "migration.preflight",
-            "Migration readiness",
+            "Review managed move",
+            "/migration/preview",
+            "data-migration-create",
+            "migrationStatus",
         ):
             self.assertIn(marker, html + javascript)
         self.assertIn("document.visibilityState", javascript)

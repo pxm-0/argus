@@ -27,7 +27,7 @@ import time
 from typing import Iterable
 
 
-DOMAINS = ("personal-sandbox", "work-sandbox")
+DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
 STATE_ROOT = Path("/var/lib/argus/rootless-gid-repair")
 LOCK_ROOT = Path("/run/argus-m5-rootless-gid-repair")
 CUTOVER_LOCK = Path("/run/argus-m5-workload-cutover/lock")

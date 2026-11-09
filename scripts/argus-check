@@ -354,7 +354,9 @@ def run(command: list[str], root: Path) -> subprocess.CompletedProcess[str]:
     )
 
 
-def run_stream(command: list[str], root: Path) -> subprocess.CompletedProcess[str]:
+def run_stream(
+    command: list[str], root: Path, *, env: dict[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     process = subprocess.Popen(
         command,
         cwd=root,
@@ -362,6 +364,7 @@ def run_stream(command: list[str], root: Path) -> subprocess.CompletedProcess[st
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         bufsize=1,
+        env=env,
     )
     lines: list[str] = []
     assert process.stdout is not None
@@ -420,7 +423,12 @@ def docs_parity_check(root: Path) -> bool:
             raise ValueError("public command row contract")
         public_commands = {str(item["command"]): str(item["privilege"]) for item in command_rows}
         if len(public_commands) != len(command_rows) or any(
-            privilege not in {"local-read-only", "server-read-only", "server-mutation"}
+            privilege not in {
+                "local-read-only",
+                "local-refresh-request",
+                "server-read-only",
+                "server-mutation",
+            }
             for privilege in public_commands.values()
         ):
             raise ValueError("duplicate command or privilege")
@@ -589,8 +597,14 @@ def main() -> int:
     checks: list[bool] = []
     checks.append(check_command("dashboard Caddy generation", [str(root / "scripts" / "argus-caddy-dashboard-plan"), "--json"], root))
     print("RUN  unittest discovery (live progress)")
-    unit = run_stream([sys.executable, "-m", "unittest", "discover", "-v"], root)
-    if unit.returncode:
+    warning_env = os.environ.copy()
+    warning_env["PYTHONWARNINGS"] = "error::ResourceWarning"
+    unit = run_stream(
+        [sys.executable, "-W", "error::ResourceWarning", "-m", "unittest", "discover", "-v"],
+        root,
+        env=warning_env,
+    )
+    if unit.returncode or "ResourceWarning" in unit.stdout:
         print("FAIL unittest discovery")
         checks.append(False)
     else:

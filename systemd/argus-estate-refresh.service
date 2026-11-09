@@ -1,0 +1,39 @@
+[Unit]
+Description=Argus configured-estate observation refresh
+After=network.target
+
+[Service]
+Type=oneshot
+User=oreo
+Group=argus-control
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+ExecStart=/srv/argus/scripts/argus-estate-refresh --timer
+UMask=0007
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+PrivateNetwork=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+IPAddressDeny=any
+ReadOnlyPaths=/srv/argus/config /srv/argus/workloads /srv/argus/scripts /etc/argus/collectors
+ReadWritePaths=/srv/argus/runtime/argus
+InaccessiblePaths=/var/run/docker.sock /run/docker.sock /etc/argus/operators.json /etc/argus/control-token /etc/argus/operator-proxy-token /srv/argus/control-plane /srv/argus/tests /srv/argus/docs /run/argus/domains
+
+[Install]
+WantedBy=multi-user.target

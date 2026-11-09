@@ -147,12 +147,22 @@ class SystemdScheduleCollectorTests(unittest.TestCase):
         for name in (
             "systemd/argus-system-schedules-collector.service",
             "systemd/argus-user-schedules-collector@.service",
+            "systemd/argus-user-schedules-collector-oreo.service",
+            "systemd/argus-user-schedules-collector-personal-sandbox.service",
+            "systemd/argus-user-schedules-collector-work-sandbox.service",
         ):
             unit = (ROOT / name).read_text(encoding="utf-8")
             self.assertIn("PrivateNetwork=true", unit)
             self.assertIn("RestrictAddressFamilies=AF_UNIX", unit)
             self.assertIn("NoNewPrivileges=true", unit)
             self.assertNotIn("ReadOnlyPaths=/var/run/docker.sock", unit)
+        for name in (
+            "systemd/argus-user-schedules-collector@.service",
+            "systemd/argus-user-schedules-collector-oreo.service",
+            "systemd/argus-user-schedules-collector-personal-sandbox.service",
+            "systemd/argus-user-schedules-collector-work-sandbox.service",
+        ):
+            self.assertIn("SupplementaryGroups=crontab", (ROOT / name).read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

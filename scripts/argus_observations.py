@@ -26,7 +26,7 @@ REGISTRY_VERSION = 2
 PREVIOUS_REGISTRY_VERSION = 1
 NORMALIZED_RECORD_VERSION = 2
 PREVIOUS_NORMALIZED_RECORD_VERSION = 1
-DEFAULT_DATABASE_CEILING_BYTES = 8 * 1024 * 1024
+DEFAULT_DATABASE_CEILING_BYTES = 32 * 1024 * 1024
 DEFAULT_KEEP_COMPLETED_RUNS = 20
 DEFAULT_KEEP_FAILED_RUNS = 20
 SOURCE_STATES = {"never_observed", "fresh", "stale", "failed", "excluded"}
@@ -539,26 +539,30 @@ class ObservationRepository:
         if read_only:
             if not path.is_file():
                 raise ObservationError("observation repository does not exist")
-            self.connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
+            connection = sqlite3.connect(path.resolve().as_uri() + "?mode=ro", uri=True, timeout=30.0)
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
-            self.connection = sqlite3.connect(path, timeout=30.0)
-            if not existed:
+            connection = sqlite3.connect(path, timeout=30.0)
+        self.connection = connection
+        try:
+            if not read_only and not existed:
                 path.chmod(0o600)
-        self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        version = self._detect_version()
-        if version is None:
-            if read_only:
-                raise ObservationError("observation repository is uninitialized")
-            self._create(PREVIOUS_REPOSITORY_VERSION)
-            self.migrate()
-            version = REPOSITORY_VERSION
-        if version not in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+            self.connection.row_factory = sqlite3.Row
+            self.connection.execute("PRAGMA foreign_keys=ON")
+            version = self._detect_version()
+            if version is None:
+                if read_only:
+                    raise ObservationError("observation repository is uninitialized")
+                self._create(PREVIOUS_REPOSITORY_VERSION)
+                self.migrate()
+                version = REPOSITORY_VERSION
+            if version not in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+                raise ObservationError(f"unsupported observation repository version: {version}")
+            self.version = version
+            self._enforce_size()
+        except BaseException:
             self.connection.close()
-            raise ObservationError(f"unsupported observation repository version: {version}")
-        self.version = version
-        self._enforce_size()
+            raise
 
     def __enter__(self) -> "ObservationRepository":
         return self
@@ -1242,12 +1246,17 @@ class ObservationRepository:
             row[0] for row in self.connection.execute("SELECT DISTINCT run_id FROM reconciliation_links")
         }
         delete_ids = [run_id for run_id in delete_ids if run_id not in linked]
+        deleted = sorted(set(delete_ids))
         with self.connection:
-            for run_id in sorted(set(delete_ids)):
+            for run_id in deleted:
                 self.connection.execute("DELETE FROM collection_runs WHERE run_id=?", (run_id,))
-        self.connection.execute("PRAGMA incremental_vacuum")
+        if deleted:
+            # The production database uses SQLite's default non-incremental
+            # auto-vacuum mode. A full vacuum is therefore required to return
+            # retired snapshot pages to the fixed-size capacity budget.
+            self.connection.execute("VACUUM")
         self._enforce_size()
-        return len(set(delete_ids))
+        return len(deleted)
 
 
 def _sync_directory(path: Path) -> None:

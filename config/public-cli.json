@@ -6,7 +6,7 @@
   "commands": [
     {"command": "argus dashboard url", "privilege": "local-read-only"},
     {"command": "argus estate status", "privilege": "local-read-only"},
-    {"command": "argus estate refresh", "privilege": "server-read-only"},
+    {"command": "argus estate refresh", "privilege": "local-refresh-request"},
     {"command": "argus estate coverage", "privilege": "local-read-only"},
     {"command": "argus workload list", "privilege": "local-read-only"},
     {"command": "argus workload show <id>", "privilege": "local-read-only"},

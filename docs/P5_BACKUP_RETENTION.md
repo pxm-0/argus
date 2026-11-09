@@ -34,5 +34,8 @@ scripts/argus-backup-prune --apply --confirm "prune argus backups"
 
 ## Current State
 
-`hello-nginx` is the only backup-enabled workload. P4 stateful/admin workloads
-remain backup-disabled until their restore gates are satisfied.
+No active workload is backup-enabled. P4 stateful/admin workloads remain
+backup-disabled until their restore gates are satisfied; the prior
+`hello-nginx` source-only backup was retired with that workload. Live smoke
+treats this as a passing no-op; it requires a valid latest artifact again as
+soon as any active workload enables backup execution.

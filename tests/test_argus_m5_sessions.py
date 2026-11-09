@@ -19,6 +19,7 @@ from argus_sessions import (  # noqa: E402
     SessionStore,
     parse_cookie,
 )
+from argus_sqlite import ClosingConnection  # noqa: E402
 
 
 class SessionStoreTests(unittest.TestCase):
@@ -34,7 +35,7 @@ class SessionStoreTests(unittest.TestCase):
             self.assertTrue(store.csrf_valid(session.session_id, rotated))
             self.assertFalse(store.csrf_valid(session.session_id, session.csrf_token))
             self.assertTrue(session.step_up_valid)
-            with sqlite3.connect(Path(directory) / "sessions.sqlite3") as connection:
+            with sqlite3.connect(Path(directory) / "sessions.sqlite3", factory=ClosingConnection) as connection:
                 stored = connection.execute(
                     "SELECT session_hash, csrf_hash, tailnet_login, role FROM sessions"
                 ).fetchone()
@@ -69,7 +70,7 @@ class SessionStoreTests(unittest.TestCase):
             self.assertFalse(
                 store.bind_operation("operation-1", replacement.session_id)
             )
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 stored_hash = connection.execute(
                     """
                     SELECT session_hash FROM operation_session_bindings
@@ -131,7 +132,7 @@ class SessionStoreTests(unittest.TestCase):
             expired = store.create("operator@example.com")
             current[0] += 11
             self.assertEqual("session-expired", store.restore(expired.session_id, expired.identity).reason)
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 self.assertIsNone(
                     connection.execute(
                         "SELECT revoked_at FROM sessions WHERE session_hash = ?",
@@ -170,14 +171,14 @@ class SessionStoreTests(unittest.TestCase):
             database = Path(directory) / "sessions.sqlite3"
             store = SessionStore(database, ttl_seconds=100, clock=lambda: current[0])
             session = store.create("operator@example.com")
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 before = connection.execute("SELECT * FROM sessions").fetchone()
                 columns = [item[0] for item in connection.execute("SELECT * FROM sessions").description]
             current[0] += 10
             self.assertIsNotNone(store.restore(session.session_id, session.identity).session)
             current[0] += 10
             self.assertIsNotNone(store.restore(session.session_id, session.identity).session)
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 after = connection.execute("SELECT * FROM sessions").fetchone()
             changed = {
                 name
@@ -211,7 +212,7 @@ class SessionStoreTests(unittest.TestCase):
     def test_schema_upgrade_is_backed_up_and_newer_schema_is_rejected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "sessions.sqlite3"
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 connection.execute("CREATE TABLE legacy(value TEXT)")
                 connection.execute("INSERT INTO legacy VALUES ('preserved')")
                 connection.execute("CREATE TABLE operator_sessions(session_hash TEXT)")
@@ -219,20 +220,20 @@ class SessionStoreTests(unittest.TestCase):
             SessionStore(database)
             backup = database.with_name("sessions.sqlite3.pre-v1.bak")
             self.assertTrue(backup.exists())
-            with sqlite3.connect(backup) as connection:
+            with sqlite3.connect(backup, factory=ClosingConnection) as connection:
                 self.assertEqual("preserved", connection.execute("SELECT value FROM legacy").fetchone()[0])
                 self.assertEqual(
                     "retired-session",
                     connection.execute("SELECT session_hash FROM operator_sessions").fetchone()[0],
                 )
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 self.assertIsNone(
                     connection.execute(
                         "SELECT name FROM sqlite_master WHERE type='table' AND name='operator_sessions'"
                     ).fetchone()
                 )
 
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 connection.execute("PRAGMA user_version=4")
             with self.assertRaisesRegex(RuntimeError, "newer than supported"):
                 SessionStore(database)
@@ -240,7 +241,7 @@ class SessionStoreTests(unittest.TestCase):
     def test_declared_current_session_schema_must_be_complete(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             database = Path(directory) / "sessions.sqlite3"
-            with sqlite3.connect(database) as connection:
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
                 connection.execute(
                     "CREATE TABLE sessions (session_hash TEXT PRIMARY KEY)"
                 )

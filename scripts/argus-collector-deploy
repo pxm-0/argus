@@ -1,0 +1,8 @@
+#!/usr/bin/env python3
+"""Install, verify, or roll back the reviewed Argus D1–D5 collector estate."""
+
+from argus_collector_deploy import main
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

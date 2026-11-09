@@ -29,7 +29,9 @@ from argus_firewall import (
 )
 
 
-DOMAINS = {"personal-sandbox", "work-sandbox"}
+DOMAINS = {
+    "personal-sandbox", "work-sandbox", "personal-managed", "work-managed"
+}
 BUILTIN_NETWORKS = {"bridge", "host", "none"}
 MAX_CONFIG_BYTES = 65536
 MAX_RUNTIME_OUTPUT_BYTES = 1048576

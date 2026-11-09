@@ -91,8 +91,8 @@ standard end-to-end, then the rebind-first workloads once approved.
 
 ### Out of scope
 
-- **dozzle** (`local`), **hello-nginx** (`cloudflare-protected`, plan-only) — not
-  tailnet workloads.
+- Retired workloads have no Tailscale route; see
+  [`ARGUS_M5_WORKLOAD_DISPOSITION.md`](ARGUS_M5_WORKLOAD_DISPOSITION.md).
 
 ## References
 

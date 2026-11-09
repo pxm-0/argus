@@ -10,7 +10,14 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class WorkloadDispositionTests(unittest.TestCase):
     def test_retired_workloads_are_absent_from_active_state(self) -> None:
-        retired = {"uptime-kuma", "dozzle", "review-ui", "publication-archive-live", "locigraph"}
+        retired = {
+            "uptime-kuma",
+            "dozzle",
+            "review-ui",
+            "publication-archive-live",
+            "locigraph",
+            "hello-nginx",
+        }
         workloads = {
             item["id"]
             for item in json.loads((ROOT / "config" / "workloads.json").read_text())["workloads"]

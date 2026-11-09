@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_m1_identity_reconcile import IdentityReconcileError, reconcile_identity
+from argus_sqlite import ClosingConnection
 from argus_state import AuditLedger
 
 
@@ -24,7 +25,7 @@ class ArgusM1IdentityReconcileTests(unittest.TestCase):
         access_new = {"demo": {"desired": "none", "urls": {"cloudflare": "https://demo.argus.invalid"}}}
         (root / "config" / "privacy.json").write_text(json.dumps({"workloads": privacy_new}))
         (root / "config" / "access.json").write_text(json.dumps({"workloads": access_new}))
-        with sqlite3.connect(root / "runtime" / "argus" / "m1" / "state.sqlite3") as connection:
+        with sqlite3.connect(root / "runtime" / "argus" / "m1" / "state.sqlite3", factory=ClosingConnection) as connection:
             for table, entries in (("privacy_projection", privacy_old), ("access_projection", access_old)):
                 connection.execute(f"CREATE TABLE {table} (workload_id TEXT PRIMARY KEY, entry_json TEXT NOT NULL)")
                 connection.executemany(f"INSERT INTO {table} VALUES (?, ?)", [(key, json.dumps(value, sort_keys=True, separators=(",", ":"))) for key, value in entries.items()])

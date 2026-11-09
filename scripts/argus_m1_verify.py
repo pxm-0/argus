@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_state import AuditLedger, SQLiteRepository, legacy_workload_snapshot
+from argus_sqlite import ClosingConnection
 
 
 class VerificationError(ValueError):
@@ -36,7 +37,7 @@ def _projection_parity(path: Path, table: str, workloads: dict[str, Any]) -> boo
         raise VerificationError("unknown M1 projection")
     expected = sorted((str(key), json.dumps(value, sort_keys=True, separators=(",", ":"))) for key, value in workloads.items())
     try:
-        with sqlite3.connect(path) as connection:
+        with sqlite3.connect(path, factory=ClosingConnection) as connection:
             rows = connection.execute(f"SELECT workload_id, entry_json FROM {table} ORDER BY workload_id").fetchall()
     except sqlite3.Error as exc:
         raise VerificationError("M1 projection store is malformed") from exc

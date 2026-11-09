@@ -17,14 +17,6 @@
       "status": "legacy-unclassified",
       "admission": "denied"
     },
-    "hello-nginx": {
-      "realm": "unclassified",
-      "zone": "legacy",
-      "stage": "none",
-      "trustDomain": "legacy-rootful",
-      "status": "legacy-unclassified",
-      "admission": "denied"
-    },
     "intake-os": {
       "realm": "unclassified",
       "zone": "legacy",

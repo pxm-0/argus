@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import faulthandler
 import grp
+import hashlib
 import json
 import os
 import pwd
@@ -51,7 +52,21 @@ from argus_actions import (  # noqa: E402
 from argus_access_runtime import route_contract  # noqa: E402
 from argus_admission import AdmissionDecision, evaluate_current  # noqa: E402
 from argus_common import audit, by_id, dashboard_state, load_json, policy_decision  # noqa: E402
+from argus_estate_refresh import (  # noqa: E402
+    EstateRefreshError,
+    create_request as create_estate_refresh_request,
+    read_request as read_estate_refresh_request,
+    read_status as read_estate_refresh_status,
+    status_summary as estate_refresh_status,
+)
 from argus_ipc import request as ipc_request  # noqa: E402
+from argus_migrations import (  # noqa: E402
+    MigrationError,
+    migration_preview,
+    public_migration,
+    read_draft as read_migration_draft,
+)
+from argus_observations import ObservationError, ObservationRepository, load_registry  # noqa: E402
 from argus_operations import (  # noqa: E402
     MUTATIONS,
     PRIVILEGED_MUTATIONS,
@@ -62,6 +77,7 @@ from argus_operations import (  # noqa: E402
     parse_timestamp,
     validate_typed_parameters,
 )
+from argus_reconciliation import reconcile  # noqa: E402
 from argus_sessions import (  # noqa: E402
     Session,
     SessionRestoration,
@@ -178,6 +194,11 @@ def validate_body_keys(
         )
 
 
+def session_hash(session: Session) -> str:
+    """Bind an authority-changing parent to one session without storing its ID."""
+    return hashlib.sha256(session.session_id.encode("utf-8")).hexdigest()
+
+
 def trust_domain(workload_id: str) -> str:
     classification_path = ROOT / "config" / "argus" / "workload-classification.json"
     try:
@@ -189,6 +210,43 @@ def trust_domain(workload_id: str) -> str:
         if isinstance(classified, dict) and isinstance(classified.get(workload_id), dict):
             return str(classified[workload_id].get("trustDomain", "legacy-rootful"))
     return "legacy-rootful"
+
+
+def runtime_domain(workload_id: str) -> str:
+    """Resolve effective placement from canonical seed plus fenced outcomes."""
+    fallback = trust_domain(workload_id)
+    manifest_path = ROOT / "workloads" / workload_id / "manifest.json"
+    try:
+        manifest = json.loads(manifest_path.read_text())
+        migration = manifest.get("migration", {})
+        seeded = migration.get("runtimeTrustDomain")
+        if isinstance(seeded, str) and seeded:
+            fallback = seeded
+    except (OSError, json.JSONDecodeError, AttributeError):
+        pass
+    return LEDGER.runtime_domain(workload_id, fallback)
+
+
+def operation_domain(
+    workload_id: str, operation_type: str, parameters: dict[str, Any]
+) -> str:
+    domain = runtime_domain(workload_id)
+    if operation_type == "production.promote":
+        return str(parameters.get("targetTrustDomain", domain))
+    if operation_type == "migration.cutover":
+        reference = LEDGER.get(str(parameters.get("preflightOperationId", "")))
+        if reference:
+            return str(reference.get("parameters", {}).get("targetTrustDomain", domain))
+    if operation_type in {"migration.rollback", "production.rollback"}:
+        field = (
+            "cutoverOperationId"
+            if operation_type == "migration.rollback"
+            else "promotionOperationId"
+        )
+        reference = LEDGER.get(str(parameters.get(field, "")))
+        if reference:
+            return str(reference.get("trust_domain", domain))
+    return domain
 
 
 def agent_available(domain: str) -> bool:
@@ -269,7 +327,10 @@ def private_dashboard_state() -> dict[str, Any]:
     for node in state.get("topology", {}).get("nodes", []):
         if node.get("kind") != "workload":
             continue
-        domain = str(node.get("trustDomain", "legacy-rootful"))
+        declared = str(node.get("trustDomain", "legacy-rootful"))
+        domain = runtime_domain(str(node.get("id", "")))
+        node["runtimeTrustDomain"] = domain
+        node["placementDrift"] = domain != declared
         if domain not in domain_availability:
             domain_availability[domain] = agent_available(domain)
         available = domain_availability[domain]
@@ -277,7 +338,42 @@ def private_dashboard_state() -> dict[str, Any]:
         if available:
             active_domains.add(domain)
     state.get("topology", {}).get("summary", {})["domainAgentsAvailable"] = len(active_domains)
+    state["reconciliation"] = estate_reconciliation()
+    state["estateRefresh"] = estate_refresh_status(ROOT)
     return state
+
+
+def estate_reconciliation() -> dict[str, Any]:
+    """Return only the current sanitized configured-estate decision evidence."""
+    registry_path = ROOT / "config" / "argus" / "observation-sources.json"
+    database = Path(
+        os.environ.get(
+            "ARGUS_OBSERVATIONS_DB",
+            ROOT / "runtime" / "argus" / "observations.sqlite3",
+        )
+    )
+    try:
+        registry = load_registry(registry_path, ROOT)
+        if not database.is_file():
+            raise OSError("observation repository is unavailable")
+        with ObservationRepository(database, read_only=True) as repository:
+            return reconcile(ROOT, repository, registry)
+    except (ObservationError, OSError, ValueError):
+        return {
+            "schemaVersion": 1,
+            "status": "unavailable",
+            "observationState": "incomplete",
+            "coverage": {
+                "status": "not-configured",
+                "configuredSources": 0,
+                "freshSources": 0,
+                "sources": [],
+            },
+            "workloads": [],
+            "blockers": [{"code": "observation-repository-unavailable"}],
+            "safeToMoveWorkloads": False,
+            "mutationAuthority": "none",
+        }
 
 
 def operation_preview(workload_id: str, operation_type: str, parameters: dict[str, Any]) -> dict[str, Any]:
@@ -288,17 +384,11 @@ def operation_preview(workload_id: str, operation_type: str, parameters: dict[st
         if admission.decision_code in {"dependency-unavailable", "unknown-workload"}
         else workload(workload_id)
     )
-    domain = trust_domain(workload_id)
-    if operation_type == "production.promote":
-        domain = str(parameters.get("targetTrustDomain", domain))
-    elif operation_type == "migration.cutover":
-        reference = LEDGER.get(str(parameters.get("preflightOperationId", "")))
-        if reference:
-            domain = str(reference.get("parameters", {}).get("targetTrustDomain", domain))
-    elif operation_type == "production.rollback":
-        reference = LEDGER.get(str(parameters.get("promotionOperationId", "")))
-        if reference:
-            domain = str(reference.get("trust_domain", domain))
+    domain = (
+        "legacy-rootful"
+        if admission.decision_code == "dependency-unavailable"
+        else operation_domain(workload_id, operation_type, parameters)
+    )
     revision = admission.revision
     allowed, reason = operation_policy(
         workload_id,
@@ -393,6 +483,13 @@ def operation_policy(
     *,
     _admission: AdmissionDecision | None = None,
 ) -> tuple[bool, str]:
+    if operation_type in {
+        "migration.cutover",
+        "migration.rollback",
+        "production.promote",
+        "production.rollback",
+    }:
+        return False, "migration kernel required"
     admission = _admission or evaluate_current(
         ROOT,
         workload_id,
@@ -403,7 +500,15 @@ def operation_policy(
     item = workload(workload_id)
     if item is None:
         return False, "unknown-workload"
-    domain = trust_domain(workload_id)
+    declared_domain = trust_domain(workload_id)
+    effective_domain = runtime_domain(workload_id)
+    domain = operation_domain(workload_id, operation_type, parameters)
+    if operation_type == "production.promote":
+        target = str(parameters.get("targetTrustDomain", ""))
+        if target != declared_domain or not target.endswith("-managed"):
+            return False, "target trust domain must match canonical managed classification"
+        if target == effective_domain:
+            return False, "workload is already placed in the canonical managed domain"
     available = privileged_agent_available(domain) if operation_type in PRIVILEGED_MUTATIONS else agent_available(domain)
     if not available:
         return False, f"{domain} domain agent unavailable"
@@ -414,7 +519,7 @@ def operation_policy(
         manifest = json.loads(manifest_path.read_text()) if manifest_path.exists() else {}
         runtime = manifest.get("runtime", item.get("runtime", {}))
         allowed = bool(item.get("health", {}).get("enabled", False)) or (
-            trust_domain(workload_id) != "legacy-rootful" and runtime.get("type") == "docker-compose"
+            effective_domain != "legacy-rootful" and runtime.get("type") == "docker-compose"
         )
         return allowed, "health check not configured"
     if operation_type == "logs.preview":
@@ -423,6 +528,12 @@ def operation_policy(
     if operation_type == "migration.preflight":
         preview = migration_preflight(workload_id, record_audit=False)
         allowed = bool(preview.get("allowed"))
+        if allowed:
+            target = str(parameters.get("targetTrustDomain", ""))
+            if target != declared_domain or not target.endswith("-managed"):
+                return False, "target trust domain must match canonical managed classification"
+            if target == effective_domain:
+                return False, "workload is already placed in the canonical managed domain"
         return allowed, (
             "migration preflight enabled by manifest"
             if allowed
@@ -546,6 +657,13 @@ class Handler(BaseHTTPRequestHandler):
         path = urlparse(self.path).path
         operation_match = re.fullmatch(r"/api/operations/([0-9a-f-]+)", path)
         workload_operations_match = re.fullmatch(r"/api/workloads/([^/]+)/operations", path)
+        migration_match = re.fullmatch(r"/api/migrations/([0-9a-f-]{36})", path)
+        workload_migrations_match = re.fullmatch(
+            r"/api/workloads/([^/]+)/migrations", path
+        )
+        estate_refresh_match = re.fullmatch(
+            r"/api/estate/refresh/(refresh-[0-9a-f-]{36})", path
+        )
         if path == "/api/session":
             restoration = self.session_restoration()
             if restoration.session:
@@ -564,6 +682,47 @@ class Handler(BaseHTTPRequestHandler):
             if not self.require_session():
                 return
             self.send_json(200, {"operations": LEDGER.list_for_workload(workload_operations_match.group(1))})
+        elif migration_match:
+            session = self.require_session()
+            if not session:
+                return
+            migration = LEDGER.get_migration(migration_match.group(1))
+            if migration is None:
+                self.send_json(404, {"error": "not found"})
+            elif migration.get("requested_by") != session.identity:
+                self.send_json(403, {"error": "migration belongs to another operator"})
+            else:
+                self.send_json(200, public_migration(migration))
+        elif workload_migrations_match:
+            session = self.require_session()
+            if not session:
+                return
+            migrations = [
+                public_migration(migration)
+                for migration in LEDGER.list_migrations_for_workload(
+                    workload_migrations_match.group(1)
+                )
+                if migration.get("requested_by") == session.identity
+            ]
+            self.send_json(200, {"migrations": migrations})
+        elif path == "/api/estate/coverage":
+            if not self.require_session():
+                return
+            self.send_json(
+                200,
+                {
+                    "reconciliation": estate_reconciliation(),
+                    "refresh": estate_refresh_status(ROOT),
+                },
+            )
+        elif estate_refresh_match:
+            if not self.require_session():
+                return
+            status = (
+                read_estate_refresh_status(ROOT, estate_refresh_match.group(1))
+                or read_estate_refresh_request(ROOT, estate_refresh_match.group(1))
+            )
+            self.send_json(200 if status else 404, status or {"error": "not found"})
         elif path == "/api/dashboard-state":
             self.send_json(200, private_dashboard_state())
         elif path == "/api/workloads":
@@ -631,6 +790,24 @@ class Handler(BaseHTTPRequestHandler):
             return
         preview_match = re.fullmatch(r"/api/workloads/([^/]+)/operations/preview", path)
         create_match = re.fullmatch(r"/api/workloads/([^/]+)/operations", path)
+        migration_preview_match = re.fullmatch(
+            r"/api/workloads/([^/]+)/migration/preview", path
+        )
+        migration_create_match = re.fullmatch(
+            r"/api/workloads/([^/]+)/migrations", path
+        )
+        migration_approve_match = re.fullmatch(
+            r"/api/migrations/([0-9a-f-]{36})/approve", path
+        )
+        migration_cancel_match = re.fullmatch(
+            r"/api/migrations/([0-9a-f-]{36})/cancel", path
+        )
+        migration_rollback_match = re.fullmatch(
+            r"/api/migrations/([0-9a-f-]{36})/rollback", path
+        )
+        migration_draft_adopt_match = re.fullmatch(
+            r"/api/migration-drafts/(draft-[0-9a-f-]{36})/adopt", path
+        )
         approve_match = re.fullmatch(r"/api/operations/([0-9a-f-]+)/approve", path)
         cancel_match = re.fullmatch(r"/api/operations/([0-9a-f-]+)/cancel", path)
         legacy_action_match = re.fullmatch(r"/api/workloads/([^/]+)/(logs|restart|backup)/(preview|apply)", path)
@@ -639,12 +816,56 @@ class Handler(BaseHTTPRequestHandler):
             legacy_action_match and legacy_action_match.group(3) == "apply"
             or legacy_access_match and legacy_access_match.group(2) == "apply"
         )
-        session = self.require_session(csrf=True, step_up=bool(approve_match) or compatibility_apply)
+        session = self.require_session(
+            csrf=True,
+            step_up=(
+                bool(approve_match)
+                or bool(migration_approve_match)
+                or bool(migration_rollback_match)
+                or compatibility_apply
+            ),
+        )
         if not session:
             return
-        if path == "/api/workloads/discover":
+        if path == "/api/estate/refresh":
+            validate_body_keys(body, set())
+            self.handle_estate_refresh_create(session)
+        elif path == "/api/workloads/discover":
             validate_body_keys(body, set())
             self.handle_workload_discover()
+        elif migration_preview_match:
+            validate_body_keys(body, set())
+            self.handle_migration_preview(migration_preview_match.group(1))
+        elif migration_create_match:
+            validate_body_keys(
+                body,
+                {
+                    "targetTrustDomain",
+                    "previewDigest",
+                    "expectedRevision",
+                    "policyVersion",
+                    "observationDigest",
+                },
+            )
+            self.handle_migration_create(migration_create_match.group(1), session, body)
+        elif migration_approve_match:
+            validate_body_keys(body, {"confirmation"})
+            self.handle_migration_approve(
+                migration_approve_match.group(1), session, body
+            )
+        elif migration_cancel_match:
+            validate_body_keys(body, set())
+            self.handle_migration_cancel(migration_cancel_match.group(1), session)
+        elif migration_rollback_match:
+            validate_body_keys(body, {"confirmation"})
+            self.handle_migration_rollback(
+                migration_rollback_match.group(1), session, body
+            )
+        elif migration_draft_adopt_match:
+            validate_body_keys(body, set())
+            self.handle_migration_draft_adopt(
+                migration_draft_adopt_match.group(1), session
+            )
         elif preview_match:
             validate_body_keys(body, {"operationType", "parameters"})
             operation_type = str(body.get("operationType", ""))
@@ -693,6 +914,28 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self.send_json(404, {"error": "not found"})
 
+    def handle_estate_refresh_create(self, session: Session) -> None:
+        try:
+            request = create_estate_refresh_request(ROOT, requested_by=session.identity)
+        except (EstateRefreshError, OSError):
+            self.send_json(
+                503,
+                {
+                    "error": "estate refresh request unavailable",
+                    "safeToMoveWorkloads": False,
+                },
+            )
+            return
+        audit("estate.refresh.request", "-", "ok", actor=session.identity, runId=request["runId"])
+        self.send_json(
+            202,
+            {
+                "request": request,
+                "reconciliation": estate_reconciliation(),
+                "safeToMoveWorkloads": False,
+            },
+        )
+
     def handle_workload_discover(self) -> None:
         result = subprocess.run(
             [sys.executable, str(ROOT / "scripts" / "argus-workload-discover"), "--json"],
@@ -708,6 +951,242 @@ class Handler(BaseHTTPRequestHandler):
             self.send_json(500, {"ok": False, "error": "invalid discovery output"})
             return
         self.send_json(200, {"ok": True, **report})
+
+    def handle_migration_preview(self, workload_id: str) -> None:
+        self.send_json(200, migration_preview(ROOT, LEDGER, workload_id))
+
+    def handle_migration_create(
+        self, workload_id: str, session: Session, body: dict[str, Any]
+    ) -> None:
+        preview = migration_preview(ROOT, LEDGER, workload_id)
+        if not preview.get("eligible"):
+            self.send_json(403, preview)
+            return
+        bound_fields = (
+            "previewDigest",
+            "expectedRevision",
+            "policyVersion",
+            "observationDigest",
+            "targetTrustDomain",
+        )
+        if any(body.get(field) != preview.get(field) for field in bound_fields):
+            self.send_json(409, {"error": "migration preview or evidence is stale"})
+            return
+        idempotency_key = str(self.headers.get("Idempotency-Key", ""))
+        if not idempotency_key:
+            self.send_json(400, {"error": "idempotency key required"})
+            return
+        migration, created = LEDGER.create_migration(
+            workload_id=workload_id,
+            source_trust_domain=str(preview["sourceTrustDomain"]),
+            target_trust_domain=str(preview["targetTrustDomain"]),
+            requested_by=session.identity,
+            originating_session_hash=session_hash(session),
+            preview=preview,
+            preview_digest=str(preview["previewDigest"]),
+            expected_revision=str(preview["expectedRevision"]),
+            policy_version=str(preview["policyVersion"]),
+            observation_digest=str(preview["observationDigest"]),
+            idempotency_key=idempotency_key,
+        )
+        if created:
+            audit(
+                "migration.intent",
+                workload_id,
+                "ok",
+                actor=session.identity,
+                migrationId=migration["migration_id"],
+            )
+        self.send_json(202, public_migration(migration))
+
+    def handle_migration_approve(
+        self, migration_id: str, session: Session, body: dict[str, Any]
+    ) -> None:
+        migration = LEDGER.get_migration(migration_id)
+        if migration is None:
+            self.send_json(404, {"error": "not found"})
+            return
+        if (
+            migration.get("requested_by") != session.identity
+            or migration.get("originating_session_hash") != session_hash(session)
+        ):
+            self.send_json(403, {"error": "migration approval requires the originating session"})
+            return
+        expected_confirmation = str(
+            migration.get("preview", {}).get("confirmationPhrase", "")
+        )
+        if str(body.get("confirmation", "")) != expected_confirmation:
+            self.send_json(403, {"error": "exact migration preview confirmation required"})
+            return
+        if int(time.time()) - parse_timestamp(str(migration["created_at"])) >= PREVIEW_TTL_SECONDS:
+            migration = LEDGER.transition_migration(
+                migration_id,
+                {"awaiting-approval"},
+                "expired",
+                finished_at=int(time.time()),
+                error_class="preview-expired",
+                redacted_summary="Migration preview expired before dashboard approval.",
+                event_detail="Approval rejected because the migration preview expired.",
+            )
+            self.send_json(410, public_migration(migration))
+            return
+        current = migration_preview(ROOT, LEDGER, str(migration["workload_id"]))
+        fields = {
+            "previewDigest": migration.get("preview_digest"),
+            "expectedRevision": migration.get("expected_revision"),
+            "policyVersion": migration.get("policy_version"),
+            "observationDigest": migration.get("observation_digest"),
+            "sourceTrustDomain": migration.get("source_trust_domain"),
+            "targetTrustDomain": migration.get("target_trust_domain"),
+        }
+        if not current.get("eligible") or any(
+            current.get(field) != value for field, value in fields.items()
+        ):
+            migration = LEDGER.transition_migration(
+                migration_id,
+                {"awaiting-approval"},
+                "expired",
+                finished_at=int(time.time()),
+                error_class="preview-stale",
+                redacted_summary="Migration source, target, policy, or observation evidence changed before approval.",
+                event_detail="Approval rejected after migration preview drift.",
+            )
+            self.send_json(409, public_migration(migration))
+            return
+        migration = LEDGER.approve_migration(
+            migration_id,
+            requested_by=session.identity,
+            originating_session_hash=session_hash(session),
+        )
+        audit(
+            "migration.approved",
+            str(migration["workload_id"]),
+            "ok",
+            actor=session.identity,
+            migrationId=migration_id,
+        )
+        self.send_json(202, public_migration(migration))
+
+    def handle_migration_cancel(self, migration_id: str, session: Session) -> None:
+        migration = LEDGER.get_migration(migration_id)
+        if migration is None:
+            self.send_json(404, {"error": "not found"})
+            return
+        if (
+            migration.get("requested_by") != session.identity
+            or migration.get("originating_session_hash") != session_hash(session)
+        ):
+            self.send_json(403, {"error": "migration cancellation requires the originating session"})
+            return
+        migration = LEDGER.cancel_migration(
+            migration_id,
+            requested_by=session.identity,
+            originating_session_hash=session_hash(session),
+        )
+        audit(
+            "migration.cancelled",
+            str(migration["workload_id"]),
+            "ok",
+            actor=session.identity,
+            migrationId=migration_id,
+        )
+        self.send_json(202, public_migration(migration))
+
+    def handle_migration_rollback(
+        self, migration_id: str, session: Session, body: dict[str, Any]
+    ) -> None:
+        migration = LEDGER.get_migration(migration_id)
+        if migration is None:
+            self.send_json(404, {"error": "not found"})
+            return
+        if (
+            migration.get("requested_by") != session.identity
+            or migration.get("originating_session_hash") != session_hash(session)
+        ):
+            self.send_json(403, {"error": "migration rollback requires the originating session"})
+            return
+        expected_confirmation = str(
+            migration.get("preview", {}).get("rollbackConfirmationPhrase", "")
+        )
+        if str(body.get("confirmation", "")) != expected_confirmation:
+            self.send_json(403, {"error": "exact migration rollback confirmation required"})
+            return
+        migration = LEDGER.begin_migration_rollback(
+            migration_id,
+            requested_by=session.identity,
+            originating_session_hash=session_hash(session),
+        )
+        audit(
+            "migration.rollback-approved",
+            str(migration["workload_id"]),
+            "ok",
+            actor=session.identity,
+            migrationId=migration_id,
+        )
+        self.send_json(202, public_migration(migration))
+
+    def handle_migration_draft_adopt(self, draft_id: str, session: Session) -> None:
+        draft = read_migration_draft(ROOT, draft_id)
+        if draft is None:
+            self.send_json(404, {"error": "migration draft not found"})
+            return
+        if draft.get("state") == "expired":
+            self.send_json(410, {"error": "migration draft expired"})
+            return
+        workload_id = str(draft["workloadId"])
+        if draft.get("action") == "rollback":
+            migration = LEDGER.get_migration(str(draft.get("migrationId", "")))
+            if migration is None:
+                self.send_json(404, {"error": "draft migration not found"})
+                return
+            if migration.get("requested_by") != session.identity:
+                self.send_json(403, {"error": "draft migration belongs to another operator"})
+                return
+            self.send_json(
+                200,
+                {
+                    "draft": draft,
+                    "migration": public_migration(migration),
+                    "nextAction": "dashboard-step-up-and-exact-rollback-confirmation",
+                },
+            )
+            return
+        preview = migration_preview(ROOT, LEDGER, workload_id)
+        fields = (
+            "previewDigest",
+            "expectedRevision",
+            "policyVersion",
+            "observationDigest",
+            "sourceTrustDomain",
+            "targetTrustDomain",
+        )
+        if not preview.get("eligible") or any(
+            draft.get(field) != preview.get(field) for field in fields
+        ):
+            self.send_json(409, {"error": "migration draft evidence is stale", "preview": preview})
+            return
+        migration, created = LEDGER.create_migration(
+            workload_id=workload_id,
+            source_trust_domain=str(preview["sourceTrustDomain"]),
+            target_trust_domain=str(preview["targetTrustDomain"]),
+            requested_by=session.identity,
+            originating_session_hash=session_hash(session),
+            preview=preview,
+            preview_digest=str(preview["previewDigest"]),
+            expected_revision=str(preview["expectedRevision"]),
+            policy_version=str(preview["policyVersion"]),
+            observation_digest=str(preview["observationDigest"]),
+            idempotency_key=f"draft:{draft_id}",
+        )
+        if created:
+            audit(
+                "migration.draft-adopted",
+                workload_id,
+                "ok",
+                actor=session.identity,
+                migrationId=migration["migration_id"],
+            )
+        self.send_json(202, {"draft": draft, "migration": public_migration(migration)})
 
     def handle_compatibility_apply(
         self, workload_id: str, operation_type: str, session: Session, body: dict[str, Any],

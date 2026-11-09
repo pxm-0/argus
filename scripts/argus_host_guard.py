@@ -12,6 +12,8 @@ HOST_EGRESS: dict[str, tuple[tuple[str, int], ...]] = {
     # the originating bridge, so both gates are required for working egress.
     "personal-sandbox": (("tcp", 443),),
     "work-sandbox": (),
+    "personal-managed": (),
+    "work-managed": (),
 }
 
 

@@ -31,17 +31,6 @@
       "lastAppliedAt": "2026-07-29T13:23:54Z",
       "lastError": ""
     },
-    "hello-nginx": {
-      "desired": "none",
-      "effective": "none",
-      "urls": {
-        "local": "",
-        "tailnet": "",
-        "cloudflare": "https://hello-nginx.argus.invalid"
-      },
-      "lastAppliedAt": "2026-07-29T03:55:13Z",
-      "lastError": ""
-    },
     "kadath": {
       "desired": "tailnet",
       "effective": "tailnet",

@@ -43,7 +43,8 @@ while (($#)); do
   shift
 done
 
-[[ "$domain" == personal-sandbox || "$domain" == work-sandbox ]] || {
+[[ "$domain" == personal-sandbox || "$domain" == work-sandbox ||
+   "$domain" == personal-managed || "$domain" == work-managed ]] || {
   echo "refusing sandbox bootstrap: unsupported or missing domain" >&2
   exit 2
 }

@@ -268,11 +268,15 @@ class OperationWorkerTests(unittest.TestCase):
                 server.server_close()
                 thread.join(timeout=2)
 
-    def test_units_keep_runtime_sockets_out_of_api_and_worker(self) -> None:
+    def test_units_keep_runtime_sockets_out_of_api_worker_and_coordinator(self) -> None:
         api = (ROOT / "control-plane" / "api" / "server.py").read_text()
         api_unit = (ROOT / "systemd" / "argus-control-api.service").read_text()
         worker_unit = (
             ROOT / "systemd" / "argus-operation-worker.service"
+        ).read_text()
+        coordinator_script = (ROOT / "scripts" / "argus_migration_coordinator.py").read_text()
+        coordinator_unit = (
+            ROOT / "systemd" / "argus-migration-coordinator.service"
         ).read_text()
         self.assertNotIn("dispatch_operation", api)
         self.assertIn("ARGUS_LEDGER_REQUIRE_EXISTING=1", api_unit)
@@ -283,6 +287,16 @@ class OperationWorkerTests(unittest.TestCase):
             worker_unit,
         )
         self.assertNotIn("DOCKER_HOST", worker_unit)
+        self.assertIn("Requires=argus-operation-worker.service", coordinator_unit)
+        self.assertIn("User=argus-worker", coordinator_unit)
+        self.assertIn("ReadOnlyPaths=/srv/argus", coordinator_unit)
+        self.assertIn("ReadWritePaths=/var/lib/argus/control", coordinator_unit)
+        self.assertIn(
+            "InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock",
+            coordinator_unit,
+        )
+        self.assertIn("MigrationCoordinator", coordinator_script)
+        self.assertNotIn("DOCKER_HOST", coordinator_unit)
 
     def test_activation_is_acknowledged_backed_up_and_rolls_back(self) -> None:
         script_path = ROOT / "scripts" / "argus-m5-ledger-worker"
@@ -303,13 +317,12 @@ class OperationWorkerTests(unittest.TestCase):
         self.assertIn("wait_for_ledger_schema", script)
         self.assertIn("LEDGER_SCHEMA_OK", script)
         self.assertIn(
-            "operation ledger did not reach schema version 2 within 10 seconds",
+            "operation ledger did not reach schema version 3 within 10 seconds",
             script,
         )
-        self.assertIn(
-            "wait_for_ledger_schema\n  wait_for_api_fail_closed",
-            script,
-        )
+        self.assertIn("argus-migration-coordinator.service", script)
+        self.assertIn("migrationCoordinatorActive=true", script)
+        self.assertIn("wait_for_ledger_schema\n  systemctl restart", script)
         self.assertIn("systemd-analyze verify", script)
         self.assertIn("missing work-sandbox runtime user", script)
         self.assertIn("missing work-sandbox issuer public key", script)

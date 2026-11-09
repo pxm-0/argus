@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from argus_sqlite import ClosingConnection
+
 
 REALMS = {"unclassified", "personal", "work"}
 ZONES = {"legacy", "sandbox", "managed"}
@@ -276,7 +278,7 @@ class SQLiteRepository:
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA foreign_keys = ON")
         return connection
@@ -442,7 +444,7 @@ class AuditLedger:
             )
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.path, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -573,7 +575,7 @@ class PrivacyMutationWriter:
             self.fault_hook(boundary)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.state_path)
+        connection = sqlite3.connect(self.state_path, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         return connection
 
@@ -694,7 +696,7 @@ class AccessMutationWriter:
             self.fault_hook(boundary)
 
     def _connect(self) -> sqlite3.Connection:
-        connection = sqlite3.connect(self.state_path)
+        connection = sqlite3.connect(self.state_path, factory=ClosingConnection)
         connection.row_factory = sqlite3.Row
         return connection
 

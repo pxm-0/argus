@@ -46,7 +46,9 @@ def fixture_records(source_registry: SourceRegistry) -> list[dict]:
 class ObservationRegistryTests(unittest.TestCase):
     def test_canonical_domains_are_derived_and_empty_registry_is_not_configured(self) -> None:
         self.assertEqual(
-            ["legacy-rootful", "personal-sandbox", "work-sandbox"],
+            [
+                "legacy-rootful", "personal-sandbox", "work-sandbox",
+            ],
             canonical_trust_domains(ROOT),
         )
         empty = SourceRegistry({"schemaVersion": 1, "hostSources": [], "sources": []}, ["work-sandbox"])
@@ -467,6 +469,7 @@ class ObservationRepositoryTests(unittest.TestCase):
             self.ingest(repo, 6, state="partial", records=self.records[:1], gap="disconnect")
             self.ingest(repo, 7, state="failed", records=[], gap="timeout")
             self.assertEqual(4, repo.prune(keep_completed=2, keep_failed=1))
+            self.assertEqual(0, repo.connection.execute("PRAGMA freelist_count").fetchone()[0])
             remaining = [row[0] for row in repo.connection.execute(
                 "SELECT run_id FROM collection_runs ORDER BY sequence"
             )]
