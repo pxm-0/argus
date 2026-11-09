@@ -22,7 +22,7 @@
   },
   "migration": {
     "status": "planned",
-    "targetTrustDomain": "personal-managed",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "",
     "compatibilitySymlink": false,
     "rollback": "No runtime is adopted; remove only the reviewed candidate records before admission.",

@@ -1,4 +1,4 @@
-# Reviewed runtime for the nodens-staging workload in personal-managed.
+# Reviewed runtime for the nodens-staging workload in personal-sandbox (stage staging).
 # Both images are domain-local IDs printed by scripts/argus-image-import; a
 # workload.deploy targetRevision must equal one of these lines exactly. Until
 # the first import, the PENDING pins fail closed (no deploy can match them).
@@ -43,7 +43,7 @@ services:
         target: /etc/caddy/ingress.json
     volumes:
       - type: bind
-        source: /var/lib/argus/managed-ingress/nodens-staging
+        source: /var/lib/argus/sandbox-ingress/nodens-staging
         target: /run/argus-ingress
     networks:
       - internal
