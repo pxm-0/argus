@@ -166,6 +166,5 @@ class ApiClient:
     def approve(self, operation_id: str, confirmation: str) -> ApiResponse:
         return self.request("POST", f"/api/operations/{quote(operation_id, safe='')}/approve", {"confirmation": confirmation})
 
-
     def operation(self, operation_id: str) -> ApiResponse:
         return self.request("GET", f"/api/operations/{quote(operation_id, safe='')}")
