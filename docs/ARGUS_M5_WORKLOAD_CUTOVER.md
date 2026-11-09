@@ -357,12 +357,40 @@ workload between trust domains leaves M1 converged.
    `workloads/nodens-staging/source/compose.yml`. Merge it.
 3. **Pull on the server.** `git -C /srv/argus pull --ff-only`. Never edit
    `/srv/argus` by hand.
-4. **Deploy staging.** From the dashboard, run `workload.deploy` for
-   `nodens-staging` with `targetRevision=sha256:<ID>`. The preview must show
-   trust domain `personal-sandbox`. `argus-domain-agent@personal-sandbox`
-   refuses any revision that is not an exact line of
-   `docker compose config --images`, then runs `up -d --pull never` and waits
-   up to 60s for domain health.
+4. **Deploy staging.** The dashboard has no `workload.deploy` button; use the
+   session API from the signed-in dashboard tab's browser console, where
+   `app.js` defines `apiPost` (adds the CSRF header and `Idempotency-Key`) and
+   `ensureStepUp` (approval needs a step-up session; enter the bootstrap
+   credential in the operator field first). Create the preview only after the
+   pull, or it is `revision-stale`:
+
+   ```js
+   const w = "nodens-staging", operationType = "workload.deploy";
+   const parameters = { targetRevision: "sha256:<ID>" };
+   const p = (await apiPost(`/api/workloads/${w}/operations/preview`, { operationType, parameters })).payload;
+   console.log(p.trustDomain, p.allowed, p.reason, p.confirmationPhrase);
+   // stop unless trustDomain === "personal-sandbox" && allowed === true
+   const c = await apiPost(`/api/workloads/${w}/operations`, {
+     operationType, parameters, previewDigest: p.previewDigest,
+     expectedRevision: p.expectedRevision, policyVersion: p.policyVersion });
+   await ensureStepUp();
+   const a = await apiPost(`/api/operations/${c.payload.operation_id}/approve`,
+     { confirmation: p.confirmationPhrase });  // "deploy nodens-staging sha256:<ID>"
+   console.log(c.status, a.status, a.payload);
+   ```
+
+   Poll `GET /api/operations/<operation_id>` until `succeeded`.
+   `argus-domain-agent@personal-sandbox` refuses any revision that is not an
+   exact line of `docker compose config --images`, then runs
+   `up -d --pull never` and waits up to 60s for domain health.
+
+   While `nodens-staging` runs, sandbox egress tooling for `personal-sandbox`
+   refuses (#354): `--apply-egress`, a sandbox cutover re-run,
+   `argus-sandbox-firewall` and `argus-m5-egress-verify` fail, and the
+   hastur/kadath/nodens reconciles report `egressPolicyDrift: true`
+   (report-only). Running workloads and the installed firewall are unaffected.
+   To change sandbox egress before #354 lands, `workload.stop` staging first
+   and deploy it again afterwards.
 5. **Verify staging.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
    succeeds, and the operation ledger records the deploy as succeeded.
 6. **Import the same image into production.**
@@ -374,16 +402,19 @@ workload between trust domains leaves M1 converged.
    also allow `deploy`, `start`, `stop`, and `health` in that manifest's
    `operations` (every capability starts denied, `operation-not-capable`).
    Merge, then pull on the server.
-8. **Deploy production.** Run `workload.deploy` for `nodens-production` with
-   the same `targetRevision`; the preview must show `personal-managed`.
+8. **Deploy production.** Repeat step 4's API sequence with
+   `w = "nodens-production"` and the same `targetRevision`; the preview must
+   show `trustDomain` `personal-managed` and `allowed` `true`.
 9. **Verify production.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8451/healthz`.
 
 ### Rollback
 
 Open a PR that reverts the affected pin to the previous ID, which is still
-loaded in that domain. Merge it, pull on the server, and run `workload.deploy`
-for that workload with the previous ID. Check that `:8450` (staging) or
+loaded in that domain. Merge it, pull on the server, and run
+`workload.deploy` (step 4's API sequence) for that workload with the previous
+ID. Check that `:8450` (staging) or
 `:8451` (production) serves the previous build. Do not prune images in
 `personal-sandbox` or `personal-managed` while their IDs are still rollback
 targets. To take staging down without a revision change, run
-`workload.stop` for `nodens-staging`.
+`workload.stop` for `nodens-staging` the same way (`parameters: {}`; the
+preview's `confirmationPhrase` is the approval text).
