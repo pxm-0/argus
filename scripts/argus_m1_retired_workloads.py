@@ -202,7 +202,9 @@ def _changes(
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
     missing = set(expected) - set(actual)
     if missing:
-        raise RetirementReconcileError(f"M1 {store} is missing an active workload")
+        raise RetirementReconcileError(
+            f"M1 {store} is missing an active workload; run argus-m1-reconcile-onboarded-workloads first"
+        )
     changed = tuple(sorted(workload_id for workload_id in expected if actual.get(workload_id) != expected[workload_id]))
     stale = set(actual) - set(expected)
     if stale - retired_ids:
@@ -255,20 +257,22 @@ def _write_journal(path: Path, value: dict[str, Any]) -> None:
             temporary.unlink()
 
 
-def _load_journal(path: Path) -> dict[str, Any] | None:
+def _load_journal(
+    path: Path, *, operation: str = OPERATION, label: str = "retired workload reconciliation journal",
+) -> dict[str, Any] | None:
     if not path.exists():
         return None
-    value = _load_object(path, "retired workload reconciliation journal")
+    value = _load_object(path, label)
     if (
         value.get("schemaVersion") != SCHEMA_VERSION
-        or value.get("operation") != OPERATION
+        or value.get("operation") != operation
         or not isinstance(value.get("configDigest"), str)
         or not value["configDigest"].startswith("sha256:")
         or not isinstance(value.get("correlationId"), str)
         or not value["correlationId"]
         or not isinstance(value.get("backups"), dict)
     ):
-        raise RetirementReconcileError("retired workload reconciliation journal is malformed")
+        raise RetirementReconcileError(f"{label} is malformed")
     return value
 
 
@@ -287,9 +291,9 @@ def _backup_database(source: Path, destination: Path) -> None:
         os.fsync(handle.fileno())
 
 
-def _create_backups(root: Path, correlation_id: str) -> dict[str, str]:
+def _create_backups(root: Path, correlation_id: str, directory: str = "retirement-backups") -> dict[str, str]:
     runtime = root / "runtime" / "argus"
-    backup_dir = runtime / "m1" / "retirement-backups"
+    backup_dir = runtime / "m1" / directory
     backup_dir.mkdir(parents=True, exist_ok=True)
     os.chmod(backup_dir, 0o700)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
@@ -375,10 +379,10 @@ def _reconcile_projections(
         raise RetirementReconcileError("M1 projection reconciliation failed") from exc
 
 
-def _intent_present(ledger: AuditLedger, correlation_id: str) -> bool:
+def _intent_present(ledger: AuditLedger, correlation_id: str, operation: str = OPERATION) -> bool:
     return any(
         event.get("correlationId") == correlation_id
-        and event.get("operation") == OPERATION
+        and event.get("operation") == operation
         and event.get("outcome") == "intent"
         for event in ledger._events()
     )
