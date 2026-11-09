@@ -138,7 +138,8 @@ def collect(root: Path, etc_dir: Path, state_dir: Path, workdir: Path, reason: s
         record(member, target, source)
 
     verifier = root / "scripts" / "argus-m1-verify"
-    result = run([str(verifier), "--root", str(root)])
+    # the tracked script is not executable (mode 100644); run it like the docs do
+    result = run([sys.executable, str(verifier), "--root", str(root)])
     if result.returncode != 0:
         raise SnapshotError("argus-m1-verify failed; snapshot aborted (fix M1 state or investigate first)")
     verify_path = workdir / "state" / "m1-verify.json"
