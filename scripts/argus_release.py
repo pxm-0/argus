@@ -26,7 +26,6 @@ SSH_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
 WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 IMAGE_LINE = re.compile(r"^(?P<head>    image:\s*)(?P<value>\S+)(?P<tail>.*)$")
-INGRESS_SOURCE = re.compile(r"(/var/lib/argus/)(?:managed|sandbox)-ingress/WORKLOAD\b")
 PLACEHOLDER_ID = "sha256:<image-id-from-import>"
 Result = dict[str, Any]
 Runner = Callable[[list[str], Path], Any]
@@ -80,8 +79,22 @@ def rewrite_image(text: str, service: str, image_id: str, comment: str) -> str:
     return "".join(lines)
 
 
-def normalised(text: str, workload_id: str, service: str) -> list[str]:
-    """Compose lines with the allowed per-workload fields masked: name, ingress path, secret refs, the pin."""
+def allowed_fields(repo: Path, item: dict[str, Any], workload_id: str, domain: str) -> dict[str, str]:
+    """Per-workload values that may legitimately differ: project and bridge from the manifest, ingress dir from the trust domain."""
+    try:
+        manifest = json.loads((repo / "workloads" / workload_id / "manifest.json").read_text(encoding="utf-8"))
+        compose = manifest["runtime"]["compose"]
+    except (OSError, KeyError, TypeError, ValueError):
+        compose = {}  # no manifest: only the registry project name is masked, so a bridge difference refuses
+    fields = {"PROJECT": str(compose.get("project") or item.get("runtime", {}).get("composeProject") or workload_id),
+              "INGRESS": f"/var/lib/argus/{domain.split('-', 1)[-1]}-ingress/{workload_id}"}
+    if compose.get("bridge"):
+        fields["BRIDGE"] = str(compose["bridge"])
+    return fields
+
+
+def normalised(text: str, fields: dict[str, str], service: str) -> list[str]:
+    """Compose lines with the allowed per-workload fields masked: project name, ingress path, bridge name, secret refs, the pin."""
     # shortcut: line-based, not a YAML parser; comments stripped at ' #'. Upgrade if compose files need anchors or flow style.
     pin = {i for i, _ in image_lines(text, service)}
     out: list[str] = []
@@ -100,15 +113,16 @@ def normalised(text: str, workload_id: str, service: str) -> list[str]:
             continue
         if i in pin:
             line = IMAGE_LINE.sub(r"\g<head>PIN", line)
-        elif re.match(r"name:\s", line):
-            line = "name: WORKLOAD"
-        out.append(INGRESS_SOURCE.sub(r"\g<1>INGRESS/WORKLOAD", line.replace(f"/{workload_id}", "/WORKLOAD")) if "-ingress/" in line else line)
+        else:
+            for key, value in fields.items():
+                line = re.sub(rf"(?<![\w./-]){re.escape(value)}(?![\w.-])", f"<{key}>", line)
+        out.append(line)
     return out
 
 
-def compose_drift(staging: str, production: str, staging_id: str, production_id: str, service: str) -> list[str]:
+def compose_drift(staging: str, production: str, staging_fields: dict[str, str], production_fields: dict[str, str], service: str) -> list[str]:
     """Unified diff of the normalised files; empty when they differ only in allowed fields."""
-    return list(difflib.unified_diff(normalised(staging, staging_id, service), normalised(production, production_id, service),
+    return list(difflib.unified_diff(normalised(staging, staging_fields, service), normalised(production, production_fields, service),
                                      "staging", "production", lineterm=""))
 
 
@@ -131,7 +145,8 @@ def workload_context(repo: Path, workload_id: str) -> dict[str, Any]:
     if not domain or not service or not compose.is_file():
         raise ReleaseError("workload-not-releasable", "The workload has no trust domain, service, or reviewed compose.yml.",
                            "Onboard the workload before pinning images.")
-    return {"item": item, "domain": domain, "service": service, "compose": compose}
+    return {"item": item, "domain": domain, "service": service, "compose": compose,
+            "fields": allowed_fields(repo, item, workload_id, domain)}
 
 
 def ssh_target() -> tuple[str, str]:
@@ -320,9 +335,9 @@ def promote(repo: Path, runner: Runner, staging_id: str, production_id: str, dry
     if not IMAGE_ID.fullmatch(image_id) or not ref:
         raise ReleaseError("promote-staging-unpinned", "Staging has no imported pin with a recorded image reference.",
                            "Run argus release pin for staging first.")
-    drift = compose_drift(staging_text, production_text, staging_id, production_id, staging["service"])
+    drift = compose_drift(staging_text, production_text, staging["fields"], production["fields"], staging["service"])
     if drift:
-        raise ReleaseError("promote-compose-differs", "Staging and production compose differ beyond name, ingress path and secret refs:\n"
+        raise ReleaseError("promote-compose-differs", "Staging and production compose differ beyond project name, ingress path, bridge name, secret refs and the image pin:\n"
                            + "\n".join(drift[:12]), "Align the two compose files in a reviewed PR first.")
     if not skip_evidence and not deploy_evidence(repo, runner, staging_id, image_id):
         raise ReleaseError("promote-staging-not-deployed", "No succeeded staging deploy of this image ID was found.",
@@ -363,7 +378,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             item.add_argument("--dry-run", action="store_true", help="print the diff only; no import, branch or PR")
     item = leaf(commands, "promote", help_text="promote the staging pin to production through a PR", contract=description(
         "Promote the staging image pin to production.", "server mutation",
-        "promotesTo registered, staging deploy evidence, compose files differing only in name/ingress path/secret refs",
+        "promotesTo registered, staging deploy evidence, compose files differing only in name/ingress path/bridge name/secret refs",
         "image loaded in the production domain; branch and PR", "image ID and PR URL", "argus promote nodens-staging nodens-production",
         "fix the named refusal and retry. Never deploys"))
     item.add_argument("staging_id")

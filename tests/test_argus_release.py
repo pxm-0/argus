@@ -81,16 +81,26 @@ class RewriteTests(unittest.TestCase):
                 self.assertFalse(release.valid_ref(bad))
 
 
+FIXTURES = ROOT / "tests" / "fixtures" / "release"
+NO_REPO = Path("/nonexistent-argus-repo")
+
+
+def fields(workload_id: str, domain: str = "personal-managed") -> dict[str, str]:
+    return release.allowed_fields(NO_REPO, {}, workload_id, domain)
+
+
+def drift(staging: str, production: str) -> list[str]:
+    return release.compose_drift(staging, production, fields("nodens-staging"), fields("nodens-production"), "nodens")
+
+
 class DriftTests(unittest.TestCase):
     def test_allowed_fields_and_pin_may_differ(self) -> None:
         staging, production = compose("nodens-staging", NEW_ID, "a"), compose("nodens-production", "sha256:PENDING-x", "b")
         production = production.replace("nodens-production-token", "other-secret")
-        self.assertEqual([], release.compose_drift(staging, production, "nodens-staging", "nodens-production", "nodens"))
+        self.assertEqual([], drift(staging, production))
 
     def test_other_image_drift_detected(self) -> None:
-        drift = release.compose_drift(compose("nodens-staging", NEW_ID), compose("nodens-production", NEW_ID, caddy="e" * 64),
-                                      "nodens-staging", "nodens-production", "nodens")
-        self.assertTrue(drift)
+        self.assertTrue(drift(compose("nodens-staging", NEW_ID), compose("nodens-production", NEW_ID, caddy="e" * 64)))
 
     def test_repo_promotion_pairs_have_no_compose_drift(self) -> None:
         registry = release.load_registry(ROOT)
@@ -100,12 +110,78 @@ class DriftTests(unittest.TestCase):
                 continue
             with self.subTest(staging=staging_id):
                 texts = [(ROOT / "workloads" / i / "source" / "compose.yml").read_text() for i in (staging_id, production_id)]
-                self.assertEqual([], release.compose_drift(texts[0], texts[1], staging_id, production_id, "nodens"))
+                domains = [str(registry[i].get("migration", {}).get("targetTrustDomain", "")) for i in (staging_id, production_id)]
+                self.assertEqual([], release.compose_drift(texts[0], texts[1], release.allowed_fields(ROOT, registry[staging_id], staging_id, domains[0]),
+                                                           release.allowed_fields(ROOT, registry[production_id], production_id, domains[1]), "nodens"))
                 for text in texts:
                     self.assertRegex(release.read_pin(text, "nodens")[0], r"^sha256:([0-9a-f]{64}|PENDING[A-Za-z0-9-]*)$")
 
     def test_repo_registers_the_nodens_promotion(self) -> None:
         self.assertEqual("nodens-production", release.load_registry(ROOT)["nodens-staging"]["promotesTo"])
+
+
+class RealPairDriftTests(unittest.TestCase):
+    """The nodens-staging / nodens-production files and manifests as #353 ships them."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.texts = {}
+        self.fields = {}
+        for stage, domain in (("staging", "personal-sandbox"), ("production", "personal-managed")):
+            workload_id = f"nodens-{stage}"
+            manifest = Path(self.tmp.name) / "workloads" / workload_id / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text((FIXTURES / f"{workload_id}.manifest.json").read_text())
+            self.texts[stage] = (FIXTURES / f"{workload_id}.compose.yml").read_text()
+            self.fields[stage] = release.allowed_fields(Path(self.tmp.name), {}, workload_id, domain)
+
+    def drift(self, staging: str | None = None, production: str | None = None) -> list[str]:
+        return release.compose_drift(staging or self.texts["staging"], production or self.texts["production"],
+                                     self.fields["staging"], self.fields["production"], "nodens")
+
+    def test_allowed_fields_come_from_manifest_and_trust_domain(self) -> None:
+        self.assertEqual({"PROJECT": "nodens-staging", "INGRESS": "/var/lib/argus/sandbox-ingress/nodens-staging", "BRIDGE": "argus-ndns-stg"},
+                         self.fields["staging"])
+        self.assertEqual("argus-ndns-prd", self.fields["production"]["BRIDGE"])
+
+    def test_real_files_differ_only_in_allowed_fields(self) -> None:
+        self.assertEqual([], self.drift())
+
+    def test_real_files_differ_literally_but_not_after_normalising(self) -> None:
+        self.assertNotEqual(self.texts["staging"], self.texts["production"])
+        for needle in ("sandbox-ingress", "argus-ndns-stg"):
+            self.assertIn(needle, self.texts["staging"])
+            self.assertNotIn(needle, self.texts["production"])
+
+    def test_any_other_difference_still_refuses(self) -> None:
+        production = self.texts["production"]
+        mutations = {
+            "caddy image": lambda t: re.sub(r"(argus-ingress:\n    image: sha256:)[0-9a-f]{64}", r"\g<1>" + "e" * 64, t),
+            "capability": lambda t: t.replace("      - NET_BIND_SERVICE\n", "      - NET_BIND_SERVICE\n      - NET_ADMIN\n"),
+            "hardening": lambda t: t.replace("    read_only: true\n", ""),
+            "no-new-privileges": lambda t: t.replace("no-new-privileges:true", "no-new-privileges:false", 1),
+            "restart policy": lambda t: t.replace("unless-stopped", "always", 1),
+            "published port": lambda t: t.replace("    restart: unless-stopped\n", "    ports:\n      - \"80:80\"\n    restart: unless-stopped\n", 1),
+            "extra service": lambda t: t.replace("\nnetworks:\n", "\n  extra:\n    image: sha256:" + "a" * 64 + "\n\nnetworks:\n", 1),
+            "bridge name not the manifest's": lambda t: t.replace("argus-ndns-prd", "argus-ndns-xyz"),
+            "ingress dir of the wrong domain": lambda t: t.replace("managed-ingress", "sandbox-ingress"),
+            "ingress dir of another workload": lambda t: t.replace("managed-ingress/nodens-production", "managed-ingress/other"),
+            "project name": lambda t: t.replace("name: nodens-production", "name: other"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label):
+                mutated = mutate(production)
+                self.assertNotEqual(production, mutated)
+                self.assertTrue(self.drift(production=mutated))
+
+    def test_healthcheck_added_on_one_side_refuses(self) -> None:
+        mutated = self.texts["production"].replace("    read_only: true\n", "    read_only: true\n    healthcheck:\n      test: [\"CMD\", \"true\"]\n", 1)
+        self.assertTrue(self.drift(production=mutated))
+
+    def test_image_pin_replacement_is_tolerated(self) -> None:
+        pinned = re.sub(r"(  nodens:\n    image: )\S+.*", r"\g<1>sha256:" + "9" * 64 + "  # ref", self.texts["production"], count=1)
+        self.assertEqual([], self.drift(production=pinned))
 
 
 FAKE_SSH = """#!/bin/sh
@@ -290,11 +366,16 @@ class CommandTests(unittest.TestCase):
                 release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID)
         self.assertEqual("promote-evidence-unavailable", caught.exception.code)
 
-    def test_ingress_bind_source_prefix_is_not_drift(self) -> None:
+    def test_ingress_bind_source_prefix_follows_the_trust_domain(self) -> None:
         staging = compose("nodens-staging", NEW_ID).replace("managed-ingress", "sandbox-ingress")
-        self.assertEqual([], release.compose_drift(staging, compose("nodens-production", NEW_ID), "nodens-staging", "nodens-production", "nodens"))
-        other = compose("nodens-production", NEW_ID).replace("/var/lib/argus/managed-ingress/nodens-production", "/var/lib/argus/mana")
-        self.assertTrue(release.compose_drift(staging, other, "nodens-staging", "nodens-production", "nodens"))
+        production = compose("nodens-production", NEW_ID)
+        sandbox_fields = fields("nodens-staging", "personal-sandbox")
+        self.assertEqual([], release.compose_drift(staging, production, sandbox_fields, fields("nodens-production"), "nodens"))
+        # sandbox path on a workload registered as personal-managed is drift
+        self.assertTrue(release.compose_drift(staging, production, fields("nodens-staging"), fields("nodens-production"), "nodens"))
+        other = production.replace("/var/lib/argus/managed-ingress/nodens-production", "/var/lib/argus/mana")
+        self.assertTrue(release.compose_drift(staging, other, sandbox_fields, fields("nodens-production"), "nodens"))
+
 
     def test_evidence_script_reads_ledger_and_validates_args(self) -> None:
         script = ROOT / "scripts" / "argus-promote-evidence"
