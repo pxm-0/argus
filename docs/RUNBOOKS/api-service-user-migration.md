@@ -15,8 +15,8 @@ Keep a root shell open on the server for the whole procedure.
 |---|---|---|
 | `/var/lib/argus/control/operations.sqlite3` (`argus-worker:argus-control 0660`) | yes, read/write | group `argus-control`; directory must be group-writable for SQLite WAL files |
 | `/var/lib/argus/control/session.sqlite3` (today `oreo`) | yes | chown below |
-| `/srv/argus/runtime/audit.log` (`oreo:oreo 0664`; `runtime/` is `oreo:oreo 0755`) | yes, append: every audited API route calls `audit()` with no error handling | `chgrp argus-control`; the file already has group rw. `ReadWritePaths=` only lifts the read-only mount, it does not grant Unix permission |
-| `/srv/argus/runtime/discovery/latest.json` (`oreo:oreo 0644`, dir `0755`) | yes, write (`handle_workload_discover`) | `chgrp argus-control`, dir `2775`, file `0664` |
+| `/srv/argus/runtime/audit.log` (`oreo:oreo 0664`; `runtime/` is `oreo:oreo 0755`) | yes, append: every audited API route calls `audit()` with no error handling | `argus-m5-runtime-permissions` (re)creates it `oreo:argus-control 0664`; the manual `chgrp` below is the same step. The file already has group rw. `ReadWritePaths=` only lifts the read-only mount, it does not grant Unix permission |
+| `/srv/argus/runtime/discovery/latest.json` (`oreo:oreo 0644`, dir `0755`) | yes, write (`handle_workload_discover`) | `argus-m5-runtime-permissions` sets group `argus-control`, dir `2775`, file `0664` |
 | `/etc/argus/{control-token,operators.json,operator-proxy-token}` (root 0600) | yes | `LoadCredential=` (systemd reads as root); no file access needed |
 | `/run/argus/domains/*/agent.sock`, `/run/argus/privileged-lifecycle/agent.sock` (group `argus-control`, 0660) | yes, connect | group `argus-control` |
 | `/srv/argus/runtime/argus/*` (setgid `argus-control`, group rw) | yes | group `argus-control` |

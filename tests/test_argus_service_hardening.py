@@ -121,6 +121,13 @@ class ApiIdentityScriptTests(unittest.TestCase):
         self.assertIn('SESSION_OWNER="argus-api"', script)
         self.assertIn('chown "$SESSION_OWNER:$CONTROL_GROUP" "$path"', script)
 
+    def test_runtime_permissions_reconciles_audit_log_and_discovery(self) -> None:
+        script = self.read("argus-m5-runtime-permissions")
+        self.assertIn('AUDIT_LOG="$ROOT/runtime/audit.log"', script)
+        self.assertIn('"$DISCOVERY_DIR/latest.json"', script)
+        self.assertIn('install -m 0664 -o "$API_USER" -g "$CONTROL_GROUP" /dev/null "$AUDIT_LOG"', script)
+        self.assertRegex(script, r'install -d -m 2775 [^\n]*"\$DISCOVERY_DIR"')
+
     def test_runbook_covers_audit_log_and_discovery(self) -> None:
         runbook = (ROOT / "docs" / "RUNBOOKS" / "api-service-user-migration.md").read_text()
         for needle in ("runtime/audit.log", "runtime/discovery", "chgrp argus-control"):

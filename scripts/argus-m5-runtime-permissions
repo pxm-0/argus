@@ -9,6 +9,8 @@ readonly CONTROL_STATE="/var/lib/argus/control"
 readonly CONFIG_DIR="$ROOT/config"
 readonly ACCESS_CONFIG="$CONFIG_DIR/access.json"
 readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
+readonly AUDIT_LOG="$ROOT/runtime/audit.log"
+readonly DISCOVERY_DIR="$ROOT/runtime/discovery"
 readonly DASHBOARD_PUBLIC="$ROOT/control-plane/dashboard/public"
 readonly API_USER="oreo"  # owner of shared files; the API (argus-api) reaches them via the group
 readonly SESSION_OWNER="argus-api"
@@ -33,12 +35,22 @@ install -d -m 2770 -o "$API_USER" -g "$CONTROL_GROUP" \
 install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" \
   "$RUNTIME" "$RUNTIME/agents"
 install -d -m 0770 -o "$API_USER" -g "$CONTROL_GROUP" "$CONTROL_STATE"
-install -d -m 2775 -o "$API_USER" -g "$CONTROL_GROUP" "$DASHBOARD_PUBLIC"
+install -d -m 2775 -o "$API_USER" -g "$CONTROL_GROUP" "$DASHBOARD_PUBLIC" "$DISCOVERY_DIR"
 
 reconciled=0
 chown "$API_USER:$CONTROL_GROUP" "$ACCESS_CONFIG"
 chmod 0664 "$ACCESS_CONFIG"
 reconciled=$((reconciled + 1))
+
+# argus-api appends to audit.log and rewrites latest.json in place via the group;
+# runtime/ is not group-writable, so the file must be (re)created here, as root.
+[[ -e "$AUDIT_LOG" ]] || install -m 0664 -o "$API_USER" -g "$CONTROL_GROUP" /dev/null "$AUDIT_LOG"
+for path in "$AUDIT_LOG" "$DISCOVERY_DIR/latest.json"; do
+  [[ -e "$path" ]] || continue
+  chown "$API_USER:$CONTROL_GROUP" "$path"
+  chmod 0664 "$path"
+  reconciled=$((reconciled + 1))
+done
 
 for path in "$M1_RUNTIME/access-journal.jsonl"; do
   [[ -e "$path" ]] || continue
