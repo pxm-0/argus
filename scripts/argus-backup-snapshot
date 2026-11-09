@@ -1,0 +1,395 @@
+#!/usr/bin/env python3
+"""Pre-change Argus snapshot: consistent SQLite copies, host state, /etc/argus, M1 journals.
+
+Root/server-side internal tool (not an operator command). Prints only paths, sizes and sha256
+fingerprints, never file contents.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import hashlib
+import io
+import json
+import os
+import re
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+RETENTION = 14
+REASON_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
+SQLITE_MAGIC = b"SQLite format 3\x00"
+RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
+COMMANDS = {
+    "state/git-head.txt": ["git", "-C", "{root}", "rev-parse", "HEAD"],
+    "state/git-status.txt": ["git", "-C", "{root}", "status", "--porcelain"],
+    "state/nft-ruleset.nft": ["nft", "list", "ruleset"],
+    "state/tailscale-serve.json": ["tailscale", "serve", "status", "--json"],
+    "state/systemd-argus-units.json": ["systemctl", "list-units", "argus-*", "--all", "--output", "json"],
+}
+
+
+class SnapshotError(Exception):
+    pass
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def sha256_stream(handle) -> str:
+    digest = hashlib.sha256()
+    for chunk in iter(lambda: handle.read(1 << 20), b""):
+        digest.update(chunk)
+    return digest.hexdigest()
+
+
+def run(argv: list[str], **kwargs) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, check=False, **kwargs)
+
+
+def backup_sqlite(source: Path, destination: Path) -> None:
+    """Online-consistent copy via the SQLite backup API (the `.backup` mechanism); never cp."""
+    src = sqlite3.connect(f"file:{source}?mode=ro", uri=True, timeout=30)
+    try:
+        dst = sqlite3.connect(destination)
+        try:
+            src.backup(dst)
+        finally:
+            dst.close()
+    finally:
+        src.close()
+
+
+def integrity_ok(path: Path) -> bool:
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        return connection.execute("PRAGMA integrity_check").fetchone() == ("ok",)
+    finally:
+        connection.close()
+
+
+def discover(root: Path, etc_dir: Path, state_dir: Path) -> tuple[list[tuple[str, Path]], list[tuple[str, Path]]]:
+    """Return (sqlite sources as (member, path), plain file sources as (member, path))."""
+    runtime = root / "runtime" / "argus"
+    databases = [
+        ("db/m1-state.sqlite3", runtime / "m1" / "state.sqlite3"),
+        ("db/entity-store.sqlite3", runtime / "entity-store.sqlite3"),
+        ("db/audit.sqlite3", runtime / "audit.sqlite3"),
+        ("db/operations.sqlite3", state_dir / "control" / "operations.sqlite3"),
+        ("db/session.sqlite3", state_dir / "control" / "session.sqlite3"),
+    ]
+    for candidate in sorted(state_dir.glob("*/capabilities.sqlite3")):
+        databases.append((f"db/capabilities-{candidate.parent.name}.sqlite3", candidate))
+    files: list[tuple[str, Path]] = []
+    for journal in sorted((runtime / "m1").glob("*.jsonl")) if (runtime / "m1").is_dir() else []:
+        files.append((f"m1/{journal.name}", journal))
+    checkpoint = runtime / "audit-checkpoint.json"
+    if checkpoint.is_file():
+        files.append(("m1/audit-checkpoint.json", checkpoint))
+    if etc_dir.is_dir():
+        for path in sorted(etc_dir.rglob("*")):
+            if path.is_file() and not path.is_symlink():
+                files.append((f"etc-argus/{path.relative_to(etc_dir).as_posix()}", path))
+    return [(m, p) for m, p in databases if p.is_file()], files
+
+
+def load_recipients(path: Path) -> list[str]:
+    lines = [ln.strip() for ln in path.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    if not lines or any(not RECIPIENT_RE.match(ln) for ln in lines):
+        raise SnapshotError("recipient file must contain only age/ssh public keys")
+    return lines
+
+
+def collect(root: Path, etc_dir: Path, state_dir: Path, workdir: Path, reason: str) -> dict:
+    databases, files = discover(root, etc_dir, state_dir)
+    if not any(m == "db/m1-state.sqlite3" for m, _ in databases):
+        raise SnapshotError(f"M1 state database not found under {root}/runtime/argus/m1")
+    members: dict[str, dict] = {}
+
+    def record(member: str, source: Path, stat_from: Path | None = None) -> None:
+        stat = (stat_from or source).stat()
+        members[member] = {
+            "source": str(stat_from or source), "size": source.stat().st_size, "sha256": sha256_file(source),
+            "mode": stat.st_mode & 0o7777, "uid": stat.st_uid, "gid": stat.st_gid,
+        }
+
+    for member, source in databases:
+        target = workdir / member
+        target.parent.mkdir(parents=True, exist_ok=True)
+        backup_sqlite(source, target)
+        if not integrity_ok(target):
+            raise SnapshotError(f"integrity_check failed for {source}")
+        record(member, target, source)
+    for member, source in files:
+        target = workdir / member
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(source.read_bytes())
+        record(member, target, source)
+
+    verifier = root / "scripts" / "argus-m1-verify"
+    result = run([str(verifier), "--root", str(root)])
+    if result.returncode != 0:
+        raise SnapshotError("argus-m1-verify failed; snapshot aborted (fix M1 state or investigate first)")
+    verify_path = workdir / "state" / "m1-verify.json"
+    verify_path.parent.mkdir(parents=True, exist_ok=True)
+    verify_path.write_text(result.stdout)
+    record("state/m1-verify.json", verify_path)
+
+    commands: dict[str, str] = {}
+    for member, template in COMMANDS.items():
+        argv = [part.format(root=root) for part in template]
+        try:
+            proc = run(argv)
+            output, status = proc.stdout, ("ok" if proc.returncode == 0 else f"exit {proc.returncode}")
+        except OSError as exc:
+            output, status = "", f"unavailable: {type(exc).__name__}"
+        commands[member] = status
+        path = workdir / member
+        path.write_text(output)
+        record(member, path)
+        if status != "ok":
+            print(f"WARN {member}: {status}", file=sys.stderr)
+
+    return {
+        "version": 1, "createdAt": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "reason": reason, "commands": commands, "members": members,
+    }
+
+
+def write_tar(archive: Path, workdir: Path, manifest: dict) -> None:
+    data = (json.dumps(manifest, indent=2, sort_keys=True) + "\n").encode()
+    with tarfile.open(archive, "w") as tar:
+        info = tarfile.TarInfo("manifest.json")
+        info.size, info.mode = len(data), 0o600
+        tar.addfile(info, io.BytesIO(data))
+        for member, meta in sorted(manifest["members"].items()):
+            info = tar.gettarinfo(str(workdir / member), arcname=member)
+            info.mode, info.uid, info.gid, info.uname, info.gname = meta["mode"], meta["uid"], meta["gid"], "", ""
+            with (workdir / member).open("rb") as handle:
+                tar.addfile(info, handle)
+
+
+def open_archive(path: Path, identity: Path | None):
+    """Yield an uncompressed tar file object; decrypts .age via the age binary."""
+    if path.suffix != ".age":
+        return path.open("rb"), None
+    if identity is None:
+        raise SnapshotError("encrypted archive: pass --identity <age identity file> to verify")
+    proc = subprocess.Popen(["age", "-d", "-i", str(identity), str(path)], stdout=subprocess.PIPE)
+    return proc.stdout, proc
+
+
+def verify_archive(path: Path, identity: Path | None = None) -> dict:
+    old_umask = os.umask(0o077)
+    try:
+        return _verify_archive(path, identity)
+    finally:
+        os.umask(old_umask)
+
+
+def _verify_archive(path: Path, identity: Path | None) -> dict:
+    if not os.access(path.parent, os.W_OK):
+        raise SnapshotError(f"cannot verify: scratch directory {path.parent} is not writable "
+                            "(scratch stays beside the archive so secrets never reach /tmp)")
+    handle, proc = open_archive(path, identity)
+    problems: list[str] = []
+    try:
+        with tarfile.open(fileobj=handle, mode="r|") as tar:
+            seen: dict[str, str] = {}
+            manifest = None
+            # Only db/* members touch disk (integrity_check needs a file); everything else is hashed in a
+            # stream. Scratch lives beside the archive (root-only tree), never in the default /tmp.
+            with tempfile.TemporaryDirectory(prefix=".argus-snap-verify-", dir=path.parent) as scratch:
+                for item in tar:
+                    if not item.isfile() or item.name.startswith("/") or ".." in Path(item.name).parts:
+                        problems.append(f"unsafe member: {item.name}")
+                        continue
+                    extracted = tar.extractfile(item)
+                    if item.name == "manifest.json":
+                        manifest = json.loads(extracted.read())
+                    elif item.name.startswith("db/"):
+                        target = Path(scratch) / Path(item.name).name
+                        with target.open("wb") as out:
+                            for chunk in iter(lambda: extracted.read(1 << 20), b""):
+                                out.write(chunk)
+                        seen[item.name] = sha256_file(target)
+                        if not integrity_ok(target):
+                            problems.append(f"sqlite integrity_check failed: {item.name}")
+                        target.unlink()
+                    else:
+                        seen[item.name] = sha256_stream(extracted)
+    except (tarfile.TarError, json.JSONDecodeError, sqlite3.Error) as exc:
+        raise SnapshotError(f"unreadable archive: {type(exc).__name__}") from exc
+    finally:
+        if proc is not None:
+            handle.close()
+            if proc.wait() != 0:
+                raise SnapshotError("age decryption failed")
+        else:
+            handle.close()
+    if manifest is None:
+        raise SnapshotError("archive has no manifest.json")
+    expected = manifest["members"]
+    for name, meta in expected.items():
+        if name not in seen:
+            problems.append(f"missing member: {name}")
+        elif seen[name] != meta["sha256"]:
+            problems.append(f"sha256 mismatch: {name}")
+    problems.extend(f"unlisted member: {n}" for n in seen if n not in expected)
+    if problems:
+        raise SnapshotError("verification failed: " + "; ".join(problems))
+    with path.open("rb") as raw:
+        fingerprint = sha256_stream(raw)
+    return {"archive": str(path), "sha256": fingerprint, "members": len(expected), "reason": manifest["reason"],
+            "createdAt": manifest["createdAt"], "manifest": manifest}
+
+
+def age_encrypt(plain: Path, recipients_file: Path, destination: Path) -> None:
+    proc = run(["age", "-R", str(recipients_file), "-o", str(destination), str(plain)])
+    if proc.returncode != 0:
+        raise SnapshotError("age encryption failed")
+
+
+def snapshots(out_dir: Path) -> list[Path]:
+    return sorted(p for p in out_dir.glob("*.tar*") if p.suffix in (".tar", ".age") and not p.name.endswith(".pinned"))
+
+
+def is_pinned(path: Path) -> bool:
+    return path.with_name(path.name + ".pinned").exists()
+
+
+def prune(out_dir: Path) -> list[str]:
+    candidates = snapshots(out_dir)
+    keep = set(candidates[-RETENTION:]) | {p for p in candidates if is_pinned(p)}
+    removed = []
+    for path in candidates:
+        if path not in keep:
+            path.unlink()
+            removed.append(path.name)
+    return removed
+
+
+def create(args: argparse.Namespace) -> dict:
+    if not REASON_RE.match(args.reason):
+        raise SnapshotError("--reason must match [A-Za-z0-9._-], 1-40 chars")
+    recipients_file = args.recipient_file
+    if recipients_file:
+        load_recipients(recipients_file)
+        if shutil.which("age") is None:
+            raise SnapshotError("age binary not found on PATH")
+    elif not args.allow_plaintext:
+        raise SnapshotError("no age recipient file configured (--recipient-file or ARGUS_SNAPSHOT_AGE_RECIPIENTS); "
+                            "refusing a plaintext archive containing /etc/argus without --allow-plaintext")
+    args.out_dir.mkdir(parents=True, exist_ok=True)
+    os.chmod(args.out_dir, 0o700)
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    final = args.out_dir / f"{stamp}-{args.reason}.tar{'.age' if recipients_file else ''}"
+    if final.exists():
+        raise SnapshotError(f"snapshot already exists: {final.name}")
+    old_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory(prefix="argus-snap-", dir=args.out_dir) as scratch:
+            work = Path(scratch)
+            manifest = collect(args.root, args.etc_dir, args.state_dir, work / "files", args.reason)
+            plain = work / "snapshot.tar"
+            write_tar(plain, work / "files", manifest)
+            verify_archive(plain)  # fail closed before encrypting or publishing anything
+            if recipients_file:
+                partial = work / "snapshot.tar.age"
+                age_encrypt(plain, recipients_file, partial)
+            else:
+                partial = plain
+            os.chmod(partial, 0o600)
+            os.replace(partial, final)
+    finally:
+        os.umask(old_umask)
+    with final.open("rb") as raw:
+        fingerprint = sha256_stream(raw)
+    removed = prune(args.out_dir)
+    return {"archive": str(final), "sha256": fingerprint, "encrypted": bool(recipients_file),
+            "members": len(manifest["members"]),
+            # Final bytes are only re-read for plaintext; encrypted needs --verify --identity.
+            "verified": not recipients_file, "staged_tar_verified": True,
+            "pruned": removed, "note": "encrypted: staged tar verified before encryption; run --verify <file> --identity <key> to re-read the .age"
+            if recipients_file else None}
+
+
+def restore_plan(info: dict) -> str:
+    manifest = info["manifest"]
+    dbs = sorted(m for m in manifest["members"] if m.startswith("db/"))
+    lines = [f"RESTORE PLAN for {info['archive']} (sha256 {info['sha256']}, created {info['createdAt']}, reason {info['reason']})",
+             "This prints steps only; nothing is restored by this command.", "",
+             "1. Verify:   scripts/argus-backup-snapshot --verify <file> [--identity <age identity>]",
+             "2. Stage:    mkdir -m 700 /root/argus-restore, then",
+             "             encrypted: age -d -i <identity> <file> | tar -xpf - --numeric-owner -C /root/argus-restore",
+             "             plaintext: tar -xpf <file> --numeric-owner -C /root/argus-restore",
+             "3. Stop services in reverse start order: agents, worker, control-api, issuer (systemctl stop argus-*).",
+             "4. Keep current state: for each target below, mv <target> <target>.pre-restore.$(date -u +%Y%m%dT%H%M%SZ)",
+             "5. Copy each staged member to its recorded source path (owner/mode preserved by tar --numeric-owner -p):"]
+    for name, meta in sorted(manifest["members"].items()):
+        if name.startswith(("db/", "m1/", "etc-argus/")):
+            lines.append(f"     {name} -> {meta['source']}  (mode {meta['mode']:o}, uid {meta['uid']}, gid {meta['gid']})")
+    lines += ["6. Restore firewall/serve only if they were the thing that broke: state/nft-ruleset.nft, state/tailscale-serve.json "
+              "(see docs/RUNBOOKS/emergency-rollback.md).",
+              "7. Start in order: issuer, control-api, worker, agents.",
+              f"8. Verify: scripts/argus-m1-verify; scripts/argus-m1-audit-checkpoint --verify m1/audit-checkpoint.json; "
+              f"sqlite3 <db> 'PRAGMA integrity_check' for {len(dbs)} databases.",
+              "9. Record the incident; keep *.pre-restore copies until the estate is confirmed healthy."]
+    return "\n".join(lines)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Create, list, verify or plan the restore of Argus pre-change snapshots.")
+    parser.add_argument("--reason", default="manual")
+    parser.add_argument("--json", action="store_true", help="machine-readable output")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--verify", type=Path, metavar="FILE")
+    parser.add_argument("--restore-plan", type=Path, metavar="FILE", help="print restore steps only")
+    parser.add_argument("--identity", type=Path, help="age identity file (used by age; never read here)")
+    parser.add_argument("--recipient-file", type=Path, default=os.environ.get("ARGUS_SNAPSHOT_AGE_RECIPIENTS") or None,
+                        help="age recipients (public keys only)")
+    parser.add_argument("--allow-plaintext", action="store_true")
+    parser.add_argument("--root", type=Path, default=ROOT)
+    parser.add_argument("--etc-dir", type=Path, default=Path("/etc/argus"))
+    parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/argus"))
+    parser.add_argument("--out-dir", type=Path, default=Path("/var/backups/argus-snapshots"))
+    args = parser.parse_args()
+    if args.recipient_file:
+        args.recipient_file = Path(args.recipient_file)
+    try:
+        if args.list:
+            rows = [{"name": p.name, "bytes": p.stat().st_size, "pinned": is_pinned(p)}
+                    for p in (snapshots(args.out_dir) if args.out_dir.is_dir() else [])]
+            print(json.dumps(rows, indent=2) if args.json else "\n".join(
+                f"{r['name']}\t{r['bytes']}\t{'pinned' if r['pinned'] else ''}" for r in rows))
+        elif args.verify:
+            info = verify_archive(args.verify, args.identity)
+            info.pop("manifest")
+            print(json.dumps(info, indent=2) if args.json else f"OK {info['archive']} members={info['members']} sha256={info['sha256']}")
+        elif args.restore_plan:
+            info = verify_archive(args.restore_plan, args.identity)
+            print(restore_plan(info))
+        else:
+            result = create(args)
+            print(json.dumps(result, indent=2) if args.json else
+                  f"SNAPSHOT {result['archive']} sha256={result['sha256']} members={result['members']} "
+                  f"encrypted={result['encrypted']} pruned={len(result['pruned'])}")
+    except (SnapshotError, OSError, sqlite3.Error) as exc:
+        print(f"ERROR {exc}", file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
