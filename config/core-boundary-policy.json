@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:ba7e684107b197399b2f5a3760e7c1fba802879cb40f057d5daedf96103a229f"
+    "expectedSbomDigest": "sha256:b2de2a389a21a4387f6270023063c431605ec3392f961fdcead81e97569c1612"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:dfa1bf5c83f94b4905556d978bb10d05020334345b8612cb538f8798cb839eef",
+    "expectedEndpointDigest": "sha256:544afe683341a609060ffc8a41945d3bbe005e0014817579c6ec63175902351a",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -101,6 +101,10 @@
       {
         "path": "scripts/argus_access_runtime.py",
         "authority": "configured-local-control-api"
+      },
+      {
+        "path": "scripts/argus_api_client.py",
+        "authority": "tailnet-operator-session-api-client"
       },
       {
         "path": "scripts/argus_capability_issuer.py",
