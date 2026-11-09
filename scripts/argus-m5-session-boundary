@@ -125,7 +125,7 @@ validate_session_store() {
   [[ -f "$SESSION_DB" ]] || fail "session database was not initialized"
   [[ "$(file_mode "$SESSION_DB")" == "600" ]] ||
     fail "session database must be mode 0600"
-  [[ "$(stat -c '%U:%G' "$SESSION_DB")" == "oreo:argus-control" ]] ||
+  [[ "$(stat -c '%U:%G' "$SESSION_DB")" == "argus-api:argus-control" ]] ||
     fail "session database has unexpected ownership"
   python3 - "$SESSION_DB" <<'PY'
 import sqlite3
@@ -270,7 +270,7 @@ restore_session_db() {
   if [[ -f "$backup.absent" ]]; then
     rm -f -- "$SESSION_DB"
   else
-    install -o oreo -g argus-control -m 0600 "$backup" "$SESSION_DB"
+    install -o argus-api -g argus-control -m 0600 "$backup" "$SESSION_DB"
   fi
 }
 
@@ -337,7 +337,7 @@ apply_boundary() {
   systemctl restart argus-control-api.service
 
   systemctl is-active --quiet argus-control-api.service || fail "control API is not active"
-  [[ "$(systemctl show argus-control-api.service -p User --value)" == "oreo" ]] ||
+  [[ "$(systemctl show argus-control-api.service -p User --value)" == "argus-api" ]] ||
     fail "control API user changed unexpectedly"
   [[ "$(systemctl show argus-control-api.service -p Group --value)" == "argus-control" ]] ||
     fail "control API group is not argus-control"

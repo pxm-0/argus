@@ -15,6 +15,8 @@ Keep a root shell open on the server for the whole procedure.
 |---|---|---|
 | `/var/lib/argus/control/operations.sqlite3` (`argus-worker:argus-control 0660`) | yes, read/write | group `argus-control`; directory must be group-writable for SQLite WAL files |
 | `/var/lib/argus/control/session.sqlite3` (today `oreo`) | yes | chown below |
+| `/srv/argus/runtime/audit.log` (`oreo:oreo 0664`; `runtime/` is `oreo:oreo 0755`) | yes, append: every audited API route calls `audit()` with no error handling | `chgrp argus-control`; the file already has group rw. `ReadWritePaths=` only lifts the read-only mount, it does not grant Unix permission |
+| `/srv/argus/runtime/discovery/latest.json` (`oreo:oreo 0644`, dir `0755`) | yes, write (`handle_workload_discover`) | `chgrp argus-control`, dir `2775`, file `0664` |
 | `/etc/argus/{control-token,operators.json,operator-proxy-token}` (root 0600) | yes | `LoadCredential=` (systemd reads as root); no file access needed |
 | `/run/argus/domains/*/agent.sock`, `/run/argus/privileged-lifecycle/agent.sock` (group `argus-control`, 0660) | yes, connect | group `argus-control` |
 | `/srv/argus/runtime/argus/*` (setgid `argus-control`, group rw) | yes | group `argus-control` |
@@ -26,8 +28,12 @@ the shared ledger directory to the API user. Ownership is set explicitly below.
 `handle_workload_discover` shells out to `scripts/argus-workload-discover`; with
 no docker access that path reports what an unprivileged user can see. Verify it
 on the dashboard after migration. `scripts/argus-m5-runtime-permissions` still
-names `API_USER="oreo"` for file ownership; group `argus-control` access keeps
-that compatible, and re-running it will not break the new user.
+names `API_USER="oreo"` as the owner of the shared files; group `argus-control`
+access keeps the API working with them. It now chowns `session.sqlite3` (and
+its `-wal`/`-shm`) to `argus-api:argus-control 0600`, so re-running it keeps the
+new user working. `argus-control-plane-reconcile` and `argus-m5-session-boundary`
+expect `User=argus-api`. `oreo` is not in `argus-control`, so its CLIs keep
+write access to `audit.log` and `latest.json` only as file owner.
 
 ## Migrate
 
@@ -40,8 +46,13 @@ id argus-api                               # expect: groups argus-api,argus-cont
 sudo systemctl stop argus-control-api
 sudo chown argus-api:argus-control /var/lib/argus/control/session.sqlite3
 sudo chmod 0600 /var/lib/argus/control/session.sqlite3
-sudo chown root:argus-control /var/lib/argus/control            # was oreo:argus-control
-sudo chmod 2770 /var/lib/argus/control
+# leave /var/lib/argus/control at oreo:argus-control (argus-m5-runtime-permissions and
+# argus-m5-capability-issuer expect that owner); group rw lets the API create WAL files
+sudo chgrp argus-control /srv/argus/runtime/audit.log
+sudo chmod 0664 /srv/argus/runtime/audit.log
+sudo chgrp argus-control /srv/argus/runtime/discovery /srv/argus/runtime/discovery/latest.json
+sudo chmod 2775 /srv/argus/runtime/discovery
+sudo chmod 0664 /srv/argus/runtime/discovery/latest.json
 # leave operations.sqlite3 at argus-worker:argus-control 0660 (do not touch)
 # leave /etc/argus/domain-keys/legacy-rootful.key at oreo:oreo 0400
 
@@ -49,8 +60,8 @@ sudo install -m 0644 systemd/argus-control-api.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl restart argus-control-api
 ```
 
-Directory ownership by root with group write keeps the worker (group member)
-and the API able to create SQLite sidecar files while neither owns the directory.
+The control directory stays `oreo:argus-control` with group write, so the
+worker and the API (both group members) can create SQLite sidecar files.
 
 ## Verify
 
@@ -58,11 +69,13 @@ and the API able to create SQLite sidecar files while neither owns the directory
 systemctl show argus-control-api -p User -p CapabilityBoundingSet   # User=argus-api, empty set
 sudo -u argus-api sudo -n true; sudo -u argus-api docker ps          # both must fail
 sudo /srv/argus/scripts/argus-doctor --host
+sudo -u argus-api sh -c ': >> /srv/argus/runtime/audit.log && touch /srv/argus/runtime/discovery/latest.json'   # both must succeed
+sudo /srv/argus/scripts/argus-m5-runtime-permissions                 # re-run; session.sqlite3 stays argus-api:argus-control
 sudo journalctl -u argus-control-api -n 50 --no-pager                # no EACCES / PermissionError
 /srv/argus/scripts/smoke-test
 ```
 
-Then log in to the dashboard (session cookie, step-up) and open an operation.
+Then log in to the dashboard (session cookie, step-up), trigger Discover workloads (an audited POST), and open an operation; check `runtime/audit.log` gained a line.
 `argus-doctor` WARNs if a NOPASSWD sudoers drop-in names `argus-api`; narrowing
 the `oreo` NOPASSWD drop-in is a separate operator task.
 
@@ -71,8 +84,7 @@ the `oreo` NOPASSWD drop-in is a separate operator task.
 ```sh
 sudo systemctl stop argus-control-api
 sudo sed -i 's/^User=argus-api$/User=oreo/' /etc/systemd/system/argus-control-api.service
-sudo chown oreo:argus-control /var/lib/argus/control /var/lib/argus/control/session.sqlite3
-sudo chmod 2770 /var/lib/argus/control
+sudo chown oreo:argus-control /var/lib/argus/control/session.sqlite3
 sudo systemctl daemon-reload && sudo systemctl restart argus-control-api
 ```
 

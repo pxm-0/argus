@@ -106,5 +106,27 @@ class MetricsTimeoutTests(unittest.TestCase):
             self.assertEqual([], collect_metrics.docker_stats())
 
 
+class ApiIdentityScriptTests(unittest.TestCase):
+    def read(self, name: str) -> str:
+        return (ROOT / "scripts" / name).read_text()
+
+    def test_scripts_expect_argus_api_service_user(self) -> None:
+        self.assertIn('SERVICE_USER="argus-api"', self.read("argus-control-plane-reconcile"))
+        boundary = self.read("argus-m5-session-boundary")
+        self.assertIn("argus-api:argus-control", boundary)
+        self.assertNotIn('== "oreo" ]]', boundary)
+
+    def test_runtime_permissions_gives_session_db_to_argus_api(self) -> None:
+        script = self.read("argus-m5-runtime-permissions")
+        self.assertIn('SESSION_OWNER="argus-api"', script)
+        self.assertIn('chown "$SESSION_OWNER:$CONTROL_GROUP" "$path"', script)
+
+    def test_runbook_covers_audit_log_and_discovery(self) -> None:
+        runbook = (ROOT / "docs" / "RUNBOOKS" / "api-service-user-migration.md").read_text()
+        for needle in ("runtime/audit.log", "runtime/discovery", "chgrp argus-control"):
+            self.assertIn(needle, runbook)
+        self.assertNotIn("chown root:argus-control /var/lib/argus/control", runbook)
+
+
 if __name__ == "__main__":
     unittest.main()
