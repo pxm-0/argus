@@ -311,6 +311,17 @@ tailscale funnel status  # must be empty
 Pin the Caddy ID the import prints as the `argus-ingress` image in both
 Compose files.
 
+Onboarding both workloads changed only tracked config. Once, after that PR is
+pulled on the server, register them in private M1 (insert-only, audited,
+checkpointed; see `docs/ARGUS_M1_AUDIT_ANCHOR.md`) before any retirement
+reconcile:
+
+```bash
+sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
+sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
+  --apply --acknowledge-onboarded-workload-registration
+```
+
 ### Release flow
 
 1. **Import.** After nodens CI publishes `ghcr.io/pxm-0/nodens@sha256:<D>`:

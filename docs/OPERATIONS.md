@@ -134,6 +134,12 @@ scripts/argus-workload-onboard apply \
   --plan-digest sha256:<reviewed-digest> --confirm example
 ```
 
+Onboarding edits only tracked config. After the onboarding PR merges and the
+server pulls it, register the workload in private M1 with the insert-only
+`scripts/argus-m1-reconcile-onboarded-workloads` (preview, then `--apply
+--acknowledge-onboarded-workload-registration`), then run
+`argus-m1-verify`. See `docs/ARGUS_M1_AUDIT_ANCHOR.md`.
+
 `scripts/argus-admission-doctor --json` is read-only. By default on the server
 it synchronously reuses the existing rootful Docker inventory helper and does
 not persist inventory or require a daemon. Supplying both `--database` and

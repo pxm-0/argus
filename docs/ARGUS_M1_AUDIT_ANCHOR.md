@@ -25,6 +25,25 @@ digests; it does not disclose workload data or host details.
 sudo python3 scripts/argus-m1-verify
 ```
 
+After an onboarding PR (`scripts/argus-workload-onboard`) merges and the
+server has pulled it, register the new active workloads in private M1 before
+any retirement reconcile; the retirement reconcile refuses while an active
+workload is missing from M1. Registration is insert-only: it adds, at revision
+1, only workloads that are active in reviewed config, absent from M1, and not
+listed as retired, to the entity store and both writer projections. It never
+updates or deletes a row and refuses any present row that differs from config,
+any undeclared stale row, and any row that would be overwritten. The preview
+returns counts only. Apply checkpoints both SQLite stores under
+`runtime/argus/m1/onboarding-backups/` first and records a hash-chained audit
+intent and outcome. `argus-m1-verify` passes afterwards only once no declared
+retired rows remain, so run the retirement reconcile next when one is pending.
+
+```bash
+sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
+sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
+  --apply --acknowledge-onboarded-workload-registration
+```
+
 If a workload is formally retired from the active inventory, reconcile its
 private M1 rows only through the retirement registry. The preview returns
 counts only. Apply refuses any missing or undeclared stale record, checkpoints
