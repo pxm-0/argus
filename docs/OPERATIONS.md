@@ -217,8 +217,9 @@ Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
 $ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/srv/argus`), rewrites only the workload service's `image:` line, runs
 `argus check`, and opens a PR; `--dry-run` prints the diff only. Promote
 refuses unless `promotesTo` is registered, the two compose files differ only in
-name, ingress path and secret refs, and a succeeded staging deploy of the image
-ID is found in the local read-only operations ledger (run on the server or set `ARGUS_OPERATIONS_DB`; or `--skip-evidence-check`). Neither command deploys. See
+name, ingress path (managed or sandbox ingress dir) and secret refs, and a succeeded staging deploy of the image
+ID is found in the operations ledger. The ledger is `argus-control` only, so when the local read fails the check runs
+`ssh $ARGUS_SSH_HOST sudo -n $ARGUS_REMOTE_REPO/scripts/argus-promote-evidence` (read-only; needs this change pulled on the server); `--skip-evidence-check` bypasses it. Neither command deploys. See
 `docs/ARGUS_M5_WORKLOAD_CUTOVER.md`.
 
 ## Doctor and contributor check

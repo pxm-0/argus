@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import argus_release as release  # noqa: E402
-from argus_cli import run  # noqa: E402
+from argus_cli import default_runner as subprocess_runner, run  # noqa: E402
 
 OLD_ID = "sha256:" + "1" * 64
 NEW_ID = "sha256:" + "2" * 64
@@ -226,7 +226,8 @@ class CommandTests(unittest.TestCase):
 
     def test_promote_refuses_without_evidence(self) -> None:
         self.assertEqual("promote-evidence-unavailable", self.promote_refusal())
-        self.assertEqual([], self.calls("ssh"))
+        self.assertIn("argus-promote-evidence", " ".join(self.calls("ssh")))
+        self.assertNotIn("argus-image-import", " ".join(self.calls("ssh")))
 
     def test_promote_refuses_when_staging_lacks_a_succeeded_deploy_of_the_id(self) -> None:
         with patch.object(release, "deploy_evidence", return_value=False):
@@ -270,17 +271,38 @@ class CommandTests(unittest.TestCase):
             ledger = MagicMock()
             ledger.list_for_workload.return_value = operations
             with patch.object(release, "OperationLedger", return_value=ledger):
-                return release.deploy_evidence(self.repo, "nodens-staging", OLD_ID)
+                return release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID)
         deploy = {"operation_type": "workload.deploy", "state": "succeeded", "parameters": {"targetRevision": OLD_ID}}
         self.assertTrue(fetch([deploy]))
         self.assertFalse(fetch([{**deploy, "state": "failed"}]))
         self.assertFalse(fetch([{**deploy, "parameters": {"targetRevision": NEW_ID}}]))
 
-    def test_deploy_evidence_refuses_when_ledger_missing(self) -> None:
+    def test_deploy_evidence_falls_back_to_server_script(self) -> None:
+        self.script("ssh", '#!/bin/sh\necho "$@" >> "$FAKE_LOG/ssh"\necho \'{"ok": true, "deployed": true}\'\n', self.bin)
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
+            self.assertTrue(release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID))
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-promote-evidence --workload nodens-staging --image {OLD_ID}"], self.calls("ssh"))
+
+    def test_deploy_evidence_unavailable_when_both_paths_fail(self) -> None:
+        self.script("ssh", "#!/bin/sh\necho '{\"ok\": false}'\nexit 4\n", self.bin)
         with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
             with self.assertRaises(release.ReleaseError) as caught:
-                release.deploy_evidence(self.repo, "nodens-staging", OLD_ID)
+                release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID)
         self.assertEqual("promote-evidence-unavailable", caught.exception.code)
+
+    def test_ingress_bind_source_prefix_is_not_drift(self) -> None:
+        staging = compose("nodens-staging", NEW_ID).replace("managed-ingress", "sandbox-ingress")
+        self.assertEqual([], release.compose_drift(staging, compose("nodens-production", NEW_ID), "nodens-staging", "nodens-production", "nodens"))
+        other = compose("nodens-production", NEW_ID).replace("/var/lib/argus/managed-ingress/nodens-production", "/var/lib/argus/mana")
+        self.assertTrue(release.compose_drift(staging, other, "nodens-staging", "nodens-production", "nodens"))
+
+    def test_evidence_script_reads_ledger_and_validates_args(self) -> None:
+        script = ROOT / "scripts" / "argus-promote-evidence"
+        def run_script(*args: str) -> tuple[int, dict]:
+            done = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+            return done.returncode, json.loads(done.stdout)
+        self.assertEqual((2, {"ok": False, "error": "invalid-arguments"}), run_script("--workload", "Bad Id", "--image", OLD_ID))
+        self.assertEqual((4, {"ok": False, "error": "RuntimeError"}), run_script("--workload", "nodens-staging", "--image", OLD_ID, "--ledger", str(self.repo / "nope.sqlite3")))
 
     def test_remote_repo_is_configurable_and_validated(self) -> None:
         self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)

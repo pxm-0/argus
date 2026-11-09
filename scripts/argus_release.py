@@ -26,6 +26,7 @@ SSH_HOST = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._@-]{0,127}$")
 WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 IMAGE_LINE = re.compile(r"^(?P<head>    image:\s*)(?P<value>\S+)(?P<tail>.*)$")
+INGRESS_SOURCE = re.compile(r"(/var/lib/argus/)(?:managed|sandbox)-ingress/WORKLOAD\b")
 PLACEHOLDER_ID = "sha256:<image-id-from-import>"
 Result = dict[str, Any]
 Runner = Callable[[list[str], Path], Any]
@@ -101,7 +102,7 @@ def normalised(text: str, workload_id: str, service: str) -> list[str]:
             line = IMAGE_LINE.sub(r"\g<head>PIN", line)
         elif re.match(r"name:\s", line):
             line = "name: WORKLOAD"
-        out.append(line.replace(f"managed-ingress/{workload_id}", "managed-ingress/WORKLOAD"))
+        out.append(INGRESS_SOURCE.sub(r"\g<1>INGRESS/WORKLOAD", line.replace(f"/{workload_id}", "/WORKLOAD")) if "-ingress/" in line else line)
     return out
 
 
@@ -133,13 +134,18 @@ def workload_context(repo: Path, workload_id: str) -> dict[str, Any]:
     return {"item": item, "domain": domain, "service": service, "compose": compose}
 
 
-def import_image(repo: Path, runner: Runner, domain: str, image: str) -> str:
+def ssh_target() -> tuple[str, str]:
     host = os.environ.get("ARGUS_SSH_HOST", "oreochiserver")
     if not SSH_HOST.fullmatch(host):
         raise ReleaseError("ssh-host-invalid", "ARGUS_SSH_HOST is not a plain host name.", "Unset it or use a bare host or user@host.", EXIT_INVOCATION)
     remote_repo = os.environ.get("ARGUS_REMOTE_REPO", "/srv/argus").rstrip("/")
     if not REMOTE_REPO.fullmatch(remote_repo) or ".." in remote_repo.split("/"):
         raise ReleaseError("remote-repo-invalid", "ARGUS_REMOTE_REPO is not a plain absolute path.", "Unset it or use e.g. /srv/argus.", EXIT_INVOCATION)
+    return host, remote_repo
+
+
+def import_image(repo: Path, runner: Runner, domain: str, image: str) -> str:
+    host, remote_repo = ssh_target()
     importer = f"{remote_repo}/scripts/argus-image-import"
     result = runner(["ssh", host, "sudo", "-n", importer, "--domain", domain, "--image", image], repo)
     for line in reversed((result.stdout or "").splitlines()):
@@ -266,8 +272,18 @@ def release_pin(repo: Path, runner: Runner, workload_id: str, image: str, dry_ru
             "nextAction": f"After merge and server pull: argus workload deploy {workload_id} --revision {image_id}"}
 
 
-def deploy_evidence(repo: Path, staging_id: str, image_id: str) -> bool:
-    """True when the local read-only operations ledger lists a succeeded workload.deploy of this image ID."""
+def ledger_has_deploy(path: Path, staging_id: str, image_id: str) -> bool:
+    """True when the read-only operations ledger at `path` lists a succeeded workload.deploy of this image ID."""
+    operations = OperationLedger(path, require_existing=True, migrate_schema=False, read_only=True).list_for_workload(staging_id)
+    return any(
+        op.get("operation_type") == "workload.deploy" and op.get("state") == "succeeded"
+        and (op.get("parameters") or {}).get("targetRevision") == image_id
+        for op in operations
+    )
+
+
+def deploy_evidence(repo: Path, runner: Runner, staging_id: str, image_id: str) -> bool:
+    """Read the ledger directly; if this user cannot (it is argus-control only), ask the server's evidence script via sudo."""
     configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
     if configured:
         path = Path(configured)
@@ -276,15 +292,21 @@ def deploy_evidence(repo: Path, staging_id: str, image_id: str) -> bool:
     else:
         path = repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
     try:
-        operations = OperationLedger(path, require_existing=True, migrate_schema=False, read_only=True).list_for_workload(staging_id)
-    except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
-        raise ReleaseError("promote-evidence-unavailable", "Staging deploy evidence could not be read from the operations ledger.",
-                           "Run on oreochiserver (or set ARGUS_OPERATIONS_DB), or confirm the staging deploy and rerun with --skip-evidence-check.") from exc
-    return any(
-        op.get("operation_type") == "workload.deploy" and op.get("state") == "succeeded"
-        and (op.get("parameters") or {}).get("targetRevision") == image_id
-        for op in operations
-    )
+        return ledger_has_deploy(path, staging_id, image_id)
+    except (OSError, RuntimeError, ValueError, sqlite3.Error):
+        pass
+    host, remote_repo = ssh_target()
+    result = runner(["ssh", host, "sudo", "-n", f"{remote_repo}/scripts/argus-promote-evidence", "--workload", staging_id, "--image", image_id], repo)
+    for line in reversed((result.stdout or "").splitlines()):
+        try:
+            payload = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(payload, dict) and payload.get("ok") is True and isinstance(payload.get("deployed"), bool):
+            return payload["deployed"]
+        break
+    raise ReleaseError("promote-evidence-unavailable", "Staging deploy evidence could not be read from the operations ledger, locally or over ssh.",
+                       "Needs passwordless `sudo -n` for the server's argus-promote-evidence (merge and pull this change first), or confirm the staging deploy and rerun with --skip-evidence-check.")
 
 
 def promote(repo: Path, runner: Runner, staging_id: str, production_id: str, dry_run: bool, skip_evidence: bool) -> Result:
@@ -302,7 +324,7 @@ def promote(repo: Path, runner: Runner, staging_id: str, production_id: str, dry
     if drift:
         raise ReleaseError("promote-compose-differs", "Staging and production compose differ beyond name, ingress path and secret refs:\n"
                            + "\n".join(drift[:12]), "Align the two compose files in a reviewed PR first.")
-    if not skip_evidence and not deploy_evidence(repo, staging_id, image_id):
+    if not skip_evidence and not deploy_evidence(repo, runner, staging_id, image_id):
         raise ReleaseError("promote-staging-not-deployed", "No succeeded staging deploy of this image ID was found.",
                            "Deploy and verify staging first, or rerun with --skip-evidence-check after confirming it yourself.")
     old_pin = read_pin(production_text, production["service"])[0]
