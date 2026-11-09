@@ -176,12 +176,14 @@ def typed_projects(root: Path, domain: str) -> dict[str, dict[str, str]]:
         if not isinstance(deploy, dict) or deploy.get("allowed") is not True:
             continue
         runtime = workload.get("runtime")
-        compose = (manifest.get("runtime") or {}).get("compose")
+        manifest_runtime = manifest.get("runtime")
+        compose = manifest_runtime.get("compose") if isinstance(manifest_runtime, dict) else None
         project = runtime.get("composeProject") if isinstance(runtime, dict) else None
         bridge = compose.get("bridge") if isinstance(compose, dict) else None
         if (
             not isinstance(project, str)
             or not project
+            or not isinstance(compose, dict)
             or compose.get("project") != project
             or project in cutover.values()
         ):

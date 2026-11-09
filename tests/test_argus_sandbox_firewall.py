@@ -252,6 +252,19 @@ class TypedDeployProjectTests(unittest.TestCase):
             with self.assertRaisesRegex(module.FirewallOperationError, "stable bridge"):
                 module.typed_projects(root, "personal-sandbox")
 
+    def test_typed_project_without_a_compose_declaration_fails_closed(self, _child: mock.Mock) -> None:
+        for broken in ({"compose": None}, None):
+            with self.subTest(runtime=broken), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                shutil.copytree(ROOT / "config", root / "config")
+                shutil.copytree(ROOT / "workloads" / "nodens-staging", root / "workloads" / "nodens-staging")
+                manifest_path = root / "workloads" / "nodens-staging" / "manifest.json"
+                manifest = json.loads(manifest_path.read_text())
+                manifest["runtime"] = broken
+                manifest_path.write_text(json.dumps(manifest))
+                with self.assertRaisesRegex(module.FirewallOperationError, "project identity is invalid"):
+                    module.typed_projects(root, "personal-sandbox")
+
     def test_typed_project_cannot_receive_egress(self, _child: mock.Mock) -> None:
         egress = {"nodens-staging": {"project": "nodens-staging", "resolver": "10.0.2.3", "allow": (("tcp", 443),), "reason": "x"}}
         with self.assertRaises(module.FirewallPolicyError):
