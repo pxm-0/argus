@@ -688,6 +688,45 @@ class RootlessGidRepairTest(unittest.TestCase):
         self.assertEqual(2, len(restarts))
         self.assertTrue(any("reset-failed" in command for command in calls))
 
+    def test_lock_waits_out_brief_contention_only_when_asked(self) -> None:
+        attempts = []
+
+        def busy_twice(_descriptor, _operation):
+            attempts.append(1)
+            if len(attempts) <= 2:
+                raise BlockingIOError
+
+        originals = (
+            module.ensure_lock_directory,
+            module.os.fstat,
+            module.fcntl,
+            module.time.sleep,
+        )
+        root_owned = SimpleNamespace(st_uid=0, st_mode=stat.S_IFREG | 0o600)
+        module.ensure_lock_directory = lambda *_args, **_kwargs: None
+        module.os.fstat = lambda _descriptor: root_owned
+        module.fcntl = SimpleNamespace(
+            flock=busy_twice, LOCK_EX=module.fcntl.LOCK_EX, LOCK_NB=module.fcntl.LOCK_NB
+        )
+        module.time.sleep = lambda _seconds: None
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        lock = Path(directory.name) / "lock"
+        try:
+            with self.assertRaisesRegex(module.RepairError, "operation is active"):
+                module.acquire_lock(lock)
+            attempts.clear()
+            with module.acquire_lock(lock, wait_seconds=60):
+                pass
+        finally:
+            (
+                module.ensure_lock_directory,
+                module.os.fstat,
+                module.fcntl,
+                module.time.sleep,
+            ) = originals
+        self.assertEqual(3, len(attempts))
+
     def test_script_has_no_public_or_broad_deletion_path(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertNotIn("rm -rf", source)

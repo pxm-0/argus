@@ -31,6 +31,8 @@ DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
 STATE_ROOT = Path("/var/lib/argus/rootless-gid-repair")
 LOCK_ROOT = Path("/run/argus-m5-rootless-gid-repair")
 CUTOVER_LOCK = Path("/run/argus-m5-workload-cutover/lock")
+PROBE_LOCK_WAIT_SECONDS = 60.0
+LOCK_RETRY_SECONDS = 0.5
 PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
 MIGRATION_RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
 APPLY_ACK = "--acknowledge-rootless-gid-repair"
@@ -1071,7 +1073,11 @@ def ensure_lock_directory(
 
 
 def acquire_lock(
-    path: Path, *, create_parent: bool = False, parent_mode: int = 0o700
+    path: Path,
+    *,
+    create_parent: bool = False,
+    parent_mode: int = 0o700,
+    wait_seconds: float = 0.0,
 ):
     ensure_lock_directory(
         path.parent, create=create_parent, mode=parent_mode
@@ -1089,12 +1095,17 @@ def acquire_lock(
     ):
         os.close(descriptor)
         raise RepairError(f"unsafe operation lock: {path}")
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError as error:
-        os.close(descriptor)
-        raise RepairError("another M5 workload operation is active") from error
-    return os.fdopen(descriptor, "a+")
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as error:
+            if time.monotonic() < deadline:
+                time.sleep(LOCK_RETRY_SECONDS)
+                continue
+            os.close(descriptor)
+            raise RepairError("another M5 workload operation is active") from error
+        return os.fdopen(descriptor, "a+")
 
 
 def public_plan(details: dict) -> dict:
@@ -1622,7 +1633,11 @@ def main() -> int:
             )
             locks.enter_context(
                 acquire_lock(
-                    CUTOVER_LOCK, create_parent=True, parent_mode=0o700
+                    CUTOVER_LOCK,
+                    create_parent=True,
+                    parent_mode=0o700,
+                    # Per-minute workload reconciles hold this lock for ~1-2s.
+                    wait_seconds=PROBE_LOCK_WAIT_SECONDS if arguments.probe else 0.0,
                 )
             )
             if arguments.apply:
