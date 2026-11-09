@@ -3,6 +3,8 @@ Description=Argus metrics collector
 
 [Service]
 Type=oneshot
+TimeoutStartSec=60
+RuntimeMaxSec=90
 User=oreo
 Group=oreo
 WorkingDirectory=/srv/argus

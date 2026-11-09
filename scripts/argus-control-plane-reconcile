@@ -3,7 +3,8 @@
 set -euo pipefail
 
 readonly ROOT="/srv/argus"
-readonly API_USER="oreo"
+readonly API_USER="oreo"          # owner of the shared state files
+readonly SERVICE_USER="argus-api"  # identity the control API unit runs as
 readonly API_GROUP="argus-control"
 readonly BACKUP_ROOT="/var/lib/argus/control-plane-backups"
 readonly CADDY_DROPIN_DIR="/etc/systemd/system/caddy.service.d"
@@ -35,10 +36,10 @@ preflight() {
   [[ -d "$ROOT/.git" ]] || fail "$ROOT is not the Argus checkout"
   [[ -f /etc/caddy/Caddyfile ]] || fail "/etc/caddy/Caddyfile is missing"
   for path in "${STATE_FILES[@]}"; do [[ -f "$path" ]] || fail "missing state file: $path"; done
-  [[ "$(systemctl show argus-control-api.service -p User --value)" == "$API_USER" ]] || fail "control API user is not $API_USER"
+  [[ "$(systemctl show argus-control-api.service -p User --value)" == "$SERVICE_USER" ]] || fail "control API user is not $SERVICE_USER"
   [[ "$(systemctl show argus-control-api.service -p Group --value)" == "$API_GROUP" ]] || fail "control API group is not $API_GROUP"
   caddy validate --config /etc/caddy/Caddyfile
-  printf 'repository=%s apiIdentity=%s:%s caddyValid=true\n' "$(git -C "$ROOT" rev-parse --short HEAD)" "$API_USER" "$API_GROUP"
+  printf 'repository=%s apiIdentity=%s:%s caddyValid=true\n' "$(git -C "$ROOT" rev-parse --short HEAD)" "$SERVICE_USER" "$API_GROUP"
   printf 'publicExposureChanged=false routesChanged=false workloadsChanged=false\n'
 }
 
