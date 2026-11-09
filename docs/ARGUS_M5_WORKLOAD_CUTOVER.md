@@ -324,6 +324,15 @@ sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
 
 ### Release flow
 
+The CLI automates steps 1, 2 and 6: `argus release pin nodens-staging --image
+ghcr.io/pxm-0/nodens@sha256:<D>` imports the digest, rewrites only the
+`image:` line, runs `argus check`, and opens the pin PR (`--dry-run` prints the
+diff). `argus promote nodens-staging nodens-production` opens the promotion PR
+after checking that a staging deploy of that ID succeeded and that the two
+Compose files differ only in name, ingress path and secret refs. Neither
+deploys; steps 3, 4, 5 and 7 stay manual. The numbered steps below are the
+manual equivalent.
+
 1. **Import.** After nodens CI publishes `ghcr.io/pxm-0/nodens@sha256:<D>`:
    `sudo ./scripts/argus-image-import --domain personal-managed --image ghcr.io/pxm-0/nodens@sha256:<D>`.
    It prints `imageId`, the ID the domain reports. Pin that ID, never `<D>`:

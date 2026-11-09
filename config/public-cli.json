@@ -17,6 +17,9 @@
     {"command": "argus workload move rollback <id>", "privilege": "server-mutation"},
     {"command": "argus operation show <operation-id>", "privilege": "server-read-only"},
     {"command": "argus operation recover <operation-id>", "privilege": "server-mutation"},
+    {"command": "argus release import <workload> --image <ref>", "privilege": "server-mutation"},
+    {"command": "argus release pin <workload> --image <ref>", "privilege": "server-mutation"},
+    {"command": "argus promote <staging-id> <production-id>", "privilege": "server-mutation"},
     {"command": "argus doctor", "privilege": "local-read-only"},
     {"command": "argus check", "privilege": "local-read-only"}
   ],

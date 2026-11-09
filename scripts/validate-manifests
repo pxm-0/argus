@@ -199,6 +199,24 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
     return errors
 
 
+def validate_promotions(repo: Path) -> list[str]:
+    """promotesTo in config/workloads.json must name another registered workload in the same trust domain."""
+    path = repo / "config" / "workloads.json"
+    if not path.exists():
+        return []
+    items = {str(item.get("id")): item for item in load_json(path).get("workloads", [])}
+    errors: list[str] = []
+    for workload_id, item in items.items():
+        target = item.get("promotesTo")
+        if target is None:
+            continue
+        if target == workload_id or target not in items:
+            add_error(errors, workload_id, "promotesTo", "must name a different registered workload")
+        elif item.get("migration", {}).get("targetTrustDomain") != items[target].get("migration", {}).get("targetTrustDomain"):
+            add_error(errors, workload_id, "promotesTo", "must target a workload in the same trust domain")
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Argus workload manifests.")
     parser.add_argument("--root", type=Path, default=repo_root())
@@ -231,6 +249,9 @@ def main() -> int:
                 print(f"FAIL {error}")
         else:
             print(f"PASS {workload_id} manifest valid")
+    for error in validate_promotions(repo):
+        failed = True
+        print(f"FAIL {error}")
     return 1 if failed else 0
 
 

@@ -205,6 +205,22 @@ approved; generic recovery is intentionally unavailable.
 argus operation show 00000000-0000-0000-0000-000000000000 --json
 ```
 
+## Release pins and promotion
+
+`server-mutation` — `argus release import <workload> --image <ref>`
+
+`server-mutation` — `argus release pin <workload> --image <ref>`
+
+`server-mutation` — `argus promote <staging-id> <production-id>`
+
+Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
+argus-image-import`, rewrites only the workload service's `image:` line, runs
+`argus check`, and opens a PR; `--dry-run` prints the diff only. Promote
+refuses unless `promotesTo` is registered, the two compose files differ only in
+name, ingress path and secret refs, and a succeeded staging deploy of the image
+ID is found (or `--skip-evidence-check`). Neither command deploys. See
+`docs/ARGUS_M5_WORKLOAD_CUTOVER.md`.
+
 ## Doctor and contributor check
 
 `local-read-only` — `argus doctor`

@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:3bac09b5d4de80fcf89bda4955ca91b38c2c8234b8f39ce7406aa63d03598fbb"
+    "expectedSbomDigest": "sha256:a75a27011a61415951f1f0066973e1eadf2d579bb6dca01a154b906a6ee924a5"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:dfa1bf5c83f94b4905556d978bb10d05020334345b8612cb538f8798cb839eef",
+    "expectedEndpointDigest": "sha256:ec67ac8a1d90c1cbc92f719fb36d3bd406128ee70131b33edcee03e91b163887",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -113,6 +113,10 @@
       {
         "path": "scripts/argus_common.py",
         "authority": "configured-workload-health-read"
+      },
+      {
+        "path": "scripts/argus_release.py",
+        "authority": "get-only-operator-api-staging-deploy-evidence"
       },
       {
         "path": "scripts/argus_collectors.py",

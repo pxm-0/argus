@@ -20,6 +20,7 @@ from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
+import argus_release
 
 
 TAILSCALE_HTTPS_URL = re.compile(
@@ -993,6 +994,8 @@ def build_parser() -> argparse.ArgumentParser:
         contract=description("Run the canonical deterministic repository validation.", "unprivileged, read-only", "supported Python and complete Git clone", "regenerates ignored local validation artifacts only", "pass/fail and sanitized output digest", "argus check --json", "run ./scripts/argus-check and fix its first named failure"),
     )
 
+    argus_release.register(commands, leaf, description, ArgusArgumentParser)
+
     legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
     legacy_health = commands.add_parser("health", help=argparse.SUPPRESS)
@@ -1037,6 +1040,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
     elif command == "operation" and args.operation_command == "recover":
         result = operation_recover(args.operation_id, args.confirm) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
+    elif command in {"release", "promote"}:
+        result = argus_release.dispatch(args, repo, runner, _error, _success)
     elif command == "doctor":
         result = doctor_command(repo, runner)
     elif command == "check":
@@ -1073,6 +1078,8 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
     elif command == "workload.list":
         for item in data["workloads"]:
             print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
+    elif data.get("dryRun"):
+        print(data["diff"], end="", file=stdout)
     else:
         print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
 
