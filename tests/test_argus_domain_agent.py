@@ -218,6 +218,21 @@ class DomainAgentServiceTests(unittest.TestCase):
         self.assertIsNone(operation["error_class"])
         self.assertEqual(operation["redactedResult"], result)
 
+    def test_lifecycle_waits_for_starting_healthcheck(self) -> None:
+        starting = subprocess.CompletedProcess([], 0, stdout='{"Service":"nodens","State":"running","Health":"starting"}')
+        healthy = subprocess.CompletedProcess([], 0, stdout='{"Service":"nodens","State":"running","Health":"healthy"}')
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            with (
+                patch.object(service, "run_compose", return_value=subprocess.CompletedProcess([], 0, stdout="")),
+                patch.object(service, "compose_service", return_value="nodens"),
+                patch("argus_domain_agent.subprocess.run", side_effect=[starting, starting, healthy]) as ps,
+                patch("argus_domain_agent.time.sleep"),
+            ):
+                result = service.execute_typed("workload.start", "hastur", {})
+        self.assertEqual(ps.call_count, 3)
+        self.assertIn("completed", result["summary"])
+
 
 if __name__ == "__main__":
     unittest.main()

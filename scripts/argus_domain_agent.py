@@ -188,6 +188,15 @@ class AgentService:
             "detail": f"{len(rows)} approved service(s) observed",
         }
 
+    def wait_for_domain_health(self, workload_id: str, timeout: float = 60.0) -> dict[str, Any]:
+        # A recreated container reports Health "starting" until its healthcheck passes.
+        deadline = time.monotonic() + timeout
+        health = self.domain_health(workload_id)
+        while not health["ok"] and time.monotonic() < deadline:
+            time.sleep(2)
+            health = self.domain_health(workload_id)
+        return health
+
     def execute_typed(self, operation_type: str, workload_id: str, parameters: dict[str, Any]) -> dict[str, Any]:
         if operation_type in {"workload.start", "workload.stop", "workload.deploy"}:
             arguments = ["up", "-d"] if operation_type != "workload.stop" else ["stop"]
@@ -200,7 +209,7 @@ class AgentService:
             if result.returncode != 0:
                 raise RuntimeError("typed lifecycle Compose command failed")
             if operation_type != "workload.stop":
-                health = self.domain_health(workload_id)
+                health = self.wait_for_domain_health(workload_id)
                 if not health["ok"]:
                     raise RuntimeError("post-lifecycle domain health failed")
             return {"summary": f"{operation_type} completed in the sealed domain."}
@@ -242,7 +251,7 @@ class AgentService:
                 )
                 if result.returncode != 0:
                     raise RuntimeError("typed restart failed")
-                health = self.domain_health(workload_id)
+                health = self.wait_for_domain_health(workload_id)
                 if not health["ok"]:
                     raise RuntimeError("post-restart domain health failed")
                 return {"summary": "Restart applied and domain-local health verified.", "health": health}

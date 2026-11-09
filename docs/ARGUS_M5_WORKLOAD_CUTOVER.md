@@ -328,7 +328,8 @@ Compose files.
 4. **Deploy staging.** From the dashboard, run `workload.deploy` for
    `nodens-staging` with `targetRevision=sha256:<ID>`. The domain agent refuses
    any revision that is not an exact line of `docker compose config --images`,
-   then runs `up -d --pull never` and checks domain health.
+   then runs `up -d --pull never` and waits up to 60s for domain health
+   (the healthcheck reports `starting` first).
 5. **Verify.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
    succeeds, and the operation ledger records the deploy as succeeded.
 6. **Promotion PR.** Pin the same `sha256:<ID>` in
