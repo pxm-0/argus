@@ -5,7 +5,7 @@ After=network.target argus-operation-worker.service
 
 [Service]
 Type=simple
-User=oreo
+User=argus-api
 Group=argus-control
 WorkingDirectory=/srv/argus
 Environment=ARGUS_ROOT=/srv/argus
@@ -22,9 +22,12 @@ ExecStart=/usr/bin/python3 /srv/argus/control-plane/api/server.py
 Restart=on-failure
 RestartSec=3
 UMask=0007
-StateDirectory=argus/control
-StateDirectoryMode=0770
-NoNewPrivileges=true
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+MemoryDenyWriteExecute=yes
+LockPersonality=yes
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true

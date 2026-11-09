@@ -111,10 +111,18 @@ def network() -> list[dict[str, int | str]]:
     return rows
 
 
-def run_json_lines(command: list[str]) -> list[dict[str, Any]]:
+COMMAND_TIMEOUT_SECONDS = 20
+
+
+def run_json_lines(command: list[str], timeout: float = COMMAND_TIMEOUT_SECONDS) -> list[dict[str, Any]]:
     if not shutil.which(command[0]):
         return []
-    result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False)
+    try:
+        result = subprocess.run(
+            command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=timeout
+        )
+    except subprocess.TimeoutExpired:  # a stuck docker child must not hold the unit in activating
+        return []
     rows = []
     for line in result.stdout.splitlines():
         try:
