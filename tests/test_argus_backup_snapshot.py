@@ -109,6 +109,31 @@ class SnapshotTests(unittest.TestCase):
         check = self.run_cli("--verify", str(archive), "--identity", str(identity), plaintext=False)
         self.assertEqual(check.returncode, 0, check.stderr)
 
+    def test_corrupt_staged_tar_aborts_encrypted_create(self) -> None:
+        from importlib.machinery import SourceFileLoader
+        mod = SourceFileLoader("snapmod", str(SCRIPT)).load_module()
+        real = mod.write_tar
+
+        def corrupt(archive, workdir, manifest):
+            first = next(iter(manifest["members"].values()))
+            first["sha256"] = "0" * 64
+            real(archive, workdir, manifest)
+
+        recipients = Path(self._tmp.name) / "recipients.txt"
+        recipients.write_text(RECIPIENT)
+        args = mod.argparse.Namespace(reason="t", recipient_file=recipients, allow_plaintext=False, root=self.root,
+                                      etc_dir=self.etc, state_dir=self.state, out_dir=self.out)
+        mod.write_tar = corrupt
+        old_path = os.environ["PATH"]
+        os.environ["PATH"] = self.env["PATH"]
+        try:
+            with self.assertRaises(mod.SnapshotError):
+                mod.create(args)
+        finally:
+            mod.write_tar = real
+            os.environ["PATH"] = old_path
+        self.assertEqual(list(self.out.glob("*.tar*")), [])
+
     def test_private_key_in_recipient_file_is_refused(self) -> None:
         recipients = Path(self._tmp.name) / "recipients.txt"
         recipients.write_text("AGE-SECRET-KEY-1ABCDEF\n")

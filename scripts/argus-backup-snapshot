@@ -13,6 +13,7 @@ import io
 import json
 import os
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -190,13 +191,23 @@ def open_archive(path: Path, identity: Path | None):
 
 
 def verify_archive(path: Path, identity: Path | None = None) -> dict:
+    old_umask = os.umask(0o077)
+    try:
+        return _verify_archive(path, identity)
+    finally:
+        os.umask(old_umask)
+
+
+def _verify_archive(path: Path, identity: Path | None) -> dict:
     handle, proc = open_archive(path, identity)
     problems: list[str] = []
     try:
         with tarfile.open(fileobj=handle, mode="r|") as tar:
             seen: dict[str, str] = {}
             manifest = None
-            with tempfile.TemporaryDirectory(prefix="argus-snap-verify-") as scratch:
+            # Only db/* members touch disk (integrity_check needs a file); everything else is hashed in a
+            # stream. Scratch lives beside the archive (root-only tree), never in the default /tmp.
+            with tempfile.TemporaryDirectory(prefix=".argus-snap-verify-", dir=path.parent) as scratch:
                 for item in tar:
                     if not item.isfile() or item.name.startswith("/") or ".." in Path(item.name).parts:
                         problems.append(f"unsafe member: {item.name}")
@@ -204,15 +215,17 @@ def verify_archive(path: Path, identity: Path | None = None) -> dict:
                     extracted = tar.extractfile(item)
                     if item.name == "manifest.json":
                         manifest = json.loads(extracted.read())
-                        continue
-                    target = Path(scratch) / item.name
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with target.open("wb") as out:
-                        for chunk in iter(lambda: extracted.read(1 << 20), b""):
-                            out.write(chunk)
-                    seen[item.name] = sha256_file(target)
-                    if item.name.startswith("db/") and not integrity_ok(target):
-                        problems.append(f"sqlite integrity_check failed: {item.name}")
+                    elif item.name.startswith("db/"):
+                        target = Path(scratch) / Path(item.name).name
+                        with target.open("wb") as out:
+                            for chunk in iter(lambda: extracted.read(1 << 20), b""):
+                                out.write(chunk)
+                        seen[item.name] = sha256_file(target)
+                        if not integrity_ok(target):
+                            problems.append(f"sqlite integrity_check failed: {item.name}")
+                        target.unlink()
+                    else:
+                        seen[item.name] = sha256_stream(extracted)
     except (tarfile.TarError, json.JSONDecodeError, sqlite3.Error) as exc:
         raise SnapshotError(f"unreadable archive: {type(exc).__name__}") from exc
     finally:
@@ -270,6 +283,8 @@ def create(args: argparse.Namespace) -> dict:
     recipients_file = args.recipient_file
     if recipients_file:
         load_recipients(recipients_file)
+        if shutil.which("age") is None:
+            raise SnapshotError("age binary not found on PATH")
     elif not args.allow_plaintext:
         raise SnapshotError("no age recipient file configured (--recipient-file or ARGUS_SNAPSHOT_AGE_RECIPIENTS); "
                             "refusing a plaintext archive containing /etc/argus without --allow-plaintext")
@@ -286,6 +301,7 @@ def create(args: argparse.Namespace) -> dict:
             manifest = collect(args.root, args.etc_dir, args.state_dir, work / "files", args.reason)
             plain = work / "snapshot.tar"
             write_tar(plain, work / "files", manifest)
+            verify_archive(plain)  # fail closed before encrypting or publishing anything
             if recipients_file:
                 partial = work / "snapshot.tar.age"
                 age_encrypt(plain, recipients_file, partial)
@@ -295,15 +311,14 @@ def create(args: argparse.Namespace) -> dict:
             os.replace(partial, final)
     finally:
         os.umask(old_umask)
-    verified = None
-    if not recipients_file:
-        verified = verify_archive(final)
+    verified = True
     with final.open("rb") as raw:
         fingerprint = sha256_stream(raw)
     removed = prune(args.out_dir)
     return {"archive": str(final), "sha256": fingerprint, "encrypted": bool(recipients_file),
-            "members": len(manifest["members"]), "verified": verified is not None,
-            "pruned": removed, "note": None if verified else "encrypted: run --verify <file> --identity <key> to re-read"}
+            "members": len(manifest["members"]), "verified": verified,
+            "pruned": removed, "note": "encrypted: staged tar verified before encryption; run --verify <file> --identity <key> to re-read the .age"
+            if recipients_file else None}
 
 
 def restore_plan(info: dict) -> str:

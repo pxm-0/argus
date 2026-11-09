@@ -113,9 +113,12 @@ gone.
    `state/tailscale-serve.json` from the newest verified snapshot (stage it as
    in `--restore-plan` step 2).
 2. Firewall: `nft -c -f <ruleset>` to syntax-check, then `nft -f <ruleset>`.
-   If unsure, `nft flush ruleset` temporarily restores reachability; then
-   reload the reviewed files in `/etc/argus/*.nft` (see
-   `sandbox-firewall-remediation.md`).
+   If the snapshot's ruleset file is empty or fails `-c`, reload the reviewed
+   files in `/etc/argus/*.nft` instead (see `sandbox-firewall-remediation.md`).
+   Do not `nft flush ruleset`: it drops sandbox egress isolation, the host
+   guard and the Docker/Tailscale chains, leaving the sandbox fail-open. Only
+   as a last resort, stop the sandbox domain agents and workloads first and
+   reapply the host guard rules immediately after the flush.
 3. Tailscale: `systemctl restart tailscaled`, `tailscale status`; reapply the
    serve config with `tailscale serve reset`, then recreate the routes from the
    saved JSON (`TAILSCALE_ACCESS_STANDARD.md`).
