@@ -199,6 +199,9 @@ def verify_archive(path: Path, identity: Path | None = None) -> dict:
 
 
 def _verify_archive(path: Path, identity: Path | None) -> dict:
+    if not os.access(path.parent, os.W_OK):
+        raise SnapshotError(f"cannot verify: scratch directory {path.parent} is not writable "
+                            "(scratch stays beside the archive so secrets never reach /tmp)")
     handle, proc = open_archive(path, identity)
     problems: list[str] = []
     try:
@@ -311,12 +314,13 @@ def create(args: argparse.Namespace) -> dict:
             os.replace(partial, final)
     finally:
         os.umask(old_umask)
-    verified = True
     with final.open("rb") as raw:
         fingerprint = sha256_stream(raw)
     removed = prune(args.out_dir)
     return {"archive": str(final), "sha256": fingerprint, "encrypted": bool(recipients_file),
-            "members": len(manifest["members"]), "verified": verified,
+            "members": len(manifest["members"]),
+            # Final bytes are only re-read for plaintext; encrypted needs --verify --identity.
+            "verified": not recipients_file, "staged_tar_verified": True,
             "pruned": removed, "note": "encrypted: staged tar verified before encryption; run --verify <file> --identity <key> to re-read the .age"
             if recipients_file else None}
 

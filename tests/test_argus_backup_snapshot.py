@@ -102,12 +102,27 @@ class SnapshotTests(unittest.TestCase):
         recipients.write_text(RECIPIENT)
         result = self.run_cli("--recipient-file", str(recipients), "--json", plaintext=False)
         self.assertEqual(result.returncode, 0, result.stderr)
-        archive = Path(json.loads(result.stdout)["archive"])
+        report = json.loads(result.stdout)
+        archive = Path(report["archive"])
         self.assertTrue(archive.name.endswith(".tar.age"))
+        self.assertFalse(report["verified"])  # final .age bytes not re-read at creation
+        self.assertTrue(report["staged_tar_verified"])
         identity = Path(self._tmp.name) / "id.txt"
         identity.write_text("unused")
         check = self.run_cli("--verify", str(archive), "--identity", str(identity), plaintext=False)
         self.assertEqual(check.returncode, 0, check.stderr)
+
+    def test_verify_in_read_only_dir_reports_clear_error(self) -> None:
+        archive = self.snapshot()
+        os.chmod(self.out, 0o500)
+        try:
+            if os.access(self.out, os.W_OK):
+                self.skipTest("running as a user that ignores directory modes")
+            result = self.run_cli("--verify", str(archive), plaintext=False)
+        finally:
+            os.chmod(self.out, 0o700)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("not writable", result.stderr)
 
     def test_corrupt_staged_tar_aborts_encrypted_create(self) -> None:
         from importlib.machinery import SourceFileLoader
