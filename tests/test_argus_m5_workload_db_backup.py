@@ -41,7 +41,7 @@ class DatabaseBackupTest(unittest.TestCase):
 
     def test_every_database_workload_is_mapped_to_its_domain(self) -> None:
         self.assertEqual(
-            {"kadath": "personal-sandbox", "intake-os": "work-sandbox"},
+            {"kadath": "personal-sandbox"},
             {name: spec["domain"] for name, spec in module.SPECS.items()},
         )
 
@@ -77,7 +77,7 @@ class DatabaseBackupTest(unittest.TestCase):
             self.assertEqual(
                 (70, 70),
                 module.postgres_container_ids(
-                    module.SPECS["intake-os"], "intake-os-postgres-1"
+                    module.SPECS["kadath"], "kadath-live-postgres-1"
                 ),
             )
         finally:

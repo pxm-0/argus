@@ -9,12 +9,6 @@
     "restricted"
   ],
   "workloads": {
-    "intake-os": {
-      "privacy": "sensitive",
-      "reason": "M1 writer verification",
-      "updatedAt": "2026-07-19T07:26:51Z",
-      "updatedBy": "argus-privacy-set"
-    },
     "hastur": {
       "privacy": "sensitive",
       "reason": "Application mounts SSH and auth-related paths according to discovery.",

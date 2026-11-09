@@ -21,10 +21,8 @@ loader.exec_module(module)
 class WorkloadStageTests(unittest.TestCase):
     def test_reviewed_domain_mapping_and_secret_exclusions(self) -> None:
         self.assertEqual("personal-sandbox", module.SPECS["hastur"]["domain"])
-        self.assertEqual("work-sandbox", module.SPECS["intake-os"]["domain"])
         self.assertIn("auth", module.SPECS["hastur"]["exclude"])
         self.assertIn(".env", module.SPECS["nodens"]["exclude"])
-        self.assertIn(".env.server", module.SPECS["intake-os"]["exclude"])
 
     def test_source_archive_excludes_secret_and_runtime_paths(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

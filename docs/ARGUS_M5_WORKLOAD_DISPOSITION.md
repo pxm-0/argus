@@ -7,7 +7,6 @@ The operator approved the following migration destinations:
 | Hastur | `personal-sandbox` | denied pending migration gates |
 | Kadath | `personal-sandbox` | denied pending migration gates |
 | Nodens | `personal-sandbox` | denied pending migration gates |
-| Intake OS | `work-sandbox` | denied pending migration gates |
 
 The destination is recorded in each workload manifest as
 `migration.targetTrustDomain`. This is a migration plan, not an admission
@@ -17,7 +16,9 @@ health, rollback, and exact-revision cutover evidence all pass.
 
 LociGraph and Hello Nginx were permanently retired before the retained-workload
 cutover; see [`RETIRED_LOCIGRAPH.md`](RETIRED_LOCIGRAPH.md) and
-[`RETIRED_HELLO_NGINX.md`](RETIRED_HELLO_NGINX.md). The operator also approved
+[`RETIRED_HELLO_NGINX.md`](RETIRED_HELLO_NGINX.md). Intake OS was permanently
+retired on 2026-11-09; see [`RETIRED_INTAKE_OS.md`](RETIRED_INTAKE_OS.md). The
+`work-sandbox` trust domain remains provisioned with no workload. The operator also approved
 permanent retirement of Uptime Kuma, Dozzle, Publication Archive, and Review
 UI. Their containers, approved source/data paths, workload-specific volumes,
 and unreferenced images were removed from `oreochiserver`. Their active Argus
@@ -31,7 +32,6 @@ No Compose project name changes are authorized:
 - Hastur: `hastur`
 - Kadath: `kadath-live`
 - Nodens: `nodens`
-- Intake OS: `intake-os`
 
 No migration may add a public route, Tailscale Funnel, Cloudflare tunnel, DNS
 record, router port, PostgreSQL host exposure, Docker socket exposure, or

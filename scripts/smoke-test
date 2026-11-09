@@ -865,7 +865,7 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
     missing = [name for name in required_docs if not (repo / "docs" / name).is_file()]
     smoke.check(not missing, "P4 evidence docs exist")
 
-    blocked_backup = ["hastur", "intake-os"]
+    blocked_backup = ["hastur"]
     bad_backup_state = []
     for workload_id in blocked_backup:
         manifest = load_manifest(repo, workload_id)
@@ -879,7 +879,7 @@ def check_p4_evidence(repo: Path, smoke: Smoke) -> None:
             bad_backup_state.append(workload_id)
     smoke.check(not bad_backup_state, "P4 stateful backup execution remains disabled")
 
-    retired = {"review-ui", "dozzle", "uptime-kuma", "locigraph", "hello-nginx"}
+    retired = {"review-ui", "dozzle", "uptime-kuma", "locigraph", "hello-nginx", "intake-os"}
     tracked = set(workload_map(repo))
     smoke.check(not (retired & tracked), "P4-deferred workloads retired from active inventory")
 

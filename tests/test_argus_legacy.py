@@ -98,7 +98,7 @@ class ArgusLegacyInventoryTest(unittest.TestCase):
                 "Config": {
                     "Image": "example:latest",
                     "Labels": {
-                        "com.docker.compose.project": "intake-os",
+                        "com.docker.compose.project": "hastur",
                         "com.docker.compose.service": "web",
                     },
                 },

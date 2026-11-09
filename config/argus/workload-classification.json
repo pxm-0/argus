@@ -9,14 +9,6 @@
       "status": "classified",
       "admission": "allowed"
     },
-    "intake-os": {
-      "realm": "work",
-      "zone": "sandbox",
-      "stage": "none",
-      "trustDomain": "work-sandbox",
-      "status": "classified",
-      "admission": "allowed"
-    },
     "kadath": {
       "realm": "personal",
       "zone": "sandbox",

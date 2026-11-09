@@ -35,7 +35,6 @@ serving is avoided). `8443` is nodens' existing live port.
 | workload    | local target      | tailnet HTTPS port | canonical URL                                   |
 | ----------- | ----------------- | ------------------ | ----------------------------------------------- |
 | nodens      | `127.0.0.1:3000`  | `8443` (live)      | `https://oreochiserver.tail0a3a58.ts.net:8443`  |
-| intake-os   | `127.0.0.1:8080`  | `8444`             | `https://oreochiserver.tail0a3a58.ts.net:8444`  |
 | hastur      | `127.0.0.1:4173`  | `8445`             | `https://oreochiserver.tail0a3a58.ts.net:8445`  |
 | uptime-kuma | `127.0.0.1:54321` | `8446`             | `https://oreochiserver.tail0a3a58.ts.net:8446`  |
 | review-ui   | `127.0.0.1:8765`  | `8447`             | `https://oreochiserver.tail0a3a58.ts.net:8447`  |
@@ -82,7 +81,6 @@ Run per workload; attach output to the PR:
 | workload    | class      | remaining work                                                                 | approval gate |
 | ----------- | ---------- | ------------------------------------------------------------------------------ | ------------- |
 | review-ui   | internal   | **Serve-only** — already `127.0.0.1:8765`. Add serve `8447 → 127.0.0.1:8765`.  | none          |
-| intake-os   | sensitive  | Rebind `0.0.0.0:3000 → 127.0.0.1`; confirm front-door port (Caddy 8080 vs app 3000); serve `8444 → 127.0.0.1:8080`. | operator sign-off (manifest: no promotion without approval) |
 | hastur      | sensitive  | Rebind `0.0.0.0:4173 → 127.0.0.1`; serve `8445 → 127.0.0.1:4173`.              | operator sign-off (SSH/auth data) |
 | uptime-kuma | restricted | Rebind `0.0.0.0:54321 → 127.0.0.1`; serve `8446 → 127.0.0.1:54321`.            | operator sign-off (restricted admin dashboard) |
 

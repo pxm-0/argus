@@ -9,17 +9,6 @@
     "cloudflare-public"
   ],
   "workloads": {
-    "intake-os": {
-      "desired": "tailnet",
-      "effective": "tailnet",
-      "urls": {
-        "local": "",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8446",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "2026-07-29T13:51:08Z",
-      "lastError": ""
-    },
     "hastur": {
       "desired": "tailnet",
       "effective": "tailnet",

@@ -20,19 +20,6 @@
     }
   },
   "workloadRoutes": {
-    "intake-os": {
-      "tailnet": {
-        "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8446"
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
-        "requiresAuth": true
-      }
-    },
     "hastur": {
       "tailnet": {
         "enabled": true,

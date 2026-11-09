@@ -29,11 +29,6 @@ SPECS = {
         "project": "kadath-live",
         "service": "postgres",
     },
-    "intake-os": {
-        "domain": "work-sandbox",
-        "project": "intake-os",
-        "service": "postgres",
-    },
 }
 RETAINED_COPIES = 14
 DUMP_TIMEOUT_SECONDS = 900

@@ -90,23 +90,6 @@ SPECS = {
         "blocked_mounts": (),
         "cutover_writers": ("nodens",),
     },
-    "intake-os": {
-        "domain": "work-sandbox",
-        "project": "intake-os",
-        "source": "/home/oreo/intake-os",
-        "compose": "docker-compose.server.yml",
-        "database": "intake-os-postgres-1",
-        "database_image": "postgres:16-alpine",
-        "redis": None,
-        "state": (
-            ("caddy-data", "volume", "intake-os_caddy_data"),
-            ("caddy-config", "volume", "intake-os_caddy_config"),
-        ),
-        "state_quiesce": {},
-        "exclude": (".git", "node_modules", "backups", ".env.server"),
-        "blocked_mounts": ("/home/oreo/intake-os/backups",),
-        "cutover_writers": ("api", "local-proxy", "web"),
-    },
 }
 DATABASE_FINGERPRINT_SQL = r"""
 \pset tuples_only on

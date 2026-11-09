@@ -7,7 +7,9 @@ application target, publishes a port, or changes a route.
 The fixed mapping is:
 
 - `hastur`, `kadath`, and `nodens` → `personal-sandbox`
-- `intake-os` → `work-sandbox`
+
+`work-sandbox` has no staged workload since Intake OS was retired; see
+[`RETIRED_INTAKE_OS.md`](RETIRED_INTAKE_OS.md).
 
 The script validates the canonical manifest, live Compose identity, container
 health, image IDs, mounts, named volumes, networks, source health, target
@@ -67,7 +69,6 @@ remain excluded:
 
 - Hastur: `.env`, `auth`, SSH material
 - Nodens: `.env`
-- Intake OS: `.env.server`
 
 Those credentials must be provisioned separately before cutover. Hastur auth
 and SSH dependency remains an explicit cutover blocker; it is not silently

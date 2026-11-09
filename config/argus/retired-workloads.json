@@ -3,6 +3,7 @@
   "workloads": [
     "dozzle",
     "hello-nginx",
+    "intake-os",
     "locigraph",
     "publication-archive-live",
     "review-ui",
