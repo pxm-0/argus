@@ -45,8 +45,8 @@ class SnapshotTests(unittest.TestCase):
         (self.etc / "domain-keys" / "k.pem").write_text(SECRET + "-key")
         verify = self.root / "scripts" / "argus-m1-verify"
         verify.parent.mkdir(parents=True)
-        verify.write_text('#!/bin/sh\necho \'{"ok": true}\'\n')
-        verify.chmod(0o755)
+        verify.write_text('print(\'{"ok": true}\')\n')
+        verify.chmod(0o644)  # mirrors the real tracked mode
         subprocess.run(["git", "init", "-q", str(self.root)], check=True)
         bindir = base / "bin"
         bindir.mkdir()
@@ -171,7 +171,7 @@ class SnapshotTests(unittest.TestCase):
 
     def test_m1_verify_failure_aborts_without_archive(self) -> None:
         verify = self.root / "scripts" / "argus-m1-verify"
-        verify.write_text("#!/bin/sh\nexit 3\n")
+        verify.write_text("raise SystemExit(3)\n")
         result = self.run_cli("--reason", "t")
         self.assertEqual(result.returncode, 1)
         self.assertEqual(list(self.out.glob("*.tar*")), [])
