@@ -164,7 +164,8 @@ under `config/` and `workloads/<id>/`, records the ID in
 `docs/RETIRED_TEMPLATE.md`, runs `argus check`, and opens a PR with a numbered
 server teardown runbook as a comment. Remaining text references (docs, tests,
 scripts) are listed for manual review. After merge and teardown, run
-`argus m1 sync` on the server.
+`scripts/argus-m1-reconcile-retired-workloads` (preview), then the same with
+`--apply --acknowledge-retired-workload-reconciliation`, on the server.
 
 ## Workload moves
 

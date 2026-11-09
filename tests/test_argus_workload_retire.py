@@ -26,8 +26,9 @@ def write(root: Path, rel: str, value: object) -> None:
 class FakeRunner:
     """Fake git/gh/check runner; ls-files reflects the fixture tree."""
 
-    def __init__(self, root: Path, check_rc: int = 0, dirty: bool = False) -> None:
+    def __init__(self, root: Path, check_rc: int = 0, dirty: bool = False, head: str = "abc\n", branch_exists: bool = False, noisy_url: bool = False) -> None:
         self.root, self.check_rc, self.dirty, self.calls = root, check_rc, dirty, []
+        self.head, self.branch_exists, self.noisy_url = head, branch_exists, noisy_url
 
     def __call__(self, command: list[str], repo: Path) -> subprocess.CompletedProcess[str]:
         self.calls.append(command)
@@ -38,7 +39,13 @@ class FakeRunner:
             out = " M x" if self.dirty else ""
         elif command[:3] == ["gh", "pr", "create"]:
             out = "https://github.com/pxm-0/argus/pull/999\n"
+        elif command[:3] == ["git", "rev-parse", "HEAD"] or command[:3] == ["git", "rev-parse", "origin/main"]:
+            out = self.head
         rc = self.check_rc if command[0].endswith("argus-check") else 0
+        if command[:3] == ["git", "rev-parse", "--verify"]:
+            rc = 0 if self.branch_exists else 1
+        if command[:3] == ["gh", "pr", "create"] and self.noisy_url:
+            out = "Warning: something\n" + out
         return subprocess.CompletedProcess(command, rc, out, "")
 
 
@@ -94,7 +101,9 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertEqual(before, self.snapshot())
         self.assertEqual([c[0] for c in runner.calls], ["git"])
         self.assertIn("1. Confirm a verified", result["data"]["runbook"])
-        self.assertIn("argus m1 sync", result["data"]["runbook"])
+        self.assertIn("argus-m1-reconcile-retired-workloads` (preview)", result["data"]["runbook"])
+        self.assertIn("--apply --acknowledge-retired-workload-reconciliation", result["data"]["runbook"])
+        self.assertNotIn("argus m1 sync", result["data"]["runbook"])
         self.assertIn("config/access.json", result["data"]["jsonEdits"])
 
     def test_unknown_and_already_retired_ids_are_refused(self) -> None:
@@ -114,6 +123,31 @@ class WorkloadRetireTests(unittest.TestCase):
         code, result = self.invoke(FakeRunner(self.root, dirty=True), "gone")
         self.assertEqual((code, result["error"]["code"]), (3, "tree-dirty"))
         self.assertEqual(before, self.snapshot())
+
+    def test_head_not_main_and_existing_branch_are_refused(self) -> None:
+        class Moved(FakeRunner):
+            def __call__(self, command, repo):
+                result = super().__call__(command, repo)
+                if command[:3] == ["git", "rev-parse", "origin/main"]:
+                    result.stdout = "def\n"
+                return result
+
+        before = self.snapshot()
+        code, result = self.invoke(Moved(self.root), "gone")
+        self.assertEqual((code, result["error"]["code"]), (3, "head-not-main"))
+        code, result = self.invoke(FakeRunner(self.root, branch_exists=True), "gone")
+        self.assertEqual((code, result["error"]["code"]), (3, "branch-exists"))
+        self.assertEqual(before, self.snapshot())
+
+    def test_pr_url_is_last_line_of_gh_output(self) -> None:
+        code, result = self.invoke(FakeRunner(self.root, noisy_url=True), "gone")
+        self.assertEqual(result["data"]["prUrl"], "https://github.com/pxm-0/argus/pull/999")
+
+    def test_templates_systemd_units_are_listed(self) -> None:
+        write(self.root, "templates/systemd/gone-backup.timer", "[Timer]\n")
+        code, result = self.invoke(FakeRunner(self.root), "gone", "--dry-run")
+        self.assertEqual(result["data"]["unitFiles"], ["templates/systemd/gone-backup.timer"])
+        self.assertIn("templates/systemd/gone-backup.timer", result["data"]["runbook"])
 
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)

@@ -6,7 +6,7 @@ Reason and approval: $reason
 
 Argus no longer inventories, routes, classifies, stages, reconciles, or backs
 up the workload. It is recorded in `config/argus/retired-workloads.json`, so
-the reviewed M1 reconciliation (`argus m1 sync`) removes its private state.
+the reviewed M1 reconciliation (`scripts/argus-m1-reconcile-retired-workloads`) removes its private state.
 
 Teardown of the server runtime (units, timers, sockets, volumes, images and the
 source checkout) is performed by the operator from the numbered runbook in the

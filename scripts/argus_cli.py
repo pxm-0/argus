@@ -20,7 +20,7 @@ from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
-from argus_workload_retire import RetireError, retire
+from argus_workload_retire import RetireError, quiet_runner, retire
 
 
 TAILSCALE_HTTPS_URL = re.compile(
@@ -855,7 +855,7 @@ def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
 
 def retire_command(repo: Path, args: argparse.Namespace, runner: Runner) -> dict[str, Any]:
     try:
-        plan = retire(repo, args.workload_id, dry_run=args.dry_run, reason=args.reason, runner=runner)
+        plan = retire(repo, args.workload_id, dry_run=args.dry_run, reason=args.reason, runner=quiet_runner if runner is default_runner else runner)
     except RetireError as exc:
         return _error(exc.code, exc.message, exc.next_action, exit_code=EXIT_REFUSAL)
     return _success("workload.retire", **{k: v for k, v in plan.items() if k != "command"})
