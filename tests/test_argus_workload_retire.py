@@ -115,11 +115,12 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertEqual((code, result["error"]["code"]), (3, "tree-dirty"))
         self.assertEqual(before, self.snapshot())
 
-    def test_failed_check_stops_before_commit(self) -> None:
+    def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)
         code, result = self.invoke(runner, "gone")
-        self.assertEqual((code, result["error"]["code"]), (3, "repository-check-failed"))
-        self.assertNotIn("commit", [c[1] for c in runner.calls if c[0] == "git" and len(c) > 1])
+        self.assertEqual((code, result["data"]["checks"]), (0, "fail"))
+        create = next(c for c in runner.calls if c[:3] == ["gh", "pr", "create"])
+        self.assertIn("--draft", create)
 
     def test_prune_is_non_mutating_and_exact(self) -> None:
         original = {"gone": 1, "gone-staging": 2, "l": ["gone", "gone-staging", {"id": "gone"}]}
