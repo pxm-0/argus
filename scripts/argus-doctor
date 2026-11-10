@@ -324,10 +324,15 @@ def api_service_user_checks(checks: list[dict[str, Any]]) -> None:
         add(checks, True, "WARN: NOPASSWD sudoers drop-in names the control API user", warn=True, files=named)
 
 
-def trusted_path_problem(path: str, trusted_uids: tuple[int, ...] = (0,)) -> str | None:
-    """First component of the resolved path that is not owned by a trusted uid or is group/other writable."""
+def trusted_path_problem(path: str, trusted_uids: tuple[int, ...] = (0,), below: Path | None = None) -> str | None:
+    """First component of the resolved path that is not owned by a trusted uid or is group/other writable.
+
+    `below` limits the walk to that directory and its children (tests use it to skip /tmp and friends).
+    """
     resolved = Path(os.path.realpath(path))
     for item in [resolved, *resolved.parents]:
+        if below is not None and below != item and below not in item.parents:
+            continue
         try:
             info = item.lstat()
         except OSError:
@@ -367,7 +372,7 @@ def exec_start_paths(shown: str) -> list[str]:
     return paths
 
 
-def exec_start_checks(checks: list[dict[str, Any]], runner: Callable[[list[str]], Any] = run, trusted_uids: tuple[int, ...] = (0,)) -> None:
+def exec_start_checks(checks: list[dict[str, Any]], runner: Callable[[list[str]], Any] = run, trusted_uids: tuple[int, ...] = (0,), below: Path | None = None) -> None:
     """Every argus unit must execute code only from root-owned, non-group-writable trees."""
     try:
         listed = runner(["systemctl", "list-units", "argus-*.service", "--all", "--plain", "--no-legend", "--no-pager"])
@@ -380,7 +385,7 @@ def exec_start_checks(checks: list[dict[str, Any]], runner: Callable[[list[str]]
         paths = exec_start_paths(shown)
         if not paths:
             continue
-        problems = [problem for path in paths if (problem := trusted_path_problem(path, trusted_uids))]
+        problems = [problem for path in paths if (problem := trusted_path_problem(path, trusted_uids, below))]
         add(checks, not problems, f"{unit} ExecStart is under root-owned, non-group-writable paths", problems=problems[:3])
 
 
@@ -393,6 +398,7 @@ def ghcr_credential_checks(
     now: datetime | None = None,
     fetch: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
     trusted_uids: tuple[int, ...] = (0,),
+    below: Path | None = None,
 ) -> None:
     """ghcr-credential: dedicated read-only registry login, root 0600, ghcr.io only, rotated within 90 days."""
     name = "ghcr-credential"
@@ -407,7 +413,7 @@ def ghcr_credential_checks(
     mode = stat.S_IMODE(info.st_mode)
     add(checks, stat.S_ISREG(info.st_mode) and info.st_uid in trusted_uids and mode == 0o600,
         f"{name}: config.json is a root-owned regular file with mode 0600", check=name, mode=oct(mode), uid=info.st_uid)
-    parent = trusted_path_problem(str(config.parent), trusted_uids)
+    parent = trusted_path_problem(str(config.parent), trusted_uids, below)
     add(checks, parent is None, f"{name}: config directory is root-owned and not group/other writable", check=name, problem=parent)
     try:
         auths = json.loads(config.read_text()).get("auths", {})

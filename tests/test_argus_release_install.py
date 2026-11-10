@@ -7,6 +7,7 @@ import io
 import os
 import stat
 import subprocess
+import sys
 import tempfile
 import threading
 import unittest
@@ -114,6 +115,8 @@ class InstallTests(ReleaseFixture):
 
 
 class SwitchAtomicityTests(unittest.TestCase):
+    # APFS can briefly report EINVAL from readlink while a symlink is renamed over; the server is Linux.
+    @unittest.skipUnless(sys.platform.startswith("linux"), "symlink rename atomicity is asserted on Linux only")
     def test_current_is_never_missing_while_switching(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             base = Path(tmp)

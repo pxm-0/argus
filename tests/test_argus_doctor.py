@@ -123,7 +123,7 @@ class HostSudoAndRegistryTests(unittest.TestCase):
 
     def ghcr(self, **overrides):
         checks: list[dict] = []
-        arguments = {"now": self.now, "trusted_uids": self.trusted, **overrides}
+        arguments = {"now": self.now, "trusted_uids": self.trusted, "below": self.tmp, **overrides}
         if "config" not in arguments:
             arguments["config"] = self.config()
         if "stamp" not in arguments:
@@ -140,11 +140,11 @@ class HostSudoAndRegistryTests(unittest.TestCase):
         good = self.tmp / "good"
         good.mkdir(mode=0o755)
         (good / "tool").write_text("x")
-        self.assertIsNone(problem(str(good / "tool"), self.trusted))
+        self.assertIsNone(problem(str(good / "tool"), self.trusted, self.tmp))
         good.chmod(0o775)
-        self.assertIn("group/other writable", problem(str(good / "tool"), self.trusted))
+        self.assertIn("group/other writable", problem(str(good / "tool"), self.trusted, self.tmp))
         good.chmod(0o755)
-        self.assertIn("owned by uid", problem(str(good / "tool"), (0,)))
+        self.assertIn("owned by uid", problem(str(good / "tool"), (0,), self.tmp))
 
     def test_trusted_path_problem_resolves_symlinks_to_the_real_location(self) -> None:
         problem = self.namespace["trusted_path_problem"]
@@ -157,10 +157,10 @@ class HostSudoAndRegistryTests(unittest.TestCase):
         (unsafe / "tool").symlink_to(release / "tool")
         (self.tmp / "via-unsafe").symlink_to(unsafe)
         (self.tmp / "via-release").symlink_to(release)
-        self.assertIsNone(problem(str(unsafe / "tool"), self.trusted))  # the link resolves into the release
-        self.assertIsNone(problem(str(self.tmp / "via-unsafe" / "tool"), self.trusted))
-        self.assertIsNone(problem(str(self.tmp / "via-release" / "tool"), self.trusted))
-        self.assertIn("group/other writable", problem(str(self.tmp / "via-unsafe"), self.trusted) or "")
+        self.assertIsNone(problem(str(unsafe / "tool"), self.trusted, self.tmp))  # the link resolves into the release
+        self.assertIsNone(problem(str(self.tmp / "via-unsafe" / "tool"), self.trusted, self.tmp))
+        self.assertIsNone(problem(str(self.tmp / "via-release" / "tool"), self.trusted, self.tmp))
+        self.assertIn("group/other writable", problem(str(self.tmp / "via-unsafe"), self.trusted, self.tmp) or "")
 
     # --- ExecStart
     def test_exec_start_paths_parse_systemctl_show_output(self) -> None:
@@ -191,7 +191,7 @@ class HostSudoAndRegistryTests(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, shows[command[2]], "")
 
         checks: list[dict] = []
-        self.namespace["exec_start_checks"](checks, runner, self.trusted)
+        self.namespace["exec_start_checks"](checks, runner, self.trusted, self.tmp)
         self.assertEqual(2, len(checks))
         self.assertTrue(self.row(checks, "argus-good.service")["ok"])
         self.assertFalse(self.row(checks, "argus-bad.service")["ok"])
