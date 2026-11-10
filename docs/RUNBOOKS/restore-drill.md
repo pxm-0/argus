@@ -32,7 +32,13 @@ cat ~/Archives/argus-snapshots/.last-ok
 ssh oreochiserver 'ls -l ~/argus-pull-ok'       # evidence the pull reached the server
 ```
 
-Rollback: `launchctl bootout gui/$UID/dev.argus.backup-pull` and delete the plist. Archives stay in place.
+Server prerequisite: PR3 merged and deployed, so `/var/backups/argus-snapshots-pull` (oreo:oreo 0750) exists and holds
+`*-nightly.tar.age`, `hastur-*.tar.gz.age` and `kadath-*.dump.age`. Check with
+`ssh oreochiserver 'ls -l /var/backups/argus-snapshots-pull'`. The pull only runs `rsync` and `touch ~/argus-pull-ok`
+as oreo; no sudo and no other server state. Until PR3 is deployed the first run reports RSYNC_FAIL (exit 1) and is harmless.
+
+Rollback (Mac only, nothing to undo on the server): `launchctl bootout gui/$UID/dev.argus.backup-pull` and
+`dev.argus.restore-drill`, delete the plists. Archives stay in place; to undo the code, revert the PR.
 
 ## What the pull does
 

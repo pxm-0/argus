@@ -40,8 +40,8 @@ EX_TEMPFAIL = 75
 # rsync exit codes meaning the transport (ssh) never worked: ssh failure, socket I/O, timeouts.
 UNREACHABLE = {10, 30, 35, 255}
 REASON = r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}"  # as PR3's REASON_RE: names are server-chosen, so stay strict
-STAMP_RE = re.compile(rf"^(\d{{8}}T\d{{6}}Z)-({REASON})\.tar(\.age)?$")
-AUX_RE = re.compile(rf"^({REASON})-(\d{{8}}T\d{{6}}Z)\.(tar\.gz|dump)\.age$")
+STAMP_RE = re.compile(rf"^(\d{{8}}T\d{{6}}Z)-({REASON})\.tar(\.age)?\Z")
+AUX_RE = re.compile(rf"^({REASON})-(\d{{8}}T\d{{6}}Z)\.(tar\.gz|dump)\.age\Z")
 TRANSIENT_MARKERS = ("not writable", "No such file", "Permission denied", "No space left", "pass --identity")
 REMOTE_RE = re.compile(r"^([A-Za-z0-9_.@-]+):(?!/{2})")  # host:path, not a local path with a colon
 

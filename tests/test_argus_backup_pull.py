@@ -185,6 +185,14 @@ class BackupPullTests(PullFixture):
         self.assertEqual(1, result.returncode)
         self.assertFalse(self.dest.exists())
 
+    def test_trailing_newline_names_are_ignored(self) -> None:
+        make_archive(self.source / f"{stamp(1)}-nightly.tar.age")
+        for name in (f"{stamp(2)}-x.tar.age\n", f"x-{stamp(2)}.dump.age\n"):
+            make_archive(self.source / name)
+        self.assertEqual(0, self.pull().returncode)
+        self.assertNotIn("\n.", (self.dest / "verify.log").read_text())
+        self.assertNotIn("x.tar.age\n", self.sums())
+
 
 class AuxCopyTests(PullFixture):
     """hastur `<name>-<stamp>.tar.gz.age` and kadath `<workload>-<stamp>.dump.age`, as PR3 publishes them."""
