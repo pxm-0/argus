@@ -167,6 +167,63 @@ class WorkloadRetireTests(unittest.TestCase):
         code, result = self.invoke(FakeRunner(self.root), "gone", "--dry-run")
         self.assertEqual(result["data"]["unitFiles"], ["systemd/argus-gone.service"])
 
+    def runbook(self, workload_id: str = "gone") -> str:
+        return self.invoke(FakeRunner(self.root), workload_id, "--dry-run")[1]["data"]["runbook"]
+
+    def test_runbook_step_zero_removes_timer_first(self) -> None:
+        rb = self.runbook()
+        step0 = next(line for line in rb.splitlines() if line.startswith("0. "))
+        self.assertIn("argus-m5-workload-gone.timer", step0)
+        self.assertIn("argus-m5-workload-gone.service", step0)
+        self.assertIn("systemctl list-unit-files | grep gone` prints nothing", step0)
+
+    def test_runbook_backup_step_names_snapshot_and_restore_dry_run(self) -> None:
+        step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
+        self.assertIn("snapshot ID", step1)
+        self.assertIn("argus-backup-restore --workload gone --artifact-id <snapshot-id> --acknowledge-isolated-restore", step1)
+
+    def test_runbook_serve_off_and_listener_check(self) -> None:
+        rb = self.runbook()
+        self.assertIn("sudo tailscale serve --https=8446 off", rb)
+        self.assertIn("tailscale serve status", rb)
+        self.assertIn("ss -ltn", rb)
+
+    def test_runbook_directories_and_legacy_clone_wait_for_backup(self) -> None:
+        rb = self.runbook()
+        for path in ("/var/lib/argus/migration-runtime/gone", "/var/lib/argus/migration-staging/gone", "/var/lib/argus/migration-cutovers/gone", "/var/backups/argus-m5-workload-staging/gone"):
+            self.assertIn(path, rb)
+        self.assertIn("KEEP `/var/lib/argus/migration-cutovers/gone`", rb)
+        self.assertIn("keep it until then", rb)
+        self.assertLess(rb.index("Directories, each only after"), rb.index("legacy source checkout"))
+
+    def test_runbook_nodens_residue_is_classified(self) -> None:
+        write(self.root, "config/workloads.json", {"workloads": [{"id": "nodens", "runtime": {"composeProject": "nodens"}}]})
+        write(self.root, "config/routes.json", {"workloadRoutes": {"nodens": {"tailnet": {"url": "https://h:8444"}}}})
+        rb = self.runbook("nodens")
+        self.assertIn("sudo tailscale serve --https=8444 off", rb)
+        self.assertIn("`nodens-live_postgres-data` (KEEP)", rb)
+        self.assertIn("`nodens-live_caddy-data` (REMOVE)", rb)
+        for network in ("nodens_default", "nodens-net", "nodens-sprint55-net"):
+            self.assertIn(f"docker network rm {network}", rb)
+        self.assertIn("docker image rm sha256:2633eeb26a5f", rb)
+
+    def test_runbook_warns_when_image_digest_is_shared(self) -> None:
+        shared = "sha256:" + "e8f2abf0300b" + "0" * 52
+        own = "sha256:" + "1" * 64
+        write(self.root, "workloads/gone/source/compose.yml", f"services:\n  a:\n    image: {shared}  # x\n  b:\n    image: {own}\n")
+        write(self.root, "workloads/gone-staging/source/compose.yml", f"services:\n  a:\n    image: {shared}\n")
+        rb = self.runbook()
+        self.assertIn(f"WARNING: `{shared[:19]}` is also pinned by `gone-staging`; do NOT remove it", rb)
+        self.assertIn(f"docker image rm {own[:19]}", rb)
+        self.assertNotIn(f"docker image rm {shared[:19]}", rb)
+
+    def test_real_repo_staging_runbook_warns_about_production_image(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        code = run(["workload", "retire", "nodens-staging", "--dry-run", "--json"], repo=ROOT, stdout=out, stderr=err)
+        self.assertEqual(code, 0, out.getvalue())
+        rb = json.loads(out.getvalue())["data"]["runbook"]
+        self.assertIn("`sha256:e8f2abf0300b` is also pinned by `nodens-production`", rb)
+
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)
         code, result = self.invoke(runner, "gone")
