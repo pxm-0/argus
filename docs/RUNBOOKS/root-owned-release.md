@@ -67,8 +67,8 @@ any live path needs them.
 2. Render and install the override drop-ins (they repoint `ExecStart`, `WorkingDirectory` and `ARGUS_ROOT`).
    `--units-dir` derives them from the units actually installed, which includes the generated
    `argus-m5-workload-*.service` units that the repository does not carry. It also writes
-   `argus-metrics.service.d/20-argus-docker-group.conf` and `argus-workload-discover.service.d/20-argus-docker-group.conf`
-   (`SupplementaryGroups=docker`), which let those two oreo-run units keep docker after `oreo` leaves the docker group:
+   `argus-metrics.service.d/20-argus-docker-group.conf`, `argus-workload-discover.service.d/20-argus-docker-group.conf` and `argus-alert.service.d/20-argus-docker-group.conf`
+   (`SupplementaryGroups=docker`), which let those oreo-run units keep docker after `oreo` leaves the docker group:
 
    ```bash
    /opt/argus/current/scripts/argus-sudoers-render --units-dir /etc/systemd/system --overrides-dir /root/argus-overrides

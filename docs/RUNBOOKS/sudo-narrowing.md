@@ -47,9 +47,9 @@ used here). Always validate with the server's own `visudo`.
 4. Decide which one-time M5 tools you still need. They will need the break-glass path.
 5. Docker consumers: the override drop-ins from `root-owned-release.md` include
    `20-argus-docker-group.conf` (`SupplementaryGroups=docker`) for `argus-metrics.service` and
-   `argus-workload-discover.service`, the oreo-run units that call `docker ps|stats`. Confirm they are installed
+   `argus-workload-discover.service` and `argus-alert.service`, the oreo-run units that call `docker ps|stats|inspect`. Confirm they are installed
    before the docker-group step below:
-   `systemctl show -p SupplementaryGroups argus-metrics.service argus-workload-discover.service` (both `docker`).
+   `systemctl show -p SupplementaryGroups argus-metrics.service argus-workload-discover.service argus-alert.service` (all `docker`).
 
 ## Apply (root shell A)
 
@@ -121,8 +121,8 @@ Before you start, item 5 are active:
 ```bash
 gpasswd -d oreo docker
 gpasswd -d oreo lxd
-systemctl start argus-metrics.service argus-workload-discover.service
-systemctl --no-pager status argus-metrics.service argus-workload-discover.service
+systemctl start argus-metrics.service argus-workload-discover.service argus-alert.service
+systemctl --no-pager status argus-metrics.service argus-workload-discover.service argus-alert.service
 ```
 
 Both units must finish `active (exited)` / `inactive (dead)` with status 0, and the dashboard metrics must still show
