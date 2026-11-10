@@ -28,9 +28,23 @@ and fsmonitor, hooks, pager and ssh command disabled, so root leaves no files in
 checkout configures. Fetch first as `oreo` (`git -C /srv/argus fetch origin`); the commit and `origin/main` must exist
 locally. The sha is the trust anchor: copy it from the merged PR on GitHub (`gh pr view <n> --json mergeCommit`), never
 from the server. `origin/main` in the checkout is only a sanity check, because `oreo` can forge that ref.
+git also runs with replace refs disabled (`--no-replace-objects`, `GIT_NO_REPLACE_OBJECTS=1`; `refs/replace/*` is
+operator-writable), the commit object is re-hashed and must equal the typed sha, and the commit's tree id is taken from
+those verified bytes and compared with a re-hash of the extracted files.
 
-Anything that writes under the release (for example `config/*.json`, `__pycache__`) now fails or is skipped.
-`config/` is read-only: change it with a reviewed PR and a new release, not on the server.
+Anything that writes under the release (for example `__pycache__`) now fails or is skipped. Policy config
+(`config/*.json`) is changed by a reviewed PR and a new release, EXCEPT the runtime-mutable `config/access.json` and
+`config/privacy.json`: the units that write them (`argus-domain-agent@`, `argus-domain-agent-legacy-rootful`, which have
+`ReadWritePaths=/srv/argus/config`) get `ARGUS_ROOT=/srv/argus` in their drop-in while their code still runs from
+`/opt/argus/current`, so `access.apply` keeps writing the live files. Run `argus m1 sync --apply` and
+`argus-privacy-set` the same way only against `/srv/argus` (not through `/opt/argus/current`, which is sealed).
+
+Residual risks, not closed by this PR: (a) allowlisted root scripts (`argus m1 sync --apply`, `argus-backup-snapshot`)
+read and write `runtime/`, which is a symlink to the `oreo`-owned `/srv/argus/runtime`, so `oreo` can plant symlinks
+there and make root write through them; the end state is not binding against a hostile `oreo` until `runtime/` ownership
+is split. (b) Generated gitignored files `caddy/dashboard.Caddyfile` and `cloudflare/planned-ingress.yml` are not linked
+into the release; `argus-doctor`/`argus_legacy` that read them report them absent until regenerated. Not verified whether
+any live path needs them.
 
 ## Apply (root shell)
 

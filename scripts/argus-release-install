@@ -6,9 +6,11 @@
 Root shell only; it is deliberately NOT in the sudoers allowlist, because the
 /srv/argus checkout (config, refs, objects) is owned by the unprivileged operator.
 Trust anchor: the 40-hex sha the root operator types, taken from the merged PR on
-GitHub.  A sha names its content, so the blobs of <sha> read from the untrusted object
-store are authentic or fail the tree-hash check below; the local origin/main ref is
-only a sanity check (the operator can forge it, the sha cannot be forged).
+GitHub.  The commit object is re-hashed and must equal that sha, the tree id is read from
+those verified bytes, and the extracted tree is re-hashed against it, so the untrusted
+object store cannot substitute content.  git runs with replace refs disabled
+(--no-replace-objects, GIT_NO_REPLACE_OBJECTS=1), since refs/replace/* is operator-writable.
+The local origin/main ref is only a sanity check (the operator can forge it, the sha cannot).
 The commit must exist in the /srv/argus checkout and be reachable from origin/main.
 The commit's blobs are written into /opt/argus/releases/<sha>, its git tree hash is recomputed and
 compared with the commit's tree, the tree is chowned root:root with group and
@@ -53,18 +55,20 @@ GIT_ENV = {
     "GIT_CONFIG_NOSYSTEM": "1",
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_TERMINAL_PROMPT": "0",
+    "GIT_NO_REPLACE_OBJECTS": "1",  # refs/replace/* is operator-writable and would swap the commit behind a sha
 }
 # The checkout's .git/config belongs to the unprivileged operator; neutralise every setting that makes git run a program.
 GIT_HARDENING = (
     "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
     "-c", "core.sshCommand=/bin/false", "-c", "protocol.ext.allow=never",
 )
+GIT_BASE = ("--no-optional-locks", "--no-replace-objects", *GIT_HARDENING)
 
 
 def git(source: Path, *args: str, binary: bool = False) -> subprocess.CompletedProcess:
     # --no-optional-locks keeps root from writing into the operator-owned checkout; safe.directory is
     # scoped to this one repo instead of a global setting.
-    command = ["git", "--no-optional-locks", *GIT_HARDENING, "-c", f"safe.directory={source}", "-C", str(source), *args]
+    command = ["git", *GIT_BASE, "-c", f"safe.directory={source}", "-C", str(source), *args]
     return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary, check=False, env=dict(GIT_ENV))
 
 
@@ -77,10 +81,14 @@ def require_known_commit(source: Path, sha: str, ref: str) -> str:
         raise ReleaseRefused(f"unknown commit {sha} in {source}")
     if git(source, "merge-base", "--is-ancestor", sha, ref).returncode != 0:
         raise ReleaseRefused(f"{sha} is not reachable from {ref}")
-    tree = git(source, "rev-parse", f"{sha}^{{tree}}")
-    if tree.returncode != 0:
+    # A sha names its content only if we re-hash it: a forged loose object could sit under the sha's path.
+    raw = git(source, "cat-file", "commit", sha, binary=True)
+    if raw.returncode != 0 or hashlib.sha1(b"commit %d\0" % len(raw.stdout) + raw.stdout).hexdigest() != sha:  # noqa: S324
+        raise ReleaseRefused(f"commit object does not hash to {sha}")
+    header = raw.stdout.split(b"\n\n", 1)[0].split(b"\n")
+    if not header or not re.fullmatch(rb"tree [0-9a-f]{40}", header[0]):
         raise ReleaseRefused(f"cannot read the tree of {sha}")
-    return tree.stdout.strip()
+    return header[0][5:].decode()
 
 
 def _blob(data: bytes) -> str:
@@ -145,7 +153,7 @@ def extract_commit(source: Path, sha: str, destination: Path) -> None:
 
 
 def git_cat_file(source: Path, oids: list[str]) -> list[bytes]:
-    command = ["git", "--no-optional-locks", *GIT_HARDENING, "-c", f"safe.directory={source}", "-C", str(source), "cat-file", "--batch"]
+    command = ["git", *GIT_BASE, "-c", f"safe.directory={source}", "-C", str(source), "cat-file", "--batch"]
     stdin = "".join(f"{oid}\n" for oid in oids).encode()
     result = subprocess.run(command, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, env=dict(GIT_ENV))
     if result.returncode != 0:

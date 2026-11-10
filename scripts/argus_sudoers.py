@@ -276,7 +276,11 @@ def render_override(unit_text: str, prefix: str = DEFAULT_PREFIX) -> str | None:
     if any(line.startswith("WorkingDirectory=") and SOURCE_PREFIX in line for line in lines):
         body.insert(0, f"WorkingDirectory={prefix}")
     header = "# Managed by scripts/argus-sudoers-render --overrides-dir; repoints this unit at the root-owned release."
-    return "\n".join([header, "[Service]", f"Environment=ARGUS_ROOT={prefix}", *body]) + "\n"
+    # Units that may write /srv/argus/config (access.json, privacy.json) keep ARGUS_ROOT on the live tree: the sealed
+    # release is read-only (EROFS) and writing into it would be lost on the next install.  Their code still runs from the release.
+    writes_config = any(line.startswith("ReadWritePaths=") and f"{SOURCE_PREFIX}/config" in line.split("=", 1)[1].split() for line in lines)
+    root_value = SOURCE_PREFIX if writes_config else prefix
+    return "\n".join([header, "[Service]", f"Environment=ARGUS_ROOT={root_value}", *body]) + "\n"
 
 
 def render_overrides(repo: Path, prefix: str = DEFAULT_PREFIX, units_dir: Path | None = None) -> dict[str, str]:

@@ -185,6 +185,24 @@ class RefusalTests(ReleaseFixture):
         self.assertEqual("{}\n", (release / "config" / "a.json").read_text())
         self.assertFalse((release / "stray.txt").exists())
 
+    def test_replace_ref_cannot_swap_the_commit_behind_a_sha(self) -> None:
+        good = self.sha
+        write(self.source, "scripts/argus", "#!/bin/sh\necho hostile\n", 0o755)
+        git(self.source, "commit", "-q", "-am", "hostile")
+        hostile = git(self.source, "rev-parse", "HEAD")
+        git(self.source, "update-ref", "refs/remotes/origin/main", hostile)
+        git(self.source, "replace", "-f", good, hostile)
+        release = self.install(good)
+        self.assertEqual("#!/usr/bin/env python3\n", (release / "scripts" / "argus").read_text())
+
+    def test_forged_loose_commit_object_is_refused(self) -> None:
+        obj = self.source / ".git" / "objects" / self.sha[:2] / self.sha[2:]
+        other = git(self.source, "commit-tree", "-m", "forged", self.sha + "^{tree}")
+        forged = self.source / ".git" / "objects" / other[:2] / other[2:]
+        obj.chmod(0o644)
+        shutil.copyfile(forged, obj)
+        self.assert_refused(self.sha, "does not hash|unknown commit|bad|cannot")
+
     def test_git_runs_with_hardening_and_clean_environment(self) -> None:
         seen = {}
 
@@ -196,6 +214,8 @@ class RefusalTests(ReleaseFixture):
             installer.git(self.source, "rev-parse", "HEAD")
         self.assertIn("core.fsmonitor=false", seen["command"])
         self.assertIn("core.hooksPath=/dev/null", seen["command"])
+        self.assertIn("--no-replace-objects", seen["command"])
+        self.assertEqual("1", seen["env"]["GIT_NO_REPLACE_OBJECTS"])
         self.assertEqual("1", seen["env"]["GIT_CONFIG_NOSYSTEM"])
         self.assertEqual(os.devnull, seen["env"]["GIT_CONFIG_GLOBAL"])
         self.assertNotIn("GIT_DIR", seen["env"])

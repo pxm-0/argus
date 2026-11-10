@@ -164,13 +164,24 @@ class OverrideTests(unittest.TestCase):
         self.assertIn("WorkingDirectory=/opt/argus/current\n", text)
         self.assertIn("ExecStart=\nExecStart=/usr/bin/python3 /opt/argus/current/control-plane/api/server.py\n", text)
 
+    def test_config_writer_units_keep_the_live_root_while_code_runs_from_the_release(self) -> None:
+        overrides = sudoers.render_overrides(ROOT)
+        writers = [p for p in sorted((ROOT / "systemd").glob("*.service")) if "/srv/argus/config" in "".join(
+            line.partition("=")[2] for line in p.read_text().splitlines() if line.startswith("ReadWritePaths="))]
+        self.assertTrue(writers)
+        for path in writers:
+            text = overrides[f"{path.name}.d/10-argus-release.conf"]
+            self.assertIn("Environment=ARGUS_ROOT=/srv/argus\n", text, path.name)
+            self.assertIn("/opt/argus/current/", text, path.name)
+        self.assertIn("Environment=ARGUS_ROOT=/opt/argus/current\n", overrides["argus-control-api.service.d/10-argus-release.conf"])
+
     def test_every_unit_touching_srv_argus_gets_a_dropin_that_leaves_none(self) -> None:
         overrides = sudoers.render_overrides(ROOT)
         for path in sorted((ROOT / "systemd").glob("*.service")):
             exec_lines = [line for line in path.read_text().splitlines() if line.startswith("Exec") and "/srv/argus" in line]
             self.assertEqual(bool(exec_lines), f"{path.name}.d/10-argus-release.conf" in overrides, path.name)
         for name, text in overrides.items():
-            self.assertNotIn("/srv/argus", text, name)
+            self.assertNotIn("/srv/argus", text.replace("Environment=ARGUS_ROOT=/srv/argus\n", ""), name)
             lines = text.splitlines()
             for key in ("ExecStartPre", "ExecStart"):
                 for index, line in enumerate(lines):
