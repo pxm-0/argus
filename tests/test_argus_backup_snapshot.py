@@ -169,6 +169,15 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn("sha256 mismatch: etc-argus/control-token", result.stderr)
 
+    def test_git_captures_never_take_optional_locks(self) -> None:
+        # a root `git status` refreshes .git/index as root:root 0600 and breaks later pulls as the repo owner
+        from importlib.machinery import SourceFileLoader
+        mod = SourceFileLoader("snapmod_git", str(SCRIPT)).load_module()
+        git_commands = [argv for argv in mod.COMMANDS.values() if argv[0] == "git"]
+        self.assertTrue(git_commands)
+        for argv in git_commands:
+            self.assertEqual(argv[1], "--no-optional-locks", argv)
+
     def test_m1_verify_failure_aborts_without_archive(self) -> None:
         verify = self.root / "scripts" / "argus-m1-verify"
         verify.write_text("raise SystemExit(3)\n")
