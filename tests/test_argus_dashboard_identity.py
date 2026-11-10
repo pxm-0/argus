@@ -96,6 +96,10 @@ class DashboardIdentityTests(unittest.TestCase):
             self.assertIn("JavaScript required", no_script)
             self.assertNotIn("admin-token", no_script)
             self.assertNotIn("data-operation", no_script)
+            app = (public / "app.js").read_text()
+            self.assertNotIn("@include", app)
+            self.assertIn("const OPERATIONS = {", app)
+            self.assertIn("Lifecycle", app)
 
 
 if __name__ == "__main__":
