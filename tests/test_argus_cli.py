@@ -402,14 +402,8 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual("succeeded", json.loads(output)["data"]["operation"]["state"])
         self.assertEqual(before, ledger.read_bytes())
 
-        code, output, _ = self.invoke(["operation", "recover", operation_id, "--json"])
-        self.assertEqual(3, code)
-        self.assertEqual("operation-recovery-confirmation-required", json.loads(output)["error"]["code"])
-        code, output, _ = self.invoke(
-            ["operation", "recover", operation_id, "--confirm", operation_id, "--json"]
-        )
-        self.assertEqual(4, code)
-        self.assertEqual("operation-recovery-unavailable", json.loads(output)["error"]["code"])
+        code, _, _ = self.invoke(["operation", "recover", operation_id, "--json"])
+        self.assertEqual(2, code)
 
     def test_completed_migration_remains_available_for_an_inert_rollback_draft(self) -> None:
         ledger_path = self.root / "operations.sqlite3"
@@ -624,7 +618,14 @@ class StableCliContractTests(unittest.TestCase):
             ["workload", "move", "status"],
             ["workload", "move", "rollback"],
             ["operation", "show"],
-            ["operation", "recover"],
+            ["op", "preview"],
+            ["op", "create"],
+            ["op", "show"],
+            ["op", "watch"],
+            ["workload", "deploy"],
+            ["workload", "start"],
+            ["workload", "stop"],
+            ["workload", "restart"],
             ["doctor"],
             ["check"],
         )
