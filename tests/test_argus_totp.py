@@ -306,6 +306,25 @@ class ServerTests(unittest.TestCase):
         with patch.dict(os.environ, {"ARGUS_TOTP_REQUIRED": "1"}):
             self.assertEqual(403, self.exchange({"bootstrapToken": TOKEN})[0])
 
+    def test_observer_machine_identity_exchanges_with_its_own_token_and_no_totp(self) -> None:
+        # Cross-PR (TOTP x argus-observer): the observer has no human second factor and its own token file.
+        base = Path(self.directory.name)
+        (base / "observer-token").write_text("observer-value\n")
+        observer = self.server.OBSERVER_LOGIN
+        (base / "operators.json").write_text(json.dumps({"schemaVersion": 1, "operators": [
+            {"tailnetLogin": LOGIN, "role": "owner", "enabled": True},
+            {"tailnetLogin": observer, "role": "owner", "enabled": True},
+        ]}))
+        self.enroll()
+        def observer_exchange(token: str) -> int:
+            handler = self.handler("/api/session/exchange", {"bootstrapToken": token})
+            handler.headers["X-Argus-Tailnet-Login"] = observer
+            handler.handle_post()
+            return handler.sent[-1][0]
+        with patch.object(self.server, "OBSERVER_TOKEN_FILE", base / "observer-token"), patch.dict(os.environ, {"ARGUS_TOTP_REQUIRED": "1"}):
+            self.assertEqual(201, observer_exchange("observer-value"))
+            self.assertEqual(401, observer_exchange(TOKEN))
+
     def test_enrolled_operator_needs_both_factors_with_generic_401(self) -> None:
         self.enroll()
         for body in ({"bootstrapToken": TOKEN}, {"bootstrapToken": TOKEN, "totp": "000000"}, {"bootstrapToken": "wrong", "totp": self.code()}, {"totp": self.code()}):

@@ -28,6 +28,14 @@ RUNTIME = Path(os.environ.get("ARGUS_RUNTIME", ROOT / "runtime" / "argus" / "m5"
 TOKEN_FILE = Path(os.environ.get("ARGUS_TOKEN_FILE", "/etc/argus/control-token"))
 OPERATORS_FILE = Path(os.environ.get("ARGUS_OPERATORS_FILE", "/etc/argus/operators.json"))
 PROXY_TOKEN_FILE = Path(os.environ.get("ARGUS_PROXY_TOKEN_FILE", "/etc/argus/operator-proxy-token"))
+OBSERVER_TOKEN_FILE = Path(os.environ.get("ARGUS_OBSERVER_TOKEN_FILE", "/etc/argus/observer-token"))
+# Non-human identity for scripts/argus-typed-health. The session store only knows the owner role, so the
+# restriction to health.refresh is enforced here by identity and the observer has its own exchange token.
+OBSERVER_LOGIN = "argus-observer@machine.argus"
+OBSERVER_REQUEST_PATHS = re.compile(
+    r"/api/workloads/[^/]+/operations(/preview)?|/api/operations/[0-9a-f-]+(/approve)?"
+)
+OBSERVER_OPERATION = "health.refresh"
 TOTP_FILE = os.environ.get("ARGUS_TOTP_FILE", "")
 SESSION_DB = Path(os.environ.get("ARGUS_SESSION_DB", RUNTIME / "sessions.sqlite3"))
 OPERATIONS_DB = Path(
@@ -176,8 +184,14 @@ def trusted_operator(headers: Any, peer_host: str) -> dict[str, str] | None:
     return enabled_operator(identity) if identity else None
 
 
-def bootstrap_valid(supplied: str) -> bool:
-    expected = bootstrap_token()
+def bootstrap_valid(supplied: str, identity: str = "") -> bool:
+    if identity == OBSERVER_LOGIN:
+        try:
+            expected = OBSERVER_TOKEN_FILE.read_text().strip()
+        except OSError:
+            return False
+    else:
+        expected = bootstrap_token()
     return bool(expected) and secrets.compare_digest(supplied, expected)
 
 
@@ -336,6 +350,23 @@ def confirmation_phrase(
     return phrases.get(operation_type, "")
 
 
+def observed_health(workload: dict[str, Any], refreshes: list[dict[str, Any]]) -> dict[str, Any]:
+    """Live last-health from the newest finished health.refresh (newest-first rows); read-only.
+
+    Falls back to the static migration.lastHealthCheck, with ok unknown, when the ledger has none.
+    """
+    health = workload.get("health") or {}
+    for operation in refreshes:
+        if operation.get("state") not in {"succeeded", "failed"}:
+            continue
+        reported = (operation.get("redactedResult") or {}).get("health")
+        ok = operation["state"] == "succeeded" and isinstance(reported, dict) and reported.get("ok") is True
+        observed_at = operation.get("finished_at") or operation.get("created_at") or ""
+        return {**health, "lastObservedAt": observed_at, "ok": ok, "observedFrom": "ledger"}
+    fallback = (workload.get("migration") or {}).get("lastHealthCheck", "")
+    return {**health, "lastObservedAt": fallback, "ok": None, "observedFrom": "migration"}
+
+
 def stage_runtime(workload: dict[str, Any]) -> dict[str, Any]:
     """Add pinned/observed image and last-deploy facts to a workload without mutating the input."""
     workload_id = str(workload.get("id", ""))
@@ -344,9 +375,11 @@ def stage_runtime(workload: dict[str, Any]) -> dict[str, Any]:
     deploy = LEDGER.list_recent(
         workload_id=workload_id, operation_type="workload.deploy", state="succeeded", limit=1
     )
+    refreshes = LEDGER.list_recent(workload_id=workload_id, operation_type="health.refresh", limit=5)
     # observedImage is the digest of the last succeeded deploy; no live container inspection exists yet.
     return {
         **workload,
+        "health": observed_health(workload, refreshes),
         "runtime": {
             **runtime,
             "pinnedImage": runtime.get("imagePin", ""),
@@ -680,10 +713,19 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self.send_json(403, {"error": "CSRF validation failed"})
                 return None
+        if session.identity == OBSERVER_LOGIN and not OBSERVER_REQUEST_PATHS.fullmatch(urlparse(self.path).path):
+            self.send_json(403, {"error": "observer identity may only run health.refresh"})
+            return None
         if step_up and not session.step_up_valid:
             self.send_json(403, {"error": "step-up reauthentication required"})
             return None
         return session
+
+    def observer_denied(self, session: Session, operation_type: str) -> bool:
+        if session.identity == OBSERVER_LOGIN and operation_type != OBSERVER_OPERATION:
+            self.send_json(403, {"error": "observer identity may only run health.refresh"})
+            return True
+        return False
 
     def do_GET(self) -> None:  # noqa: N802
         try:
@@ -928,6 +970,8 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body.get("parameters", {}), dict):
                 raise OperationValidationError("parameters must be an object")
             parameters = dict(body.get("parameters") or {})
+            if self.observer_denied(session, operation_type):
+                return
             self.send_json(200, operation_preview(preview_match.group(1), operation_type, parameters))
         elif create_match:
             validate_body_keys(
@@ -1317,11 +1361,14 @@ class Handler(BaseHTTPRequestHandler):
             )
             return False
         state, entry = totp_enrollment(identity)
-        if state == "missing" and os.environ.get("ARGUS_TOTP_REQUIRED") == "1":
+        if identity == OBSERVER_LOGIN:
+            # Machine identity: authenticated by its own observer token and confined to health.refresh; no human TOTP.
+            state = "missing"
+        elif state == "missing" and os.environ.get("ARGUS_TOTP_REQUIRED") == "1":
             audit(action, "-", "rejected", actor=identity, reason="totp-not-enrolled")
             self.send_json(403, {"error": "second factor enrolment required"})
             return False
-        token_ok = bootstrap_valid(str(body.get("bootstrapToken", "")))
+        token_ok = bootstrap_valid(str(body.get("bootstrapToken", "")), identity)
         totp_ok = state == "missing"
         if state == "ok" and entry is not None:
             totp_ok = SESSIONS.verify_second_factor(
@@ -1383,6 +1430,8 @@ class Handler(BaseHTTPRequestHandler):
     def handle_operation_create(self, workload_id: str, session: Session, body: dict[str, Any]) -> None:
         operation_type = str(body.get("operationType", ""))
         parameters = dict(body.get("parameters") or {})
+        if self.observer_denied(session, operation_type):
+            return
         preview = operation_preview(workload_id, operation_type, parameters)
         if not preview["allowed"]:
             self.send_json(403, preview)
@@ -1444,6 +1493,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if operation["requested_by"] != session.identity:
             self.send_json(403, {"error": "operation belongs to another operator"})
+            return
+        if self.observer_denied(session, str(operation["operation_type"])):
             return
         if not SESSIONS.operation_bound_to(
             operation_id,
