@@ -656,6 +656,7 @@ primary-host
 ├── argus-management
 ├── legacy-rootful
 ├── personal-sandbox
+│   └── staging (Nodens projects; see 7.2)
 ├── personal-managed
 │   ├── dev
 │   ├── staging
@@ -691,6 +692,17 @@ no dependency on managed data stores
 stage: none
 ```
 
+Operator decision (#322): `personal-sandbox` is the staging environment and
+`personal-managed` the production environment for every Nodens project. Each
+project gets `<id>-staging` in `personal-sandbox` (`zone: sandbox`,
+`stage: staging`) and `<id>-production` in `personal-managed`
+(`stage: production`). A sandbox staging workload is a typed-deploy,
+image-pinned workload, never a `sandboxReconcileOnly` source build, and keeps
+the 7.4 staging properties. Allowed stages per zone are fail-closed in
+`argus_state.allowed_stages`: `sandbox` admits only `none`, plus `staging` in
+realm `personal`; `managed` admits `dev`, `staging`, and `production`;
+`legacy` admits only `none`. Production is never admitted in a sandbox.
+
 Personal and work sandboxes are separate trust domains. A work sandbox cannot reuse personal secrets, networks, volumes, source mounts, or tunnel credentials.
 
 ### 7.3 Managed development
@@ -719,6 +731,11 @@ commit
 ```
 
 Production must not receive a separately rebuilt artifact after staging validation.
+
+For Nodens projects, staging runs in `personal-sandbox` and production in
+`personal-managed`. The same image is imported into each domain with
+`argus-image-import`, and both Compose files pin the same domain-local image
+ID; the promotion is a pin change, never a rebuild.
 
 ### 7.7 Enforcement matrix
 
