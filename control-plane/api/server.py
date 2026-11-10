@@ -1333,6 +1333,16 @@ class Handler(BaseHTTPRequestHandler):
         if token_ok and totp_ok:
             SESSIONS.clear_failures(identity)
             return True
+        if (
+            token_ok
+            and state == "ok"
+            and entry is not None
+            and SESSIONS.is_replayed_code(identity, str(body.get("totp", "")), secret=entry["secret"])
+        ):
+            # Right token, already-used code (exchange then step-up inside one 30 s window): not a guess.
+            audit(action, "-", "rejected", actor=identity, reason="totp-code-reused", locked=False)
+            self.send_json(401, {"error": "verified tailnet identity and valid credentials required"})
+            return False
         remaining = SESSIONS.record_failure(identity)
         audit(
             action,

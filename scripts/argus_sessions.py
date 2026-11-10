@@ -658,6 +658,17 @@ class SessionStore:
             connection.commit()
         return True
 
+    def is_replayed_code(self, login: str, code: str, *, secret: str) -> bool:
+        """True for a code valid for the secret whose counter was already accepted (not a guess)."""
+        if argus_totp.is_recovery_shape(code):
+            return False
+        counter = argus_totp.matching_counter(secret, code, self.clock())
+        if counter is None:
+            return False
+        with self._connect() as connection:
+            row = connection.execute("SELECT last_counter FROM totp_state WHERE login = ?", (login,)).fetchone()
+        return row is not None and counter <= int(row["last_counter"])
+
     def purge(self) -> int:
         cutoff = _format_timestamp(self._now() - SESSION_RETENTION_SECONDS)
         with self._connect() as connection:

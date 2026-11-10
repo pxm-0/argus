@@ -83,6 +83,7 @@ class _Flow:
         self.cli, self.repo, self.args = cli, repo, args
         self.client: ApiClient | None = None
         self.tty: _Tty | None = None
+        self.prompted_code = False  # a second prompt in one run must not reuse the first 30 s code
 
     def stop(self, code: str, message: str, next_action: str, exit_code: int, **kwargs: Any) -> _Stop:
         return _Stop(self.cli._error(code, message, next_action, exit_code=exit_code, authority="operator-api", **kwargs))
@@ -110,7 +111,11 @@ class _Flow:
     def authenticate(self, stage: str, send: Callable[[ApiClient, str, str], ApiResponse]) -> None:
         assert self.client is not None and self.tty is not None
         token = self.secret(stage)
-        code = self.tty.read_secret("Authenticator code or recovery code (blank if not enrolled): ").strip()
+        prompt = "Authenticator code or recovery code (blank if not enrolled): "
+        if self.prompted_code:
+            prompt = "Wait for the NEXT 30 s code (a code already used is rejected). " + prompt
+        self.prompted_code = True
+        code = self.tty.read_secret(prompt).strip()
         try:
             response = send(self.client, token, code)
             if response.status == 429:

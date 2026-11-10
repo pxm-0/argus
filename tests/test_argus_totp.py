@@ -75,6 +75,14 @@ class StoreTests(unittest.TestCase):
     def code(self, offset: int = 0) -> str:
         return argus_totp.hotp(self.entry["secret"], argus_totp.counter_at(self.now[0]) + offset)
 
+    def test_replayed_code_is_identified_but_a_wrong_code_is_not(self) -> None:
+        secret = self.entry["secret"]
+        self.assertFalse(self.store.is_replayed_code(LOGIN, self.code(), secret=secret))
+        self.assertTrue(self.verify(self.code()))
+        self.assertTrue(self.store.is_replayed_code(LOGIN, self.code(), secret=secret))
+        self.assertFalse(self.store.is_replayed_code(LOGIN, "000000" if self.code() != "000000" else "111111", secret=secret))
+        self.assertFalse(self.store.is_replayed_code(LOGIN, self.codes[0], secret=secret))
+
     def test_replay_and_older_counters_are_rejected(self) -> None:
         self.assertTrue(self.verify(self.code()))
         self.assertFalse(self.verify(self.code()))

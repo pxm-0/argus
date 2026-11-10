@@ -82,8 +82,29 @@ Each operator can be enrolled with an authenticator (RFC 6238: SHA-1, 6 digits,
 - The lockout is per operator login, covers the bootstrap token too, and is
   checked before the token file is read. Rejection audit events carry the
   action, actor and a fixed reason only, never a submitted value.
+- A code that is valid but already used (for example the same code typed again
+  for step-up right after exchange) is rejected with the same 401 but is not
+  counted toward the lockout when the bootstrap token is correct. `argus op`
+  asks for a second code on step-up: wait for the next 30 s code.
 - State lives in the session database (`totp_state`, `totp_recovery_used`,
   schema 4; the migration writes `<db>.pre-v4.bak` first).
+
+### Reverting code after the schema 4 migration
+
+Older code refuses a database it does not know ("schema 4 is newer than
+supported 3") and `argus-control-api` crash-loops. Before reverting the PR or
+running an older checkout, restore the pre-migration copy:
+
+```bash
+sudo systemctl stop argus-control-api
+sudo install -o argus-api -g argus-control -m 0600 \
+  /var/lib/argus/control/session.sqlite3.pre-v4.bak /var/lib/argus/control/session.sqlite3
+sudo rm -f /var/lib/argus/control/session.sqlite3-wal /var/lib/argus/control/session.sqlite3-shm
+# deploy the older code, then: sudo systemctl start argus-control-api
+```
+
+Sessions created after the migration are lost by this restore (re-exchange).
+To avoid it, prefer turning the factor off (below) over reverting the code.
 
 ### Enrol
 
@@ -99,17 +120,23 @@ the terminal, asks for one valid code, and only then writes
 **other than the Mac that holds the bootstrap token**, otherwise one stolen
 machine holds both factors. Store the recovery codes offline.
 
-Then, once, enable the credential in `argus-control-api.service`:
+Then, once, enable the credential in `argus-control-api.service`. The running
+unit is the copy in `/etc/systemd/system/` (not a symlink to the repo), so
+install the edited repo unit there:
 
 ```ini
 LoadCredential=operator-totp.json:/etc/argus/operator-totp.json
 Environment=ARGUS_TOTP_FILE=%d/operator-totp.json
 ```
 
-`sudo systemctl daemon-reload && sudo systemctl restart argus-control-api`.
-Verify exchange and step-up with token plus code from a second terminal before
-setting `ARGUS_TOTP_REQUIRED=1` and restarting again. Rollback: unset
-`ARGUS_TOTP_REQUIRED` and restart; the secrets stay in place.
+`sudo install -m 0644 /srv/argus/systemd/argus-control-api.service /etc/systemd/system/ && sudo systemctl daemon-reload && sudo systemctl restart argus-control-api`,
+then confirm it took effect: `systemctl show argus-control-api -p LoadCredential`
+must list `operator-totp.json`. Verify exchange and step-up with token plus code from a second terminal before
+setting `ARGUS_TOTP_REQUIRED=1` and restarting again. Each prompt needs a fresh
+30 s code, and 5 failures lock the operator out for 15 minutes. Rollback, in
+this order: unset `ARGUS_TOTP_REQUIRED` and restart; re-comment the two unit
+lines, install the unit, `daemon-reload`, restart; only then (if at all) delete
+`/etc/argus/operator-totp.json`, because a missing credential stops the unit.
 
 ### Limits
 
