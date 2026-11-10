@@ -111,8 +111,13 @@ To avoid it, prefer turning the factor off (below) over reverting the code.
 On the server, from an interactive terminal (root only, TTY only):
 
 ```bash
-sudo argus keys totp-enroll --operator <login>     # add --rotate to replace
+sudo env PYTHONDONTWRITEBYTECODE=1 argus keys totp-enroll --operator <login>     # add --rotate to replace
 ```
+
+`PYTHONDONTWRITEBYTECODE=1` stops root from leaving root-owned `.pyc` files in the
+operator-owned `/srv/argus/scripts/__pycache__`. A malformed secrets file makes
+every exchange return 401 and each attempt counts toward the lockout, so check the
+file (`sudo python3 -m json.tool /etc/argus/operator-totp.json >/dev/null`) before step 3.
 
 The command prints the `otpauth://` URI and 10 single-use recovery codes once on
 the terminal, asks for one valid code, and only then writes
