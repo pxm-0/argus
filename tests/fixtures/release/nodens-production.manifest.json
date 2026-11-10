@@ -1,0 +1,127 @@
+{
+  "id": "nodens-production",
+  "name": "Nodens Production",
+  "description": "Default-deny reviewed onboarding candidate.",
+  "schemaVersion": 1,
+  "canonicalRoot": "/srv/argus/workloads/nodens-production",
+  "sourcePath": "/srv/argus/workloads/nodens-production/source",
+  "privacyCompatibility": "unclassified",
+  "accessCompatibility": "none",
+  "runtime": {
+    "type": "docker-compose",
+    "compose": {
+      "path": "/srv/argus/workloads/nodens-production/source/compose.yml",
+      "project": "nodens-production",
+      "service": "nodens",
+      "bridge": "argus-ndns-prd",
+      "legacyPaths": []
+    },
+    "composePath": "/srv/argus/workloads/nodens-production/source/compose.yml",
+    "composeProject": "nodens-production",
+    "service": "nodens",
+    "legacyComposePaths": []
+  },
+  "migration": {
+    "status": "planned",
+    "targetTrustDomain": "personal-managed",
+    "originalPath": "",
+    "compatibilitySymlink": false,
+    "rollback": "No runtime is adopted; remove only the reviewed candidate records before admission.",
+    "notes": [
+      "Onboarding does not start, stop, migrate, or adopt a discovered runtime."
+    ]
+  },
+  "health": {
+    "url": "",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
+  "operations": {
+    "health": {
+      "allowed": false
+    },
+    "logs": {
+      "allowed": false
+    },
+    "restart": {
+      "allowed": false
+    },
+    "deploy": {
+      "allowed": false
+    },
+    "start": {
+      "allowed": false
+    },
+    "stop": {
+      "allowed": false
+    },
+    "backup": {
+      "allowed": false
+    },
+    "restore": {
+      "allowed": false
+    },
+    "access": {
+      "allowed": false
+    },
+    "migrationPreflight": {
+      "allowed": false
+    },
+    "migrationCutover": {
+      "allowed": false
+    },
+    "migrationRollback": {
+      "allowed": false
+    },
+    "productionPromote": {
+      "allowed": false
+    },
+    "productionRollback": {
+      "allowed": false
+    },
+    "cloudflareProtectedPlan": {
+      "allowed": false
+    },
+    "cloudflareProtectedApply": {
+      "allowed": false
+    },
+    "cloudflareProtectedRollback": {
+      "allowed": false
+    }
+  },
+  "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
+    "status": "planned",
+    "source": false,
+    "env": false,
+    "namedVolumes": [],
+    "bindMounts": [],
+    "database": {
+      "type": "none",
+      "dumpCommand": "",
+      "restoreCommand": ""
+    },
+    "destination": "/srv/argus/runtime/backups/nodens-production",
+    "retention": {
+      "keepLast": 5
+    },
+    "restoreTested": false,
+    "lastBackupAt": "",
+    "lastRestoreTestAt": ""
+  },
+  "security": {
+    "publicAllowed": false,
+    "trackedByArgusGit": true,
+    "classification": "unclassified",
+    "publicExposureAllowed": false,
+    "forbiddenTargets": [
+      "legacy-rootful",
+      "public"
+    ],
+    "notes": [
+      "Public exposure and runtime mutation are denied by default.",
+      "Only source/compose.yml is tracked: it pins domain-local image IDs and declares no published ports."
+    ]
+  }
+}

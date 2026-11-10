@@ -381,6 +381,17 @@ workload between trust domains leaves M1 converged.
 
 ### Release flow
 
+The CLI automates steps 1, 2, 6 and 7: `argus release pin nodens-staging
+--image ghcr.io/pxm-0/nodens@sha256:<D>` imports the digest into the sandbox
+domain, rewrites only the `image:` line, runs `argus check`, and opens the pin
+PR (`--dry-run` prints the diff). `argus promote nodens-staging
+nodens-production` imports the same digest into the production domain, requires
+the same image ID, checks that a staging deploy of that ID succeeded and that
+the two Compose files differ only in workload name, compose project, bridge,
+ingress path and secret refs, then opens the promotion PR. Neither deploys;
+steps 3, 4, 5, 8 and 9 stay manual. The numbered steps below are the manual
+equivalent.
+
 1. **Import into staging.** After nodens CI publishes
    `ghcr.io/pxm-0/nodens@sha256:<D>`:
    `sudo ./scripts/argus-image-import --domain personal-sandbox --image ghcr.io/pxm-0/nodens@sha256:<D>`.
