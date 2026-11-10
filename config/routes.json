@@ -46,19 +46,6 @@
         "requiresAuth": true
       }
     },
-    "nodens": {
-      "tailnet": {
-        "enabled": true,
-        "mode": "tailscale-serve",
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8444"
-      },
-      "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
-        "requiresAuth": true
-      }
-    },
     "nodens-staging": {
       "tailnet": {
         "enabled": true,

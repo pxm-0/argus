@@ -125,63 +125,6 @@
       }
     },
     {
-      "id": "nodens",
-      "name": "Nodens",
-      "description": "Nodens website migrated into the sealed personal sandbox.",
-      "lifecycle": "active",
-      "kind": "web-app",
-      "paths": {
-        "root": "/srv/argus/workloads/nodens",
-        "source": "/srv/argus/workloads/nodens/source",
-        "manifest": "/srv/argus/workloads/nodens/manifest.json",
-        "legacy": "/home/oreo/nodens"
-      },
-      "runtime": {
-        "type": "docker-compose",
-        "composePath": "/srv/argus/workloads/nodens/source/docker-compose.yml",
-        "legacyComposePaths": [
-          "/home/oreo/nodens/docker-compose.yml"
-        ],
-        "composeProject": "nodens",
-        "service": "nodens"
-      },
-      "network": {
-        "localUrl": "",
-        "internalPort": 80,
-        "observedBindings": []
-      },
-      "health": {
-        "enabled": true,
-        "url": "https://oreochiserver.tail0a3a58.ts.net:8444/",
-        "expectedStatus": 200,
-        "timeoutSeconds": 3
-      },
-      "actions": {
-        "open": true,
-        "health": false,
-        "logs": false,
-        "restart": false,
-        "deploy": false,
-        "accessToggle": false,
-        "sandboxReconcileOnly": true,
-        "privacyToggle": true
-      },
-      "migration": {
-        "status": "migrated",
-        "targetTrustDomain": "personal-sandbox",
-        "migratedAt": "2026-07-29T12:46:43Z",
-        "lastHealthCheck": "2026-07-29T13:51:08Z",
-        "originalPath": "/home/oreo/nodens",
-        "compatibilitySymlink": false,
-        "bindMountRisks": [],
-        "namedVolumeRisks": [],
-        "notes": [
-          "Cut over to the sealed personal sandbox with the original Compose project name preserved.",
-          "Stateless rollback was rehearsed successfully before the accepted cutover was reapplied."
-        ]
-      }
-    },
-    {
       "id": "nodens-staging",
       "name": "Nodens Staging",
       "promotesTo": "nodens-production",
