@@ -7,7 +7,8 @@ only and should be installed on `oreochiserver` after the PR lands.
 
 - `scripts/argus-smoke-scheduled`
 - `systemd/argus-smoke.service`
-- `systemd/argus-smoke.timer`
+- `systemd/argus-smoke.timer` (every six hours: 00, 06, 12, 18 UTC, up to 15 minutes of jitter)
+- `systemd/argus-smoke.service.d/onfailure.conf` (starts an alert evaluation when a run fails)
 
 The service runs a root-only, no-network container-creation preflight through
 each sandbox's private Docker socket before dropping to the `oreo` identity for
@@ -31,6 +32,11 @@ Outputs:
 The status JSON contains the command, timestamp, exit code, failure count,
 warning count, sanitized per-domain runtime-probe state, and log path. It does
 not send network alerts or call external services.
+
+Each server run also appends a row to `runtime/smoke/smoke-history.jsonl` (30-day cap, up to
+ten `FAIL`/`WARN` check names per row; offline runs are not recorded). Read it with
+`argus smoke status --last N`. Alerting on a failed or stale run is described in
+`docs/MONITORING.md`.
 
 ## Install
 

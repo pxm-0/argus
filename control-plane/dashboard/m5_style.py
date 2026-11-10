@@ -61,6 +61,10 @@ main { width:min(1720px,100%); margin:0 auto; padding:18px 24px 56px; }
 .summary span,dt { display:block; margin-top:7px; color:var(--muted); font-size:9px; font-weight:700; letter-spacing:.1em; text-transform:uppercase; }
 .alert { display:flex; justify-content:space-between; gap:18px; padding:10px 14px; border:1px solid var(--line); border-top:0; background:var(--field); color:var(--muted); font-size:11px; overflow-wrap:anywhere; }
 .alert strong { color:var(--blue); text-transform:uppercase; letter-spacing:.08em; }
+.alert[data-state="open"] { border-color:var(--red); color:var(--ink); }
+.alert[data-state="open"] strong { color:var(--red); }
+.alert[data-state="clear"] strong { color:var(--green); }
+.alert[data-state="unavailable"] strong { color:var(--gold); }
 .evidence-state { margin-top:18px; border:1px solid var(--line); background:var(--field); }
 .evidence-state .section-head { padding:16px 18px 12px; }
 .evidence-state[data-state="error"],.evidence-state[data-state="conflict"] { border-color:color-mix(in srgb,var(--red) 62%,var(--line)); }

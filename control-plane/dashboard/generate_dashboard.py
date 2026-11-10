@@ -85,6 +85,10 @@ def render_html() -> str:
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
       </section>
+      <section class="alert" id="alert-banner" data-state="loading" role="status" aria-live="polite">
+        <strong>Alerts</strong>
+        <span>loading alert state</span>
+      </section>
       <section class="evidence-state" id="evidence-state" aria-labelledby="evidence-state-title" aria-live="polite">
         <div class="section-head">
           <div><p class="eyebrow">Evidence gate</p><h2 id="evidence-state-title">Estate completeness</h2></div>
@@ -192,6 +196,7 @@ const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
+const alertBanner = document.getElementById("alert-banner");
 const evidenceStateEl = document.getElementById("evidence-state");
 const evidenceStateLabelEl = document.getElementById("evidence-state-label");
 const evidenceStateBodyEl = document.getElementById("evidence-state-body");
@@ -652,7 +657,24 @@ function renderSummary() {
     ["Agents available", Number(topologySummary.domainAgentsAvailable || 0)],
     ["Exposure", privateExposure ? "Private" : "Review"]
   ].map(([label, value]) => `<div><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+  renderAlertBanner();
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
+}
+
+function renderAlertBanner() {
+  const alerts = state?.alerts;
+  if (!alerts || alerts.available === false) {
+    alertBanner.dataset.state = "unavailable";
+    alertBanner.innerHTML = "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>";
+    return;
+  }
+  const open = alerts.alerts || [];
+  alertBanner.dataset.state = open.length ? "open" : "clear";
+  const lines = open.slice(0, 5).map((item) => `${escapeHtml(item.severity)} ${escapeHtml(item.id)}: ${escapeHtml(item.detail)}`);
+  const more = open.length > 5 ? ` (+${open.length - 5} more)` : "";
+  alertBanner.innerHTML = open.length
+    ? `<strong>${open.length} open alert${open.length === 1 ? "" : "s"}</strong><span>${lines.join(" | ")}${more}</span>`
+    : "<strong>Alerts</strong><span>no open alerts</span>";
 }
 
 function renderTopology() {
