@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import argparse
 import fcntl
-import glob
 import json
 import os
 import re
@@ -19,8 +18,10 @@ import shutil
 import ssl
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,7 +33,6 @@ from argus_common import audit, root
 
 Run = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
 DB_BACKUP_UNIT = "argus-workload-db-backup@{name}.service"
-DEFAULT_CERT_GLOB = "/var/lib/tailscale/certs/*.crt"
 TYPED_DOMAINS = {"personal-managed", "personal-sandbox", "work-sandbox"}
 
 
@@ -202,17 +202,40 @@ def tailscale_state(run: Run) -> dict | None:
     return {"backendState": document.get("BackendState"), "keyExpiry": (document.get("Self") or {}).get("KeyExpiry")}
 
 
-def certificates(run: Run, pattern: str) -> list[dict] | None:
+def served_certificate(host: str, port: int) -> str | None:
+    try:
+        return ssl.get_server_certificate((host, port), timeout=5)
+    except (OSError, ssl.SSLError):
+        return None
+
+
+def certificates(run: Run, workloads: list[dict], fetch: Callable[[str, int], str | None] = served_certificate) -> list[dict] | None:
+    """notAfter of the certificates actually served on the typed workloads' health endpoints.
+
+    A TLS handshake needs no privilege (/var/lib/tailscale/certs is root 0700). None when nothing could be
+    read, so the check is unknown and open alerts are kept.
+    """
     if shutil.which("openssl") is None:
         return None
+    endpoints = {}
+    for item in workloads:
+        parts = urllib.parse.urlsplit(item["url"])
+        if parts.scheme == "https" and parts.hostname:
+            endpoints[f"{parts.hostname}:{parts.port or 443}"] = (parts.hostname, parts.port or 443)
     rows = []
-    for path in sorted(glob.glob(pattern)):
-        result = run(["openssl", "x509", "-noout", "-enddate", "-in", path])
+    for name, (host, port) in sorted(endpoints.items()):
+        pem = fetch(host, port)
+        if pem is None:
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".pem") as handle:
+            handle.write(pem)
+            handle.flush()
+            result = run(["openssl", "x509", "-noout", "-enddate", "-in", handle.name])
         match = re.match(r"notAfter=(.+)", result.stdout.strip()) if _ok(result) else None
         if match:
             parsed = datetime.strptime(match.group(1).replace(" GMT", ""), "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
-            rows.append({"name": Path(path).name, "notAfter": parsed.timestamp()})
-    return rows
+            rows.append({"name": name, "notAfter": parsed.timestamp()})
+    return rows or None
 
 
 def collect_inputs(repo: Path, previous_failures: dict[str, int], run: Run = run_command) -> dict[str, Any]:
@@ -234,7 +257,7 @@ def collect_inputs(repo: Path, previous_failures: dict[str, int], run: Run = run
         "egressDrift": egress_drift(run, [item["id"] for item in workloads]),
         "m1Drift": m1_drift(repo),
         "tailscale": tailscale_state(run),
-        "certs": certificates(run, os.environ.get("ARGUS_ALERT_CERT_GLOB", DEFAULT_CERT_GLOB)),
+        "certs": certificates(run, workloads),
     }
 
 

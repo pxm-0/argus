@@ -32,7 +32,7 @@ Severity `page` is red-and-act-now, `warn` is act-this-week. Limits are strict: 
 | `egress-drift:<workload>` | the workload's `argus-m5-workload-*` run reports `egressPolicyDrift` | warn |
 | `m1-drift` | `argus doctor`'s M1 drift check reports drift | warn |
 | `tailscale-backend` / `tailscale-key-expiry` | `BackendState` is not `Running` / node key expires within 14 d (page once expired) | page / warn |
-| `cert-expiry:<file>` | a certificate under `$ARGUS_ALERT_CERT_GLOB` (default `/var/lib/tailscale/certs/*.crt`) expires within 14 d, when `openssl` exists | warn (page once expired) |
+| `cert-expiry:<host:port>` | the certificate served on a typed workload health endpoint (TLS handshake, no file read) expires within 14 d, when `openssl` exists; unknown (alerts kept) when no endpoint answers | warn (page once expired) |
 
 Every input is optional. A missing or unreadable file, an absent tool or a failed command makes that check
 "unknown": it opens nothing and leaves already-open alerts alone. "Healthy" is only ever concluded from evidence.

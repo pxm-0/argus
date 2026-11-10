@@ -6,10 +6,12 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -351,11 +353,30 @@ class MainTest(unittest.TestCase):
         self.assertTrue(all(event["actor"] == "argus-alert" for event in audit))
 
     def test_main_tolerates_missing_files_everywhere(self) -> None:
-        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"ARGUS_ROOT": directory, "ARGUS_SNAPSHOT_LAST": directory + "/none.json", "ARGUS_ALERT_CERT_GLOB": directory + "/*.crt"}):
+        with tempfile.TemporaryDirectory() as directory, mock.patch.dict(os.environ, {"ARGUS_ROOT": directory, "ARGUS_SNAPSHOT_LAST": directory + "/none.json"}):
             nothing = lambda argv: None
             with mock.patch.object(alert_script, "run_command", nothing), mock.patch.object(alert_script, "root", return_value=Path(directory)), mock.patch.object(alert_script, "m1_drift", return_value=None):
                 state, _ = alerting.evaluate(alert_script.collect_inputs(Path(directory), {}, nothing), {}, NOW)
         self.assertEqual([], [a for a in state["alerts"] if a["id"] != "disk-usage"])
+
+
+class ServedCertificateTest(unittest.TestCase):
+    workloads = [{"url": "https://host.ts.net:8445/api/health"}, {"url": "https://host.ts.net:8445/other"}, {"url": "http://x:1/h"}]
+
+    def test_unreachable_endpoints_are_unknown_not_clear(self) -> None:
+        self.assertIsNone(alert_script.certificates(alert_script.run_command, self.workloads, lambda host, port: None))
+        self.assertIsNone(alert_script.certificates(alert_script.run_command, [], lambda host, port: None))
+
+    @unittest.skipUnless(shutil.which("openssl"), "openssl missing")
+    def test_reads_not_after_from_served_pem_once_per_endpoint(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            key, crt = f"{directory}/k.pem", f"{directory}/c.pem"
+            subprocess.run(["openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", key, "-out", crt, "-days", "3", "-subj", "/CN=t"], check=True, capture_output=True)
+            pem, calls = Path(crt).read_text(), []
+            rows = alert_script.certificates(alert_script.run_command, self.workloads, lambda host, port: calls.append((host, port)) or pem)
+        self.assertEqual([("host.ts.net", 8445)], calls)
+        self.assertEqual(["host.ts.net:8445"], [row["name"] for row in rows])
+        self.assertAlmostEqual(time.time() + 3 * DAY, rows[0]["notAfter"], delta=DAY)
 
 
 class PollerTest(unittest.TestCase):
