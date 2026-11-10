@@ -154,6 +154,19 @@ invalid evidence returns exit `2`.
 scripts/argus-admission-doctor --json
 ```
 
+## Workload retirement
+
+`local-write` — `argus workload retire <id>`
+
+With `--dry-run` it prints the plan and writes nothing. Stage 1 only; it never touches the server. It removes every registry reference
+under `config/` and `workloads/<id>/`, records the ID in
+`config/argus/retired-workloads.json`, generates `docs/RETIRED_<ID>.md` from
+`docs/RETIRED_TEMPLATE.md`, runs `argus check`, and opens a PR with a numbered
+server teardown runbook as a comment. Remaining text references (docs, tests,
+scripts) are listed for manual review. After merge and teardown, run
+`scripts/argus-m1-reconcile-retired-workloads` (preview), then the same with
+`--apply --acknowledge-retired-workload-reconciliation`, on the server.
+
 ## Workload moves
 
 `local-read-only` — `argus workload move preview <id>`

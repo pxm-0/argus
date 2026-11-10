@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:b4bda7d90fafe956b32ccdf2e727af0036b47695dfb72dccb648747620fbd411"
+    "expectedSbomDigest": "sha256:312cb1f8a11fa4db2e501bcb8d413e47d8730cd12acbca45ebf1366d2eaa5683"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
