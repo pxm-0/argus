@@ -27,9 +27,9 @@
     },
     "nodens-staging": {
       "realm": "personal",
-      "zone": "managed",
+      "zone": "sandbox",
       "stage": "staging",
-      "trustDomain": "personal-managed",
+      "trustDomain": "personal-sandbox",
       "status": "classified",
       "admission": "allowed"
     },

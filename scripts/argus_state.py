@@ -21,6 +21,16 @@ STAGES = {"none", "dev", "staging", "production"}
 DOMAIN_KINDS = {"management", "legacy", "workload"}
 
 
+def allowed_stages(realm: str | None, zone: str | None) -> set[str]:
+    """Stages a classified workload may carry in a zone (BRIDGE §7)."""
+    if zone == "managed":
+        return {"dev", "staging", "production"}
+    if zone == "sandbox":
+        # Operator decision: personal-sandbox is every Nodens project's staging environment.
+        return {"none", "staging"} if realm == "personal" else {"none"}
+    return {"none"}
+
+
 class StateError(ValueError):
     """Raised when an entity cannot be safely represented or persisted."""
 
@@ -233,6 +243,8 @@ class Classification:
                 raise StateError("legacy domains must be unclassified, legacy, and stage none")
         elif self.realm == "unclassified" or self.zone == "legacy":
             raise StateError("workload domains require personal/work and sandbox/managed classification")
+        elif self.stage not in allowed_stages(self.realm, self.zone):
+            raise StateError("workload stage is not permitted in its zone")
 
     def as_dict(self) -> dict[str, str | None]:
         self.validate()

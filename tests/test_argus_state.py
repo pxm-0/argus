@@ -34,6 +34,19 @@ class ArgusStateTest(unittest.TestCase):
         with self.assertRaises(StateError):
             Classification("unclassified", "sandbox", "dev", "workload-a", "workload").validate()
 
+    def test_stage_is_bound_to_zone(self) -> None:
+        Classification("personal", "sandbox", "none", "personal-sandbox", "workload").validate()
+        Classification("personal", "sandbox", "staging", "personal-sandbox", "workload").validate()
+        Classification("personal", "managed", "production", "personal-managed", "workload").validate()
+        for realm, zone, stage in (
+            ("personal", "sandbox", "production"),
+            ("personal", "sandbox", "dev"),
+            ("work", "sandbox", "staging"),
+            ("personal", "managed", "none"),
+        ):
+            with self.subTest(realm=realm, zone=zone, stage=stage), self.assertRaises(StateError):
+                Classification(realm, zone, stage, f"{realm}-{zone}", "workload").validate()
+
     def test_cross_domain_resources_require_authenticated_gateway(self) -> None:
         authorize_relationship("personal-prod", "personal-prod", "volume")
         authorize_relationship("personal-prod", "work-prod", "service-gateway", authenticated_gateway=True)
