@@ -16,6 +16,7 @@ from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
 import argus_cli_op
+import argus_cli_m1
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
@@ -801,6 +802,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             "auditVersion": boundary.get("auditVersion"),
             "result": "pass",
         },
+        m1Drift=argus_cli_m1.drift_status(repo),
         lastCompletedCollection=None,
         lastSafeRollbackPoint=None,
         compatibility="partial-discovery-not-installed",
@@ -978,6 +980,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     argus_release.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
 
     legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
@@ -1029,6 +1032,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = doctor_command(repo, runner)
     elif command == "check":
         result = check_command(repo, runner)
+    elif command == "m1":
+        result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
         result = _error("command-unsupported", "The command is unsupported.", "Run argus --help.", exit_code=EXIT_INVOCATION)
     if deprecation and result.get("ok"):
@@ -1061,6 +1066,8 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
     elif command == "workload.list":
         for item in data["workloads"]:
             print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
+    elif command.startswith("m1."):
+        argus_cli_m1.render(data, stdout)
     elif data.get("dryRun"):
         print(data["diff"], end="", file=stdout)
     else:
