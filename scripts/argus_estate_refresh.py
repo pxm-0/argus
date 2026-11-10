@@ -9,6 +9,7 @@ import os
 import re
 import stat
 import tempfile
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
@@ -23,6 +24,8 @@ RUN_ID = re.compile(r"^refresh-[0-9a-f-]{36}$")
 STATUS_VERSION = 1
 MAX_PENDING_REQUESTS = 8
 RUNNER_UID = 1000
+STATUS_KEEP_RECENT = 720
+STATUS_KEEP_DAILY_DAYS = 30
 
 
 class EstateRefreshError(ValueError):
@@ -163,6 +166,42 @@ def _write_status(root: Path, result: dict[str, Any]) -> None:
     _atomic_json(directories["latest"], result)
 
 
+def prune_status(root: Path, *, now: float | None = None) -> int:
+    """Delete old per-run status files; return how many were removed.
+
+    Keeps the newest STATUS_KEEP_RECENT, the newest file of each UTC day for the last
+    STATUS_KEEP_DAILY_DAYS days, the run latest.json names, and any queued request's run.
+    """
+    directories = paths(root)
+    current = time.time() if now is None else now
+    entries: list[tuple[float, str]] = []
+    with os.scandir(directories["status"]) as scan:
+        for entry in scan:
+            if entry.is_file(follow_symlinks=False) and entry.name.endswith(".json") and RUN_ID.fullmatch(entry.name[:-5]):
+                entries.append((entry.stat(follow_symlinks=False).st_mtime, entry.name))
+    entries.sort(reverse=True)
+    keep = {name for _, name in entries[:STATUS_KEEP_RECENT]}
+    seen_days: set[str] = set()
+    for mtime, name in entries:
+        day = datetime.fromtimestamp(mtime, UTC).strftime("%Y-%m-%d")
+        if current - mtime <= STATUS_KEEP_DAILY_DAYS * 86400 and day not in seen_days:
+            seen_days.add(day)
+            keep.add(name)
+    latest = read_status(root)
+    if latest and isinstance(latest.get("runId"), str):
+        keep.add(f"{latest['runId']}.json")
+    keep.update(path.name for path in directories["requests"].glob("refresh-*.json"))
+    removed = 0
+    for _, name in entries:
+        if name not in keep:
+            try:
+                (directories["status"] / name).unlink()
+                removed += 1
+            except FileNotFoundError:
+                pass
+    return removed
+
+
 def _database_mode(path: Path) -> None:
     for candidate in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
         if candidate.is_file() and not candidate.is_symlink():
@@ -229,6 +268,11 @@ def run_refresh(
         finally:
             lock.close()
     _write_status(root, result)
+    try:
+        prune_status(root)
+    except OSError:
+        # Pruning is housekeeping; a failure must not turn a recorded refresh into an error.
+        pass
     return result
 
 

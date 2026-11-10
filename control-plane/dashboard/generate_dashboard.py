@@ -830,7 +830,8 @@ function renderWorkload(workload) {
   const desiredAccess = access.desired || "-";
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
-  const healthEvidenceAt = migration.lastHealthCheck || "";
+  const healthEvidenceAt = health.lastObservedAt || migration.lastHealthCheck || "";
+  const healthVerdict = health.ok === true ? "Healthy" : health.ok === false ? "Unhealthy" : (health.enabled ? "Configured" : "Unknown");
   const blockers = operationBlockers({
     agentAvailable,
     logsAllowed,
@@ -854,7 +855,7 @@ function renderWorkload(workload) {
       <div class="workload-overview">
         <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
         <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        <span data-label="Health"><strong>${health.enabled ? "Configured" : "Unknown"}</strong></span>
+        <span data-label="Health"><strong data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthVerdict)}</strong></span>
         <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
         <span data-label="Evidence"><strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
         <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
@@ -901,7 +902,7 @@ function renderWorkload(workload) {
             <h3>Reachability</h3>
             <dl class="facts">
               <div><dt>Health</dt><dd>${escapeHtml(healthLabel)} ${escapeHtml(health.expectedStatus || "")}</dd></div>
-              <div><dt>Last health</dt><dd>${escapeHtml(migration.lastHealthCheck || "-")}</dd></div>
+              <div><dt>Last health</dt><dd>${escapeHtml(healthEvidenceAt || "-")}</dd></div>
               <div><dt>Local URL</dt><dd>${escapeHtml(urls.local || "-")}</dd></div>
               <div><dt>Tailnet URL</dt><dd>${escapeHtml(urls.tailnet || "-")}</dd></div>
             </dl>
@@ -973,7 +974,7 @@ function renderPlans() {
   const monitoring = state?.monitoring || {};
   const workloads = state?.workloads || [];
   const backupPlans = workloads.filter((item) => item.backup?.status).length;
-  const healthEvidence = workloads.map((item) => item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
+  const healthEvidence = workloads.map((item) => item.health?.lastObservedAt || item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
   routeSummary.textContent = `${workloads.length} workloads · oldest evidence ${evidenceFreshness(healthEvidence[0] || "")}`;
   document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
   document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;

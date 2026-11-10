@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import socket
+import sqlite3
 import subprocess
 import time
 from datetime import datetime, timezone
@@ -18,6 +19,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PUBLIC = ROOT / "control-plane" / "dashboard" / "public"
 OUT = PUBLIC / "metrics.json"
 HISTORY = ROOT / "runtime" / "metrics-history" / "metrics.jsonl"
+OBSERVATIONS_DB = Path(os.environ.get("ARGUS_OBSERVATIONS_DB", ROOT / "runtime" / "argus" / "observations.sqlite3"))
+WORKLOADS_CONFIG = ROOT / "config" / "workloads.json"
 
 
 def read_text(path: Path, default: str = "") -> str:
@@ -200,6 +203,70 @@ def temperatures() -> list[dict[str, float | str]]:
     return rows
 
 
+def compose_project_workloads(config: Path = WORKLOADS_CONFIG) -> dict[str, str]:
+    try:
+        items = json.loads(config.read_text()).get("workloads", [])
+    except (OSError, ValueError):
+        return {}
+    return {
+        str((item.get("runtime") or {}).get("composeProject", "")): str(item.get("id", ""))
+        for item in items
+        if (item.get("runtime") or {}).get("composeProject")
+    }
+
+
+def workload_metrics(database: Path = OBSERVATIONS_DB, config: Path = WORKLOADS_CONFIG) -> list[dict[str, Any]]:
+    """Per-Compose-project container health from the latest observation run of every active source.
+
+    Reads the D2 observation repository, so rootless trust domains are visible without any Docker access.
+    """
+    try:
+        connection = sqlite3.connect(database.resolve().as_uri() + "?mode=ro", uri=True, timeout=5)
+    except (sqlite3.Error, OSError):
+        return []
+    try:
+        rows = connection.execute(
+            """
+            SELECT o.source_id, o.observed_at, o.attributes_json
+            FROM observations o
+            JOIN sources s ON s.source_id = o.source_id AND s.current_run_id = o.run_id
+            WHERE s.active = 1 AND o.resource_kind = 'container'
+            """
+        ).fetchall()
+    except sqlite3.Error:
+        return []
+    finally:
+        connection.close()
+    ids = compose_project_workloads(config)
+    projects: dict[tuple[str, str], dict[str, Any]] = {}
+    for source_id, observed_at, attributes_json in rows:
+        try:
+            attributes = json.loads(attributes_json)
+        except ValueError:
+            continue
+        project = str(attributes.get("project", ""))
+        entry = projects.setdefault(
+            (source_id, project),
+            {
+                "workloadId": ids.get(project, ""),
+                "project": project,
+                "source": source_id,
+                "containers": 0,
+                "running": 0,
+                "unhealthy": 0,
+                "observedAt": "",
+                "services": [],
+            },
+        )
+        lifecycle, health = str(attributes.get("lifecycle", "")), str(attributes.get("health", ""))
+        entry["containers"] += 1
+        entry["running"] += lifecycle == "running"
+        entry["unhealthy"] += health == "unhealthy"
+        entry["observedAt"] = max(entry["observedAt"], str(observed_at))
+        entry["services"].append({"service": str(attributes.get("service", "")), "lifecycle": lifecycle, "health": health})
+    return sorted(projects.values(), key=lambda item: (item["project"], item["source"]))
+
+
 def collect() -> dict[str, Any]:
     return {
         "timestamp": datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
@@ -211,6 +278,7 @@ def collect() -> dict[str, Any]:
         "disk": disk(),
         "network": network(),
         "docker": {"containers": docker_containers(), "stats": docker_stats()},
+        "workloads": workload_metrics(),
         "processes": processes(),
         "temperatures": temperatures(),
     }
