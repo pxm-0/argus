@@ -271,6 +271,44 @@ def host_health_checks(checks: list[dict[str, Any]]) -> None:
     add(checks, readiness.returncode == 0, "PostgreSQL accepts loopback readiness probe")
 
 
+def api_service_user_checks(checks: list[dict[str, Any]]) -> None:
+    """The control API must not run as a user that can reach root or docker."""
+    unit = "argus-control-api.service"
+    try:
+        shown = run(["systemctl", "show", unit, "-p", "User", "-p", "CapabilityBoundingSet"])
+    except OSError:
+        add(checks, False, "control API unit properties available")
+        return
+    props = dict(line.split("=", 1) for line in shown.stdout.splitlines() if "=" in line)
+    user = props.get("User", "").strip()
+    add(checks, shown.returncode == 0 and bool(user), "control API runs as an explicit non-root user", user=user)
+    if not user:
+        return
+    try:
+        groups = run(["id", "-nG", user]).stdout.split()
+    except OSError:
+        groups = []
+    privileged = sorted({"sudo", "docker"}.intersection(groups))
+    add(checks, user != "root" and not privileged, "control API user is not root, sudo or docker", user=user, groups=privileged)
+    add(
+        checks,
+        not props.get("CapabilityBoundingSet", "").strip(),
+        "control API capability bounding set is empty",
+        capabilityBoundingSet=props.get("CapabilityBoundingSet", "").strip(),
+    )
+    sudoers = Path("/etc/sudoers.d")
+    try:
+        named = sorted(
+            item.name
+            for item in sudoers.iterdir()
+            if item.is_file() and any("NOPASSWD" in line and user in line.split() for line in item.read_text().splitlines())
+        )
+    except OSError:
+        return  # unreadable without root; the host check runs as root
+    if named:
+        add(checks, True, "WARN: NOPASSWD sudoers drop-in names the control API user", warn=True, files=named)
+
+
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
     command = [str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
     if os.geteuid() == 0:
@@ -319,6 +357,7 @@ def audit(*, include_host: bool = False) -> dict[str, Any]:
     reconcile_check(checks)
     if include_host:
         host_health_checks(checks)
+        api_service_user_checks(checks)
     core_boundary_check(checks)
     failures = [check for check in checks if not check["ok"]]
     return {"ok": not failures, "failures": len(failures), "checks": checks}
@@ -326,7 +365,7 @@ def audit(*, include_host: bool = False) -> dict[str, Any]:
 
 def print_text(result: dict[str, Any]) -> None:
     for check in result["checks"]:
-        print(("ok   " if check["ok"] else "fail ") + check["message"])
+        print(("warn " if check.get("warn") else "ok   " if check["ok"] else "fail ") + check["message"])
 
 
 def main() -> int:
