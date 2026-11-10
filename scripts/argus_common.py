@@ -91,6 +91,12 @@ SECRET_KEY_PARTS = (
 REDACTED = "[redacted]"
 
 
+def is_server_checkout(repo: Path) -> bool:
+    """True for the server's /srv/argus checkout and for a root-owned release tree (it carries ARGUS_RELEASE)."""
+    resolved = repo.resolve()
+    return resolved == Path("/srv/argus") or (resolved / "ARGUS_RELEASE").is_file()
+
+
 def root() -> Path:
     override = os.environ.get("ARGUS_ROOT")
     if override:

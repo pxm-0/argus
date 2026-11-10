@@ -213,6 +213,7 @@ class HostSudoAndRegistryTests(unittest.TestCase):
         self.assertTrue(rows["argus-operator"]["ok"] and not rows["argus-operator"].get("warn"))
         self.assertTrue(rows["90-codex-nopasswd"]["ok"] and rows["90-codex-nopasswd"]["warn"])
         self.assertTrue(rows["oreo-yog-sothoth"]["warn"])
+        self.assertIn("ROOT-EQUIVALENT", rows["oreo-yog-sothoth"]["message"])
         self.assertFalse(rows["99-evil"]["ok"])
 
     def test_sudoers_checks_are_silent_when_directory_unreadable(self) -> None:

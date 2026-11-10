@@ -454,7 +454,7 @@ class Handler(socketserver.BaseRequestHandler):
 
 
 def main() -> int:
-    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus")).resolve()
+    root = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
     runtime = Path(os.environ.get("ARGUS_RUNTIME", root / "runtime" / "argus" / "m5"))
     socket_path = Path(os.environ.get("ARGUS_PRIVILEGED_LIFECYCLE_SOCKET", "/run/argus/privileged-lifecycle/agent.sock"))
     socket_path.parent.mkdir(parents=True, exist_ok=True)

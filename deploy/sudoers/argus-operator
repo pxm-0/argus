@@ -28,7 +28,7 @@ Cmnd_Alias ARGUS_SCRIPTS = \
     /opt/argus/current/scripts/argus m1 sync --apply --confirm *, \
     /opt/argus/current/scripts/argus m1 verify, \
     /opt/argus/current/scripts/argus m1 verify --json, \
-    /opt/argus/current/scripts/argus-release-install --sha *
+    /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image *
 
 Cmnd_Alias ARGUS_SYSTEMCTL = \
     /usr/bin/systemctl restart argus-capability-issuer.service, \

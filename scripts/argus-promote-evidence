@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 from pathlib import Path
@@ -22,12 +23,16 @@ LEDGER = Path("/var/lib/argus/control/operations.sqlite3")
 
 
 def main(argv: list[str]) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--workload", required=True)
     parser.add_argument("--image", required=True)
     parser.add_argument("--ledger", default=str(LEDGER), help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not WORKLOAD_ID.fullmatch(args.workload) or not IMAGE_ID.fullmatch(args.image):
+        print(json.dumps({"ok": False, "error": "invalid-arguments"}))
+        return 2
+    # The sudoers entry ends in `--image *`, so extra words reach us: root must only ever read the real ledger.
+    if os.geteuid() == 0 and Path(args.ledger) != LEDGER:
         print(json.dumps({"ok": False, "error": "invalid-arguments"}))
         return 2
     try:

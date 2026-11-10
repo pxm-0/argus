@@ -51,6 +51,12 @@ FORBIDDEN_BINARIES = frozenset({
 })
 
 
+def promotable_workloads(repo: Path) -> tuple[str, ...]:
+    """Staging workloads whose deploy evidence `argus release promote` reads over ssh."""
+    registry = json.loads((repo / "config" / "workloads.json").read_text())
+    return tuple(sorted(str(item["id"]) for item in registry["workloads"] if item.get("promotesTo")))
+
+
 def rootless_domains(repo: Path) -> tuple[str, ...]:
     registry = json.loads((repo / "config" / "argus" / "observation-sources.json").read_text())
     return tuple(sorted({
@@ -70,7 +76,7 @@ def alias(name: str, commands: Iterable[str]) -> str:
     return f"Cmnd_Alias {name} = \\\n    " + ", \\\n    ".join(commands)
 
 
-def script_commands(prefix: str, domains: tuple[str, ...]) -> list[str]:
+def script_commands(prefix: str, domains: tuple[str, ...], promotable: tuple[str, ...] = ()) -> list[str]:
     scripts = f"{prefix}/scripts"
     commands = [cmd(f"{scripts}/argus-image-import", "--domain", d, "--image", "*") for d in domains]
     commands += [
@@ -86,8 +92,9 @@ def script_commands(prefix: str, domains: tuple[str, ...]) -> list[str]:
         cmd(f"{scripts}/argus", "m1", "sync", "--apply", "--confirm", "*"),
         cmd(f"{scripts}/argus", "m1", "verify"),
         cmd(f"{scripts}/argus", "m1", "verify", "--json"),
-        cmd(f"{scripts}/argus-release-install", "--sha", "*"),
     ]
+    # argus-release-install is root-shell only: it installs the code every other entry here runs as root.
+    commands += [cmd(f"{scripts}/argus-promote-evidence", "--workload", workload, "--image", "*") for workload in promotable]
     return commands
 
 
@@ -112,7 +119,7 @@ def net_commands() -> list[str]:
     return [cmd(TAILSCALE, "serve", "status"), cmd(SS, "-H", "-ltnp")] + [cmd(TAILSCALE, *line.split()) for line in TAILSCALE_SERVE]
 
 
-def render_sudoers(domains: tuple[str, ...], prefix: str = DEFAULT_PREFIX, user: str = OPERATOR, log_output: bool = False) -> str:
+def render_sudoers(domains: tuple[str, ...], prefix: str = DEFAULT_PREFIX, user: str = OPERATOR, log_output: bool = False, promotable: tuple[str, ...] = ()) -> str:
     defaults = ["!env_keep", "env_reset", f'secure_path="{SECURE_PATH}"', "noexec"] + (["log_output"] if log_output else [])
     parts = [
         "# Managed by scripts/argus-sudoers-render from the reviewed repository; do not edit on the server.",
@@ -121,7 +128,7 @@ def render_sudoers(domains: tuple[str, ...], prefix: str = DEFAULT_PREFIX, user:
         "# noexec is the default; only ARGUS_SCRIPTS are tagged EXEC because they spawn docker, runuser and git.",
         *(f"Defaults:{user} {item}" for item in defaults),
         "",
-        alias("ARGUS_SCRIPTS", script_commands(prefix, domains)),
+        alias("ARGUS_SCRIPTS", script_commands(prefix, domains, promotable)),
         "",
         alias("ARGUS_SYSTEMCTL", systemctl_commands(domains)),
         "",
@@ -246,6 +253,14 @@ def split_command(line: str) -> list[str]:
 
 EXEC_KEYS = ("ExecStartPre", "ExecStart", "ExecStartPost", "ExecStop", "ExecReload")
 OVERRIDE_NAME = "10-argus-release.conf"
+# oreo-run units that call the default-socket docker CLI.  They get the docker group for the unit only, so the
+# interactive operator can leave the docker group (membership is root-equivalent: docker.sock is root:docker 0660).
+DOCKER_GROUP_UNITS = ("argus-metrics.service", "argus-workload-discover.service")
+DOCKER_GROUP_OVERRIDE_NAME = "20-argus-docker-group.conf"
+DOCKER_GROUP_OVERRIDE = (
+    "# Managed by scripts/argus-sudoers-render --overrides-dir; keeps docker access when oreo leaves the docker group.\n"
+    "[Service]\nSupplementaryGroups=docker\n"
+)
 
 
 def render_override(unit_text: str, prefix: str = DEFAULT_PREFIX) -> str | None:
@@ -281,4 +296,6 @@ def render_overrides(repo: Path, prefix: str = DEFAULT_PREFIX, units_dir: Path |
         text = render_override(path.read_text(), prefix)
         if text is not None:
             result[f"{name}.d/{OVERRIDE_NAME}"] = text
+        if name in DOCKER_GROUP_UNITS:
+            result[f"{name}.d/{DOCKER_GROUP_OVERRIDE_NAME}"] = DOCKER_GROUP_OVERRIDE
     return result

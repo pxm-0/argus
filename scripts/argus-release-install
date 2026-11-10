@@ -3,14 +3,23 @@
 
   sudo /opt/argus/current/scripts/argus-release-install --sha <40-hex>
 
-Root only.  The commit must exist in the /srv/argus checkout, be reachable from
-origin/main, and the checkout must be clean.  `git archive` of that commit is
-extracted into /opt/argus/releases/<sha>, its git tree hash is recomputed and
+Root shell only; it is deliberately NOT in the sudoers allowlist, because the
+/srv/argus checkout (config, refs, objects) is owned by the unprivileged operator.
+Trust anchor: the 40-hex sha the root operator types, taken from the merged PR on
+GitHub.  A sha names its content, so the blobs of <sha> read from the untrusted object
+store are authentic or fail the tree-hash check below; the local origin/main ref is
+only a sanity check (the operator can forge it, the sha cannot be forged).
+The commit must exist in the /srv/argus checkout and be reachable from origin/main.
+The commit's blobs are written into /opt/argus/releases/<sha>, its git tree hash is recomputed and
 compared with the commit's tree, the tree is chowned root:root with group and
 other write removed, and /opt/argus/current is flipped with an atomic rename.
 Gitignored state paths (runtime/, dashboard public/) become symlinks into the
 live checkout so services keep their state; the release itself stays read-only.
-The only CLI argument is --sha so a sudoers `--sha *` entry cannot widen paths.
+
+git runs with an empty environment, no system/global config, and fsmonitor, hooks and
+pager disabled.  `git status` is never run: it executes repo-configured clean filters
+and fsmonitor, so the unprivileged repo owner could use it to run code as root.  The
+release is built from the commit object, so working-tree state cannot affect it.
 """
 from __future__ import annotations
 
@@ -22,7 +31,6 @@ import shutil
 import stat
 import subprocess
 import sys
-import tarfile
 import tempfile
 from pathlib import Path
 
@@ -38,25 +46,35 @@ class ReleaseRefused(RuntimeError):
     """A precondition failed; nothing under the prefix was changed."""
 
 
+GIT_ENV = {
+    "PATH": "/usr/bin:/bin",
+    "HOME": "/nonexistent",
+    "LC_ALL": "C",
+    "GIT_CONFIG_NOSYSTEM": "1",
+    "GIT_CONFIG_GLOBAL": "/dev/null",
+    "GIT_TERMINAL_PROMPT": "0",
+}
+# The checkout's .git/config belongs to the unprivileged operator; neutralise every setting that makes git run a program.
+GIT_HARDENING = (
+    "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
+    "-c", "core.sshCommand=/bin/false", "-c", "protocol.ext.allow=never",
+)
+
+
 def git(source: Path, *args: str, binary: bool = False) -> subprocess.CompletedProcess:
-    # Root must not write into the oreo-owned checkout (index refresh, locks), and
-    # safe.directory is scoped to this one repo instead of a global setting.
-    command = ["git", "--no-optional-locks", "-c", f"safe.directory={source}", "-C", str(source), *args]
-    return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary, check=False)
+    # --no-optional-locks keeps root from writing into the operator-owned checkout; safe.directory is
+    # scoped to this one repo instead of a global setting.
+    command = ["git", "--no-optional-locks", *GIT_HARDENING, "-c", f"safe.directory={source}", "-C", str(source), *args]
+    return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary, check=False, env=dict(GIT_ENV))
 
 
-def require_clean_commit(source: Path, sha: str, ref: str) -> str:
+def require_known_commit(source: Path, sha: str, ref: str) -> str:
     """Return the commit's tree hash or raise ReleaseRefused."""
     if not SHA.fullmatch(sha):
         raise ReleaseRefused("sha must be 40 lowercase hex characters")
     commit = git(source, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
     if commit.returncode != 0 or commit.stdout.strip() != sha:
         raise ReleaseRefused(f"unknown commit {sha} in {source}")
-    status = git(source, "status", "--porcelain")
-    if status.returncode != 0:
-        raise ReleaseRefused(f"git status failed in {source}")
-    if status.stdout.strip():
-        raise ReleaseRefused(f"{source} has uncommitted changes; refusing to install from a dirty checkout")
     if git(source, "merge-base", "--is-ancestor", sha, ref).returncode != 0:
         raise ReleaseRefused(f"{sha} is not reachable from {ref}")
     tree = git(source, "rev-parse", f"{sha}^{{tree}}")
@@ -92,15 +110,56 @@ def git_tree_hash(path: Path) -> str | None:
     return hashlib.sha1(b"tree %d\0" % len(body) + body).hexdigest()  # noqa: S324
 
 
-def extract_archive(source: Path, sha: str, destination: Path) -> None:
-    archive = git(source, "archive", "--format=tar", sha, binary=True)
-    if archive.returncode != 0:
-        raise ReleaseRefused(f"git archive failed: {archive.stderr.decode(errors='replace')[-200:]}")
-    with tempfile.TemporaryFile() as handle:
-        handle.write(archive.stdout)
-        handle.seek(0)
-        with tarfile.open(fileobj=handle) as tar:
-            tar.extractall(destination, filter="data")
+def extract_commit(source: Path, sha: str, destination: Path) -> None:
+    """Write the commit's blobs under `destination`.
+
+    Not `git archive`: it applies repo-configured smudge filters, which would run operator-chosen programs as
+    root.  ls-tree plus cat-file read raw objects and run nothing.
+    """
+    listing = git(source, "ls-tree", "-r", "-z", "--full-tree", sha, binary=True)
+    if listing.returncode != 0:
+        raise ReleaseRefused(f"git ls-tree failed: {listing.stderr.decode(errors='replace')[-200:]}")
+    entries = []
+    for record in listing.stdout.split(b"\0"):
+        if not record:
+            continue
+        meta, _, raw_path = record.partition(b"\t")
+        mode, kind, oid = meta.decode().split()
+        parts = os.fsdecode(raw_path).split("/")
+        if kind != "blob" or mode not in ("100644", "100755", "120000") or any(p in ("", ".", "..", ".git") for p in parts):
+            raise ReleaseRefused(f"unsupported tree entry: {mode} {kind} {os.fsdecode(raw_path)!r}")
+        entries.append((mode, oid, parts))
+    objects = git_cat_file(source, [oid for _, oid, _ in entries])
+    base = os.path.realpath(destination)
+    for (mode, _oid, parts), content in zip(entries, objects):
+        target = destination.joinpath(*parts)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        parent = os.path.realpath(target.parent)
+        if parent != base and not parent.startswith(base + os.sep):
+            raise ReleaseRefused(f"entry escapes the release tree: {'/'.join(parts)}")
+        if mode == "120000":
+            os.symlink(os.fsdecode(content), target)
+        else:
+            target.write_bytes(content)
+            target.chmod(0o755 if mode == "100755" else 0o644)
+
+
+def git_cat_file(source: Path, oids: list[str]) -> list[bytes]:
+    command = ["git", "--no-optional-locks", *GIT_HARDENING, "-c", f"safe.directory={source}", "-C", str(source), "cat-file", "--batch"]
+    stdin = "".join(f"{oid}\n" for oid in oids).encode()
+    result = subprocess.run(command, input=stdin, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, env=dict(GIT_ENV))
+    if result.returncode != 0:
+        raise ReleaseRefused(f"git cat-file failed: {result.stderr.decode(errors='replace')[-200:]}")
+    data, position, blobs = result.stdout, 0, []
+    for oid in oids:
+        end = data.index(b"\n", position)
+        fields = data[position:end].split()
+        if len(fields) != 3 or fields[0].decode() != oid or fields[1] != b"blob":
+            raise ReleaseRefused(f"unexpected cat-file reply for {oid}")
+        size = int(fields[2])
+        blobs.append(data[end + 1:end + 1 + size])
+        position = end + 1 + size + 1
+    return blobs
 
 
 def seal(tree: Path, owner: tuple[int, int]) -> None:
@@ -135,7 +194,7 @@ def switch_current(current: Path, release: Path) -> None:
 def install_release(
     sha: str, *, source: Path = SOURCE, prefix: Path = PREFIX, ref: str = REF, owner: tuple[int, int] = (0, 0)
 ) -> Path:
-    expected_tree = require_clean_commit(source, sha, ref)
+    expected_tree = require_known_commit(source, sha, ref)
     releases = prefix / "releases"
     releases.mkdir(parents=True, exist_ok=True, mode=0o755)
     final = releases / sha
@@ -144,7 +203,7 @@ def install_release(
     staging = Path(tempfile.mkdtemp(prefix=f".staging-{sha[:12]}-", dir=releases))
     try:
         staging.chmod(0o700)
-        extract_archive(source, sha, staging)
+        extract_commit(source, sha, staging)
         actual = git_tree_hash(staging)
         if actual != expected_tree:
             raise ReleaseRefused(f"tree hash mismatch: archive {actual} != commit {expected_tree}")
@@ -161,7 +220,7 @@ def install_release(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install a reviewed commit as a root-owned release.", allow_abbrev=False)
-    parser.add_argument("--sha", required=True, help="40-hex commit reachable from origin/main in /srv/argus")
+    parser.add_argument("--sha", required=True, help="40-hex commit reachable from origin/main in /srv/argus; copy it from the merged PR, not from the server")
     args = parser.parse_args(argv)
     if os.geteuid() != 0:
         print("argus-release-install must run as root", file=sys.stderr)
@@ -169,7 +228,7 @@ def main(argv: list[str] | None = None) -> int:
     os.umask(0o022)
     try:
         release = install_release(args.sha)
-    except (ReleaseRefused, OSError, tarfile.TarError) as exc:
+    except (ReleaseRefused, OSError, ValueError) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     print(f"installed {release}; /opt/argus/current -> {release}")

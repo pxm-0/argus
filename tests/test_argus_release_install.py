@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import shutil
 import stat
 import subprocess
 import sys
@@ -160,18 +161,48 @@ class RefusalTests(ReleaseFixture):
     def test_refuses_malformed_sha(self) -> None:
         for bad in ("abc", self.sha.upper(), self.sha[:39], self.sha + "0", "../" + self.sha, ""):
             with self.assertRaisesRegex(installer.ReleaseRefused, "40 lowercase hex"):
-                installer.require_clean_commit(self.source, bad, "origin/main")
+                installer.require_known_commit(self.source, bad, "origin/main")
         self.assertFalse((self.prefix / "current").exists())
 
     def test_refuses_unknown_sha(self) -> None:
         self.assert_refused("0" * 40, "unknown commit")
 
-    def test_refuses_dirty_checkout_tracked_and_untracked(self) -> None:
-        write(self.source, "config/a.json", "dirty\n")
-        self.assert_refused(self.sha, "uncommitted")
-        git(self.source, "checkout", "--", "config/a.json")
+    def test_repo_config_cannot_execute_code_in_the_root_installer(self) -> None:
+        """The operator owns .git/config; fsmonitor, filters, hooks and pagers must never run as root."""
+        marker = Path(self._tmp.name) / "pwned"
+        hook = Path(self._tmp.name) / "hook.sh"
+        hook.write_text(f"#!/bin/sh\ntouch {marker}\n")
+        hook.chmod(0o755)
+        for key in ("core.fsmonitor", "filter.x.clean", "filter.x.smudge", "core.pager", "core.sshCommand", "diff.x.textconv"):
+            git(self.source, "config", key, str(hook))
+        git(self.source, "config", "core.hooksPath", str(Path(self._tmp.name)))
+        (self.source / ".git" / "info").mkdir(exist_ok=True)
+        (self.source / ".git" / "info" / "attributes").write_text("* filter=x diff=x\n")
+        write(self.source, "config/a.json", "dirty\n")  # a dirty tree must neither block nor leak into the release
         write(self.source, "stray.txt", "x\n")
-        self.assert_refused(self.sha, "uncommitted")
+        release = self.install()
+        self.assertFalse(marker.exists(), "root ran code planted in the unprivileged repo config")
+        self.assertEqual("{}\n", (release / "config" / "a.json").read_text())
+        self.assertFalse((release / "stray.txt").exists())
+
+    def test_git_runs_with_hardening_and_clean_environment(self) -> None:
+        seen = {}
+
+        def fake_run(command, **kwargs):
+            seen.update(command=command, env=kwargs["env"])
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with patch.object(installer.subprocess, "run", fake_run), patch.dict(os.environ, {"GIT_DIR": "/evil", "GIT_EXTERNAL_DIFF": "x"}):
+            installer.git(self.source, "rev-parse", "HEAD")
+        self.assertIn("core.fsmonitor=false", seen["command"])
+        self.assertIn("core.hooksPath=/dev/null", seen["command"])
+        self.assertEqual("1", seen["env"]["GIT_CONFIG_NOSYSTEM"])
+        self.assertEqual(os.devnull, seen["env"]["GIT_CONFIG_GLOBAL"])
+        self.assertNotIn("GIT_DIR", seen["env"])
+        self.assertNotIn("GIT_EXTERNAL_DIFF", seen["env"])
+
+    def test_installer_never_runs_git_status(self) -> None:
+        self.assertNotIn('"status"', Path(installer.__file__ if hasattr(installer, "__file__") else ROOT / "scripts" / "argus-release-install").read_text())
 
     def test_refuses_commit_not_reachable_from_origin_main(self) -> None:
         git(self.source, "checkout", "-q", "-b", "side")
@@ -190,13 +221,13 @@ class RefusalTests(ReleaseFixture):
     def test_tree_hash_mismatch_aborts_cleanly_and_keeps_previous_current(self) -> None:
         first = self.install()
         sha = self.second_commit()
-        real = installer.extract_archive
+        real = installer.extract_commit
 
         def tampered(source: Path, commit: str, destination: Path) -> None:
             real(source, commit, destination)
             (destination / "scripts" / "injected.py").write_text("evil = True\n")
 
-        with patch.object(installer, "extract_archive", tampered), self.assertRaisesRegex(installer.ReleaseRefused, "tree hash mismatch"):
+        with patch.object(installer, "extract_commit", tampered), self.assertRaisesRegex(installer.ReleaseRefused, "tree hash mismatch"):
             self.install(sha)
         self.assertEqual(first, (self.prefix / "current").resolve())
         self.assertEqual([self.sha], sorted(p.name for p in (self.prefix / "releases").iterdir()))
@@ -217,6 +248,48 @@ class CliTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()) as stderr:
             self.assertEqual(3, installer.main(["--sha", "a" * 40]))
         self.assertIn("refused: nope", stderr.getvalue())
+
+
+class ReleaseTreeAwarenessTests(unittest.TestCase):
+    """After cutover the code runs from /opt/argus/releases/<sha>, not /srv/argus."""
+
+    def setUp(self) -> None:
+        sys.path.insert(0, str(ROOT / "scripts"))
+        self.addCleanup(sys.path.remove, str(ROOT / "scripts"))
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tree = Path(self._tmp.name).resolve() / "releases" / ("a" * 40)
+        (self.tree / "scripts").mkdir(parents=True)
+
+    def test_release_tree_counts_as_the_server_checkout_and_a_plain_tree_does_not(self) -> None:
+        from argus_common import is_server_checkout
+
+        self.assertFalse(is_server_checkout(self.tree))
+        (self.tree / "ARGUS_RELEASE").write_text("a" * 40 + "\n")
+        self.assertTrue(is_server_checkout(self.tree))
+        self.assertTrue(is_server_checkout(Path("/srv/argus")))
+
+    def test_release_tree_uses_the_server_ledger_and_deployed_revision(self) -> None:
+        import argus_cli
+
+        (self.tree / "ARGUS_RELEASE").write_text("a" * 40 + "\n")
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": ""}):
+            self.assertEqual(Path("/var/lib/argus/control/operations.sqlite3"), argus_cli.operation_ledger_path(self.tree))
+        (self.tree / "ARGUS_RELEASE").unlink()
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": ""}):
+            self.assertEqual(self.tree / "runtime/argus/m5/operations.sqlite3", argus_cli.operation_ledger_path(self.tree))
+
+    def test_sandbox_firewall_defaults_to_the_tree_it_runs_from_when_env_is_reset(self) -> None:
+        # sudo env_reset drops ARGUS_ROOT; a root-run script must not fall back to the operator-writable /srv/argus.
+        shutil.copy(ROOT / "scripts" / "argus-sandbox-firewall", self.tree / "scripts" / "argus-sandbox-firewall")
+        for module in ROOT.joinpath("scripts").glob("argus_*.py"):
+            shutil.copy(module, self.tree / "scripts" / module.name)
+        env = {key: value for key, value in os.environ.items() if key != "ARGUS_ROOT"}
+        done = subprocess.run([sys.executable, str(self.tree / "scripts" / "argus-sandbox-firewall"), "--domain", "personal-sandbox", "--plan"],
+                              capture_output=True, text=True, env=env, check=False)
+        self.assertEqual(3, done.returncode, done.stderr)
+        self.assertIn(str(self.tree / "config" / "workloads.json"), done.stderr)
+        self.assertNotIn("/srv/argus", done.stderr)
 
 
 if __name__ == "__main__":

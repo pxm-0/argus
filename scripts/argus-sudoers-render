@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> int:
             target.write_text(text, encoding="utf-8")
         print(f"wrote {len(files)} override drop-ins to {args.overrides_dir}")
         return 0
-    text = argus_sudoers.render_sudoers(argus_sudoers.rootless_domains(REPO), args.prefix, args.user, args.log_output)
+    text = argus_sudoers.render_sudoers(argus_sudoers.rootless_domains(REPO), args.prefix, args.user, args.log_output, argus_sudoers.promotable_workloads(REPO))
     if args.check:
         if COMMITTED.read_text(encoding="utf-8") != text:
             print(f"{COMMITTED.relative_to(REPO)} is stale; run: scripts/argus-sudoers-render > {COMMITTED.relative_to(REPO)}", file=sys.stderr)

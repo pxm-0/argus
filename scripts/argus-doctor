@@ -27,7 +27,10 @@ SUDOERS_DIR = Path("/etc/sudoers.d")
 # Operator-accepted exceptions: reported as warnings, never hidden.
 SUDOERS_WARN_ONLY = {
     "90-codex-nopasswd": "legacy broad grant; remove last in docs/RUNBOOKS/sudo-narrowing.md",
-    "oreo-yog-sothoth": "separate yog-sothoth grant retained by operator decision",
+    "oreo-yog-sothoth": (
+        "ROOT-EQUIVALENT, kept by operator decision: systemctl enable/start/restart * (any unit file), psql as postgres, "
+        "install of an oreo-owned unit file; oreo still has a root path until this file is narrowed"
+    ),
 }
 GHCR_CONFIG = Path("/etc/argus/registry/.docker/config.json")
 GHCR_STAMP = Path("/var/lib/argus/ghcr-token-rotated")

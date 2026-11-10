@@ -20,7 +20,8 @@ import argus_sudoers as sudoers  # noqa: E402
 COMMITTED = ROOT / "deploy" / "sudoers" / "argus-operator"
 RUNBOOKS = ROOT / "docs" / "RUNBOOKS"
 DOMAINS = sudoers.rootless_domains(ROOT)
-RENDERED = sudoers.render_sudoers(DOMAINS)
+PROMOTABLE = sudoers.promotable_workloads(ROOT)
+RENDERED = sudoers.render_sudoers(DOMAINS, promotable=PROMOTABLE)
 ENTRIES = sudoers.parse_entries(RENDERED)
 loader = importlib.machinery.SourceFileLoader("argus_sudoers_render", str(ROOT / "scripts" / "argus-sudoers-render"))
 render_cli = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
@@ -36,8 +37,8 @@ class RenderedFileTests(unittest.TestCase):
     def test_visudo_accepts_rendered_files(self) -> None:
         variants = {
             "default": RENDERED,
-            "alt-prefix": sudoers.render_sudoers(DOMAINS, "/opt/x/current"),
-            "log-output": sudoers.render_sudoers(DOMAINS, log_output=True),
+            "alt-prefix": sudoers.render_sudoers(DOMAINS, "/opt/x/current", promotable=PROMOTABLE),
+            "log-output": sudoers.render_sudoers(DOMAINS, log_output=True, promotable=PROMOTABLE),
         }
         with tempfile.TemporaryDirectory() as tmp:
             for name, text in variants.items():
@@ -57,7 +58,7 @@ class RenderedFileTests(unittest.TestCase):
         self.assertTrue(all(e.user == "oreo" and e.runas == "root" for e in ENTRIES))
 
     def test_prefix_is_applied_to_every_script(self) -> None:
-        text = sudoers.render_sudoers(DOMAINS, "/opt/x/current")
+        text = sudoers.render_sudoers(DOMAINS, "/opt/x/current", promotable=PROMOTABLE)
         scripts = [e.command for e in sudoers.parse_entries(text) if "/scripts/" in e.command]
         self.assertTrue(scripts)
         self.assertTrue(all(c.startswith("/opt/x/current/scripts/") for c in scripts))
@@ -76,6 +77,19 @@ class ParserTests(unittest.TestCase):
             self.assertNotIn("*", "".join(entry.args[:-1]))
             if entry.args and entry.args[-1] == "*":
                 self.assertGreaterEqual(len(entry.args), 2)
+
+    def test_release_installer_is_root_shell_only(self) -> None:
+        # It installs the code every other entry runs as root, from a checkout the operator owns.
+        self.assertNotIn("argus-release-install", RENDERED)
+
+    def test_promote_evidence_is_allowed_per_promotable_workload_with_a_pinned_workload(self) -> None:
+        self.assertIn("nodens-staging", PROMOTABLE)
+        lines = [e for e in ENTRIES if e.command.endswith("argus-promote-evidence")]
+        self.assertEqual(len(PROMOTABLE), len(lines))
+        for entry in lines:
+            self.assertEqual(("--workload", entry.args[1], "--image", "*"), entry.args)
+            self.assertIn(entry.args[1], PROMOTABLE)
+            self.assertNotIn("--ledger", entry.args)
 
     def test_excluded_tools_never_appear(self) -> None:
         for forbidden in ("argus-m5-", "argus-m0-", "python3", "/bin/bash", "/usr/bin/cp", "/usr/bin/sed", "/usr/bin/tee", "/usr/bin/docker"):
@@ -162,6 +176,23 @@ class OverrideTests(unittest.TestCase):
                 for index, line in enumerate(lines):
                     if line == f"{key}=":
                         self.assertTrue(lines[index + 1].startswith(f"{key}="), name)
+
+    def test_docker_cli_units_keep_docker_through_a_unit_group_not_the_operator_group(self) -> None:
+        overrides = sudoers.render_overrides(ROOT)
+        for unit in sudoers.DOCKER_GROUP_UNITS:
+            text = (ROOT / "systemd" / unit).read_text()
+            self.assertIn("User=oreo", text, unit)
+            script = next(line for line in text.splitlines() if line.startswith("ExecStart=")).partition("=")[2].split()[-1].replace("/srv/argus/", "")
+            self.assertIn('"docker"', (ROOT / script).read_text(), f"{unit} no longer calls docker; drop it from DOCKER_GROUP_UNITS")
+            self.assertIn("SupplementaryGroups=docker\n", overrides[f"{unit}.d/20-argus-docker-group.conf"])
+        # no other oreo-run unit may run the default-socket docker CLI (it would break when oreo leaves the group)
+        for path in sorted((ROOT / "systemd").glob("*.service")):
+            text = path.read_text()
+            if "User=oreo" in text and path.name not in sudoers.DOCKER_GROUP_UNITS:
+                script = next((line for line in text.splitlines() if line.startswith("ExecStart=")), "").partition("=")[2].split()[-1:]
+                target = ROOT / script[0].replace("/srv/argus/", "") if script else None
+                if target and target.is_file() and not target.name.startswith("argus_domain_agent"):
+                    self.assertNotRegex(target.read_text(), r'\["docker", "(ps|stats|compose|inspect)"', path.name)
 
     def test_unit_without_srv_argus_is_skipped_and_prefix_is_validated(self) -> None:
         self.assertIsNone(sudoers.render_override("[Service]\nExecStart=/usr/bin/true\n"))
@@ -253,6 +284,10 @@ class RunbookConsistencyTests(unittest.TestCase):
         for needle in ("two", "/root/sudoers-backup", "visudo -cf", "visudo -c", "sudo -n -l", "90-codex-nopasswd", "pkexec"):
             self.assertIn(needle, narrowing)
         self.assertLess(narrowing.index("sudo -n -l"), narrowing.index("rm /etc/sudoers.d/90-codex-nopasswd"))
+        self.assertIn("argus-promote-evidence --workload nodens-staging", narrowing)
+        self.assertNotIn("sudo -n /usr/bin/systemctl restart sshd", narrowing, "the retained yog-sothoth entry allows it")
+        self.assertIn("ROOT-EQUIVALENT", narrowing.upper())
+        self.assertLess(narrowing.index("rm /etc/sudoers.d/90-codex-nopasswd"), narrowing.index("gpasswd -d oreo docker"))
         ghcr = (RUNBOOKS / "ghcr-token-rotation.md").read_text()
         self.assertIn("read -rs", ghcr)
         self.assertIn("/etc/argus/registry/.docker", ghcr)
