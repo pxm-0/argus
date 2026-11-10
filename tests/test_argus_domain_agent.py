@@ -250,5 +250,22 @@ class DomainAgentServiceTests(unittest.TestCase):
         self.assertTrue(health["ok"], health)
         self.assertEqual("healthy", health["status"])
 
+    def test_crash_looping_sidecar_fails_domain_health(self) -> None:
+        # nodens-production: app healthy but the ingress sidecar restarting must not count as a successful deploy
+        rows = {
+            "restarting": '{"Service":"argus-ingress","State":"restarting","Health":"","ExitCode":255}',
+            "exited-error": '{"Service":"argus-ingress","State":"exited","Health":"","ExitCode":1}',
+        }
+        app = '{"Service":"nodens","State":"running","Health":"healthy"}'
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            for label, sidecar in rows.items():
+                with self.subTest(label), (
+                    patch.object(service, "compose_service", return_value="nodens")
+                ), patch("argus_domain_agent.subprocess.run",
+                         return_value=subprocess.CompletedProcess([], 0, stdout=sidecar + "\n" + app + "\n")):
+                    health = service.domain_health("hastur")
+                self.assertFalse(health["ok"], (label, health))
+
 if __name__ == "__main__":
     unittest.main()
