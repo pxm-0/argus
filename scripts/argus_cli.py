@@ -15,11 +15,14 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
+import argus_cli_op
+import argus_cli_m1
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
+import argus_release
 from argus_workload_retire import RetireError, quiet_runner, retire
 
 
@@ -734,23 +737,6 @@ def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
     return _success("operation.show", operation={key: row[key] for key in row.keys()})
 
 
-def operation_recover(operation_id: str, confirmation: str) -> dict[str, Any]:
-    if confirmation != operation_id:
-        return _error(
-            "operation-recovery-confirmation-required",
-            "Recovery lacks the exact operation ID confirmation.",
-            f"Inspect argus operation show {operation_id}, then pass --confirm {operation_id}.",
-            exit_code=EXIT_REFUSAL,
-        )
-    return _error(
-        "operation-recovery-unavailable",
-        "No generic recovery mutation is approved for this operation.",
-        f"Inspect argus operation show {operation_id} and use its typed recovery runbook.",
-        exit_code=EXIT_UNAVAILABLE,
-        authority="operation-ledger",
-    )
-
-
 def default_runner(command: list[str], repo: Path) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         command,
@@ -817,6 +803,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             "auditVersion": boundary.get("auditVersion"),
             "result": "pass",
         },
+        m1Drift=argus_cli_m1.drift_status(repo),
         lastCompletedCollection=None,
         lastSafeRollbackPoint=None,
         compatibility="partial-discovery-not-installed",
@@ -977,27 +964,26 @@ def build_parser() -> argparse.ArgumentParser:
         if action in {"apply", "rollback"}:
             item.add_argument("--confirm", default="", help="exact workload ID confirmation")
 
-    operation = commands.add_parser("operation", help="durable operation status and recovery")
+    operation = commands.add_parser("operation", help="durable operation status")
     operation_sub = operation.add_subparsers(dest="operation_command", required=True, parser_class=ArgusArgumentParser)
-    for action in ("show", "recover"):
+    for action in ("show",):
         item = leaf(
             operation_sub,
             action,
             help_text=f"{action} a durable operation",
             contract=description(
                 f"{action.title()} a durable operation without guessing current authority.",
-                "server mutation with exact confirmation" if action == "recover" else "server read-only",
+                "server read-only",
                 "exact operation ID and compatible durable ledger",
-                "none for show; recovery requires the final reviewed confirmation",
+                "none",
                 "state, authority, retry safety, and typed recovery",
                 f"argus operation {action} 00000000-0000-0000-0000-000000000000 --json",
                 "inspect operation state and follow only its typed runbook",
             ),
         )
         item.add_argument("operation_id")
-        if action == "recover":
-            item.add_argument("--confirm", default="", help="exact operation ID confirmation")
 
+    argus_cli_op.register(commands, workload_sub, leaf, description)
     leaf(
         commands,
         "doctor",
@@ -1010,6 +996,9 @@ def build_parser() -> argparse.ArgumentParser:
         help_text="run the canonical repository validation",
         contract=description("Run the canonical deterministic repository validation.", "unprivileged, read-only", "supported Python and complete Git clone", "regenerates ignored local validation artifacts only", "pass/fail and sanitized output digest", "argus check --json", "run ./scripts/argus-check and fix its first named failure"),
     )
+
+    argus_release.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
 
     legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
@@ -1055,12 +1044,16 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = move_command(repo, args.move_command, args.workload_id, getattr(args, "confirm", "")) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
     elif command == "operation" and args.operation_command == "show":
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
-    elif command == "operation" and args.operation_command == "recover":
-        result = operation_recover(args.operation_id, args.confirm) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
+    elif command == "op" or (command == "workload" and args.workload_command in argus_cli_op.SHORTCUTS):
+        result = argus_cli_op.execute(args, repo, sys.modules[__name__])
+    elif command in {"release", "promote"}:
+        result = argus_release.dispatch(args, repo, runner, _error, _success)
     elif command == "doctor":
         result = doctor_command(repo, runner)
     elif command == "check":
         result = check_command(repo, runner)
+    elif command == "m1":
+        result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
         result = _error("command-unsupported", "The command is unsupported.", "Run argus --help.", exit_code=EXIT_INVOCATION)
     if deprecation and result.get("ok"):
@@ -1093,6 +1086,11 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
     elif command == "workload.list":
         for item in data["workloads"]:
             print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
+    elif command.startswith("m1."):
+        argus_cli_m1.render(data, stdout)
+    elif data.get("dryRun") and ("diff" in data or "runbook" in data):
+        # release dry-runs carry a diff; workload retire dry-runs carry the teardown runbook
+        print(data.get("diff") or data["runbook"], end="", file=stdout)
     else:
         print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
 

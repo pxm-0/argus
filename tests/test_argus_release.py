@@ -1,0 +1,399 @@
+from __future__ import annotations
+
+import io
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import unittest
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
+
+import argus_release as release  # noqa: E402
+from argus_cli import default_runner as subprocess_runner, run  # noqa: E402
+
+OLD_ID = "sha256:" + "1" * 64
+NEW_ID = "sha256:" + "2" * 64
+DIGEST = "sha256:" + "d" * 64
+REF = f"ghcr.io/pxm-0/nodens@{DIGEST}"
+COMPOSE = """# reviewed
+name: {name}
+
+services:
+  nodens:
+    image: {pin}  # {comment}
+    restart: unless-stopped
+  argus-ingress:
+    image: sha256:{caddy}  # caddy
+    volumes:
+      - source: /var/lib/argus/managed-ingress/{name}
+    secrets:
+      - {name}-token
+networks:
+  internal:
+    internal: true
+"""
+
+
+def compose(name: str, pin: str, comment: str = "old", caddy: str = "c" * 64) -> str:
+    return COMPOSE.format(name=name, pin=pin, comment=comment, caddy=caddy)
+
+
+def workload(workload_id: str, **extra: object) -> dict[str, object]:
+    return {"id": workload_id, "runtime": {"service": "nodens"},
+            "migration": {"targetTrustDomain": "personal-managed"}, **extra}
+
+
+class RewriteTests(unittest.TestCase):
+    def test_rewrite_changes_only_the_service_image_line(self) -> None:
+        text = compose("nodens-staging", OLD_ID)
+        out = release.rewrite_image(text, "nodens", NEW_ID, REF)
+        self.assertEqual(f"    image: {NEW_ID}  # {REF}", out.splitlines()[5])
+        self.assertEqual(text.splitlines()[:5] + text.splitlines()[6:], out.splitlines()[:5] + out.splitlines()[6:])
+
+    def test_zero_matches_refused(self) -> None:
+        text = compose("nodens-staging", OLD_ID).replace(f"    image: {OLD_ID}  # old\n", "")
+        with self.assertRaises(release.ReleaseError) as caught:
+            release.rewrite_image(text, "nodens", NEW_ID, REF)
+        self.assertEqual("compose-image-line-count", caught.exception.code)
+
+    def test_two_matches_refused(self) -> None:
+        text = compose("nodens-staging", OLD_ID).replace("    restart", f"    image: {OLD_ID}\n    restart")
+        with self.assertRaises(release.ReleaseError) as caught:
+            release.rewrite_image(text, "nodens", NEW_ID, REF)
+        self.assertIn("found 2", str(caught.exception))
+
+    def test_missing_service_refused(self) -> None:
+        with self.assertRaises(release.ReleaseError) as caught:
+            release.rewrite_image(compose("x", OLD_ID), "other", NEW_ID, REF)
+        self.assertEqual("compose-service-not-found", caught.exception.code)
+
+    def test_ref_validation(self) -> None:
+        self.assertTrue(release.valid_ref(REF))
+        for bad in ("ghcr.io/pxm-0/nodens:latest", f"ghcr.io/other/nodens@{DIGEST}", f"docker.io/library/nginx@{DIGEST}", REF + "x"):
+            with self.subTest(bad=bad):
+                self.assertFalse(release.valid_ref(bad))
+
+
+FIXTURES = ROOT / "tests" / "fixtures" / "release"
+NO_REPO = Path("/nonexistent-argus-repo")
+
+
+def fields(workload_id: str, domain: str = "personal-managed") -> dict[str, str]:
+    return release.allowed_fields(NO_REPO, {}, workload_id, domain)
+
+
+def drift(staging: str, production: str) -> list[str]:
+    return release.compose_drift(staging, production, fields("nodens-staging"), fields("nodens-production"), "nodens")
+
+
+class DriftTests(unittest.TestCase):
+    def test_allowed_fields_and_pin_may_differ(self) -> None:
+        staging, production = compose("nodens-staging", NEW_ID, "a"), compose("nodens-production", "sha256:PENDING-x", "b")
+        production = production.replace("nodens-production-token", "other-secret")
+        self.assertEqual([], drift(staging, production))
+
+    def test_other_image_drift_detected(self) -> None:
+        self.assertTrue(drift(compose("nodens-staging", NEW_ID), compose("nodens-production", NEW_ID, caddy="e" * 64)))
+
+    def test_repo_promotion_pairs_have_no_compose_drift(self) -> None:
+        registry = release.load_registry(ROOT)
+        for staging_id, item in registry.items():
+            production_id = item.get("promotesTo")
+            if not production_id:
+                continue
+            with self.subTest(staging=staging_id):
+                texts = [(ROOT / "workloads" / i / "source" / "compose.yml").read_text() for i in (staging_id, production_id)]
+                domains = [str(registry[i].get("migration", {}).get("targetTrustDomain", "")) for i in (staging_id, production_id)]
+                self.assertEqual([], release.compose_drift(texts[0], texts[1], release.allowed_fields(ROOT, registry[staging_id], staging_id, domains[0]),
+                                                           release.allowed_fields(ROOT, registry[production_id], production_id, domains[1]), "nodens"))
+                for text in texts:
+                    self.assertRegex(release.read_pin(text, "nodens")[0], r"^sha256:([0-9a-f]{64}|PENDING[A-Za-z0-9-]*)$")
+
+    def test_repo_registers_the_nodens_promotion(self) -> None:
+        self.assertEqual("nodens-production", release.load_registry(ROOT)["nodens-staging"]["promotesTo"])
+
+
+class RealPairDriftTests(unittest.TestCase):
+    """The nodens-staging / nodens-production files and manifests as #353 ships them."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.texts = {}
+        self.fields = {}
+        for stage, domain in (("staging", "personal-sandbox"), ("production", "personal-managed")):
+            workload_id = f"nodens-{stage}"
+            manifest = Path(self.tmp.name) / "workloads" / workload_id / "manifest.json"
+            manifest.parent.mkdir(parents=True)
+            manifest.write_text((FIXTURES / f"{workload_id}.manifest.json").read_text())
+            self.texts[stage] = (FIXTURES / f"{workload_id}.compose.yml").read_text()
+            self.fields[stage] = release.allowed_fields(Path(self.tmp.name), {}, workload_id, domain)
+
+    def drift(self, staging: str | None = None, production: str | None = None) -> list[str]:
+        return release.compose_drift(staging or self.texts["staging"], production or self.texts["production"],
+                                     self.fields["staging"], self.fields["production"], "nodens")
+
+    def test_allowed_fields_come_from_manifest_and_trust_domain(self) -> None:
+        self.assertEqual({"PROJECT": "nodens-staging", "INGRESS": "/var/lib/argus/sandbox-ingress/nodens-staging", "BRIDGE": "argus-ndns-stg"},
+                         self.fields["staging"])
+        self.assertEqual("argus-ndns-prd", self.fields["production"]["BRIDGE"])
+
+    def test_real_files_differ_only_in_allowed_fields(self) -> None:
+        self.assertEqual([], self.drift())
+
+    def test_real_files_differ_literally_but_not_after_normalising(self) -> None:
+        self.assertNotEqual(self.texts["staging"], self.texts["production"])
+        for needle in ("sandbox-ingress", "argus-ndns-stg"):
+            self.assertIn(needle, self.texts["staging"])
+            self.assertNotIn(needle, self.texts["production"])
+
+    def test_any_other_difference_still_refuses(self) -> None:
+        production = self.texts["production"]
+        mutations = {
+            "caddy image": lambda t: re.sub(r"(argus-ingress:\n    image: sha256:)[0-9a-f]{64}", r"\g<1>" + "e" * 64, t),
+            "capability": lambda t: t.replace("      - NET_BIND_SERVICE\n", "      - NET_BIND_SERVICE\n      - NET_ADMIN\n"),
+            "hardening": lambda t: t.replace("    read_only: true\n", ""),
+            "no-new-privileges": lambda t: t.replace("no-new-privileges:true", "no-new-privileges:false", 1),
+            "restart policy": lambda t: t.replace("unless-stopped", "always", 1),
+            "published port": lambda t: t.replace("    restart: unless-stopped\n", "    ports:\n      - \"80:80\"\n    restart: unless-stopped\n", 1),
+            "extra service": lambda t: t.replace("\nnetworks:\n", "\n  extra:\n    image: sha256:" + "a" * 64 + "\n\nnetworks:\n", 1),
+            "bridge name not the manifest's": lambda t: t.replace("argus-ndns-prd", "argus-ndns-xyz"),
+            "ingress dir of the wrong domain": lambda t: t.replace("managed-ingress", "sandbox-ingress"),
+            "ingress dir of another workload": lambda t: t.replace("managed-ingress/nodens-production", "managed-ingress/other"),
+            "project name": lambda t: t.replace("name: nodens-production", "name: other"),
+        }
+        for label, mutate in mutations.items():
+            with self.subTest(label):
+                mutated = mutate(production)
+                self.assertNotEqual(production, mutated)
+                self.assertTrue(self.drift(production=mutated))
+
+    def test_healthcheck_added_on_one_side_refuses(self) -> None:
+        mutated = self.texts["production"].replace("    read_only: true\n", "    read_only: true\n    healthcheck:\n      test: [\"CMD\", \"true\"]\n", 1)
+        self.assertTrue(self.drift(production=mutated))
+
+    def test_image_pin_replacement_is_tolerated(self) -> None:
+        pinned = re.sub(r"(  nodens:\n    image: )\S+.*", r"\g<1>sha256:" + "9" * 64 + "  # ref", self.texts["production"], count=1)
+        self.assertEqual([], self.drift(production=pinned))
+
+
+FAKE_SSH = """#!/bin/sh
+echo "$@" >> "$FAKE_LOG/ssh"
+echo '{{"ok": true, "imageId": "{id}"}}'
+"""
+FAKE_GH = """#!/bin/sh
+echo "$@" >> "$FAKE_LOG/gh"
+echo https://github.com/pxm-0/argus/pull/999
+"""
+
+
+class CommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        base = Path(self.tmp.name)
+        self.repo, self.bin, self.log = base / "repo", base / "bin", base / "log"
+        for path in (self.repo / "config", self.repo / "scripts", self.bin, self.log):
+            path.mkdir(parents=True)
+        subprocess.run(["git", "init", "-q", "--bare", str(base / "origin.git")], check=True)
+        registry = {"workloads": [workload("nodens-staging", promotesTo="nodens-production"), workload("nodens-production")]}
+        (self.repo / "config" / "workloads.json").write_text(json.dumps(registry))
+        (self.repo / "config" / "routes.json").write_text(json.dumps({"dashboard": {"url": "https://127.0.0.1:1"}}))
+        self.write_compose("nodens-staging", compose("nodens-staging", OLD_ID, REF))
+        self.write_compose("nodens-production", compose("nodens-production", "sha256:PENDING-x"))
+        self.script("scripts/argus-check", "#!/bin/sh\nexit ${FAKE_CHECK_EXIT:-0}\n", self.repo)
+        self.script("ssh", FAKE_SSH.format(id=OLD_ID), self.bin)
+        self.script("gh", FAKE_GH, self.bin)
+        for args in (["init", "-q", "-b", "main"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"],
+                     ["remote", "add", "origin", str(base / "origin.git")]):
+            subprocess.run(["git", *args], cwd=self.repo, check=True)
+        env = {"PATH": f"{self.bin}:{os.environ['PATH']}", "FAKE_LOG": str(self.log), "GIT_AUTHOR_NAME": "t",
+               "GIT_AUTHOR_EMAIL": "t@t", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        patcher = patch.dict(os.environ, env)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def script(self, name: str, content: str, parent: Path) -> None:
+        path = parent / name
+        path.write_text(content)
+        path.chmod(path.stat().st_mode | stat.S_IXUSR)
+
+    def write_compose(self, workload_id: str, text: str) -> None:
+        path = self.repo / "workloads" / workload_id / "source" / "compose.yml"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+    def invoke(self, *argv: str) -> tuple[int, dict, str]:
+        out, err = io.StringIO(), io.StringIO()
+        code = run([*argv, "--json"], repo=self.repo, stdout=out, stderr=err)
+        return code, json.loads(out.getvalue()), err.getvalue()
+
+    def calls(self, name: str) -> list[str]:
+        path = self.log / name
+        return path.read_text().splitlines() if path.exists() else []
+
+    def test_pin_imports_commits_and_opens_pr(self) -> None:
+        self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)
+        code, payload, _ = self.invoke("release", "pin", "nodens-staging", "--image", REF)
+        self.assertEqual(0, code, payload)
+        data = payload["data"]
+        self.assertEqual(f"release/nodens-staging-{NEW_ID[7:19]}", data["branch"])
+        self.assertEqual("https://github.com/pxm-0/argus/pull/999", data["prUrl"])
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
+        self.assertEqual(data["branch"], branch)
+        self.assertIn(f"image: {NEW_ID}", (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
+        gh = (self.log / "gh").read_text()
+        self.assertTrue(gh.startswith("pr create --base main"))
+        self.assertIn(f"argus workload deploy nodens-staging --revision {NEW_ID}", gh)
+        for section in ("## P0 Scope", "## Summary", "## Verification", "## Safety Checklist", "## Notes", "## Rollback"):
+            self.assertIn(section, gh)
+
+    def test_ssh_host_comes_from_environment(self) -> None:
+        with patch.dict(os.environ, {"ARGUS_SSH_HOST": "ops@box"}):
+            self.invoke("release", "import", "nodens-staging", "--image", REF)
+        self.assertTrue(self.calls("ssh")[0].startswith("ops@box sudo -n"))
+        with patch.dict(os.environ, {"ARGUS_SSH_HOST": "-oProxyCommand=x"}):
+            code, payload, _ = self.invoke("release", "import", "nodens-staging", "--image", REF)
+        self.assertEqual(2, code)
+        self.assertEqual("ssh-host-invalid", payload["error"]["code"])
+
+    def test_dry_run_prints_diff_and_touches_nothing(self) -> None:
+        before = (self.repo / "workloads/nodens-staging/source/compose.yml").read_text()
+        code, payload, _ = self.invoke("release", "pin", "nodens-staging", "--image", REF, "--dry-run")
+        self.assertEqual(0, code)
+        self.assertIn("+    image: sha256:<image-id-from-import>", payload["data"]["diff"])
+        self.assertEqual([], self.calls("ssh") + self.calls("gh"))
+        self.assertEqual(before, (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
+
+    def test_invalid_refs_never_reach_ssh(self) -> None:
+        for image in ("ghcr.io/pxm-0/nodens:latest", f"ghcr.io/evil/nodens@{DIGEST}"):
+            code, payload, _ = self.invoke("release", "pin", "nodens-staging", "--image", image)
+            self.assertEqual((2, "image-ref-invalid"), (code, payload["error"]["code"]))
+        self.assertEqual([], self.calls("ssh"))
+
+    def test_failed_check_restores_file_and_opens_nothing(self) -> None:
+        self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)
+        before = (self.repo / "workloads/nodens-staging/source/compose.yml").read_text()
+        with patch.dict(os.environ, {"FAKE_CHECK_EXIT": "1"}):
+            code, payload, _ = self.invoke("release", "pin", "nodens-staging", "--image", REF)
+        self.assertEqual((1, "repository-check-failed"), (code, payload["error"]["code"]))
+        self.assertEqual(before, (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
+        self.assertEqual([], self.calls("gh"))
+
+    def test_dirty_tree_refused(self) -> None:
+        (self.repo / "stray").write_text("x")
+        code, payload, _ = self.invoke("release", "pin", "nodens-staging", "--image", REF)
+        self.assertEqual((3, "worktree-dirty"), (code, payload["error"]["code"]))
+        self.assertEqual([], self.calls("gh"))
+
+    def promote_refusal(self, *extra: str) -> str:
+        code, payload, _ = self.invoke("promote", "nodens-staging", "nodens-production", *extra)
+        self.assertEqual(3, code, payload)
+        self.assertEqual([], self.calls("gh"))
+        return payload["error"]["code"]
+
+    def test_promote_refuses_without_evidence(self) -> None:
+        self.assertEqual("promote-evidence-unavailable", self.promote_refusal())
+        self.assertIn("argus-promote-evidence", " ".join(self.calls("ssh")))
+        self.assertNotIn("argus-image-import", " ".join(self.calls("ssh")))
+
+    def test_promote_refuses_when_staging_lacks_a_succeeded_deploy_of_the_id(self) -> None:
+        with patch.object(release, "deploy_evidence", return_value=False):
+            self.assertEqual("promote-staging-not-deployed", self.promote_refusal())
+
+    def test_promote_refuses_unregistered_target_and_unpinned_staging(self) -> None:
+        registry = json.loads((self.repo / "config/workloads.json").read_text())
+        del registry["workloads"][0]["promotesTo"]
+        (self.repo / "config/workloads.json").write_text(json.dumps(registry))
+        self.assertEqual("promote-target-unregistered", self.promote_refusal("--skip-evidence-check"))
+
+    def test_promote_refuses_unpinned_staging(self) -> None:
+        self.write_compose("nodens-staging", compose("nodens-staging", "sha256:PENDING-x"))
+        self.assertEqual("promote-staging-unpinned", self.promote_refusal("--skip-evidence-check"))
+
+    def test_promote_refuses_compose_differences(self) -> None:
+        self.write_compose("nodens-production", compose("nodens-production", "sha256:PENDING-x").replace("unless-stopped", "always"))
+        self.assertEqual("promote-compose-differs", self.promote_refusal("--skip-evidence-check"))
+        self.assertEqual([], self.calls("ssh"))
+
+    def test_promote_refuses_when_production_import_reports_another_id(self) -> None:
+        self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)
+        self.assertEqual("promote-image-id-mismatch", self.promote_refusal("--skip-evidence-check"))
+
+    def test_promote_opens_pr_with_identical_pins(self) -> None:
+        code, payload, _ = self.invoke("promote", "nodens-staging", "nodens-production", "--skip-evidence-check")
+        self.assertEqual(0, code, payload)
+        text = (self.repo / "workloads/nodens-production/source/compose.yml").read_text()
+        self.assertEqual(OLD_ID, release.read_pin(text, "nodens")[0])
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        self.assertIn(f"nodens-production: image: {OLD_ID} (was sha256:PENDING-x)", (self.log / "gh").read_text())
+
+    def test_promote_dry_run_prints_diff_only(self) -> None:
+        code, payload, _ = self.invoke("promote", "nodens-staging", "nodens-production", "--skip-evidence-check", "--dry-run")
+        self.assertEqual(0, code)
+        self.assertIn(f"+    image: {OLD_ID}", payload["data"]["diff"])
+        self.assertEqual([], self.calls("ssh") + self.calls("gh"))
+
+    def test_deploy_evidence_matches_only_succeeded_deploys_of_the_id(self) -> None:
+        def fetch(operations: list[dict]) -> bool:
+            ledger = MagicMock()
+            ledger.list_for_workload.return_value = operations
+            with patch.object(release, "OperationLedger", return_value=ledger):
+                return release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID)
+        deploy = {"operation_type": "workload.deploy", "state": "succeeded", "parameters": {"targetRevision": OLD_ID}}
+        self.assertTrue(fetch([deploy]))
+        self.assertFalse(fetch([{**deploy, "state": "failed"}]))
+        self.assertFalse(fetch([{**deploy, "parameters": {"targetRevision": NEW_ID}}]))
+
+    def test_deploy_evidence_falls_back_to_server_script(self) -> None:
+        self.script("ssh", '#!/bin/sh\necho "$@" >> "$FAKE_LOG/ssh"\necho \'{"ok": true, "deployed": true}\'\n', self.bin)
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
+            self.assertTrue(release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID))
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-promote-evidence --workload nodens-staging --image {OLD_ID}"], self.calls("ssh"))
+
+    def test_deploy_evidence_unavailable_when_both_paths_fail(self) -> None:
+        self.script("ssh", "#!/bin/sh\necho '{\"ok\": false}'\nexit 4\n", self.bin)
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
+            with self.assertRaises(release.ReleaseError) as caught:
+                release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID)
+        self.assertEqual("promote-evidence-unavailable", caught.exception.code)
+
+    def test_ingress_bind_source_prefix_follows_the_trust_domain(self) -> None:
+        staging = compose("nodens-staging", NEW_ID).replace("managed-ingress", "sandbox-ingress")
+        production = compose("nodens-production", NEW_ID)
+        sandbox_fields = fields("nodens-staging", "personal-sandbox")
+        self.assertEqual([], release.compose_drift(staging, production, sandbox_fields, fields("nodens-production"), "nodens"))
+        # sandbox path on a workload registered as personal-managed is drift
+        self.assertTrue(release.compose_drift(staging, production, fields("nodens-staging"), fields("nodens-production"), "nodens"))
+        other = production.replace("/var/lib/argus/managed-ingress/nodens-production", "/var/lib/argus/mana")
+        self.assertTrue(release.compose_drift(staging, other, sandbox_fields, fields("nodens-production"), "nodens"))
+
+
+    def test_evidence_script_reads_ledger_and_validates_args(self) -> None:
+        script = ROOT / "scripts" / "argus-promote-evidence"
+        def run_script(*args: str) -> tuple[int, dict]:
+            done = subprocess.run([sys.executable, str(script), *args], capture_output=True, text=True)
+            return done.returncode, json.loads(done.stdout)
+        self.assertEqual((2, {"ok": False, "error": "invalid-arguments"}), run_script("--workload", "Bad Id", "--image", OLD_ID))
+        self.assertEqual((4, {"ok": False, "error": "RuntimeError"}), run_script("--workload", "nodens-staging", "--image", OLD_ID, "--ledger", str(self.repo / "nope.sqlite3")))
+
+    def test_remote_repo_is_configurable_and_validated(self) -> None:
+        self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)
+        with patch.dict(os.environ, {"ARGUS_REMOTE_REPO": "/opt/argus/"}):
+            self.invoke("release", "import", "nodens-production", "--image", REF)
+        self.assertIn(" sudo -n /opt/argus/scripts/argus-image-import ", self.calls("ssh")[0])
+        with patch.dict(os.environ, {"ARGUS_REMOTE_REPO": "/srv/../x"}):
+            code, payload, _ = self.invoke("release", "import", "nodens-production", "--image", REF)
+        self.assertEqual("remote-repo-invalid", payload["error"]["code"])
+
+
+if __name__ == "__main__":
+    unittest.main()

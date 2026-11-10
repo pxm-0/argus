@@ -13,6 +13,7 @@
       "path": "/srv/argus/workloads/nodens-staging/source/compose.yml",
       "project": "nodens-staging",
       "service": "nodens",
+      "bridge": "argus-ndns-stg",
       "legacyPaths": []
     },
     "composePath": "/srv/argus/workloads/nodens-staging/source/compose.yml",
@@ -22,7 +23,7 @@
   },
   "migration": {
     "status": "planned",
-    "targetTrustDomain": "personal-managed",
+    "targetTrustDomain": "personal-sandbox",
     "originalPath": "",
     "compatibilitySymlink": false,
     "rollback": "No runtime is adopted; remove only the reviewed candidate records before admission.",

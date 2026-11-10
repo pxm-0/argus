@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_cli import run  # noqa: E402
+from argus_cli import render_human, run  # noqa: E402
 from argus_workload_retire import prune  # noqa: E402
 
 TEMPLATE = (ROOT / "docs" / "RETIRED_TEMPLATE.md").read_text(encoding="utf-8")
@@ -105,6 +105,17 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertIn("--apply --acknowledge-retired-workload-reconciliation", result["data"]["runbook"])
         self.assertNotIn("argus m1 sync", result["data"]["runbook"])
         self.assertIn("config/access.json", result["data"]["jsonEdits"])
+
+    def test_human_render_of_dry_runs_never_crashes(self) -> None:
+        cases = [
+            ({"command": "workload.retire", "dryRun": True, "runbook": "1. step\n"}, "1. step"),
+            ({"command": "release.pin", "dryRun": True, "diff": "--- a\n+++ b\n"}, "+++ b"),
+            ({"command": "workload.retire", "dryRun": True}, '"dryRun": true'),
+        ]
+        for data, expected in cases:
+            out, err = io.StringIO(), io.StringIO()
+            render_human({"ok": True, "data": data}, out, err, "")
+            self.assertIn(expected, out.getvalue())
 
     def test_unknown_and_already_retired_ids_are_refused(self) -> None:
         for workload_id in ("nope", "old"):

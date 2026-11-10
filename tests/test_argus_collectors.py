@@ -616,11 +616,12 @@ class CollectorSchedulerTests(unittest.TestCase):
         def collect(source, request, timeout):
             if source.source_id.endswith("-0"):
                 return CollectionResult("completed", [], None, request["protocolVersion"])
-            time.sleep(0.08)
+            time.sleep(0.75)
             return CollectionResult("completed", [], None, request["protocolVersion"])
 
+        # wide margins: a 20 ms deadline let thread start-up alone fail the instant source on loaded CI runners
         scheduler = CollectorScheduler(
-            self.repository, self.registry, max_workers=3, global_timeout_milliseconds=20, collector=collect
+            self.repository, self.registry, max_workers=3, global_timeout_milliseconds=250, collector=collect
         )
         result = scheduler.refresh(refresh_id="deadline", explicit_clock="2026-08-05T00:00:00Z")
         self.assertEqual("completed", result["sources"][0]["state"])

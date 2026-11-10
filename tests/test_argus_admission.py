@@ -213,6 +213,17 @@ class AdmissionDecisionTests(unittest.TestCase):
         self.assertTrue(logs.allowed)
         self.assertEqual("allowed", logs.decision_code)
 
+    def test_sandbox_admits_staging_deploy_but_not_production(self) -> None:
+        staging = evaluate(self.root, current_request(self.root, "nodens-staging", "workload.deploy"))
+        self.assertEqual("allowed", staging.decision_code)
+        self.assertEqual("personal-sandbox", current_request(self.root, "nodens-staging", "workload.deploy").target.trust_domain)
+
+        classification = self.load("config/argus/workload-classification.json")
+        classification["workloads"]["nodens-staging"]["stage"] = "production"
+        self.save("config/argus/workload-classification.json", classification)
+        production = evaluate(self.root, current_request(self.root, "nodens-staging", "workload.deploy"))
+        self.assertEqual("classification-incomplete", production.decision_code)
+
     def test_decision_code_set_is_closed(self) -> None:
         self.assertEqual(
             {
