@@ -24,6 +24,7 @@ from argus_observations import ObservationError, ObservationRepository, digest, 
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
 import argus_release
+import argus_totp
 from argus_workload_retire import RetireError, quiet_runner, retire
 
 
@@ -841,6 +842,18 @@ def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
     )
 
 
+def keys_command(args: argparse.Namespace) -> dict[str, Any]:
+    tty = argus_cli_op.open_tty()
+    try:
+        login = argus_totp.enroll(login=args.operator, rotate=args.rotate, tty=tty, euid=os.geteuid(), stdin_is_tty=sys.stdin.isatty())
+    except argus_totp.EnrollRefused as exc:
+        return _error(exc.code, exc.message, "Run as root on the server from an interactive terminal; nothing was written.", exit_code=EXIT_REFUSAL)
+    finally:
+        if tty is not None:
+            tty.close()
+    return _success("keys.totp-enroll", operator=login, enrolled=True)
+
+
 def retire_command(repo: Path, args: argparse.Namespace, runner: Runner) -> dict[str, Any]:
     try:
         plan = retire(repo, args.workload_id, dry_run=args.dry_run, reason=args.reason, runner=quiet_runner if runner is default_runner else runner)
@@ -985,6 +998,16 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("operation_id")
 
     argus_cli_op.register(commands, workload_sub, leaf, description)
+    keys = commands.add_parser("keys", help="operator credential management")
+    keys_sub = keys.add_subparsers(dest="keys_command", required=True, parser_class=ArgusArgumentParser)
+    enroll_parser = leaf(
+        keys_sub,
+        "totp-enroll",
+        help_text="enrol an operator authenticator (TOTP) and recovery codes",
+        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies"),
+    )
+    enroll_parser.add_argument("--operator", default="", help="tailnet login; optional when exactly one owner is enabled")
+    enroll_parser.add_argument("--rotate", action="store_true", help="replace an existing enrolment")
     leaf(
         commands,
         "doctor",
@@ -1048,6 +1071,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
     elif command == "op" or (command == "workload" and args.workload_command in argus_cli_op.SHORTCUTS):
         result = argus_cli_op.execute(args, repo, sys.modules[__name__])
+    elif command == "keys":
+        result = keys_command(args)
     elif command in {"release", "promote"}:
         result = argus_release.dispatch(args, repo, runner, _error, _success)
     elif command == "doctor":

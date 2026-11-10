@@ -36,6 +36,7 @@ OBSERVER_REQUEST_PATHS = re.compile(
     r"/api/workloads/[^/]+/operations(/preview)?|/api/operations/[0-9a-f-]+(/approve)?"
 )
 OBSERVER_OPERATION = "health.refresh"
+TOTP_FILE = os.environ.get("ARGUS_TOTP_FILE", "")
 SESSION_DB = Path(os.environ.get("ARGUS_SESSION_DB", RUNTIME / "sessions.sqlite3"))
 OPERATIONS_DB = Path(
     os.environ.get("ARGUS_OPERATIONS_DB", RUNTIME / "operations.sqlite3")
@@ -85,6 +86,7 @@ from argus_operations import (  # noqa: E402
     parse_timestamp,
     validate_typed_parameters,
 )
+import argus_totp  # noqa: E402
 from argus_reconciliation import reconcile  # noqa: E402
 from argus_sessions import (  # noqa: E402
     Session,
@@ -191,6 +193,20 @@ def bootstrap_valid(supplied: str, identity: str = "") -> bool:
     else:
         expected = bootstrap_token()
     return bool(expected) and secrets.compare_digest(supplied, expected)
+
+
+def totp_enrollment(identity: str) -> tuple[str, dict[str, Any] | None]:
+    """("ok", entry) | ("missing", None) | ("unavailable", None); unset ARGUS_TOTP_FILE means nobody is enrolled."""
+    if not TOTP_FILE:
+        return "missing", None
+    try:
+        operators = argus_totp.load_operators(Path(TOTP_FILE))
+    except FileNotFoundError:
+        return "missing", None
+    except (OSError, argus_totp.TotpError):
+        return "unavailable", None
+    entry = operators.get(identity.strip().lower())
+    return ("ok", entry) if entry else ("missing", None)
 
 
 def workload(workload_id: str) -> dict[str, Any] | None:
@@ -838,7 +854,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         body = self.read_body()
         if path == "/api/session/exchange":
-            validate_body_keys(body, {"bootstrapToken"})
+            validate_body_keys(body, {"bootstrapToken", "totp"})
             self.handle_session_exchange(body)
             return
         if path == "/api/session/logout":
@@ -858,12 +874,11 @@ class Handler(BaseHTTPRequestHandler):
             )
             return
         if path == "/api/session/step-up":
-            validate_body_keys(body, {"bootstrapToken"})
+            validate_body_keys(body, {"bootstrapToken", "totp"})
             session = self.require_session(csrf=True)
             if not session:
                 return
-            if not bootstrap_valid(str(body.get("bootstrapToken", ""))):
-                self.send_json(401, {"error": "step-up credential rejected"})
+            if not self.authenticate_factors(session.identity, body, "session.step-up"):
                 return
             session_id = parse_cookie(self.headers.get("Cookie", "")).get(SESSION_COOKIE, "")
             if not SESSIONS.step_up(session_id):
@@ -1334,15 +1349,66 @@ class Handler(BaseHTTPRequestHandler):
             )
         self.send_json(202, operation)
 
+    def authenticate_factors(self, identity: str, body: dict[str, Any], action: str) -> bool:
+        """Lockout, then bootstrap token plus TOTP when enrolled; sends the failure response itself."""
+        remaining = SESSIONS.lockout_remaining(identity)
+        if remaining:
+            audit(action, "-", "locked", actor=identity)
+            self.send_json(
+                429,
+                {"error": "too many failed attempts; try again later"},
+                headers=[("Retry-After", str(remaining))],
+            )
+            return False
+        state, entry = totp_enrollment(identity)
+        if identity == OBSERVER_LOGIN:
+            # Machine identity: authenticated by its own observer token and confined to health.refresh; no human TOTP.
+            state = "missing"
+        elif state == "missing" and os.environ.get("ARGUS_TOTP_REQUIRED") == "1":
+            audit(action, "-", "rejected", actor=identity, reason="totp-not-enrolled")
+            self.send_json(403, {"error": "second factor enrolment required"})
+            return False
+        token_ok = bootstrap_valid(str(body.get("bootstrapToken", "")), identity)
+        totp_ok = state == "missing"
+        if state == "ok" and entry is not None:
+            totp_ok = SESSIONS.verify_second_factor(
+                identity,
+                str(body.get("totp", "")),
+                secret=entry["secret"],
+                recovery_hashes=entry["recoveryCodeHashes"],
+            )
+        if token_ok and totp_ok:
+            SESSIONS.clear_failures(identity)
+            return True
+        if (
+            token_ok
+            and state == "ok"
+            and entry is not None
+            and SESSIONS.is_replayed_code(identity, str(body.get("totp", "")), secret=entry["secret"])
+        ):
+            # Right token, already-used code (exchange then step-up inside one 30 s window): not a guess.
+            audit(action, "-", "rejected", actor=identity, reason="totp-code-reused", locked=False)
+            self.send_json(401, {"error": "verified tailnet identity and valid credentials required"})
+            return False
+        remaining = SESSIONS.record_failure(identity)
+        audit(
+            action,
+            "-",
+            "rejected",
+            actor=identity,
+            reason="totp-store-unavailable" if state == "unavailable" else "factor-failed",
+            locked=bool(remaining),
+        )
+        self.send_json(401, {"error": "verified tailnet identity and valid credentials required"})
+        return False
+
     def handle_session_exchange(self, body: dict[str, Any]) -> None:
         operator = self.operator()
         nonce = str(self.headers.get(CSRF_BOOTSTRAP_HEADER, ""))
-        if (
-            operator is None
-            or not SAFE_REQUEST_NONCE.fullmatch(nonce)
-            or not bootstrap_valid(str(body.get("bootstrapToken", "")), operator["identity"])
-        ):
+        if operator is None or not SAFE_REQUEST_NONCE.fullmatch(nonce):
             self.send_json(401, {"error": "verified tailnet identity and bootstrap credential required"})
+            return
+        if not self.authenticate_factors(operator["identity"], body, "session.exchange"):
             return
         session = SESSIONS.create(operator["identity"], role=operator["role"])
         audit("session.exchange", "-", "ok", actor=operator["identity"])

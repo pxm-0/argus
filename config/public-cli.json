@@ -28,6 +28,7 @@
     {"command": "argus release import <workload> --image <ref>", "privilege": "server-mutation"},
     {"command": "argus release pin <workload> --image <ref>", "privilege": "server-mutation"},
     {"command": "argus promote <staging-id> <production-id>", "privilege": "server-mutation"},
+    {"command": "argus keys totp-enroll", "privilege": "server-mutation"},
     {"command": "argus doctor", "privilege": "local-read-only"},
     {"command": "argus check", "privilege": "local-read-only"},
     {"command": "argus m1 sync", "privilege": "server-read-only"},
