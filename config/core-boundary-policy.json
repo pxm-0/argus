@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:b3fd9100f97bdc84ef9f1a544bc92d74b34c56b88743b2d9b8335ed06a9c40e3"
+    "expectedSbomDigest": "sha256:3624713115c62619a54d33e10b1cd63fd9158231c60b3d2407da76958df4898f"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:544afe683341a609060ffc8a41945d3bbe005e0014817579c6ec63175902351a",
+    "expectedEndpointDigest": "sha256:1f9145c546180dabb40041d77fd2efc9665ff8a3e03c553baa4dd5a243a5ec22",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -81,6 +81,10 @@
       {
         "path": "scripts/argus-control-plane-reconcile",
         "authority": "configured-local-control-api"
+      },
+      {
+        "path": "scripts/argus-restore-drill",
+        "authority": "ephemeral-loopback-control-api-restore-check"
       },
       {
         "path": "scripts/argus-m5-workload-stage",
