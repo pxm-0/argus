@@ -110,27 +110,81 @@ def unit_files(files: list[Path], workload_id: str, all_ids: tuple[str, ...] = (
     return sorted(str(p) for p in files if "systemd" in p.parts and owned(p.name))
 
 
+# Residue the registry cannot see, for workloads that predate Argus-managed Compose.
+# Volume class: "keep" holds data (remove only after a verified dump), "remove" is cache/config.
+KNOWN_RESIDUE: dict[str, dict[str, Any]] = {
+    "nodens": {
+        "images": ["sha256:2633eeb26a5f"],
+        "volumes": [("nodens-live_caddy-config", "remove"), ("nodens-live_caddy-data", "remove"), ("nodens-live_postgres-data", "keep")],
+        "networks": ["nodens_default", "nodens-net", "nodens-sprint55-net"],
+    }
+}
+IMAGE_ID = re.compile(r"^\s*image:\s*(sha256:[0-9a-f]{64})", re.MULTILINE)
+
+
+def compose_image_ids(repo: Path, files: list[Path]) -> dict[str, set[str]]:
+    """Map workload id to the image IDs pinned by its tracked workloads/<id>/source/compose.yml."""
+    pinned: dict[str, set[str]] = {}
+    for rel in files:
+        if len(rel.parts) == 4 and rel.parts[0] == "workloads" and rel.parts[2] == "source" and rel.suffix in {".yml", ".yaml"} and (repo / rel).is_file():
+            pinned.setdefault(rel.parts[1], set()).update(IMAGE_ID.findall((repo / rel).read_text(encoding="utf-8")))
+    return pinned
+
+
+def image_step(repo: Path, workload_id: str, files: list[Path], known: list[str]) -> str:
+    pinned = compose_image_ids(repo, files)
+    own = sorted(pinned.get(workload_id, set()))
+    shared = {digest: sorted(i for i, ids in pinned.items() if i != workload_id and digest in ids) for digest in own}
+    removable = [d[:19] for d in own if not shared[d]] + known
+    text = "Remove images by ID, never by name or tag: " + (", ".join(f"`docker image rm {d}`" for d in removable) or "none pinned in this repository; list candidates with `docker image ls --digests`") + "."
+    for digest, users in shared.items():
+        if users:
+            text += f" WARNING: `{digest[:19]}` is also pinned by {', '.join(f'`{u}`' for u in users)}; do NOT remove it."
+    return text
+
+
 def teardown_runbook(repo: Path, workload: dict[str, Any], workload_id: str, files: list[Path], all_ids: tuple[str, ...] = ()) -> str:
     paths = workload.get("paths", {})
     runtime = workload.get("runtime", {})
+    project = runtime.get("composeProject") or workload_id
     domain = workload.get("migration", {}).get("targetTrustDomain", "unknown")
     units = unit_files(files, workload_id, all_ids)
     routes = _load(repo / "config/routes.json").get("workloadRoutes", {}).get(workload_id, {})
     tailnet_url = routes.get("tailnet", {}).get("url", "")
+    port = re.search(r":(\d+)(?:/|$)", tailnet_url)
+    if port:
+        serve = f"`sudo tailscale serve --https={port.group(1)} off`"
+        serve_check = f"`tailscale serve status` no longer lists `{tailnet_url}` and `ss -ltn` shows nothing listening on :{port.group(1)}"
+    else:
+        serve = "`sudo tailscale serve --https=<port> off` for the workload's port (`tailscale serve status` lists it)"
+        serve_check = "`tailscale serve status` and `ss -ltn` show no leftover listener"
+    residue = KNOWN_RESIDUE.get(workload_id, {})
+    volumes, networks = residue.get("volumes", []), residue.get("networks", [])
+    if volumes:
+        volume_text = "Volumes: " + "; ".join(f"`{v}` ({c.upper()})" for v, c in volumes) + ". KEEP volumes hold data: dump and verify them first, remove them only after the backup is verified."
+    else:
+        volume_text = f"Volumes: list `docker volume ls --filter name={workload_id}` (it is a substring match: ignore `{workload_id}-staging` and `{workload_id}-production` volumes), classify each KEEP (data) or REMOVE (cache/config), and remove only after the backup is verified."
+    network_text = ("Networks: " + ", ".join(f"`docker network rm {n}`" for n in networks) + ".") if networks else f"Networks: check `docker network ls --format '{{{{.Name}}}}' | grep -x '{workload_id}.*'` by name, and remove only this workload's leftovers (not `{workload_id}-staging` or `{workload_id}-production`)."
+    unit_stem = f"argus-m5-workload-{workload_id}"
     steps = [
-        f"Confirm a verified, restore-tested backup of `{workload_id}` exists and record it in `docs/RETIRED_{workload_id.upper().replace('-', '_')}.md`.",
-        f"Stop and remove the Compose project `{runtime.get('composeProject') or workload_id}` (service `{runtime.get('service') or 'n/a'}`) in trust domain `{domain}`; remove its named volumes and images.",
-        f"Remove the Tailscale Serve route{f' for {tailnet_url}' if tailnet_url else ''} and any ingress socket for `{workload_id}`.",
-        "Disable and remove any systemd units, timers and sockets for the workload"
+        f"Disable and remove the reconcile retry timer first so nothing restarts the workload (`{unit_stem}.timer` runs `argus-m5-workload-cutover --reconcile` every minute): `sudo systemctl disable --now {unit_stem}.timer {unit_stem}.service`, delete `/etc/systemd/system/{unit_stem}.timer` and `.service`, `sudo systemctl daemon-reload`, then check `systemctl list-unit-files '{unit_stem}*'` prints nothing (match the exact unit name: a substring grep also hits `{workload_id}-staging` and `{workload_id}-production` units that must stay).",
+        f"Confirm a verified backup of `{workload_id}` exists; there are two gates. (a) Source and config: `cd /srv/argus`, `ls runtime/backups/{workload_id}/`. If it is empty, run `python3 scripts/argus-backup-run {workload_id} --confirm {workload_id}`. That refuses with `backup is not allowed` when the workload manifest has `operations.backupAllowed=false` (and for manifests with volumes or a database); either set `operations.backupAllowed=true` in `/srv/argus/workloads/{workload_id}/manifest.json` as a reviewed change, or skip to (b) and record that no restore-tested source artifact exists. If an artifact exists, run the isolated restore dry-run on its snapshot ID: `sudo python3 scripts/argus-backup-restore --workload {workload_id} --artifact-id <snapshot-id> --acknowledge-isolated-restore`; it leaves a root-owned `/var/lib/argus/{workload_id}/restore-operations` tree to remove with `sudo rm -r` once checked. (b) Data volumes: argus-backup-run never covers them, so the newest `sudo ls /var/backups/argus-m5-workload-staging/{workload_id}/` stage dir (root 0700) counts only if you inspect its contents, otherwise dump each volume with `docker run --rm -v <volume>:/d -v \"$PWD\":/out alpine tar -czf /out/<volume>.tgz -C /d .` and verify it. The gate passes when (b) is verified, plus (a) where an artifact exists. Record the snapshot ID, if any, and the data backup in `docs/RETIRED_{workload_id.upper().replace('-', '_')}.md`. Nothing below is deleted before this passes.",
+        f"Stop and remove the Compose project `{project}` (service `{runtime.get('service') or 'n/a'}`) in trust domain `{domain}` with `docker compose -p {project} down` (no `-v`, no `--rmi`).",
+        image_step(repo, workload_id, files, residue.get("images", [])),
+        volume_text,
+        network_text,
+        f"Remove the Tailscale Serve route with {serve}, then confirm {serve_check}. Also remove any ingress socket for `{workload_id}`.",
+        "Disable and remove any other systemd units, timers and sockets for the workload"
         + (f" (tracked here: {', '.join(units)})" if units else " (none tracked in this repository; check `systemctl list-units '*" + workload_id + "*'` on the host)")
         + ".",
         f"Remove the runtime root `{paths.get('root', f'/srv/argus/workloads/{workload_id}')}` including the materialized source checkout.",
-        f"Remove the legacy source checkout `{paths['legacy']}` if present." if paths.get("legacy") else "Check for a legacy source checkout and remove it if present.",
+        f"Directories, each only after the backup is verified. REMOVE `/var/lib/argus/migration-runtime/{domain}/{workload_id}` and `/var/lib/argus/migration-staging/{domain}/{workload_id}` (domain-nested, root-owned: use `sudo`; the runtime dir holds the tailnet-serve ingress socket). KEEP `/var/lib/argus/migration-cutovers/{workload_id}` (cutover evidence) until it is summarised in the retirement doc, then remove it. KEEP `/var/backups/argus-m5-workload-staging/{workload_id}` (root 0700, `sudo`) until it has been copied off-host and that copy verified, then remove it.",
+        f"Once the backup is verified, remove the legacy source checkout `{paths['legacy']}` if present; keep it until then." if paths.get("legacy") else "Check for a legacy source checkout and remove it only after the backup is verified.",
         f"Merge this PR, pull it on the server, then run `{RECONCILE}` (preview) and `{RECONCILE_APPLY}` so private M1 state converges with `retired-workloads.json`.",
         f"Run `scripts/argus-m1-verify`, confirm `argus workload list` no longer shows `{workload_id}` and `argus doctor` is clean.",
     ]
-    return f"# Server teardown runbook: {workload_id}\n\nStage 1 never touches the server. Run these as the operator, in order:\n\n" + "\n".join(
-        f"{n}. {text}" for n, text in enumerate(steps, 1)
+    return f"# Server teardown runbook: {workload_id}\n\nStage 1 never touches the server. Run these as the operator, in order, starting at step 0:\n\n" + "\n".join(
+        f"{n}. {text}" for n, text in enumerate(steps)
     ) + "\n"
 
 
