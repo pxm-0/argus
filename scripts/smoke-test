@@ -6,6 +6,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -23,7 +24,7 @@ from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS
 
 
 MIGRATION_STATUSES = {"planned", "needs-discovery", "migrated", "blocked", "deprecated"}
-BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok"}
+BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"}
 SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
 
 
@@ -490,6 +491,95 @@ def check_migration_and_backup(repo: Path, smoke: Smoke) -> None:
     if ok:
         smoke.pass_("migration statuses valid")
         smoke.pass_("backup plans exist for migrated workloads")
+
+
+INGRESS_SOCKET_SOURCE = re.compile(r"^/var/lib/argus/[\w-]+-ingress/[\w.-]+/?$")
+ACTIVE_BACKUP_STATUSES = {"configured", "ok", "stateless-by-design"}
+
+
+def compose_state_mounts(repo: Path, manifest: dict[str, Any]) -> list[str] | None:
+    """Mount sources in the pinned compose file that are not ingress sockets; None when unreadable."""
+    compose = manifest.get("runtime", {}).get("compose", {}).get("path", "")
+    try:
+        lines = (repo / Path(compose).relative_to("/srv/argus")).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return None
+    # shortcut: line scan, not a YAML parser (stdlib only); handles the long `source:` and short `- src:dst` forms.
+    found: list[str] = []
+    in_volumes = False
+    for line in lines:
+        stripped = line.split("#", 1)[0].rstrip()
+        if not stripped.strip():
+            continue
+        indent = len(stripped) - len(stripped.lstrip())
+        if re.match(r"^\s*volumes:\s*$", stripped):
+            in_volumes = True
+            if indent == 0:
+                found.append("top-level volumes")
+            continue
+        if in_volumes and indent <= 4 and not stripped.lstrip().startswith("-"):
+            in_volumes = False
+        if not in_volumes:
+            continue
+        item = stripped.lstrip().removeprefix("- ").strip()
+        source = item.split(":", 1)[1].strip() if item.startswith("source:") else (item.split(":", 1)[0] if ":" in item and not item.startswith(("type:", "target:", "read_only:")) else "")
+        if source and not INGRESS_SOCKET_SOURCE.match(source):
+            found.append(source)
+    return found
+
+
+def check_active_workload_evidence(repo: Path, smoke: Smoke, offline: bool = True) -> None:
+    """Every lifecycle=active or typed-deploy workload (the latter stays lifecycle=discovered, see shortcut below) needs a backup plan, honest stateless claims and an enabled health probe."""
+    try:
+        routes = load_json_file(repo / "config" / "routes.json").get("workloadRoutes", {})
+    except (OSError, ValueError):
+        routes = {}
+    ok = True
+    for workload_id, workload in workload_map(repo).items():
+        manifest = load_manifest(repo, workload_id)
+        # shortcut: lifecycle=active on a sandbox workload with a targetTrustDomain enrols it in the
+        # cutover firewall policy (argus_sandbox_firewall.configured_projects), so typed-deploy
+        # workloads stay lifecycle=discovered; upgrade when that firewall keys on something else.
+        typed_deploy = bool(manifest.get("operations", {}).get("deploy", {}).get("allowed"))
+        if workload.get("lifecycle") != "active" and not typed_deploy:
+            continue
+        backup = manifest.get("backup", {}) if manifest else {}
+        # shortcut: hastur/nodens are lifecycle=active with a pre-existing "planned" backup (the backups PR owns
+        # that), so only typed-deploy workloads need a real status; tighten when those two are configured.
+        allowed = ACTIVE_BACKUP_STATUSES if typed_deploy else BACKUP_STATUSES
+        if str(backup.get("status", "")) not in allowed:
+            smoke.fail(f"{workload_id} active or typed-deploy workload has backup plan")
+            ok = False
+        if backup.get("status") == "stateless-by-design":
+            mounts = compose_state_mounts(repo, manifest)
+            if backup.get("namedVolumes") or backup.get("bindMounts") or mounts is None or mounts:
+                smoke.fail(f"{workload_id} stateless workload has no volumes or bind mounts")
+                ok = False
+        health = workload.get("health", {})
+        if not health.get("enabled") or not str(health.get("url", "")).strip():
+            smoke.fail(f"{workload_id} active or typed-deploy workload has health probe enabled with url")
+            ok = False
+            continue
+        if offline:
+            continue
+        urls = [("health", health["url"], int(health.get("expectedStatus", 200)))]
+        tailnet = routes.get(workload_id, {}).get("tailnet", {})
+        if tailnet.get("enabled") and tailnet.get("url"):
+            urls.append(("route", tailnet["url"], 200))
+        for label, url, expected in urls:
+            try:
+                with urllib.request.urlopen(url, timeout=float(health.get("timeoutSeconds", 3))) as response:
+                    status = response.status
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+                exc.close()
+            except (OSError, ValueError):
+                status = 0
+            if status != expected:
+                smoke.fail(f"{workload_id} {label} returns {expected}")
+                ok = False
+    if ok:
+        smoke.pass_("active or typed-deploy workloads have backup plan, health probe and valid stateless claims")
 
 
 def checksum_valid(path: Path) -> bool:
@@ -1020,6 +1110,7 @@ def main() -> int:
     check_workload_manifests(repo, smoke)
     check_tracked_runtime_and_source(repo, smoke)
     check_migration_and_backup(repo, smoke)
+    check_active_workload_evidence(repo, smoke, args.offline)
     check_latest_backup_artifact(repo, smoke, args.offline)
     check_operation_permissions(repo, smoke)
     check_operator_links(repo, smoke, args.offline)
