@@ -21,6 +21,12 @@ from argus_m5_topology import build_topology
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_reconciliation import reconcile
 
+# Images a sealed trust domain may import; shared by argus-image-import and argus release.
+ALLOWED_IMAGES = (
+    re.compile(r"ghcr\.io/pxm-0/[a-z0-9-]+@sha256:[0-9a-f]{64}"),
+    re.compile(r"docker\.io/library/caddy@sha256:[0-9a-f]{64}"),
+)
+
 
 APPROVED_OPERATOR_LINKS = {
     "argus": "argus",
