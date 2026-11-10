@@ -27,8 +27,8 @@ REASON_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 SQLITE_MAGIC = b"SQLite format 3\x00"
 RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
 COMMANDS = {
-    "state/git-head.txt": ["git", "-C", "{root}", "rev-parse", "HEAD"],
-    "state/git-status.txt": ["git", "-C", "{root}", "status", "--porcelain"],
+    "state/git-head.txt": ["git", "--no-optional-locks", "-C", "{root}", "rev-parse", "HEAD"],
+    "state/git-status.txt": ["git", "--no-optional-locks", "-C", "{root}", "status", "--porcelain"],
     "state/nft-ruleset.nft": ["nft", "list", "ruleset"],
     "state/tailscale-serve.json": ["tailscale", "serve", "status", "--json"],
     "state/systemd-argus-units.json": ["systemctl", "list-units", "argus-*", "--all", "--output", "json"],
