@@ -130,6 +130,59 @@ class D6DashboardCompletenessTests(unittest.TestCase):
         self.assertEqual("", out["noPin"])
         self.assertEqual(("workload.stop", "workload.start"), (out["stop"], out["start"]))
 
+    def test_stages_activity_banner_and_stage_actions_are_present(self) -> None:
+        html = render_html()
+        for marker in ('id="stages"', 'id="activity"', 'id="active-operation" class="active-banner" role="status"', '<ol id="events"'):
+            self.assertIn(marker, html)
+        self.assertLess(html.index('id="stages"'), html.index('id="workloads"'))
+        self.assertNotIn('<pre id="events"', html)
+        for marker in (
+            "<table", 'scope="col"', 'scope="row"', "out of sync", "/api/operations?limit=25",
+            "updateActiveOperation(operation, workload)",
+            'data-stage-action="promote"', 'data-stage-action="rollback"',
+            "/migration/preview", "/migrations`", "/rollback`", "data-view-operation", "pinnedImageDelta",
+        ):
+            self.assertIn(marker, JS + html)
+        self.assertNotIn("personal-sandbox", JS)
+
+    def test_migration_preflight_click_passes_declared_trust_domain(self) -> None:
+        self.assertIn("targetTrustDomain: declaredTrustDomain(workload)", JS)
+        operations = (DASHBOARD / "assets" / "operations.js").read_text()
+        self.assertIn("targetTrustDomain: context.targetTrustDomain", operations)
+
+    @unittest.skipUnless(shutil.which("node"), "requires node")
+    def test_migration_preflight_parameters_resolve_declared_domain(self) -> None:
+        stages = (DASHBOARD / "assets" / "stages.js").read_text()
+        operations = (DASHBOARD / "assets" / "operations.js").read_text()
+        helper = stages[stages.index("function declaredTrustDomain"):stages.index("// One family per staging")]
+        ops = operations[operations.index("const NO_PARAMETERS"):operations.index("const OPERATIONS")]
+        table = operations[operations.index("const OPERATIONS"):]
+        table = table[:table.index("\n};") + 3]
+        script = (
+            'const state = {topology: {nodes: [{id: "a-managed", trustDomain: "personal-managed"}, {id: "old", trustDomain: "legacy-rootful"}]}};\n'
+            + helper + ops + table + "\n"
+            "const p = OPERATIONS['migration-preflight'].parameters;\n"
+            "console.log(JSON.stringify(['a-managed', 'old', 'missing'].map((w) => p({ targetTrustDomain: declaredTrustDomain(w) }))));"
+        )
+        out = subprocess.run(["node", "-e", script], capture_output=True, text=True, check=True).stdout
+        self.assertEqual(
+            json.loads(out),
+            [{"targetTrustDomain": "personal-managed"}, {"targetTrustDomain": "legacy-rootful"}, {"targetTrustDomain": ""}],
+        )
+
+    @unittest.skipUnless(shutil.which("node"), "requires node")
+    def test_stage_families_pair_by_promotes_to_then_name(self) -> None:
+        stages = (ROOT / "control-plane" / "dashboard" / "assets" / "stages.js").read_text()
+        harness = "const state = null; const escapeHtml = String; " + stages.replace("const TERMINAL_STATES", "var TERMINAL_STATES") + r"""
+        const w = [{ id: "a-staging" }, { id: "a-production" }, { id: "b-stage", promotesTo: "b-live" }, { id: "b-live" }, { id: "c-staging" }, { id: "other" }];
+        console.log(JSON.stringify(stageFamilies(w).map((f) => [f.name, f.staging.id, f.production && f.production.id])));
+        """
+        out = subprocess.run(["node", "-e", harness], text=True, capture_output=True, check=True).stdout
+        self.assertEqual(
+            [["a", "a-staging", "a-production"], ["b-stage", "b-stage", "b-live"], ["c", "c-staging", None]],
+            json.loads(out),
+        )
+
     def test_acceptance_emits_the_allowlisted_three_run_summary(self) -> None:
         revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, capture_output=True, check=True).stdout.strip()
         completed = subprocess.run(
