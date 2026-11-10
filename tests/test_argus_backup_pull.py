@@ -180,12 +180,16 @@ class LaunchdPlistTests(unittest.TestCase):
 
 
 STUB_SERVER = """
-import http.server, os
+import http.server, os, socketserver
+class S(http.server.HTTPServer):
+    def server_bind(self):  # HTTPServer.server_bind does a slow getfqdn() on CI macOS, as the real API avoids
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = "127.0.0.1", self.server_address[1]
 class H(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(401); self.end_headers()
     def log_message(self, *a): pass
-http.server.HTTPServer(("127.0.0.1", int(os.environ["ARGUS_API_PORT"])), H).serve_forever()
+S(("127.0.0.1", int(os.environ["ARGUS_API_PORT"])), H).serve_forever()
 """
 
 
