@@ -152,7 +152,7 @@ def api_answers(root: Path, steps: list[str], timeout: float = 20.0) -> None:
             except urllib.error.HTTPError as exc:
                 status = exc.code
             except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
-                last_error = type(exc).__name__
+                last_error = f"{type(exc).__name__}: {getattr(exc, 'reason', exc)}"
                 time.sleep(0.3)
                 continue
             if status in (200, 401):
