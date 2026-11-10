@@ -70,7 +70,19 @@ prints it. `argus-smoke.timer` now fires at 00, 06, 12 and 18 UTC with up to 15 
 
 ## Install (server, operator approval)
 
-Run from `/srv/argus` after the merge is pulled:
+Step 0 (Mac or server, before pulling on the server): after the last wave-2 PR is merged, run
+`mise exec -- ./scripts/argus-check --boundary-only` on main. Every wave-2 PR rewrites `expectedSbomDigest` in
+`config/core-boundary-policy.json`, so the merged tree can fail with a digest mismatch. The failure output is already
+JSON and carries the true `sbomDigest` and `endpointDigest`; write them into the policy file, run the full
+`./scripts/argus-check` until it passes, and land that as a small PR. Do not pull on the server until main passes.
+
+Step 1: record the rollback point first (`git -C /srv/argus rev-parse HEAD`), then `git pull --ff-only` and
+`python3 scripts/argus-check --boundary-only`. Rollback of the pull is `git reset --hard <recorded sha>` (`runtime/` is
+untracked, so it is untouched).
+
+Then run the whole block below from `/srv/argus` as the operator (do not hand-pick lines: the first lines back up the
+current units, which the rollback needs). The evaluator itself runs as `User=oreo`; run any manual evaluation as oreo
+(`sudo -u oreo python3 scripts/argus-alert`), never as root, or `runtime/alerts/` ends up root-owned.
 
 ```bash
 stamp=$(date -u +%Y%m%dT%H%M%SZ)
@@ -90,6 +102,12 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now argus-alert.timer
 sudo systemctl restart argus-smoke.timer
 ```
+
+Notes: `argus-backup-snapshot.service` does not exist until the backups PR lands, so its drop-in directory dangles
+until then (harmless). `argus-smoke.timer` moves from daily to every 6 hours, so the root `rootless-gid-repair --probe`
+pre-steps run four times as often. The `argus-alert.service` sandbox (`ProtectSystem=strict`, `NoNewPrivileges`, only
+`/srv/argus/runtime` writable) is first exercised under real systemd by the verify steps below, as is the `OnFailure=`
+trigger for the `argus-workload-db-backup@kadath.service` instance.
 
 Verify:
 
@@ -132,11 +150,16 @@ Notifications fire once per new or changed alert; a recurrence after resolution 
 
 ```bash
 sudo systemctl disable --now argus-alert.timer
+sudo rm /etc/systemd/system/argus-alert.service /etc/systemd/system/argus-alert.timer \
+  '/etc/systemd/system/argus-alert-unit@.service'
 sudo rm -r /etc/systemd/system/{argus-smoke,argus-metrics,argus-estate-refresh,argus-backup-snapshot}.service.d \
   '/etc/systemd/system/argus-workload-db-backup@.service.d'
+# restore the pre-install smoke timer (stamp: `sudo ls /var/lib/argus/config-backups`)
+sudo cp --preserve=all /var/lib/argus/config-backups/alerting-<stamp>/argus-smoke.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+sudo systemctl restart argus-smoke.timer
 launchctl bootout gui/$(id -u)/dev.argus.alert-poller
 ```
 
-Restore the previous smoke cadence by reinstalling the old `argus-smoke.timer` from the config backup. No other
+The old `argus-smoke.timer` comes back from the config backup taken by the install block. No other
 state is touched; `runtime/alerts/` is disposable.
