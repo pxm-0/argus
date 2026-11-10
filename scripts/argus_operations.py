@@ -2048,6 +2048,35 @@ class OperationLedger:
             ).fetchall()
         return [self._row(row) or {} for row in rows]
 
+    def list_recent(
+        self,
+        *,
+        state: str = "",
+        operation_type: str = "",
+        domain: str = "",
+        workload_id: str = "",
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        """Newest-first operations across workloads; filters are exact-match and parameterized."""
+        clauses = []
+        values: list[Any] = []
+        for column, value in (
+            ("state", state),
+            ("operation_type", operation_type),
+            ("trust_domain", domain),
+            ("workload_id", workload_id),
+        ):
+            if value:
+                clauses.append(f"{column} = ?")
+                values.append(value)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"SELECT * FROM operations {where} ORDER BY created_at DESC, operation_id DESC LIMIT ?",
+                (*values, max(1, min(int(limit), 200))),
+            ).fetchall()
+        return [self._row(row) or {} for row in rows]
+
     def events(self, operation_id: str) -> list[dict[str, Any]]:
         with self._connect() as connection:
             rows = connection.execute(
