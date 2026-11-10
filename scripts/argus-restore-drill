@@ -1,0 +1,223 @@
+#!/usr/bin/env python3
+"""Monthly restore drill: prove the newest off-host snapshot can really be restored, on the Mac.
+
+Decrypts the newest verified archive into a 0700 temp dir, rebuilds an Argus root from it, then runs
+argus-m1-verify, argus-m1-audit-checkpoint --verify and sqlite integrity_check on every database, starts
+the control API on a loopback port against the restored state and checks it answers. The temp dir is always
+deleted. Result goes to drill.log; a failure raises an osascript notification and exits non-zero.
+Never prints archive contents or key material.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import io
+import json
+import os
+import shutil
+import socket
+import sqlite3
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+STAGE = {  # archive member -> path inside the rebuilt root
+    "db/m1-state.sqlite3": "runtime/argus/m1/state.sqlite3",
+    "db/entity-store.sqlite3": "runtime/argus/entity-store.sqlite3",
+    "db/audit.sqlite3": "runtime/argus/audit.sqlite3",
+    "db/operations.sqlite3": "runtime/m5/operations.sqlite3",
+    "db/session.sqlite3": "runtime/m5/sessions.sqlite3",
+    "m1/audit-checkpoint.json": "runtime/argus/audit-checkpoint.json",
+}
+
+
+class DrillError(Exception):
+    pass
+
+
+def extract(archive: Path, identity: Path, target: Path) -> None:
+    """Stream-decrypt the archive and write regular, relative members only (no path escapes)."""
+    proc = subprocess.Popen(["age", "-d", "-i", str(identity), str(archive)], stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL)
+    try:
+        with tarfile.open(fileobj=proc.stdout, mode="r|") as tar:
+            for item in tar:
+                parts = Path(item.name).parts
+                if not item.isfile() or item.name.startswith("/") or ".." in parts:
+                    raise DrillError(f"unsafe archive member: {item.name}")
+                out = target / item.name
+                out.parent.mkdir(parents=True, exist_ok=True)
+                src = tar.extractfile(item)
+                with out.open("wb") as handle:
+                    shutil.copyfileobj(src, handle)
+    except tarfile.TarError as exc:
+        raise DrillError(f"unreadable archive: {type(exc).__name__}") from exc
+    finally:
+        proc.stdout.close()
+    if proc.wait() != 0:
+        raise DrillError("age decryption failed")
+
+
+def newest_verified(archive_dir: Path) -> Path:
+    sums = archive_dir / "SHA256SUMS"
+    names = [line.partition("  ")[2] for line in sums.read_text().splitlines()] if sums.is_file() else []
+    existing = sorted(n for n in names if n and (archive_dir / n).is_file())
+    if not existing:
+        raise DrillError("no verified archive recorded in SHA256SUMS (run argus-backup-pull first)")
+    return archive_dir / existing[-1]
+
+
+def build_root(extracted: Path, root: Path, repo: Path) -> str:
+    """Lay out a root: config from the snapshot's git commit when available, restored runtime, repo code."""
+    for member, rel in STAGE.items():
+        source = extracted / member
+        if source.is_file():
+            (root / rel).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(source, root / rel)
+    (root / "runtime" / "argus" / "m1").mkdir(parents=True, exist_ok=True)
+    for journal in (extracted / "m1").glob("*.jsonl"):
+        shutil.copyfile(journal, root / "runtime" / "argus" / "m1" / journal.name)
+    for name in ("scripts", "control-plane"):
+        (root / name).symlink_to(repo / name)
+    head_file = extracted / "state" / "git-head.txt"
+    head = head_file.read_text().strip() if head_file.is_file() else ""
+    if head:
+        packed = subprocess.run(["git", "--no-optional-locks", "-C", str(repo), "archive", head, "config", "workloads"],
+                                capture_output=True, check=False)
+        if packed.returncode == 0:
+            with tarfile.open(fileobj=io.BytesIO(packed.stdout)) as tar:
+                tar.extractall(root, filter="data") if sys.version_info >= (3, 12) else tar.extractall(root)
+            return f"config from commit {head[:12]}"
+    shutil.copytree(repo / "config", root / "config")
+    if (repo / "workloads").is_dir():
+        shutil.copytree(repo / "workloads", root / "workloads")
+    return "config from working tree (snapshot commit unavailable)"
+
+
+def run_tool(label: str, argv: list[str], steps: list[str]) -> None:
+    proc = subprocess.run([sys.executable, *argv], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        last = (proc.stderr.strip() or proc.stdout.strip() or "no output").splitlines()[-1][:200]
+        raise DrillError(f"{label} failed: {last}")
+    steps.append(f"{label} ok")
+
+
+def integrity(extracted: Path, steps: list[str]) -> None:
+    databases = sorted((extracted / "db").glob("*.sqlite3"))
+    if not databases:
+        raise DrillError("archive holds no databases")
+    for path in databases:
+        connection = sqlite3.connect(path)  # our own scratch copy; mode=ro fails on WAL-mode copies with the system sqlite
+        try:
+            if connection.execute("PRAGMA integrity_check").fetchone() != ("ok",):
+                raise DrillError(f"integrity_check failed: {path.name}")
+        finally:
+            connection.close()
+    steps.append(f"integrity_check ok ({len(databases)} databases)")
+
+
+def free_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+def api_answers(root: Path, steps: list[str], timeout: float = 20.0) -> None:
+    """The API has no /health route; an unauthenticated /api/session answering 401 proves it started on the
+    restored session and operations databases (it opens both at import and exits if they are unusable)."""
+    port = free_port()
+    runtime = root / "runtime" / "m5"
+    env = {**os.environ, "ARGUS_ROOT": str(root), "ARGUS_RUNTIME": str(runtime), "ARGUS_API_PORT": str(port),
+           "ARGUS_SESSION_DB": str(runtime / "sessions.sqlite3"), "ARGUS_OPERATIONS_DB": str(runtime / "operations.sqlite3"),
+           "ARGUS_LEDGER_REQUIRE_EXISTING": "1", "ARGUS_TOKEN_FILE": str(root / "none"),
+           "ARGUS_OPERATORS_FILE": str(root / "none"), "ARGUS_PROXY_TOKEN_FILE": str(root / "none")}
+    server = subprocess.Popen([sys.executable, str(root / "control-plane" / "api" / "server.py")], env=env,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    try:
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if server.poll() is not None:
+                raise DrillError("control API exited: " + ((server.stderr.read() or "").strip().splitlines() or ["?"])[-1][:200])
+            try:
+                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/session", timeout=2)
+                status = 200
+            except urllib.error.HTTPError as exc:
+                status = exc.code
+            except (urllib.error.URLError, OSError):
+                time.sleep(0.3)
+                continue
+            if status in (200, 401):
+                steps.append(f"control API answered {status} on loopback")
+                return
+            raise DrillError(f"control API answered unexpected status {status}")
+        raise DrillError("control API did not answer in time")
+    finally:
+        server.terminate()
+        try:
+            server.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            server.kill()
+        if server.stderr:
+            server.stderr.close()
+
+
+def drill(archive_dir: Path, identity: Path, repo: Path) -> tuple[str, list[str]]:
+    archive = newest_verified(archive_dir)
+    steps: list[str] = []
+    old_umask = os.umask(0o077)
+    try:
+        with tempfile.TemporaryDirectory(prefix=".argus-drill-", dir=archive_dir) as scratch:  # mkdtemp is 0700
+            extracted, root = Path(scratch) / "extracted", Path(scratch) / "root"
+            extracted.mkdir()
+            root.mkdir()
+            extract(archive, identity, extracted)
+            steps.append(f"decrypted {archive.name}")
+            steps.append(build_root(extracted, root, repo))
+            run_tool("argus-m1-verify", [str(repo / "scripts" / "argus-m1-verify"), "--root", str(root)], steps)
+            checkpoint = root / "runtime" / "argus" / "audit-checkpoint.json"
+            run_tool("audit-checkpoint --verify",
+                     [str(repo / "scripts" / "argus-m1-audit-checkpoint"), "--verify", str(checkpoint)], steps)
+            integrity(extracted, steps)
+            api_answers(root, steps)
+    finally:
+        os.umask(old_umask)
+    return archive.name, steps
+
+
+def main() -> int:
+    if sys.version_info < (3, 12):  # the snapshot verifier misreads good .age archives on 3.9 (macOS system python)
+        print("ERROR run with python 3.12+ (the mise python), not the system python", file=sys.stderr)
+        return 1
+    home = Path.home()
+    parser = argparse.ArgumentParser(description="Restore the newest off-host snapshot into a temp dir and prove it works.")
+    parser.add_argument("--archive-dir", type=Path, default=home / "Archives" / "argus-snapshots")
+    parser.add_argument("--identity", type=Path, default=home / ".config" / "argus" / "snapshot-age.key")
+    parser.add_argument("--repo", type=Path, default=ROOT)
+    parser.add_argument("--no-notify", action="store_true")
+    args = parser.parse_args()
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    try:
+        if not args.identity.is_file():
+            raise DrillError(f"age identity not found: {args.identity}")
+        name, steps = drill(args.archive_dir, args.identity, args.repo)
+        line, code = f"{stamp} DRILL_OK {name}: " + "; ".join(steps), 0
+    except (DrillError, OSError, sqlite3.Error, subprocess.SubprocessError) as exc:
+        line, code = f"{stamp} DRILL_FAIL {exc}", 1
+        if not args.no_notify and shutil.which("osascript"):
+            subprocess.run(["osascript", "-e", 'display notification "Restore drill FAILED, see drill.log" '
+                            'with title "Argus restore drill"'], check=False, capture_output=True)
+    print(line)
+    if args.archive_dir.is_dir():
+        with (args.archive_dir / "drill.log").open("a") as handle:
+            handle.write(line + "\n")
+    return code
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
