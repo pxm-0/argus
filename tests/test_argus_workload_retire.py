@@ -181,7 +181,7 @@ class WorkloadRetireTests(unittest.TestCase):
         step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
         self.assertNotIn("argus-backup-run gone", step1)
         self.assertNotIn("argus-backup-restore --workload", step1)
-        for needle in ("cd /var/backups/argus-retired/gone && sha256sum", "sha256sum -c checksums.sha256", 'tar -tzf "$f"', "/var/backups/argus-retired/gone", "pushing a commit to this PR branch", "BEFORE merging"):
+        for needle in ("cd /var/backups/argus-retired/gone && sha256sum", "sha256sum -c checksums.sha256", 'tar -tzf "$f"', "/var/backups/argus-retired/gone", "pushing a commit to this PR branch", "BEFORE merging", "-v <volume>:/d:ro", "docker pull alpine"):
             self.assertIn(needle, step1)
 
     def test_runbook_serve_off_and_listener_check(self) -> None:
@@ -226,6 +226,8 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertLess(fw, rb.index("argus-m1-reconcile-retired-workloads"))
         self.assertIn("argus-m5-egress-verify", rb)
         self.assertIn("argus-personal-sandbox.nft.pre", rb)
+        self.assertIn("sudo PYTHONDONTWRITEBYTECODE=1 scripts/argus-sandbox-firewall --domain personal-sandbox --plan", rb)
+        self.assertIn("tailnet `https://` URL", rb)
 
     def test_runbook_warns_when_image_digest_is_shared(self) -> None:
         shared = "sha256:" + "e8f2abf0300b" + "0" * 52
