@@ -54,7 +54,7 @@ class WorkloadRetireTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         r = self.root
-        write(r, "config/workloads.json", {"workloads": [{"id": "gone", "name": "Gone", "paths": {"root": "/srv/argus/workloads/gone", "legacy": "/home/oreo/gone"}, "runtime": {"composeProject": "gone", "service": "web"}}, {"id": "gone-staging"}, {"id": "keep"}]})
+        write(r, "config/workloads.json", {"workloads": [{"id": "gone", "name": "Gone", "paths": {"root": "/srv/argus/workloads/gone", "legacy": "/home/oreo/gone"}, "runtime": {"composeProject": "gone", "service": "web"}, "migration": {"targetTrustDomain": "personal-sandbox"}}, {"id": "gone-staging"}, {"id": "keep"}]})
         write(r, "config/access.json", {"workloads": {"gone": {"desired": "none"}, "keep": {"desired": "none"}}})
         write(r, "config/routes.json", {"workloadRoutes": {"gone": {"tailnet": {"url": "https://h:8446"}}, "keep": {}}})
         write(r, "config/argus/observation-sources.json", {"sources": [{"workload": "gone", "x": 1}, {"workload": "keep"}]})
@@ -181,6 +181,9 @@ class WorkloadRetireTests(unittest.TestCase):
         step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
         self.assertIn("snapshot ID", step1)
         self.assertIn("argus-backup-restore --workload gone --artifact-id <snapshot-id> --acknowledge-isolated-restore", step1)
+        self.assertIn("sudo python3 scripts/argus-backup-restore", step1)
+        self.assertIn("python3 scripts/argus-backup-run gone --confirm gone", step1)
+        self.assertIn("argus-m5-workload-staging/gone/", step1)
 
     def test_runbook_serve_off_and_listener_check(self) -> None:
         rb = self.runbook()
@@ -190,7 +193,7 @@ class WorkloadRetireTests(unittest.TestCase):
 
     def test_runbook_directories_and_legacy_clone_wait_for_backup(self) -> None:
         rb = self.runbook()
-        for path in ("/var/lib/argus/migration-runtime/gone", "/var/lib/argus/migration-staging/gone", "/var/lib/argus/migration-cutovers/gone", "/var/backups/argus-m5-workload-staging/gone"):
+        for path in ("/var/lib/argus/migration-runtime/personal-sandbox/gone", "/var/lib/argus/migration-staging/personal-sandbox/gone", "/var/lib/argus/migration-cutovers/gone", "/var/backups/argus-m5-workload-staging/gone"):
             self.assertIn(path, rb)
         self.assertIn("KEEP `/var/lib/argus/migration-cutovers/gone`", rb)
         self.assertIn("keep it until then", rb)
