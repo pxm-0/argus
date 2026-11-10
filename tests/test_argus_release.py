@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -384,6 +387,19 @@ class CommandTests(unittest.TestCase):
             return done.returncode, json.loads(done.stdout)
         self.assertEqual((2, {"ok": False, "error": "invalid-arguments"}), run_script("--workload", "Bad Id", "--image", OLD_ID))
         self.assertEqual((4, {"ok": False, "error": "RuntimeError"}), run_script("--workload", "nodens-staging", "--image", OLD_ID, "--ledger", str(self.repo / "nope.sqlite3")))
+
+    def test_evidence_script_refuses_other_ledgers_and_abbreviations_as_root(self) -> None:
+        # sudoers ends in `--image *`, so a root run can be handed extra words.
+        loader = importlib.machinery.SourceFileLoader("promote_evidence", str(ROOT / "scripts" / "argus-promote-evidence"))
+        module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+        loader.exec_module(module)
+        other = str(self.repo / "other.sqlite3")
+        out = io.StringIO()
+        with patch.object(module.os, "geteuid", return_value=0), contextlib.redirect_stdout(out):
+            code = module.main(["--workload", "nodens-staging", "--image", OLD_ID, "--ledger", other])
+        self.assertEqual((2, {"ok": False, "error": "invalid-arguments"}), (code, json.loads(out.getvalue())))
+        with self.assertRaises(SystemExit), contextlib.redirect_stderr(io.StringIO()):
+            module.main(["--workload", "nodens-staging", "--image", OLD_ID, "--led", other])
 
     def test_remote_repo_is_configurable_and_validated(self) -> None:
         self.script("ssh", FAKE_SSH.format(id=NEW_ID), self.bin)

@@ -95,6 +95,7 @@ Older code refuses a database it does not know ("schema 4 is newer than
 supported 3") and `argus-control-api` crash-loops. Before reverting the PR or
 running an older checkout, restore the pre-migration copy:
 
+<!-- sudoers: root-shell -->
 ```bash
 sudo systemctl stop argus-control-api
 sudo install -o argus-api -g argus-control -m 0600 \
@@ -110,6 +111,7 @@ To avoid it, prefer turning the factor off (below) over reverting the code.
 
 On the server, from an interactive terminal (root only, TTY only):
 
+<!-- sudoers: root-shell -->
 ```bash
 sudo env PYTHONDONTWRITEBYTECODE=1 argus keys totp-enroll --operator <login>     # add --rotate to replace
 ```

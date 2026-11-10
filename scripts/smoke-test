@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_actions import sanitize_log_text
-from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS
+from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS, is_server_checkout
 
 
 MIGRATION_STATUSES = {"planned", "needs-discovery", "migrated", "blocked", "deprecated"}
@@ -1020,7 +1020,7 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
 
 def check_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
     command = [str(repo / "scripts" / "argus-doctor"), "--json"]
-    if not offline and repo == Path("/srv/argus"):
+    if not offline and is_server_checkout(repo):
         command.append("--host")
     result = run(command, repo)
     try:

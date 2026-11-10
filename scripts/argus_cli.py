@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import argus_cli_alerts
 import argus_cli_op
 import argus_cli_m1
+from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
@@ -444,7 +445,7 @@ def operation_ledger_path(repo: Path) -> Path:
     configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
     if configured:
         return Path(configured)
-    if repo.resolve() == Path("/srv/argus"):
+    if is_server_checkout(repo):
         return Path("/var/lib/argus/control/operations.sqlite3")
     return repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
 
@@ -796,7 +797,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
     return _success(
         "doctor",
         argusRevision=revision,
-        deployedRevision=revision if repo == Path("/srv/argus") else "unavailable",
+        deployedRevision=revision if is_server_checkout(repo) else "unavailable",
         operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": "unverified"},
         discoveryRepositorySchema={"supported": "not-installed", "deployed": "not-installed"},
         collectorProtocol={"supported": "not-installed", "deployed": "not-installed"},
