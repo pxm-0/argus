@@ -36,6 +36,9 @@ services:
     # Not read_only: Compose refuses inline config content on read-only services.
     cap_drop:
       - ALL
+    # the caddy binary carries the cap_net_bind_service file capability; exec fails (EPERM) unless it stays bounded
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     configs:
