@@ -65,6 +65,10 @@ def normalize_base_url(url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}"
 
 
+def _credentials(bootstrap_token: str, totp: str) -> dict[str, str]:
+    return {"bootstrapToken": bootstrap_token, **({"totp": totp} if totp else {})}
+
+
 class ApiClient:
     def __init__(self, base_url: str, *, timeout: float = 15.0) -> None:
         self.origin = normalize_base_url(base_url)
@@ -123,16 +127,16 @@ class ApiClient:
             parsed = {}
         return ApiResponse(status, parsed if isinstance(parsed, dict) else {})
 
-    def exchange(self, bootstrap_token: str) -> ApiResponse:
+    def exchange(self, bootstrap_token: str, totp: str = "") -> ApiResponse:
         return self.request(
             "POST",
             "/api/session/exchange",
-            {"bootstrapToken": bootstrap_token},
+            _credentials(bootstrap_token, totp),
             headers={"X-Argus-CSRF-Bootstrap": secrets.token_urlsafe(32)},
         )
 
-    def step_up(self, bootstrap_token: str) -> ApiResponse:
-        return self.request("POST", "/api/session/step-up", {"bootstrapToken": bootstrap_token})
+    def step_up(self, bootstrap_token: str, totp: str = "") -> ApiResponse:
+        return self.request("POST", "/api/session/step-up", _credentials(bootstrap_token, totp))
 
     def preview(self, workload_id: str, operation_type: str, parameters: dict[str, Any]) -> ApiResponse:
         return self.request(

@@ -39,7 +39,7 @@ class SessionStoreTests(unittest.TestCase):
                 stored = connection.execute(
                     "SELECT session_hash, csrf_hash, tailnet_login, role FROM sessions"
                 ).fetchone()
-                self.assertEqual(3, connection.execute("PRAGMA user_version").fetchone()[0])
+                self.assertEqual(4, connection.execute("PRAGMA user_version").fetchone()[0])
             self.assertNotIn(session.session_id, stored)
             self.assertNotIn(session.csrf_token, stored)
             self.assertEqual(("operator@example.com", "owner"), stored[2:])
@@ -234,8 +234,27 @@ class SessionStoreTests(unittest.TestCase):
                 )
 
             with sqlite3.connect(database, factory=ClosingConnection) as connection:
-                connection.execute("PRAGMA user_version=4")
+                connection.execute("PRAGMA user_version=5")
             with self.assertRaisesRegex(RuntimeError, "newer than supported"):
+                SessionStore(database)
+
+    def test_v3_database_migrates_to_totp_tables_with_a_pre_v4_backup(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            database = Path(directory) / "sessions.sqlite3"
+            store = SessionStore(database)
+            session = store.create("operator@example.com")
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
+                connection.execute("DROP TABLE totp_state")
+                connection.execute("DROP TABLE totp_recovery_used")
+                connection.execute("PRAGMA user_version=3")
+            migrated = SessionStore(database)
+            self.assertTrue(database.with_name("sessions.sqlite3.pre-v4.bak").exists())
+            self.assertIsNotNone(migrated.get(session.session_id, "operator@example.com"))
+            self.assertEqual(0, migrated.lockout_remaining("operator@example.com"))
+            with sqlite3.connect(database, factory=ClosingConnection) as connection:
+                self.assertEqual(4, connection.execute("PRAGMA user_version").fetchone()[0])
+                connection.execute("DROP TABLE totp_state")
+            with self.assertRaisesRegex(RuntimeError, "missing totp_state columns"):
                 SessionStore(database)
 
     def test_declared_current_session_schema_must_be_complete(self) -> None:
@@ -245,7 +264,7 @@ class SessionStoreTests(unittest.TestCase):
                 connection.execute(
                     "CREATE TABLE sessions (session_hash TEXT PRIMARY KEY)"
                 )
-                connection.execute("PRAGMA user_version=3")
+                connection.execute("PRAGMA user_version=4")
             with self.assertRaisesRegex(
                 RuntimeError,
                 "missing sessions columns",

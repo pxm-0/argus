@@ -6,15 +6,20 @@ import os
 import pwd
 import re
 import stat
+import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from argus_common import audit as write_audit
 from argus_ipc import request as ipc_request
 from argus_operations import OperationConflict, OperationLedger, PRIVILEGED_MUTATIONS
 
 
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+TERMINAL_STATES = frozenset({"succeeded", "failed", "rolled-back", "denied", "expired", "indeterminate"})
+
+
 class OperationWorker:
     def __init__(
         self,
@@ -23,11 +28,37 @@ class OperationWorker:
         *,
         dispatch_timeout_seconds: float = 10,
         privileged_socket: Path = Path("/run/argus/privileged-lifecycle/agent.sock"),
+        audit: Callable[..., None] = write_audit,
     ) -> None:
+        self.audit = audit
+        # Operations this process handed to an agent; the agent persists the outcome, so we watch for it.
+        self.unfinished: set[str] = set()
         self.ledger = ledger
         self.agent_socket_dir = agent_socket_dir
         self.dispatch_timeout_seconds = dispatch_timeout_seconds
         self.privileged_socket = privileged_socket
+
+    def record_finished(self) -> None:
+        """Append one operation.finished audit line per watched operation that reached a terminal state."""
+        for operation_id in sorted(self.unfinished):
+            operation = self.ledger.get(operation_id)
+            if operation is None or operation["state"] not in TERMINAL_STATES:
+                continue
+            self.unfinished.discard(operation_id)
+            try:
+                self.audit(
+                    "operation.finished",
+                    str(operation["workload_id"]),
+                    str(operation["state"]),
+                    actor="operation-worker",
+                    operationId=operation_id,
+                    workloadId=str(operation["workload_id"]),
+                    state=str(operation["state"]),
+                    errorClass=str(operation.get("error_class") or ""),
+                )
+            except OSError as exc:
+                # Audit evidence must never stop dispatch; the ledger stays authoritative.
+                print(f"operation.finished audit failed: {exc.__class__.__name__}", file=sys.stderr)
 
     def socket_path(self, trust_domain: str, operation_type: str = "") -> Path:
         if not DOMAIN_ID.fullmatch(trust_domain):
@@ -104,10 +135,12 @@ class OperationWorker:
             operation = self.ledger.claim(str(queued["operation_id"]))
             if operation is None:
                 continue
+            self.unfinished.add(str(operation["operation_id"]))
             if self.dispatch(operation):
                 accepted += 1
             else:
                 indeterminate += 1
+        self.record_finished()
         return accepted, indeterminate, recovered
 
 
