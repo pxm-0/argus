@@ -175,7 +175,10 @@ class WorkloadRetireTests(unittest.TestCase):
         step0 = next(line for line in rb.splitlines() if line.startswith("0. "))
         self.assertIn("argus-m5-workload-gone.timer", step0)
         self.assertIn("argus-m5-workload-gone.service", step0)
-        self.assertIn("systemctl list-unit-files | grep gone` prints nothing", step0)
+        self.assertIn("reconcile retry timer", step0)
+        self.assertNotIn("backup timer", step0)
+        self.assertIn("systemctl list-unit-files 'argus-m5-workload-gone*'` prints nothing", step0)
+        self.assertIn("gone-staging", step0)
 
     def test_runbook_backup_step_names_snapshot_and_restore_dry_run(self) -> None:
         step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
@@ -184,6 +187,10 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertIn("sudo python3 scripts/argus-backup-restore", step1)
         self.assertIn("python3 scripts/argus-backup-run gone --confirm gone", step1)
         self.assertIn("argus-m5-workload-staging/gone/", step1)
+        self.assertIn("backup is not allowed", step1)
+        self.assertIn("operations.backupAllowed=true", step1)
+        self.assertIn("where an artifact exists", step1)
+        self.assertIn("restore-operations", step1)
 
     def test_runbook_serve_off_and_listener_check(self) -> None:
         rb = self.runbook()
