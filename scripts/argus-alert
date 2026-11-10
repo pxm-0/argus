@@ -1,0 +1,306 @@
+#!/usr/bin/env python3
+"""Argus alert evaluator (unprivileged, stdlib only).
+
+Collects read-only host evidence, runs the pure checks in argus_alerting over it, and writes
+runtime/alerts/state.json with edge detection: one audit event when an alert opens and one
+when it resolves. Missing evidence is tolerated (the check is skipped, open alerts are kept).
+Alert details never contain secrets.
+"""
+
+from __future__ import annotations
+
+import argparse
+import fcntl
+import json
+import os
+import re
+import shutil
+import ssl
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Callable
+
+import argus_alert_sources as sources
+from argus_alerting import PAGE, WARN, evaluate, next_health_failures
+from argus_common import audit, root
+
+Run = Callable[[list[str]], "subprocess.CompletedProcess[str] | None"]
+DB_BACKUP_UNIT = "argus-workload-db-backup@{name}.service"
+TYPED_DOMAINS = {"personal-managed", "personal-sandbox", "work-sandbox"}
+
+
+def run_command(argv: list[str], timeout: float = 20) -> "subprocess.CompletedProcess[str] | None":
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def _ok(result: "subprocess.CompletedProcess[str] | None") -> bool:
+    return result is not None and result.returncode == 0
+
+
+def failed_units(run: Run) -> list[str] | None:
+    result = run(["systemctl", "list-units", "argus-*", "--failed", "--no-legend", "--plain", "--no-pager"])
+    if not _ok(result):
+        return None
+    units = []
+    for line in result.stdout.splitlines():
+        fields = line.replace("●", " ").replace("*", " ").split()
+        if fields and fields[0].startswith("argus-"):
+            units.append(fields[0])
+    return units
+
+
+def db_backups(run: Run, names: list[str]) -> dict[str, dict] | None:
+    found: dict[str, dict] = {}
+    for name in names:
+        result = run(["systemctl", "show", "--timestamp=unix", "-p", "Result", "-p", "InactiveEnterTimestamp", DB_BACKUP_UNIT.format(name=name)])
+        if not _ok(result):
+            continue
+        values = dict(line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)
+        found[name] = {"result": values.get("Result", ""), "finishedAt": values.get("InactiveEnterTimestamp") or None}
+    return found or None
+
+
+def probe_health(url: str, expected_status: int, timeout: float) -> dict:
+    """One GET. Detail names the failure class only; it never echoes the URL or response body."""
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "argus-alert"})
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+        exc.close()
+    except (urllib.error.URLError, ssl.SSLError, OSError, ValueError) as exc:
+        return {"ok": False, "detail": f"request failed: {type(exc).__name__}"}
+    return {"ok": status == expected_status, "detail": f"status {status}, expected {expected_status}"}
+
+
+def _load(repo: Path, relative: str) -> dict:
+    document = sources.read_dict(repo / relative)
+    return document or {}
+
+
+def typed_workloads(repo: Path) -> list[dict]:
+    """Active workloads with a typed trust domain and an enabled health URL."""
+    classified = _load(repo, "config/argus/workload-classification.json").get("workloads", {})
+    rows = []
+    for item in _load(repo, "config/workloads.json").get("workloads", []):
+        health = item.get("health") or {}
+        domain = (classified.get(item.get("id")) or {}).get("trustDomain", "")
+        if item.get("lifecycle") == "active" and domain in TYPED_DOMAINS and health.get("enabled") and health.get("url"):
+            rows.append(
+                {
+                    "id": item["id"],
+                    "url": health["url"],
+                    "expectedStatus": int(health.get("expectedStatus", 200)),
+                    "timeoutSeconds": float(health.get("timeoutSeconds", 3)),
+                    "severity": PAGE if domain == "personal-managed" else WARN,
+                }
+            )
+    return rows
+
+
+def probe_workloads(workloads: list[dict], probe: Callable[[str, int, float], dict] = probe_health) -> dict[str, dict]:
+    return {item["id"]: probe(item["url"], item["expectedStatus"], item["timeoutSeconds"]) for item in workloads}
+
+
+def _docker_time(value: str) -> float | None:
+    text = re.sub(r"(\.\d{6})\d+", r"\1", value.strip())
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp() if text and not text.startswith("0001") else None
+    except ValueError:
+        return None
+
+
+def exited_containers(run: Run, repo: Path) -> list[dict] | None:
+    """Exited containers of registered workloads that are not migrated into a sandbox domain.
+
+    Migrated workloads leave their old rootful source stopped on purpose, and their live containers
+    sit in rootless daemons this identity cannot read, so neither is evidence of a problem here.
+    """
+    projects = {
+        (item.get("runtime") or {}).get("composeProject")
+        for item in _load(repo, "config/workloads.json").get("workloads", [])
+        if item.get("lifecycle") == "active" and (item.get("migration") or {}).get("status") != "migrated"
+    } - {None}
+    listing = run(["docker", "ps", "-a", "--filter", "status=exited", "--format", "{{.ID}}"])
+    if not _ok(listing):
+        return None
+    ids = listing.stdout.split()
+    if not ids or not projects:
+        return []
+    inspected = run(["docker", "inspect", "--format", '{{.Name}}|{{index .Config.Labels "com.docker.compose.project"}}|{{.State.FinishedAt}}', *ids])
+    if not _ok(inspected):
+        return None
+    rows = []
+    for line in inspected.stdout.splitlines():
+        name, _, rest = line.partition("|")
+        project, _, finished = rest.partition("|")
+        if project in projects:
+            rows.append({"name": name.lstrip("/"), "exitedAt": _docker_time(finished)})
+    return rows
+
+
+def deploy_behind(run: Run, repo: Path) -> dict | None:
+    """Local refs only: the deploy flow fetches, the evaluator never touches the network or .git."""
+    base = ["git", "--no-optional-locks", "-C", str(repo)]
+    count = run(base + ["rev-list", "--count", "HEAD..origin/main"])
+    if not _ok(count) or not count.stdout.strip().isdigit():
+        return None
+    behind = int(count.stdout.strip())
+    if behind == 0:
+        return {"count": 0, "oldestCommitAt": None}
+    stamps = run(base + ["log", "--format=%ct", "HEAD..origin/main"])
+    lines = stamps.stdout.split() if _ok(stamps) else []
+    return {"count": behind, "oldestCommitAt": lines[-1] if lines else None}
+
+
+def egress_drift(run: Run, workload_ids: list[str]) -> dict[str, bool] | None:
+    drift: dict[str, bool] = {}
+    for workload in workload_ids:
+        result = run(["journalctl", "-u", f"argus-m5-workload-{workload}.service", "-n", "10", "-o", "cat", "--no-pager"])
+        if not _ok(result):
+            continue
+        for line in reversed(result.stdout.splitlines()):
+            try:
+                payload = json.loads(line[line.find("{"):]) if "{" in line else None
+            except ValueError:
+                continue
+            if isinstance(payload, dict) and "egressPolicyDrift" in payload:
+                drift[workload] = bool(payload["egressPolicyDrift"])
+                break
+    return drift or None
+
+
+def m1_drift(repo: Path) -> dict | None:
+    try:
+        import argus_cli_m1
+
+        return argus_cli_m1.drift_status(repo)
+    except Exception as exc:  # noqa: BLE001 - an unreadable M1 store is "unknown", reported below
+        print(f"argus-alert: m1 drift unavailable: {type(exc).__name__}", file=sys.stderr)
+        return None
+
+
+def tailscale_state(run: Run) -> dict | None:
+    result = run(["tailscale", "status", "--json"])
+    if not _ok(result):
+        return None
+    try:
+        document = json.loads(result.stdout)
+    except ValueError:
+        return None
+    return {"backendState": document.get("BackendState"), "keyExpiry": (document.get("Self") or {}).get("KeyExpiry")}
+
+
+def served_certificate(host: str, port: int) -> str | None:
+    try:
+        return ssl.get_server_certificate((host, port), timeout=5)
+    except (OSError, ssl.SSLError):
+        return None
+
+
+def certificates(run: Run, workloads: list[dict], fetch: Callable[[str, int], str | None] = served_certificate) -> list[dict] | None:
+    """notAfter of the certificates actually served on the typed workloads' health endpoints.
+
+    A TLS handshake needs no privilege (/var/lib/tailscale/certs is root 0700). None when nothing could be
+    read, so the check is unknown and open alerts are kept.
+    """
+    if shutil.which("openssl") is None:
+        return None
+    endpoints = {}
+    for item in workloads:
+        parts = urllib.parse.urlsplit(item["url"])
+        if parts.scheme == "https" and parts.hostname:
+            endpoints[f"{parts.hostname}:{parts.port or 443}"] = (parts.hostname, parts.port or 443)
+    rows = []
+    for name, (host, port) in sorted(endpoints.items()):
+        pem = fetch(host, port)
+        if pem is None:
+            continue
+        with tempfile.NamedTemporaryFile("w", suffix=".pem") as handle:
+            handle.write(pem)
+            handle.flush()
+            result = run(["openssl", "x509", "-noout", "-enddate", "-in", handle.name])
+        match = re.match(r"notAfter=(.+)", result.stdout.strip()) if _ok(result) else None
+        if match:
+            parsed = datetime.strptime(match.group(1).replace(" GMT", ""), "%b %d %H:%M:%S %Y").replace(tzinfo=timezone.utc)
+            rows.append({"name": name, "notAfter": parsed.timestamp()})
+    return rows or None
+
+
+def collect_inputs(repo: Path, previous_failures: dict[str, int], run: Run = run_command) -> dict[str, Any]:
+    workloads = typed_workloads(repo)
+    probes = probe_workloads(workloads) if workloads else {}
+    usage = shutil.disk_usage("/")
+    names = [name for name in os.environ.get("ARGUS_ALERT_DB_BACKUPS", "kadath").split(",") if name]
+    return {
+        "failedUnits": failed_units(run),
+        "smokeLatest": sources.smoke_latest(repo),
+        "snapshotLast": sources.read_dict(sources.snapshot_last_path()),
+        "dbBackups": db_backups(run, names),
+        "probes": probes,
+        "healthFailures": next_health_failures(previous_failures, probes),
+        "healthSeverity": {item["id"]: item["severity"] for item in workloads},
+        "exitedContainers": exited_containers(run, repo),
+        "diskPercent": usage.used / (usage.used + usage.free) * 100,
+        "deployBehind": deploy_behind(run, repo),
+        "egressDrift": egress_drift(run, [item["id"] for item in workloads]),
+        "m1Drift": m1_drift(repo),
+        "tailscale": tailscale_state(run),
+        "certs": certificates(run, workloads),
+    }
+
+
+def write_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + f".tmp{os.getpid()}")
+    temporary.write_text(json.dumps(state, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temporary.chmod(0o644)
+    os.replace(temporary, path)
+
+
+def record_events(events: list[dict]) -> None:
+    for item in events:
+        alert = item["alert"]
+        try:
+            audit(f"alert.{item['event']}", "platform", "ok", actor="argus-alert", alertId=alert["id"], severity=alert["severity"], detail=alert["detail"])
+        except OSError as exc:
+            print(f"argus-alert: audit write failed for {alert['id']}: {exc}", file=sys.stderr)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Evaluate Argus alerts and write runtime/alerts/state.json.")
+    parser.add_argument("--state-dir", type=Path, default=root() / "runtime" / "alerts")
+    parser.add_argument("--trigger", default="timer", help="who started this run (timer or an OnFailure unit name)")
+    parser.add_argument("--json", action="store_true", help="print the resulting state")
+    args = parser.parse_args(argv)
+
+    args.state_dir.mkdir(parents=True, exist_ok=True)
+    with (args.state_dir / ".lock").open("w") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            return 0  # another evaluation is already running; its result covers this trigger
+        state_path = args.state_dir / "state.json"
+        previous = sources.read_dict(state_path) or {}
+        inputs = collect_inputs(root(), previous.get("probeFailures") or {})
+        state, events = evaluate(inputs, previous, time.time())
+        write_state(state_path, state)
+    record_events(events)
+    if args.json:
+        print(json.dumps(state, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

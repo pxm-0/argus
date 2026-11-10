@@ -259,6 +259,21 @@ sudo argus m1 sync --apply --confirm sha256:<digest>
 sudo argus m1 verify --json
 ```
 
+## Alerts, smoke and backup evidence
+
+`server-read-only` — `argus smoke status`
+
+`server-read-only` — `argus backup list`
+
+`server-read-only` — `argus backup freshness`
+
+`server-read-only` — `argus alerts`
+
+Run on the server. `argus smoke status [--last N]` shows the latest scheduled smoke and the capped 30-day history
+(with the failed check names); `argus backup list|freshness` reads the snapshot pull directory and
+`snapshot-last.json`; `argus alerts` shows what `argus-alert` holds open. Missing evidence is reported as
+unavailable, never as healthy. See `docs/MONITORING.md`.
+
 ## Durable operations
 
 `server-read-only` — `argus operation show <operation-id>`
