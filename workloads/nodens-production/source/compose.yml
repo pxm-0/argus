@@ -51,6 +51,10 @@ services:
 networks:
   internal:
     internal: true
+    driver_opts:
+      # Stable bridge name, equal to manifest runtime.compose.bridge, so the
+      # domain firewall renders one unchanging rule for it (#354).
+      com.docker.network.bridge.name: argus-ndns-prd
 
 configs:
   ingress:
