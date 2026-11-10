@@ -255,7 +255,7 @@ EXEC_KEYS = ("ExecStartPre", "ExecStart", "ExecStartPost", "ExecStop", "ExecRelo
 OVERRIDE_NAME = "10-argus-release.conf"
 # oreo-run units that call the default-socket docker CLI.  They get the docker group for the unit only, so the
 # interactive operator can leave the docker group (membership is root-equivalent: docker.sock is root:docker 0660).
-DOCKER_GROUP_UNITS = ("argus-metrics.service", "argus-workload-discover.service")
+DOCKER_GROUP_UNITS = ("argus-metrics.service", "argus-workload-discover.service", "argus-alert.service")
 DOCKER_GROUP_OVERRIDE_NAME = "20-argus-docker-group.conf"
 DOCKER_GROUP_OVERRIDE = (
     "# Managed by scripts/argus-sudoers-render --overrides-dir; keeps docker access when oreo leaves the docker group.\n"

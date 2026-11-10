@@ -1,0 +1,25 @@
+[Unit]
+Description=Argus alert evaluation after %i failed
+# A flapping unit must not queue an evaluation per failure; the 2-minute timer still covers it.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=oneshot
+User=oreo
+Group=oreo
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus-alert --trigger %i
+TimeoutStartSec=90
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+ReadWritePaths=/srv/argus/runtime
+UMask=0022

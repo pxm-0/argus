@@ -33,7 +33,11 @@
     {"command": "argus check", "privilege": "local-read-only"},
     {"command": "argus m1 sync", "privilege": "server-read-only"},
     {"command": "argus m1 sync --apply", "privilege": "server-mutation"},
-    {"command": "argus m1 verify", "privilege": "server-read-only"}
+    {"command": "argus m1 verify", "privilege": "server-read-only"},
+    {"command": "argus smoke status", "privilege": "server-read-only"},
+    {"command": "argus backup list", "privilege": "server-read-only"},
+    {"command": "argus backup freshness", "privilege": "server-read-only"},
+    {"command": "argus alerts", "privilege": "server-read-only"}
   ],
   "compatibility": {
     "argus health": "argus estate status",

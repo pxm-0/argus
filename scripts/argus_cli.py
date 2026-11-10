@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
+import argus_cli_alerts
 import argus_cli_op
 import argus_cli_m1
 from argus_common import is_server_checkout
@@ -1023,6 +1024,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     argus_release.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
 
     legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
@@ -1080,6 +1082,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = check_command(repo, runner)
     elif command == "m1":
         result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
+    elif command in {"smoke", "backup", "alerts"}:
+        result = argus_cli_alerts.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
         result = _error("command-unsupported", "The command is unsupported.", "Run argus --help.", exit_code=EXIT_INVOCATION)
     if deprecation and result.get("ok"):
