@@ -39,6 +39,16 @@ from argus_operations import (
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 
 
+def parse_compose_rows(stdout: str) -> list[dict[str, Any]]:
+    stripped = stdout.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        # compose prints one JSON object per container line, so multi-container projects are NDJSON
+        decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
+    return decoded if isinstance(decoded, list) else [decoded]
+
+
 class IndeterminateOperation(RuntimeError):
     """The executor timed out after dispatch and must never be silently retried."""
 
@@ -170,13 +180,7 @@ class AgentService:
         if result.returncode != 0:
             return {"ok": False, "status": "unavailable", "detail": "typed runtime health command failed"}
         try:
-            stripped = result.stdout.strip()
-            try:
-                decoded = json.loads(stripped)
-            except json.JSONDecodeError:
-                # compose prints one JSON object per container line, so multi-container projects are NDJSON
-                decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
-            payload = decoded if isinstance(decoded, list) else [decoded]
+            payload = parse_compose_rows(result.stdout)
         except json.JSONDecodeError:
             return {"ok": False, "status": "invalid", "detail": "typed runtime health output was invalid"}
         service = self.compose_service(workload_id)
@@ -199,6 +203,28 @@ class AgentService:
             "status": "healthy" if healthy else "unhealthy",
             "detail": f"{len(rows)} approved service(s) observed",
         }
+
+    def image_id(self, workload_id: str) -> str:
+        """Best-effort image ID of the approved service's container; empty when it cannot be read."""
+        try:
+            listed = subprocess.run(
+                self.compose_command(workload_id, "ps", "--format", "json"), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8,
+            )
+            service = self.compose_service(workload_id)
+            rows = [row for row in parse_compose_rows(listed.stdout) if not service or row.get("Service") == service]
+            container = str(rows[0].get("ID", "")) if rows and listed.returncode == 0 else ""
+            if not re.fullmatch(r"[0-9a-f]{12,64}", container):
+                return ""
+            inspected = subprocess.run(
+                ["docker", "--host", f"unix:///var/lib/argus/{self.domain}/docker.sock",
+                 "inspect", "--format", "{{.Image}}", container],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return ""
+        image = inspected.stdout.strip()
+        return image if inspected.returncode == 0 and re.fullmatch(r"sha256:[0-9a-f]{64}", image) else ""
 
     def wait_for_domain_health(self, workload_id: str, timeout: float = 60.0) -> dict[str, Any]:
         # A recreated container reports Health "starting" until its healthcheck passes.
@@ -224,6 +250,12 @@ class AgentService:
                 health = self.wait_for_domain_health(workload_id)
                 if not health["ok"]:
                     raise RuntimeError("post-lifecycle domain health failed")
+            if operation_type == "workload.deploy":
+                return {
+                    "summary": f"{operation_type} completed in the sealed domain.",
+                    "domain_health": health,
+                    "imageId": self.image_id(workload_id),
+                }
             return {"summary": f"{operation_type} completed in the sealed domain."}
         if operation_type == "backup.restore":
             try:
