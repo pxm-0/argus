@@ -12,6 +12,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import stat
 import subprocess
@@ -34,6 +35,37 @@ RETAINED_COPIES = 14
 DUMP_TIMEOUT_SECONDS = 900
 REPAIR_TIMEOUT_SECONDS = 180
 IMAGE_ID_PATTERN = re.compile(r"sha256:[0-9a-f]{64}")
+
+PULL_DIR = Path("/var/backups/argus-snapshots-pull")
+PULL_OWNER = "oreo"
+RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
+
+
+def publish_encrypted(artifact: Path, recipient_file: Path, pull_dir: Path, prefix: str, keep: int) -> dict:
+    """Encrypt an already-verified artifact to public keys, then atomically publish it to the pull dir."""
+    lines = [ln.strip() for ln in recipient_file.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
+    if not lines or any(not RECIPIENT_RE.match(ln) for ln in lines):
+        raise BackupError("recipient file must contain only age/ssh public keys")
+    ids = pwd.getpwnam(PULL_OWNER)
+    pull_dir.mkdir(parents=True, exist_ok=True)
+    os.chown(pull_dir, ids.pw_uid, ids.pw_gid)
+    os.chmod(pull_dir, 0o750)
+    final = pull_dir / f"{artifact.name}.age"
+    partial = pull_dir / f".{final.name}.partial"
+    try:
+        proc = subprocess.run(["age", "-R", str(recipient_file), "-o", str(partial), str(artifact)],
+                              capture_output=True, check=False)
+        if proc.returncode != 0 or not partial.exists() or partial.stat().st_size == 0:
+            raise BackupError("age encryption failed")
+        os.chmod(partial, 0o640)
+        os.chown(partial, ids.pw_uid, ids.pw_gid)
+        os.replace(partial, final)
+    finally:
+        partial.unlink(missing_ok=True)
+    stale = sorted(pull_dir.glob(f"{prefix}-*.age"), reverse=True)[keep:]
+    for path in stale:
+        path.unlink()
+    return {"path": str(final), "bytes": final.stat().st_size, "pruned": [p.name for p in stale]}
 
 
 class BackupError(RuntimeError):
@@ -569,7 +601,7 @@ def prune(directory: Path, keep: int) -> list[str]:
     return removed
 
 
-def backup(workload: str) -> dict:
+def backup(workload: str, recipient_file: Path | None = None) -> dict:
     if os.geteuid() != 0:
         raise BackupError("run with sudo")
     spec = SPECS[workload]
@@ -637,9 +669,14 @@ def backup(workload: str) -> dict:
     if size == 0:
         artifact.unlink()
         raise BackupError("dump verified but empty")
+    published = (
+        publish_encrypted(artifact, recipient_file, PULL_DIR, workload, RETAINED_COPIES)
+        if recipient_file else None
+    )
     return {
         "schemaVersion": 1,
         "workloadId": workload,
+        "encryptedCopy": published,
         "trustDomain": spec["domain"],
         "container": container,
         "artifactPath": str(artifact),
@@ -663,6 +700,11 @@ def main() -> int:
         "--confirm",
         help="exact workload ID required for ownership repair",
     )
+    parser.add_argument(
+        "--age-recipient-file",
+        type=Path,
+        help="age public keys; also publish an encrypted copy of the verified dump to the pull dir",
+    )
     arguments = parser.parse_args()
     if os.geteuid() != 0:
         raise BackupError("run with sudo")
@@ -674,7 +716,7 @@ def main() -> int:
         if arguments.action == "repair-ownership":
             result = repair_ownership(arguments.workload, arguments.confirm)
         else:
-            result = backup(arguments.workload)
+            result = backup(arguments.workload, arguments.age_recipient_file)
     print(json.dumps(result, sort_keys=True))
     return 0
 

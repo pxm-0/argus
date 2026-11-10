@@ -159,3 +159,54 @@ sudo install -m 0644 templates/systemd/argus-hastur-backup.service \
 sudo systemctl daemon-reload
 sudo systemctl enable --now argus-hastur-backup.timer
 ```
+
+## Nightly encrypted snapshots and the pull directory
+
+`argus-backup-snapshot.timer` runs `scripts/argus-backup-snapshot --reason nightly`
+at 02:10 UTC (`Persistent=true`, `RandomizedDelaySec=5m`), before the 02:35
+workload dumps. Archives are age-encrypted to the public keys in
+`/etc/argus/snapshot-recipients.txt` and stay in `/var/backups/argus-snapshots`
+(root `0700`).
+
+- Retention: only `*-nightly.tar.age` is pruned (newest 14). Reason-named
+  snapshots (`pre-deploy` and similar) are kept 60 days, or until pinned with a
+  `<archive>.pinned` file.
+- After a successful run, encrypted archives are mirrored (never plaintext) to
+  `/var/backups/argus-snapshots-pull` (`oreo:oreo 0750`, files `0640`) so the Mac
+  can pull without root. Create it once:
+  `sudo install -d -o oreo -g oreo -m 0750 /var/backups/argus-snapshots-pull`.
+- `/var/lib/argus/snapshot-last.json` (`{timestamp,size}`, `0644`) and
+  `/var/lib/argus/backup-status.json` record freshness. The status file carries
+  `staged_tar_verified` (the tar was verified before encryption) and
+  `final_verified` (the final bytes were re-read; false for `.age`, because the
+  identity is never on the server). A failing run triggers
+  `argus-backup-snapshot-failure.service`, which writes `status: "failed"`.
+- `--verify <file> [--identity <age identity>]` also compares against the previous
+  snapshot in the same directory (`--previous FILE` to choose, `--no-compare` to
+  skip) and fails if a `db/*` or `etc-argus/*` member disappeared or shrank by
+  more than 50 percent. Run it from the Mac, which holds the identity.
+
+Install:
+
+```bash
+sudo install -m 0644 systemd/argus-backup-snapshot.service \
+  systemd/argus-backup-snapshot-failure.service systemd/argus-backup-snapshot.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now argus-backup-snapshot.timer
+```
+
+### Encrypted dumps
+
+`argus-m5-workload-db-backup` and `argus-m5-hastur-backup` take
+`--age-recipient-file FILE`. The dump or tar is verified in the root-only tree
+first, then encrypted to a partial file in the pull dir and published with
+`os.replace`. Kadath keeps the newest 14 copies there. Hastur is frozen, so the
+pull dir holds exactly one encrypted copy each of `data` and `auth`. The kadath
+unit template passes the flag; run hastur once by hand:
+
+```bash
+sudo ./scripts/argus-m5-hastur-backup --workload hastur --age-recipient-file /etc/argus/snapshot-recipients.txt
+```
+
+The age identity is held by the operator (password manager plus paper copy); it
+is never stored on the server or in this repository.
