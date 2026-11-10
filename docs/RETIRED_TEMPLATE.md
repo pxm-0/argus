@@ -13,7 +13,7 @@ networks, images, state directories and the source checkout) is performed by the
 retirement pull request. Record the verified backup location and date here
 before merging:
 
-- Backup: TODO before merge.
+- Backup: TODO before merge. Push a commit to the PR branch that replaces this line with the location, date and checksum file of the verified backup (runbook step 1).
 
 Historical M0-M5 documents and Git commits retain their original references
 for audit history; they are not active runtime controls and must not be used to
