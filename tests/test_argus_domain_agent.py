@@ -267,5 +267,31 @@ class DomainAgentServiceTests(unittest.TestCase):
                     health = service.domain_health("hastur")
                 self.assertFalse(health["ok"], (label, health))
 
+    def test_deploy_result_carries_domain_health_and_image_id(self) -> None:
+        image = "sha256:" + "c" * 64
+        config = subprocess.CompletedProcess([], 0, stdout="sha256:target\n")
+        up = subprocess.CompletedProcess([], 0, stdout="")
+        ps = subprocess.CompletedProcess([], 0, stdout='{"ID":"' + "ab" * 6 + '","Service":"nodens","State":"running","Health":"healthy"}\n')
+        inspected = subprocess.CompletedProcess([], 0, stdout=image + "\n")
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            with (
+                patch.object(service, "run_compose", side_effect=[config, up]),
+                patch.object(service, "compose_service", return_value="nodens"),
+                patch("argus_domain_agent.subprocess.run", side_effect=[ps, ps, inspected]) as run,
+            ):
+                result = service.execute_typed("workload.deploy", "hastur", {"targetRevision": "sha256:target"})
+        self.assertTrue(result["domain_health"]["ok"])
+        self.assertEqual(image, result["imageId"])
+        self.assertIn("inspect", run.call_args_list[-1].args[0])
+        self.assertIn("completed", result["summary"])
+
+    def test_unreadable_image_id_is_empty_not_fatal(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            with patch("argus_domain_agent.subprocess.run", return_value=subprocess.CompletedProcess([], 1, stdout="")):
+                self.assertEqual("", service.image_id("hastur"))
+
+
 if __name__ == "__main__":
     unittest.main()
