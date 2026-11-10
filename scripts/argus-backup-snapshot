@@ -35,8 +35,8 @@ REASON_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 SQLITE_MAGIC = b"SQLite format 3\x00"
 RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
 COMMANDS = {
-    "state/git-head.txt": ["git", "--no-optional-locks", "-C", "{root}", "rev-parse", "HEAD"],
-    "state/git-status.txt": ["git", "--no-optional-locks", "-C", "{root}", "status", "--porcelain"],
+    "state/git-head.txt": ["git", "-c", "safe.directory={root}", "--no-optional-locks", "-C", "{root}", "rev-parse", "HEAD"],
+    "state/git-status.txt": ["git", "-c", "safe.directory={root}", "--no-optional-locks", "-C", "{root}", "status", "--porcelain"],
     "state/nft-ruleset.nft": ["nft", "list", "ruleset"],
     "state/tailscale-serve.json": ["tailscale", "serve", "status", "--json"],
     "state/systemd-argus-units.json": ["systemctl", "list-units", "argus-*", "--all", "--output", "json"],
@@ -318,6 +318,17 @@ def atomic_write_json(path: Path, payload: dict, mode: int = 0o644) -> None:
     os.replace(partial, path)
 
 
+def copy_nofollow(source: Path, partial: Path, mode: int, uid: int | None, gid: int | None) -> None:
+    """Write partial as a fresh file in an oreo-writable dir: never follow a planted symlink, never reuse a file."""
+    partial.unlink(missing_ok=True)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "wb") as out, source.open("rb") as handle:
+        if uid is not None:
+            os.fchown(out.fileno(), uid, gid)
+        os.fchmod(out.fileno(), mode)
+        shutil.copyfileobj(handle, out)
+
+
 def mirror_to_pull_dir(out_dir: Path, pull_dir: Path, owner: str) -> list[str]:
     """Copy encrypted archives only (never plaintext) to the oreo-readable pull dir; drop what pruning removed."""
     try:
@@ -335,10 +346,8 @@ def mirror_to_pull_dir(out_dir: Path, pull_dir: Path, owner: str) -> list[str]:
         if target.exists() and target.stat().st_size == source.stat().st_size:
             continue
         partial = pull_dir / f".{name}.partial"
-        shutil.copyfile(source, partial)
-        os.chmod(partial, 0o640)
-        if ids is not None and os.geteuid() == 0:
-            os.chown(partial, ids.pw_uid, ids.pw_gid)
+        root_owned = ids is not None and os.geteuid() == 0
+        copy_nofollow(source, partial, 0o640, ids.pw_uid if root_owned else None, ids.pw_gid if root_owned else None)
         os.replace(partial, target)
         copied.append(name)
     for stale in pull_dir.glob("*.tar.age"):

@@ -174,7 +174,7 @@ workload dumps. Archives are age-encrypted to the public keys in
 - After a successful run, encrypted archives are mirrored (never plaintext) to
   `/var/backups/argus-snapshots-pull` (`oreo:oreo 0750`, files `0640`) so the Mac
   can pull without root. Create it once:
-  `sudo install -d -o oreo -g oreo -m 0750 /var/backups/argus-snapshots-pull`.
+  The script creates and chowns it itself; no manual step is needed.
 - `/var/lib/argus/snapshot-last.json` (`{timestamp,size}`, `0644`) and
   `/var/lib/argus/backup-status.json` record freshness. The status file carries
   `staged_tar_verified` (the tar was verified before encryption) and
@@ -199,10 +199,14 @@ sudo systemctl enable --now argus-backup-snapshot.timer
 
 `argus-m5-workload-db-backup` and `argus-m5-hastur-backup` take
 `--age-recipient-file FILE`. The dump or tar is verified in the root-only tree
-first, then encrypted to a partial file in the pull dir and published with
-`os.replace`. Kadath keeps the newest 14 copies there. Hastur is frozen, so the
+first, encrypted in a root-only temp dir, then copied into the pull dir as a
+fresh partial (`O_EXCL|O_NOFOLLOW`, so a symlink planted by oreo is never
+followed) and published with `os.replace`. The snapshot mirror does the same. Kadath keeps the newest 14 copies there. Hastur is frozen, so the
 pull dir holds exactly one encrypted copy each of `data` and `auth`. The kadath
-unit template passes the flag; run hastur once by hand:
+unit template passes the flag, but the installed kadath unit does not change
+until you reinstall the template (below); without that step kadath stays
+unencrypted. If the recipient file is ever malformed, the dump unit exits
+nonzero after the verified dump is kept. Run hastur once by hand:
 
 ```bash
 sudo ./scripts/argus-m5-hastur-backup --workload hastur --age-recipient-file /etc/argus/snapshot-recipients.txt
@@ -221,3 +225,17 @@ sudo-narrowing repoint list: when releases move to root-owned `/opt/argus/curren
 change their `ExecStart` and `WorkingDirectory` paths with the other `argus-*`
 units. No ownership precheck is added meanwhile; it would fail the unit on the
 current server and stop backups.
+
+### Rollback
+
+Archives are never touched by a rollback. To undo the whole PR on the server:
+
+```bash
+sudo systemctl disable --now argus-backup-snapshot.timer
+sudo rm /etc/systemd/system/argus-backup-snapshot.{service,timer} /etc/systemd/system/argus-backup-snapshot-failure.service
+# reinstall the previous kadath unit template (without the age recipient flag) from the prior release
+sudo systemctl daemon-reload
+```
+
+Reverting the docs-only commit f3d4214 does not roll anything back. Delete
+the pull-dir copies by hand if wanted.

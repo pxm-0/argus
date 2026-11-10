@@ -178,7 +178,9 @@ class SnapshotTests(unittest.TestCase):
         git_commands = [argv for argv in mod.COMMANDS.values() if argv[0] == "git"]
         self.assertTrue(git_commands)
         for argv in git_commands:
-            self.assertEqual(argv[1], "--no-optional-locks", argv)
+            self.assertIn("--no-optional-locks", argv)
+            # root reading the oreo-owned repo must not hit "dubious ownership"
+            self.assertIn("safe.directory={root}", argv)
 
     def test_m1_verify_failure_aborts_without_archive(self) -> None:
         verify = self.root / "scripts" / "argus-m1-verify"
@@ -235,6 +237,22 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(status["status"], "ok")
         self.assertFalse(status["final_verified"])
         self.assertTrue(status["staged_tar_verified"])
+
+    def test_mirror_never_follows_a_planted_partial_symlink(self) -> None:
+        from importlib.machinery import SourceFileLoader
+        mod = SourceFileLoader("snapmod_mirror", str(SCRIPT)).load_module()
+        out, pull = Path(self._tmp.name) / "o", Path(self._tmp.name) / "p"
+        out.mkdir()
+        pull.mkdir()
+        (out / "20200101T000000Z-nightly.tar.age").write_bytes(b"cipher")
+        victim = Path(self._tmp.name) / "victim"
+        victim.write_text("keep")
+        (pull / ".20200101T000000Z-nightly.tar.age.partial").symlink_to(victim)
+        mod.mirror_to_pull_dir(out, pull, "nobody-such-user")
+        self.assertEqual(victim.read_text(), "keep")
+        copied = pull / "20200101T000000Z-nightly.tar.age"
+        self.assertFalse(copied.is_symlink())
+        self.assertEqual(copied.read_bytes(), b"cipher")
 
     def test_record_failure_updates_status_file(self) -> None:
         result = self.run_cli("--record-failure", "boom", plaintext=False)

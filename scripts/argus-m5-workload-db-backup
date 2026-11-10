@@ -14,10 +14,12 @@ import os
 from pathlib import Path
 import pwd
 import re
+import shutil
 import stat
 import subprocess
 import sys
 import tarfile
+import tempfile
 import time
 
 
@@ -41,6 +43,17 @@ PULL_OWNER = "oreo"
 RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
 
 
+def copy_nofollow(source: Path, partial: Path, mode: int, uid: int | None, gid: int | None) -> None:
+    """Write partial as a fresh file in an oreo-writable dir: never follow a planted symlink, never reuse a file."""
+    partial.unlink(missing_ok=True)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "wb") as out, source.open("rb") as handle:
+        if uid is not None:
+            os.fchown(out.fileno(), uid, gid)
+        os.fchmod(out.fileno(), mode)
+        shutil.copyfileobj(handle, out)
+
+
 def publish_encrypted(artifact: Path, recipient_file: Path, pull_dir: Path, prefix: str, keep: int) -> dict:
     """Encrypt an already-verified artifact to public keys, then atomically publish it to the pull dir."""
     lines = [ln.strip() for ln in recipient_file.read_text().splitlines() if ln.strip() and not ln.startswith("#")]
@@ -52,16 +65,18 @@ def publish_encrypted(artifact: Path, recipient_file: Path, pull_dir: Path, pref
     os.chmod(pull_dir, 0o750)
     final = pull_dir / f"{artifact.name}.age"
     partial = pull_dir / f".{final.name}.partial"
-    try:
-        proc = subprocess.run(["age", "-R", str(recipient_file), "-o", str(partial), str(artifact)],
+    # encrypt in a root-only temp dir, then copy into the oreo-writable pull dir without following symlinks
+    with tempfile.TemporaryDirectory(prefix="argus-age-") as work:
+        encrypted = Path(work) / final.name
+        proc = subprocess.run(["age", "-R", str(recipient_file), "-o", str(encrypted), str(artifact)],
                               capture_output=True, check=False)
-        if proc.returncode != 0 or not partial.exists() or partial.stat().st_size == 0:
+        if proc.returncode != 0 or not encrypted.exists() or encrypted.stat().st_size == 0:
             raise BackupError("age encryption failed")
-        os.chmod(partial, 0o640)
-        os.chown(partial, ids.pw_uid, ids.pw_gid)
-        os.replace(partial, final)
-    finally:
-        partial.unlink(missing_ok=True)
+        try:
+            copy_nofollow(encrypted, partial, 0o640, ids.pw_uid, ids.pw_gid)
+            os.replace(partial, final)
+        finally:
+            partial.unlink(missing_ok=True)
     stale = sorted(pull_dir.glob(f"{prefix}-*.age"), reverse=True)[keep:]
     for path in stale:
         path.unlink()
