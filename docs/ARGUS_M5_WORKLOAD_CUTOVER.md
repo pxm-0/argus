@@ -268,40 +268,91 @@ Run workloads sequentially. The global lock refuses overlapping cutovers.
 Do not delete the stopped source containers or final stage artifacts until
 the final acceptance checkpoint is approved.
 
-## Managed-zone pilot: nodens staging and production
+## Nodens staging (sandbox) and production (managed)
 
-`nodens-staging` and `nodens-production` are two separate workloads in
-`personal-managed` (realm `personal`, zone `managed`), each with its own
-Compose project, network, ingress socket, and tailnet route (BRIDGE §7.7).
-Both run the same image ID; production never receives a rebuilt artifact
-(BRIDGE §7.6). The reviewed runtime is the tracked
-`workloads/<id>/source/compose.yml` (`security.trackedByArgusGit: true`); the
-rest of `source/` stays ignored. The domain has no published ports and no
-default egress, and deploys use `--pull never`, so images reach it only through
-`argus-image-import`.
+Operator decision (#322, BRIDGE §7.2): `personal-sandbox` is the staging
+environment and `personal-managed` the production environment for every
+Nodens project. `nodens-staging` runs in `personal-sandbox` (realm `personal`,
+zone `sandbox`, stage `staging`); `nodens-production` runs in
+`personal-managed` (zone `managed`, stage `production`). Each has its own
+trust domain, Compose project, network, ingress socket, and tailnet route
+(BRIDGE §7.7). Both run the same image ID; production never receives a
+rebuilt artifact (BRIDGE §7.6).
 
-| Workload | Compose project | Ingress socket | Tailnet route |
-| --- | --- | --- | --- |
-| `nodens-staging` | `nodens-staging` | `/var/lib/argus/managed-ingress/nodens-staging/upstream.sock` | `:8450` |
-| `nodens-production` | `nodens-production` | `/var/lib/argus/managed-ingress/nodens-production/upstream.sock` | `:8451` |
+`nodens-staging` is a typed-deploy, image-pinned workload: it is not
+`sandboxReconcileOnly`, has no `argus-m5-workload-*` reconcile timer, and is
+never built from source. The legacy sandbox `nodens` workload (`:8444`) is
+separate and is retired on its own after staging is verified.
+
+The reviewed runtime is the tracked `workloads/<id>/source/compose.yml`
+(`security.trackedByArgusGit: true`); the rest of `source/` stays ignored.
+Neither domain publishes ports and both deny default egress, and deploys use
+`--pull never`, so images reach a domain only through `argus-image-import`.
+The two Compose files may differ only in workload name, image pin,
+ingress path, and pinned bridge name.
+
+### Typed-deploy projects in the sandbox firewall
+
+The domain firewall (`argus-sandbox-firewall`, cutover `--apply-egress` and
+re-runs, `argus-m5-egress-verify`, reconcile `egressPolicyDrift`) counts two
+kinds of project (#354):
+
+- **Cutover projects**: `lifecycle: active` with
+  `migration.targetTrustDomain` equal to the domain. Each must be running.
+  Rules, egress, connectivity, and the probe matrix are unchanged for them.
+- **Typed-deploy projects**: classification `trustDomain` equal to the
+  domain, `actions.sandboxReconcileOnly` not true, and manifest
+  `operations.deploy.allowed: true`. The manifest must declare
+  `runtime.compose.bridge` (`argus-` prefix, at most 15 characters), and the
+  Compose network must pin the same name in
+  `driver_opts.com.docker.network.bridge.name`. A typed project with no bridge
+  declaration refuses the whole domain.
+
+A typed project is optional at runtime. Its bridge always renders exactly one
+own-traffic rule, for example
+`iifname "argus-ndns-stg" oifname "argus-ndns-stg" accept;`, so the persisted
+policy does not change when staging is stopped or deployed. It gets no
+egress (an egress declaration naming it is refused), no cross-project
+connectivity (a policy naming it is refused), and it is not in the probe
+matrix. Discovery still refuses any project that is neither kind, any typed
+project on a bridge other than its declared one, and any missing cutover
+project.
+
+| Workload | Bridge |
+| --- | --- |
+| `nodens-staging` | `argus-ndns-stg` |
+| `nodens-production` | `argus-ndns-prd` (not yet deploy-enabled) |
+
+After this lands, regenerate and apply the `personal-sandbox` policy once (the
+only change is the `argus-ndns-stg` rule); until then reconciles report
+`egressPolicyDrift: true`.
+
+| Workload | Trust domain | Compose project | Ingress socket | Tailnet route |
+| --- | --- | --- | --- | --- |
+| `nodens-staging` | `personal-sandbox` | `nodens-staging` | `/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock` | `:8450` |
+| `nodens-production` | `personal-managed` | `nodens-production` | `/var/lib/argus/managed-ingress/nodens-production/upstream.sock` | `:8451` |
 
 Routes are tailnet-only. Never Funnel, Cloudflare, or a public listener.
 
 ### One-time host setup
 
 `route_contract` accepts only loopback HTTP targets, so Argus cannot apply a
-Serve mapping to a Unix socket. Create the ingress directories and the Serve
-mappings by hand, once:
+Serve mapping to a Unix socket. Create each ingress directory, owned by its
+domain's identity, and the Serve mappings by hand, once:
 
 ```bash
+sudo install -d -m 0711 -o root -g root /var/lib/argus/sandbox-ingress
+sudo install -d -m 0700 -o argus-personal-sandbox -g argus-personal-sandbox \
+  /var/lib/argus/sandbox-ingress/nodens-staging
 sudo install -d -m 0711 -o root -g root /var/lib/argus/managed-ingress
 sudo install -d -m 0700 -o argus-personal-managed -g argus-personal-managed \
-  /var/lib/argus/managed-ingress/nodens-staging \
   /var/lib/argus/managed-ingress/nodens-production
-sudo ./scripts/argus-image-import --domain personal-managed \
-  --image docker.io/library/caddy@sha256:<caddy-digest>
+for domain in personal-sandbox personal-managed; do
+  sudo ./scripts/argus-image-import --domain "$domain" \
+    --image docker.io/library/caddy@sha256:<caddy-digest>
+done
 sudo tailscale serve --bg --https=8450 \
-  unix:/var/lib/argus/managed-ingress/nodens-staging/upstream.sock
+  unix:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock
 sudo tailscale serve --bg --https=8451 \
   unix:/var/lib/argus/managed-ingress/nodens-production/upstream.sock
 tailscale serve status   # 8450 and 8451, tailnet only
@@ -309,12 +360,12 @@ tailscale funnel status  # must be empty
 ```
 
 Pin the Caddy ID the import prints as the `argus-ingress` image in both
-Compose files.
+Compose files; it must be the same ID in both domains.
 
-Onboarding both workloads changed only tracked config. Once, after that PR is
-pulled on the server, register them in private M1 (insert-only, audited,
-checkpointed; see `docs/ARGUS_M1_AUDIT_ANCHOR.md`) before any retirement
-reconcile:
+Onboarding changes only tracked config. Once, after an onboarding PR is
+pulled on the server, register new workloads in private M1 (insert-only,
+audited, checkpointed; see `docs/ARGUS_M1_AUDIT_ANCHOR.md`) before any
+retirement reconcile:
 
 ```bash
 sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
@@ -322,39 +373,79 @@ sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
   --apply --acknowledge-onboarded-workload-registration
 ```
 
+M1 entity and projection rows derive from the legacy classification, privacy,
+and access registries, not from `workload-classification.json`, so moving a
+workload between trust domains leaves M1 converged.
+`sudo python3 scripts/argus-m1-reconcile-retired-workloads` must report
+`alreadyApplied: true` with every count `0`.
+
 ### Release flow
 
-1. **Import.** After nodens CI publishes `ghcr.io/pxm-0/nodens@sha256:<D>`:
-   `sudo ./scripts/argus-image-import --domain personal-managed --image ghcr.io/pxm-0/nodens@sha256:<D>`.
+1. **Import into staging.** After nodens CI publishes
+   `ghcr.io/pxm-0/nodens@sha256:<D>`:
+   `sudo ./scripts/argus-image-import --domain personal-sandbox --image ghcr.io/pxm-0/nodens@sha256:<D>`.
    It prints `imageId`, the ID the domain reports. Pin that ID, never `<D>`:
-   they can differ. On the first import, test that a container can be created
-   from it, to catch a rootless EOVERFLOW unpack failure.
-2. **Pin PR.** Replace the `nodens` image in
-   `workloads/nodens-staging/source/compose.yml` with `image: sha256:<ID>`.
-   Both workloads are admitted but every manifest capability starts denied
-   (`operation-not-capable`), so the first pin PR also allows `deploy`,
-   `start`, `stop`, and `health` in that workload's manifest `operations`.
-   Merge it.
+   they can differ. Test that a container can be created from it, to catch a
+   rootless EOVERFLOW unpack failure:
+   `sudo runuser -u argus-personal-sandbox -- docker --host unix:///var/lib/argus/personal-sandbox/docker.sock create --name argus-import-probe sha256:<ID>`,
+   then `... rm argus-import-probe`.
+2. **Pin PR.** Set `image: sha256:<ID>` for `nodens` in
+   `workloads/nodens-staging/source/compose.yml`. Merge it.
 3. **Pull on the server.** `git -C /srv/argus pull --ff-only`. Never edit
    `/srv/argus` by hand.
-4. **Deploy staging.** From the dashboard, run `workload.deploy` for
-   `nodens-staging` with `targetRevision=sha256:<ID>`. The domain agent refuses
-   any revision that is not an exact line of `docker compose config --images`,
-   then runs `up -d --pull never` and waits up to 60s for domain health
-   (the healthcheck reports `starting` first).
-5. **Verify.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
+4. **Deploy staging.** The dashboard has no `workload.deploy` button; use the
+   session API from the signed-in dashboard tab's browser console, where
+   `app.js` defines `apiPost` (adds the CSRF header and `Idempotency-Key`) and
+   `ensureStepUp` (approval needs a step-up session; enter the bootstrap
+   credential in the operator field first). Create the preview only after the
+   pull, or it is `revision-stale`:
+
+   ```js
+   const w = "nodens-staging", operationType = "workload.deploy";
+   const parameters = { targetRevision: "sha256:<ID>" };
+   const p = (await apiPost(`/api/workloads/${w}/operations/preview`, { operationType, parameters })).payload;
+   console.log(p.trustDomain, p.allowed, p.reason, p.confirmationPhrase);
+   // stop unless trustDomain === "personal-sandbox" && allowed === true
+   const c = await apiPost(`/api/workloads/${w}/operations`, {
+     operationType, parameters, previewDigest: p.previewDigest,
+     expectedRevision: p.expectedRevision, policyVersion: p.policyVersion });
+   await ensureStepUp();
+   const a = await apiPost(`/api/operations/${c.payload.operation_id}/approve`,
+     { confirmation: p.confirmationPhrase });  // "deploy nodens-staging sha256:<ID>"
+   console.log(c.status, a.status, a.payload);
+   ```
+
+   Poll `GET /api/operations/<operation_id>` until `succeeded`.
+   `argus-domain-agent@personal-sandbox` refuses any revision that is not an
+   exact line of `docker compose config --images`, then runs
+   `up -d --pull never` and waits up to 60s for domain health.
+
+   Staging may run or be stopped without affecting sandbox egress tooling;
+   see [Typed-deploy projects in the sandbox firewall](#typed-deploy-projects-in-the-sandbox-firewall).
+5. **Verify staging.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8450/healthz`
    succeeds, and the operation ledger records the deploy as succeeded.
-6. **Promotion PR.** Pin the same `sha256:<ID>` in
-   `workloads/nodens-production/source/compose.yml` (grant production
-   capabilities the same way on the first promotion). The two Compose files may differ only
-   in workload name and ingress path. Merge, then pull on the server.
-7. **Deploy production.** Run `workload.deploy` for `nodens-production` with the
-   same `targetRevision`, then check `:8451/healthz`.
+6. **Import the same image into production.**
+   `sudo ./scripts/argus-image-import --domain personal-managed --image ghcr.io/pxm-0/nodens@sha256:<D>`.
+   The printed `imageId` must equal the staging `<ID>`; stop if it differs.
+   Run the same container-create probe against the `personal-managed` socket.
+7. **Promotion PR.** Pin the same `sha256:<ID>` in
+   `workloads/nodens-production/source/compose.yml`. On the first promotion,
+   also allow `deploy`, `start`, `stop`, and `health` in that manifest's
+   `operations` (every capability starts denied, `operation-not-capable`).
+   Merge, then pull on the server.
+8. **Deploy production.** Repeat step 4's API sequence with
+   `w = "nodens-production"` and the same `targetRevision`; the preview must
+   show `trustDomain` `personal-managed` and `allowed` `true`.
+9. **Verify production.** `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8451/healthz`.
 
 ### Rollback
 
-Open a PR that reverts the production pin to the previous ID, which is still
-loaded in the domain. Merge it, pull on the server, and run `workload.deploy`
-for `nodens-production` with that previous ID. Check that `:8451` serves the
-previous build. Do not prune images in `personal-managed` while their IDs are
-still rollback targets.
+Open a PR that reverts the affected pin to the previous ID, which is still
+loaded in that domain. Merge it, pull on the server, and run
+`workload.deploy` (step 4's API sequence) for that workload with the previous
+ID. Check that `:8450` (staging) or
+`:8451` (production) serves the previous build. Do not prune images in
+`personal-sandbox` or `personal-managed` while their IDs are still rollback
+targets. To take staging down without a revision change, run
+`workload.stop` for `nodens-staging` the same way (`parameters: {}`; the
+preview's `confirmationPhrase` is the approval text).

@@ -2,6 +2,8 @@
 from __future__ import annotations
 from typing import Any
 
+from argus_state import allowed_stages
+
 QUARANTINE = {"realm": "unclassified", "zone": "legacy", "stage": "none", "trustDomain": "legacy-rootful", "status": "legacy-unclassified", "admission": "denied"}
 TARGET_KEYS = {"realm", "zone", "stage", "trustDomain", "status", "admission"}
 
@@ -14,7 +16,7 @@ def _valid_target(state: Any) -> bool:
     return (
         realm in {"personal", "work"}
         and zone in {"sandbox", "managed"}
-        and stage in ({"none"} if zone == "sandbox" else {"dev", "staging", "production"})
+        and stage in allowed_stages(realm, zone)
         and state.get("trustDomain") == expected_domain
         and state.get("status") == "classified"
         and state.get("admission") == "allowed"
