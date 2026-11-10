@@ -171,13 +171,25 @@ class AgentService:
             return {"ok": False, "status": "unavailable", "detail": "typed runtime health command failed"}
         try:
             stripped = result.stdout.strip()
-            decoded = json.loads(stripped) if stripped.startswith(("[", "{")) else [json.loads(line) for line in stripped.splitlines() if line]
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                # compose prints one JSON object per container line, so multi-container projects are NDJSON
+                decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
             payload = decoded if isinstance(decoded, list) else [decoded]
         except json.JSONDecodeError:
             return {"ok": False, "status": "invalid", "detail": "typed runtime health output was invalid"}
         service = self.compose_service(workload_id)
         rows = [row for row in payload if not service or row.get("Service") == service]
-        healthy = bool(rows) and all(
+        # sibling containers (e.g. the ingress sidecar) must not be crash-looping, dead or failed either
+        siblings = [row for row in payload if row not in rows]
+        siblings_ok = all(
+            str(row.get("State", "")).lower() not in {"restarting", "dead"}
+            and not (str(row.get("State", "")).lower() == "exited" and str(row.get("ExitCode", 0)) not in {"0", ""})
+            and str(row.get("Health", "")).lower() != "unhealthy"
+            for row in siblings
+        )
+        healthy = bool(rows) and siblings_ok and all(
             str(row.get("State", "")).lower() == "running"
             and str(row.get("Health", "")).lower() in {"", "healthy"}
             for row in rows

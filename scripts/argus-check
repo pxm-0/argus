@@ -419,15 +419,17 @@ def docs_parity_check(root: Path) -> bool:
         command_rows = public_cli["commands"]
         if not isinstance(command_rows, list) or not command_rows:
             raise ValueError("public command rows")
-        if any(not isinstance(item, dict) or set(item) != {"command", "privilege"} for item in command_rows):
+        if any(not isinstance(item, dict) or set(item) - {"where"} != {"command", "privilege"} or item.get("where", "api") != "api" for item in command_rows):
             raise ValueError("public command row contract")
         public_commands = {str(item["command"]): str(item["privilege"]) for item in command_rows}
         if len(public_commands) != len(command_rows) or any(
             privilege not in {
                 "local-read-only",
                 "local-refresh-request",
+                "local-write",
                 "server-read-only",
                 "server-mutation",
+                "api-session",
             }
             for privilege in public_commands.values()
         ):

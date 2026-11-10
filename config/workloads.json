@@ -184,6 +184,7 @@
     {
       "id": "nodens-staging",
       "name": "Nodens Staging",
+      "promotesTo": "nodens-production",
       "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
       "lifecycle": "discovered",
       "kind": "web-app",
@@ -223,7 +224,7 @@
       },
       "migration": {
         "status": "planned",
-        "targetTrustDomain": "personal-managed",
+        "targetTrustDomain": "personal-sandbox",
         "originalPath": "",
         "compatibilitySymlink": false,
         "bindMountRisks": [],

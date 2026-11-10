@@ -1,4 +1,4 @@
-# Reviewed runtime for the nodens-staging workload in personal-managed.
+# Reviewed runtime for the nodens-staging workload in personal-sandbox (stage staging).
 # Both images are domain-local IDs printed by scripts/argus-image-import; a
 # workload.deploy targetRevision must equal one of these lines exactly. Until
 # the first import, the PENDING pins fail closed (no deploy can match them).
@@ -36,6 +36,9 @@ services:
     # Not read_only: Compose refuses inline config content on read-only services.
     cap_drop:
       - ALL
+    # the caddy binary carries the cap_net_bind_service file capability; exec fails (EPERM) unless it stays bounded
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     configs:
@@ -43,7 +46,7 @@ services:
         target: /etc/caddy/ingress.json
     volumes:
       - type: bind
-        source: /var/lib/argus/managed-ingress/nodens-staging
+        source: /var/lib/argus/sandbox-ingress/nodens-staging
         target: /run/argus-ingress
     networks:
       - internal
@@ -51,6 +54,10 @@ services:
 networks:
   internal:
     internal: true
+    driver_opts:
+      # Stable bridge name, equal to manifest runtime.compose.bridge, so the
+      # domain firewall renders one unchanging rule for it (#354).
+      com.docker.network.bridge.name: argus-ndns-stg
 
 configs:
   ingress:

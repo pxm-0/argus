@@ -219,6 +219,7 @@ def render_firewall(
     domain: str,
     networks: Any,
     *,
+    typed_bridges: dict[str, str] | None = None,
     egress: dict[str, dict[str, Any]] | None = None,
     connectivity: list[dict[str, Any]] | None = None,
     endpoints: Any | None = None,
@@ -243,14 +244,24 @@ def render_firewall(
         (item["project"], item["network"], item["service"]): item["addresses"]
         for item in resolved_endpoints
     }
+    # Typed-deploy projects get only their declared bridge's own-traffic rule,
+    # rendered whether or not they run; no egress or cross-project rule can name them.
+    intra = {
+        project: [network["interface"] for network in project_networks]
+        for project, project_networks in by_project.items()
+    }
+    for project, interface in (typed_bridges or {}).items():
+        _name(project, "typed project")
+        if not isinstance(interface, str) or not INTERFACE.fullmatch(interface):
+            raise FirewallPolicyError("typed project bridge is invalid")
+        if project in intra or any(interface in names for names in intra.values()):
+            raise FirewallPolicyError("typed project bridge is duplicated")
+        intra[project] = [interface]
     forward: list[str] = []
-    for project in sorted(by_project):
-        project_networks = by_project[project]
-        for source in project_networks:
-            for target in project_networks:
-                forward.append(
-                    f'    iifname "{source["interface"]}" oifname "{target["interface"]}" accept;\n'
-                )
+    for project in sorted(intra):
+        for source in intra[project]:
+            for target in intra[project]:
+                forward.append(f'    iifname "{source}" oifname "{target}" accept;\n')
     for policy in sorted(policies, key=lambda item: item["id"]):
         source = by_identity.get((policy["sourceProject"], policy["sourceNetwork"]))
         target = by_identity.get((policy["targetProject"], policy["targetNetwork"]))

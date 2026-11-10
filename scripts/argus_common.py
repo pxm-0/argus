@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import urllib.error
@@ -19,6 +20,12 @@ from typing import Any
 from argus_m5_topology import build_topology
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_reconciliation import reconcile
+
+# Images a sealed trust domain may import; shared by argus-image-import and argus release.
+ALLOWED_IMAGES = (
+    re.compile(r"ghcr\.io/pxm-0/[a-z0-9-]+@sha256:[0-9a-f]{64}"),
+    re.compile(r"docker\.io/library/caddy@sha256:[0-9a-f]{64}"),
+)
 
 
 APPROVED_OPERATOR_LINKS = {
@@ -218,6 +225,37 @@ def recent_events(limit: int = 50) -> list[dict[str, Any]]:
     return events
 
 
+def compose_image_pin(compose_path: str, service: str = "") -> str:
+    """Return the immutable sha256 digest on the named service's `image:` line, or "".
+
+    Handles `image: repo@sha256:<hex>` and bare `image: sha256:<hex>` (with an optional
+    trailing comment). Only the service's own image counts, so a sidecar such as caddy
+    never supplies the pin. Without a service, a single distinct digest is required.
+    The compose file is server-local; off-server this returns "".
+    """
+    try:
+        text = Path(compose_path).read_text(encoding="utf-8") if compose_path else ""
+    except OSError:
+        return ""
+    digest = r"(?:^|@)(sha256:[0-9a-f]{64})$"
+    in_services, in_target, found = False, not service, set()
+    for line in text.splitlines():
+        code = line.split("#", 1)[0].rstrip()
+        if not code.strip():
+            continue
+        indent = len(code) - len(code.lstrip())
+        if indent == 0:
+            in_services = code.strip() == "services:"
+            continue
+        if service and in_services and indent <= 2 and code.strip().endswith(":"):
+            in_target = code.strip()[:-1].strip("\"'") == service
+            continue
+        m = re.match(r"\s*image:\s*[\"']?(\S+?)[\"']?$", code)
+        if in_target and m and (d := re.search(digest, m.group(1))):
+            found.add(d.group(1))
+    return found.pop() if len(found) == 1 else ""
+
+
 def dashboard_state() -> dict[str, Any]:
     privacy = load_json("privacy.json")
     access = load_json("access.json")
@@ -236,6 +274,13 @@ def dashboard_state() -> dict[str, Any]:
         merged.append(
             {
                 **workload,
+                "runtime": {
+                    **(workload.get("runtime") or {}),
+                    "imagePin": compose_image_pin(
+                        str((workload.get("runtime") or {}).get("composePath", "")),
+                        str((workload.get("runtime") or {}).get("service", "")),
+                    ),
+                },
                 "privacy": privacy["workloads"].get(workload_id, {}),
                 "access": access["workloads"].get(workload_id, {}),
                 "routes": routes["workloadRoutes"].get(workload_id, {}),

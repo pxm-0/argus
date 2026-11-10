@@ -13,6 +13,7 @@
       "path": "/srv/argus/workloads/nodens-production/source/compose.yml",
       "project": "nodens-production",
       "service": "nodens",
+      "bridge": "argus-ndns-prd",
       "legacyPaths": []
     },
     "composePath": "/srv/argus/workloads/nodens-production/source/compose.yml",
@@ -37,7 +38,7 @@
   },
   "operations": {
     "health": {
-      "allowed": false
+      "allowed": true
     },
     "logs": {
       "allowed": false
@@ -46,13 +47,13 @@
       "allowed": false
     },
     "deploy": {
-      "allowed": false
+      "allowed": true
     },
     "start": {
-      "allowed": false
+      "allowed": true
     },
     "stop": {
-      "allowed": false
+      "allowed": true
     },
     "backup": {
       "allowed": false

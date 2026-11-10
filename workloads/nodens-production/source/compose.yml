@@ -6,7 +6,7 @@ name: nodens-production
 
 services:
   nodens:
-    image: sha256:PENDING-nodens-image-id-from-argus-image-import
+    image: sha256:e8f2abf0300b7031e22ab633eade07dad327bbcab3572e26d0eb007d27569733  # ghcr.io/pxm-0/nodens@sha256:e8f2abf0300b7031e22ab633eade07dad327bbcab3572e26d0eb007d27569733 (nodens aec2b0a)
     restart: unless-stopped
     read_only: true
     tmpfs:
@@ -36,6 +36,9 @@ services:
     # Not read_only: Compose refuses inline config content on read-only services.
     cap_drop:
       - ALL
+    # the caddy binary carries the cap_net_bind_service file capability; exec fails (EPERM) unless it stays bounded
+    cap_add:
+      - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
     configs:
@@ -51,6 +54,10 @@ services:
 networks:
   internal:
     internal: true
+    driver_opts:
+      # Stable bridge name, equal to manifest runtime.compose.bridge, so the
+      # domain firewall renders one unchanging rule for it (#354).
+      com.docker.network.bridge.name: argus-ndns-prd
 
 configs:
   ingress:
