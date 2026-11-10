@@ -210,3 +210,14 @@ sudo ./scripts/argus-m5-hastur-backup --workload hastur --age-recipient-file /et
 
 The age identity is held by the operator (password manager plus paper copy); it
 is never stored on the server or in this repository.
+
+### Root ExecStart from an oreo-owned tree
+
+`argus-backup-snapshot.service`, `argus-backup-snapshot-failure.service` and the
+kadath workload template run scripts from `/srv/argus` as root. That tree and
+`scripts/argus-backup-snapshot` are owned by oreo today, so anything that can
+write as oreo can get code run as root nightly. These three units are on the
+sudo-narrowing repoint list: when releases move to root-owned `/opt/argus/current`,
+change their `ExecStart` and `WorkingDirectory` paths with the other `argus-*`
+units. No ownership precheck is added meanwhile; it would fail the unit on the
+current server and stop backups.
