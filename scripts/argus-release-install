@@ -1,0 +1,180 @@
+#!/usr/bin/env python3
+"""Install a reviewed commit as an immutable, root-owned release and switch /opt/argus/current to it.
+
+  sudo /opt/argus/current/scripts/argus-release-install --sha <40-hex>
+
+Root only.  The commit must exist in the /srv/argus checkout, be reachable from
+origin/main, and the checkout must be clean.  `git archive` of that commit is
+extracted into /opt/argus/releases/<sha>, its git tree hash is recomputed and
+compared with the commit's tree, the tree is chowned root:root with group and
+other write removed, and /opt/argus/current is flipped with an atomic rename.
+Gitignored state paths (runtime/, dashboard public/) become symlinks into the
+live checkout so services keep their state; the release itself stays read-only.
+The only CLI argument is --sha so a sudoers `--sha *` entry cannot widen paths.
+"""
+from __future__ import annotations
+
+import argparse
+import hashlib
+import os
+import re
+import shutil
+import stat
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+SOURCE = Path("/srv/argus")
+PREFIX = Path("/opt/argus")
+REF = "origin/main"
+STATE_LINKS = ("runtime", "control-plane/dashboard/public")
+STAMP = "ARGUS_RELEASE"
+SHA = re.compile(r"[0-9a-f]{40}")
+
+
+class ReleaseRefused(RuntimeError):
+    """A precondition failed; nothing under the prefix was changed."""
+
+
+def git(source: Path, *args: str, binary: bool = False) -> subprocess.CompletedProcess:
+    # Root must not write into the oreo-owned checkout (index refresh, locks), and
+    # safe.directory is scoped to this one repo instead of a global setting.
+    command = ["git", "--no-optional-locks", "-c", f"safe.directory={source}", "-C", str(source), *args]
+    return subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=not binary, check=False)
+
+
+def require_clean_commit(source: Path, sha: str, ref: str) -> str:
+    """Return the commit's tree hash or raise ReleaseRefused."""
+    if not SHA.fullmatch(sha):
+        raise ReleaseRefused("sha must be 40 lowercase hex characters")
+    commit = git(source, "rev-parse", "--verify", "--quiet", f"{sha}^{{commit}}")
+    if commit.returncode != 0 or commit.stdout.strip() != sha:
+        raise ReleaseRefused(f"unknown commit {sha} in {source}")
+    status = git(source, "status", "--porcelain")
+    if status.returncode != 0:
+        raise ReleaseRefused(f"git status failed in {source}")
+    if status.stdout.strip():
+        raise ReleaseRefused(f"{source} has uncommitted changes; refusing to install from a dirty checkout")
+    if git(source, "merge-base", "--is-ancestor", sha, ref).returncode != 0:
+        raise ReleaseRefused(f"{sha} is not reachable from {ref}")
+    tree = git(source, "rev-parse", f"{sha}^{{tree}}")
+    if tree.returncode != 0:
+        raise ReleaseRefused(f"cannot read the tree of {sha}")
+    return tree.stdout.strip()
+
+
+def _blob(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()  # noqa: S324 - git object id, not security hashing
+
+
+def git_tree_hash(path: Path) -> str | None:
+    """Git tree object id of a directory; None for a directory git would not track (empty)."""
+    entries: list[tuple[bytes, bytes, str]] = []
+    for child in path.iterdir():
+        name = os.fsencode(child.name)
+        info = child.lstat()
+        if stat.S_ISLNK(info.st_mode):
+            entries.append((name, b"120000", _blob(os.fsencode(os.readlink(child)))))
+        elif stat.S_ISDIR(info.st_mode):
+            sub = git_tree_hash(child)
+            if sub is not None:
+                entries.append((name + b"/", b"40000", sub))
+        elif stat.S_ISREG(info.st_mode):
+            mode = b"100755" if info.st_mode & stat.S_IXUSR else b"100644"
+            entries.append((name, mode, _blob(child.read_bytes())))
+        else:
+            raise ReleaseRefused(f"unsupported file type in release: {child}")
+    if not entries:
+        return None
+    body = b"".join(mode + b" " + name.rstrip(b"/") + b"\0" + bytes.fromhex(oid) for name, mode, oid in sorted(entries))
+    return hashlib.sha1(b"tree %d\0" % len(body) + body).hexdigest()  # noqa: S324
+
+
+def extract_archive(source: Path, sha: str, destination: Path) -> None:
+    archive = git(source, "archive", "--format=tar", sha, binary=True)
+    if archive.returncode != 0:
+        raise ReleaseRefused(f"git archive failed: {archive.stderr.decode(errors='replace')[-200:]}")
+    with tempfile.TemporaryFile() as handle:
+        handle.write(archive.stdout)
+        handle.seek(0)
+        with tarfile.open(fileobj=handle) as tar:
+            tar.extractall(destination, filter="data")
+
+
+def seal(tree: Path, owner: tuple[int, int]) -> None:
+    """root-owned, no group/other write anywhere; symlinks are chowned but never followed."""
+    for current, dirs, files in os.walk(tree, followlinks=False):
+        for name in [*dirs, *files]:
+            path = Path(current, name)
+            os.chown(path, *owner, follow_symlinks=False)
+            if not path.is_symlink():
+                path.chmod(stat.S_IMODE(path.lstat().st_mode) & ~0o022)
+    os.chown(tree, *owner)
+    tree.chmod(0o755)
+
+
+def link_state(tree: Path, source: Path) -> None:
+    for relative in STATE_LINKS:
+        target = tree / relative
+        if target.is_dir() and not target.is_symlink():
+            shutil.rmtree(target)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.symlink_to(source / relative)
+
+
+def switch_current(current: Path, release: Path) -> None:
+    """Atomic: build a temp symlink beside `current`, then rename over it."""
+    temp = current.with_name(f".{current.name}.{os.getpid()}.new")
+    temp.unlink(missing_ok=True)
+    temp.symlink_to(release)
+    os.replace(temp, current)
+
+
+def install_release(
+    sha: str, *, source: Path = SOURCE, prefix: Path = PREFIX, ref: str = REF, owner: tuple[int, int] = (0, 0)
+) -> Path:
+    expected_tree = require_clean_commit(source, sha, ref)
+    releases = prefix / "releases"
+    releases.mkdir(parents=True, exist_ok=True, mode=0o755)
+    final = releases / sha
+    if final.exists():
+        raise ReleaseRefused(f"{final} already exists; releases are immutable (use a new sha or switch the symlink by hand)")
+    staging = Path(tempfile.mkdtemp(prefix=f".staging-{sha[:12]}-", dir=releases))
+    try:
+        staging.chmod(0o700)
+        extract_archive(source, sha, staging)
+        actual = git_tree_hash(staging)
+        if actual != expected_tree:
+            raise ReleaseRefused(f"tree hash mismatch: archive {actual} != commit {expected_tree}")
+        link_state(staging, source)
+        (staging / STAMP).write_text(sha + "\n", encoding="utf-8")
+        seal(staging, owner)
+        os.replace(staging, final)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    switch_current(prefix / "current", final)
+    return final
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Install a reviewed commit as a root-owned release.", allow_abbrev=False)
+    parser.add_argument("--sha", required=True, help="40-hex commit reachable from origin/main in /srv/argus")
+    args = parser.parse_args(argv)
+    if os.geteuid() != 0:
+        print("argus-release-install must run as root", file=sys.stderr)
+        return 3
+    os.umask(0o022)
+    try:
+        release = install_release(args.sha)
+    except (ReleaseRefused, OSError, tarfile.TarError) as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    print(f"installed {release}; /opt/argus/current -> {release}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

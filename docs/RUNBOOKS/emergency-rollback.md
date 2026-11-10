@@ -7,9 +7,9 @@ steps are deterministic shell; none needs an AI or external service.
 ## 0. Snapshot before any risky change
 
 ```bash
-sudo /srv/argus/scripts/argus-backup-snapshot --reason before-<change>
-sudo /srv/argus/scripts/argus-backup-snapshot --verify /var/backups/argus-snapshots/<file>
-sudo /srv/argus/scripts/argus-backup-snapshot --restore-plan <file>   # prints steps only
+sudo /opt/argus/current/scripts/argus-backup-snapshot
+sudo /opt/argus/current/scripts/argus-backup-snapshot --verify /var/backups/argus-snapshots/<file>
+sudo /opt/argus/current/scripts/argus-backup-snapshot --restore-plan <file>   # prints steps only
 ```
 
 The snapshot holds consistent SQLite copies (SQLite backup API, never `cp`) of
@@ -60,7 +60,7 @@ start. Changes written after the migration are lost; check the audit ledger.
 1. Revert the pin PR (the one that changed the workload image digest) and merge.
 2. Pull on the server: `git -C /srv/argus pull --ff-only`.
 3. Import the previous digest if it is no longer present:
-   `sudo ./scripts/argus-image-import --domain <domain> --image <repo>@sha256:<previous>`.
+   `sudo /opt/argus/current/scripts/argus-image-import --domain personal-sandbox --image <repo>@sha256:<previous>` (the domain that runs the workload).
 4. Redeploy through the normal deploy path and confirm workload health.
    Do not edit the pin on the server by hand.
 
@@ -69,11 +69,11 @@ start. Changes written after the migration are lost; check the audit ledger.
 Restart bottom-up so dependents never see a half-started dependency:
 
 ```bash
-sudo systemctl restart argus-capability-issuer
-sudo systemctl restart argus-control-api         # requires argus-operation-worker
-sudo systemctl restart argus-operation-worker
-sudo systemctl restart 'argus-domain-agent@*'    # then legacy-rootful if used
-journalctl -u 'argus-*' -n 100 | cat
+sudo systemctl restart argus-capability-issuer.service
+sudo systemctl restart argus-control-api.service         # requires argus-operation-worker
+sudo systemctl restart argus-operation-worker.service
+sudo systemctl restart argus-domain-agent@personal-sandbox.service   # each domain, then legacy-rootful if used
+sudo journalctl --no-pager -n 200 -u argus-domain-agent@personal-sandbox.service
 ```
 
 Check `systemctl list-units 'argus-*'` for failed units before moving on. If an
@@ -82,7 +82,7 @@ operation is stuck, use `argus operation show <id>` and
 
 ## 4. M1 store corruption
 
-1. Confirm: `sudo ./scripts/argus-m1-verify` fails, or
+1. Confirm: `sudo argus m1 verify` fails, or
    `sqlite3 <db> 'PRAGMA integrity_check'` is not `ok`.
 2. Stop services (reverse of section 3's order), pick the newest verified
    snapshot, and follow `--restore-plan <file>`. Keep the corrupt database as

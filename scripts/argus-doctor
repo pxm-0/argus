@@ -2,22 +2,37 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import binascii
 import grp
 import json
 import os
 import pwd
 import shutil
 import stat
+import re
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from argus_common import load_json, print_json, root
+from argus_sudoers import findings as sudoers_findings, parse_entries as parse_sudoers
 
 
 SECRET_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".token"}
 SECRET_NAMES = {".env", "control-token", "audit.log"}
 SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
+SUDOERS_DIR = Path("/etc/sudoers.d")
+# Operator-accepted exceptions: reported as warnings, never hidden.
+SUDOERS_WARN_ONLY = {
+    "90-codex-nopasswd": "legacy broad grant; remove last in docs/RUNBOOKS/sudo-narrowing.md",
+    "oreo-yog-sothoth": "separate yog-sothoth grant retained by operator decision",
+}
+GHCR_CONFIG = Path("/etc/argus/registry/.docker/config.json")
+GHCR_STAMP = Path("/var/lib/argus/ghcr-token-rotated")
+GHCR_WARN_DAYS, GHCR_FAIL_DAYS = 75, 90
+GHCR_SCOPES = {"read:packages"}
 
 
 def run(command: list[str]) -> subprocess.CompletedProcess[str]:
@@ -309,6 +324,153 @@ def api_service_user_checks(checks: list[dict[str, Any]]) -> None:
         add(checks, True, "WARN: NOPASSWD sudoers drop-in names the control API user", warn=True, files=named)
 
 
+def trusted_path_problem(path: str, trusted_uids: tuple[int, ...] = (0,)) -> str | None:
+    """First component of the resolved path that is not owned by a trusted uid or is group/other writable."""
+    resolved = Path(os.path.realpath(path))
+    for item in [resolved, *resolved.parents]:
+        try:
+            info = item.lstat()
+        except OSError:
+            return f"{item} is not readable"
+        if info.st_uid not in trusted_uids:
+            return f"{item} is owned by uid {info.st_uid}"
+        if info.st_mode & 0o022:
+            return f"{item} is group/other writable"
+    return None
+
+
+def sudoers_checks(checks: list[dict[str, Any]], directory: Path = SUDOERS_DIR) -> None:
+    """No operator drop-in may grant ALL, shells, interpreters or wildcard escapes."""
+    try:
+        files = sorted(item for item in directory.iterdir() if item.is_file() and "." not in item.name and not item.name.endswith("~"))
+        texts = {item.name: item.read_text() for item in files}
+    except OSError:
+        return  # unreadable without root; the host check runs as root
+    for name, text in texts.items():
+        problems = sudoers_findings(parse_sudoers(text))
+        message = f"sudoers drop-in {name} has no root-escape entries"
+        if not problems:
+            add(checks, True, message)
+        elif name in SUDOERS_WARN_ONLY:
+            add(checks, True, f"WARN: {message}: {SUDOERS_WARN_ONLY[name]}", warn=True, findings=len(problems))
+        else:
+            add(checks, False, message, findings=problems[:10])
+
+
+def exec_start_paths(shown: str) -> list[str]:
+    """Executable and absolute script path from a `systemctl show -p ExecStart` value."""
+    paths = re.findall(r"path=(\S+)", shown)[:1]
+    argv = re.search(r"argv\[\]=(.*?) ;", shown)
+    words = argv.group(1).split() if argv else []
+    if len(words) > 1 and words[1].startswith("/") and os.path.isfile(words[1]):
+        paths.append(words[1])
+    return paths
+
+
+def exec_start_checks(checks: list[dict[str, Any]], runner: Callable[[list[str]], Any] = run, trusted_uids: tuple[int, ...] = (0,)) -> None:
+    """Every argus unit must execute code only from root-owned, non-group-writable trees."""
+    try:
+        listed = runner(["systemctl", "list-units", "argus-*.service", "--all", "--plain", "--no-legend", "--no-pager"])
+    except OSError:
+        add(checks, False, "systemd unit listing available")
+        return
+    units = sorted({line.split()[0] for line in listed.stdout.splitlines() if line.split()})
+    for unit in units:
+        shown = runner(["systemctl", "show", unit, "-p", "ExecStart", "--value"]).stdout
+        paths = exec_start_paths(shown)
+        if not paths:
+            continue
+        problems = [problem for path in paths if (problem := trusted_path_problem(path, trusted_uids))]
+        add(checks, not problems, f"{unit} ExecStart is under root-owned, non-group-writable paths", problems=problems[:3])
+
+
+def ghcr_credential_checks(
+    checks: list[dict[str, Any]],
+    *,
+    config: Path = GHCR_CONFIG,
+    stamp: Path = GHCR_STAMP,
+    online: bool = False,
+    now: datetime | None = None,
+    fetch: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
+    trusted_uids: tuple[int, ...] = (0,),
+) -> None:
+    """ghcr-credential: dedicated read-only registry login, root 0600, ghcr.io only, rotated within 90 days."""
+    name = "ghcr-credential"
+    try:
+        info = config.lstat()
+    except FileNotFoundError:
+        add(checks, True, f"WARN: {name}: {config} not installed yet (docs/RUNBOOKS/ghcr-token-rotation.md)", warn=True, check=name)
+        return
+    except OSError:
+        add(checks, False, f"{name}: {config} is not readable", check=name)
+        return
+    mode = stat.S_IMODE(info.st_mode)
+    add(checks, stat.S_ISREG(info.st_mode) and info.st_uid in trusted_uids and mode == 0o600,
+        f"{name}: config.json is a root-owned regular file with mode 0600", check=name, mode=oct(mode), uid=info.st_uid)
+    parent = trusted_path_problem(str(config.parent), trusted_uids)
+    add(checks, parent is None, f"{name}: config directory is root-owned and not group/other writable", check=name, problem=parent)
+    try:
+        auths = json.loads(config.read_text()).get("auths", {})
+    except (OSError, ValueError, AttributeError):
+        add(checks, False, f"{name}: config.json is valid JSON with an auths map", check=name)
+        return
+    registries = sorted(auths) if isinstance(auths, dict) else []
+    add(checks, registries == ["ghcr.io"], f"{name}: auths contains ghcr.io only", check=name, registries=registries)
+    current = now or datetime.now(timezone.utc)
+    try:
+        rotated = datetime.strptime(stamp.read_text().strip(), "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except (OSError, ValueError):
+        add(checks, False, f"{name}: rotation stamp {stamp} is missing or not an ISO UTC timestamp", check=name)
+    else:
+        age = (current - rotated).days
+        base = f"{name}: token age {age}d (warn at {GHCR_WARN_DAYS}d, fail at {GHCR_FAIL_DAYS}d)"
+        if age < 0 or age >= GHCR_FAIL_DAYS:
+            add(checks, False, base, check=name, ageDays=age)
+        elif age >= GHCR_WARN_DAYS:
+            add(checks, True, f"WARN: {base}", warn=True, check=name, ageDays=age)
+        else:
+            add(checks, True, base, check=name, ageDays=age)
+    if online and isinstance(auths.get("ghcr.io"), dict):
+        ghcr_online_check(checks, auths["ghcr.io"].get("auth", ""), fetch or curl_github_headers)
+
+
+def curl_github_headers(token: str) -> subprocess.CompletedProcess[str]:
+    # The Authorization header goes over stdin (`-H @-`) so the token never appears in `ps`.
+    # curl, not urllib: the core boundary policy forbids undeclared network importers.
+    return subprocess.run(
+        ["curl", "--silent", "--show-error", "--max-time", "15", "--dump-header", "-", "--output", "/dev/null",
+         "--header", "@-", "https://api.github.com/user"],
+        input=f"Authorization: Bearer {token}\nUser-Agent: argus-doctor\n", text=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False, timeout=30,
+    )
+
+
+def ghcr_online_check(checks: list[dict[str, Any]], auth: str, fetch: Callable[[str], subprocess.CompletedProcess[str]]) -> None:
+    name = "ghcr-credential"
+    try:
+        token = base64.b64decode(auth, validate=True).decode().partition(":")[2]
+    except (binascii.Error, UnicodeDecodeError):
+        token = ""
+    if not token:
+        add(checks, False, f"{name}: ghcr.io auth entry is not user:token base64", check=name)
+        return
+    try:
+        result = fetch(token)
+    except (OSError, subprocess.TimeoutExpired):
+        add(checks, True, f"WARN: {name}: curl or GitHub unavailable; scopes not verified", warn=True, check=name)
+        return
+    status = re.match(r"HTTP/\S+\s+(\d{3})", result.stdout)
+    if result.returncode != 0 or status is None:
+        add(checks, True, f"WARN: {name}: GitHub unreachable; scopes not verified", warn=True, check=name)
+        return
+    if status.group(1) != "200":
+        add(checks, False, f"{name}: GitHub rejected the token (HTTP {status.group(1)})", check=name)
+        return
+    header = re.search(r"^x-oauth-scopes:(.*)$", result.stdout, re.IGNORECASE | re.MULTILINE)
+    scopes = {item.strip() for item in (header.group(1) if header else "").split(",") if item.strip()}
+    add(checks, scopes == GHCR_SCOPES, f"{name}: token scopes are exactly read:packages", check=name, scopes=sorted(scopes))
+
+
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
     command = [str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
     if os.geteuid() == 0:
@@ -347,7 +509,7 @@ def core_boundary_check(checks: list[dict[str, Any]]) -> None:
     )
 
 
-def audit(*, include_host: bool = False) -> dict[str, Any]:
+def audit(*, include_host: bool = False, online: bool = False) -> dict[str, Any]:
     checks: list[dict[str, Any]] = []
     config_valid(checks)
     argus_quarantine_checks(checks)
@@ -358,6 +520,9 @@ def audit(*, include_host: bool = False) -> dict[str, Any]:
     if include_host:
         host_health_checks(checks)
         api_service_user_checks(checks)
+        sudoers_checks(checks)
+        exec_start_checks(checks)
+        ghcr_credential_checks(checks, online=online)
     core_boundary_check(checks)
     failures = [check for check in checks if not check["ok"]]
     return {"ok": not failures, "failures": len(failures), "checks": checks}
@@ -372,9 +537,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run Argus security and exposure audit checks.")
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--host", action="store_true", help="include live host ownership and PostgreSQL checks")
+    parser.add_argument("--online", action="store_true", help="with --host: also verify the GHCR token scopes against GitHub")
     args = parser.parse_args()
 
-    result = audit(include_host=args.host)
+    result = audit(include_host=args.host, online=args.online)
     if args.json:
         print_json(result)
     else:

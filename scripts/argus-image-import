@@ -28,6 +28,9 @@ ROOT = SCRIPT_DIR.parent
 SOURCES = ROOT / "config" / "argus" / "observation-sources.json"
 IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
 DOCKER_TIMEOUT_SECONDS = 900
+# Dedicated, root-only registry login so the pull never depends on root's ~/.docker
+# (sudo resets HOME). Falls back to the ambient config until the rotation runbook creates it.
+REGISTRY_DOCKER_CONFIG = Path("/etc/argus/registry/.docker")
 
 
 class ImportFailure(RuntimeError):
@@ -72,10 +75,17 @@ def loaded_reference(output: str) -> str:
     return loaded[0]
 
 
+def registry_env(config_dir: Path = REGISTRY_DOCKER_CONFIG) -> dict[str, str]:
+    env = dict(os.environ)
+    if (config_dir / "config.json").is_file():
+        env["DOCKER_CONFIG"] = str(config_dir)
+    return env
+
+
 def import_image(domain: str, image: str) -> str:
     pull = subprocess.run(
         ["docker", "pull", image], stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-        text=True, check=False, timeout=DOCKER_TIMEOUT_SECONDS,
+        text=True, check=False, timeout=DOCKER_TIMEOUT_SECONDS, env=registry_env(),
     )
     if pull.returncode != 0:
         raise ImportFailure(f"host docker pull failed: {pull.stderr.strip()[-300:]}")
@@ -108,7 +118,9 @@ def import_image(domain: str, image: str) -> str:
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Import an allowlisted image digest into a rootless trust domain.")
+    parser = argparse.ArgumentParser(
+        description="Import an allowlisted image digest into a rootless trust domain.", allow_abbrev=False,
+    )
     parser.add_argument("--domain", required=True, help="Rootless trust domain, for example personal-managed.")
     parser.add_argument("--image", required=True, help="Allowlisted reference pinned by @sha256 digest.")
     arguments = parser.parse_args(argv)

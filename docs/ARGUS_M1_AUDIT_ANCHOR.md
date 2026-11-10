@@ -22,7 +22,7 @@ and the hash-chained ledger together. The command prints only counts and
 digests; it does not disclose workload data or host details.
 
 ```bash
-sudo python3 scripts/argus-m1-verify
+sudo argus m1 verify
 ```
 
 After an onboarding PR (`scripts/argus-workload-onboard`) merges and the
@@ -43,9 +43,8 @@ a digest, and `--apply --confirm <digest>` passes the acknowledgements
 internally only when the digest matches the freshly recomputed plan.
 
 ```bash
-sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
-sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
-  --apply --acknowledge-onboarded-workload-registration
+sudo argus m1 sync
+sudo argus m1 sync --apply --confirm sha256:<plan-digest>
 ```
 
 If a workload is formally retired from the active inventory, reconcile its
@@ -56,10 +55,9 @@ It removes only declared retired rows and reprojects an already-present active
 row only to the exact reviewed configuration.
 
 ```bash
-sudo python3 scripts/argus-m1-reconcile-retired-workloads
-sudo python3 scripts/argus-m1-reconcile-retired-workloads \
-  --apply --acknowledge-retired-workload-reconciliation
-sudo python3 scripts/argus-m1-verify
+sudo argus m1 sync
+sudo argus m1 sync --apply --confirm sha256:<plan-digest>
+sudo argus m1 verify
 ```
 
 `config/argus/retired-workloads.json` is the explicit deletion allowlist for
@@ -70,6 +68,9 @@ If verification reports missing explicit legacy quarantine records, reconcile
 only those missing records from the existing denied default, then rerun the
 legacy import and verification. This does not admit a workload or alter its
 runtime, access, routes, or classification beyond explicit legacy quarantine.
+
+One-time legacy recovery; run it from a root maintenance shell (not part of the
+narrowed operator sudo allowlist, see `docs/RUNBOOKS/sudo-narrowing.md`):
 
 ```bash
 sudo python3 scripts/argus-m1-reconcile-legacy-classifications --apply --acknowledge-quarantine-reconciliation
