@@ -11,6 +11,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+import argus_totp
 from argus_sqlite import ClosingConnection
 
 
@@ -18,7 +19,10 @@ SESSION_IDLE_TTL_SECONDS = 30 * 60
 SESSION_ABSOLUTE_TTL_SECONDS = 8 * 60 * 60
 STEP_UP_TTL_SECONDS = 5 * 60
 SESSION_RETENTION_SECONDS = 30 * 24 * 60 * 60
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
+TOTP_FAILURE_LIMIT = 5
+TOTP_FAILURE_WINDOW_SECONDS = 5 * 60
+TOTP_LOCK_SECONDS = 15 * 60
 SESSION_RESTORATION_FAILURES = frozenset(
     {
         "identity-missing",
@@ -144,6 +148,14 @@ class SessionStore:
                 "session_hash",
                 "created_at",
             },
+            "totp_state": {
+                "login",
+                "last_counter",
+                "fail_count",
+                "fail_window_start",
+                "locked_until",
+            },
+            "totp_recovery_used": {"code_hash", "login", "used_at"},
         }
         for table, expected in required.items():
             columns = {
@@ -218,6 +230,26 @@ class SessionStore:
                         """
                         CREATE INDEX IF NOT EXISTS operation_session_reservations_session
                           ON operation_session_reservations(session_hash)
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS totp_state (
+                            login TEXT PRIMARY KEY,
+                            last_counter INTEGER NOT NULL DEFAULT 0,
+                            fail_count INTEGER NOT NULL DEFAULT 0,
+                            fail_window_start INTEGER NOT NULL DEFAULT 0,
+                            locked_until INTEGER NOT NULL DEFAULT 0
+                        )
+                        """
+                    )
+                    connection.execute(
+                        """
+                        CREATE TABLE IF NOT EXISTS totp_recovery_used (
+                            code_hash TEXT PRIMARY KEY,
+                            login TEXT NOT NULL,
+                            used_at INTEGER NOT NULL
+                        )
                         """
                     )
                     connection.execute("DROP TABLE IF EXISTS operator_sessions")
@@ -540,6 +572,91 @@ class SessionStore:
             str(reservation["session_hash"]),
             session_hash,
         )
+
+    def lockout_remaining(self, login: str) -> int:
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT locked_until FROM totp_state WHERE login = ?", (login,)
+            ).fetchone()
+        return max(0, int(row["locked_until"]) - self._now()) if row else 0
+
+    def record_failure(self, login: str) -> int:
+        """Count one failed attempt; returns the lock seconds now in force (0 when not locked)."""
+        current = self._now()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            connection.execute("INSERT OR IGNORE INTO totp_state (login) VALUES (?)", (login,))
+            row = connection.execute(
+                "SELECT fail_count, fail_window_start, locked_until FROM totp_state WHERE login = ?",
+                (login,),
+            ).fetchone()
+            locked_until = int(row["locked_until"])
+            if locked_until > current:
+                connection.rollback()
+                return locked_until - current
+            count, start = int(row["fail_count"]), int(row["fail_window_start"])
+            if current - start >= TOTP_FAILURE_WINDOW_SECONDS:
+                count, start = 0, current
+            count += 1
+            if count >= TOTP_FAILURE_LIMIT:
+                locked_until, count = current + TOTP_LOCK_SECONDS, 0
+            connection.execute(
+                "UPDATE totp_state SET fail_count = ?, fail_window_start = ?, locked_until = ? WHERE login = ?",
+                (count, start, locked_until, login),
+            )
+            connection.commit()
+        return max(0, locked_until - current)
+
+    def clear_failures(self, login: str) -> None:
+        with self._connect() as connection:
+            connection.execute(
+                "UPDATE totp_state SET fail_count = 0, fail_window_start = 0 WHERE login = ?",
+                (login,),
+            )
+
+    def verify_second_factor(
+        self, login: str, code: str, *, secret: str, recovery_hashes: list[str]
+    ) -> bool:
+        """Accept one TOTP code (counter above last_counter) or one unused recovery code, atomically."""
+        recovery = argus_totp.is_recovery_shape(code)
+        digest, counter = "", None
+        if recovery:
+            digest = argus_totp.recovery_hash(login, code)
+            matched = False
+            for known in recovery_hashes:
+                matched |= secrets.compare_digest(known, digest)
+            if not matched:
+                return False
+        else:
+            counter = argus_totp.matching_counter(secret, code, self.clock())
+            if counter is None:
+                return False
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            if recovery:
+                try:
+                    connection.execute(
+                        "INSERT INTO totp_recovery_used (code_hash, login, used_at) VALUES (?, ?, ?)",
+                        (digest, login, self._now()),
+                    )
+                except sqlite3.IntegrityError:
+                    connection.rollback()
+                    return False
+            else:
+                connection.execute("INSERT OR IGNORE INTO totp_state (login) VALUES (?)", (login,))
+                last = int(
+                    connection.execute(
+                        "SELECT last_counter FROM totp_state WHERE login = ?", (login,)
+                    ).fetchone()["last_counter"]
+                )
+                if counter <= last:
+                    connection.rollback()
+                    return False
+                connection.execute(
+                    "UPDATE totp_state SET last_counter = ? WHERE login = ?", (counter, login)
+                )
+            connection.commit()
+        return True
 
     def purge(self) -> int:
         cutoff = _format_timestamp(self._now() - SESSION_RETENTION_SECONDS)

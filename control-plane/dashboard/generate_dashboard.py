@@ -66,6 +66,7 @@ def render_html() -> str:
       </div>
       <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
+        <input id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" hidden>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
         <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
         <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
@@ -186,6 +187,7 @@ const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
 const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
+const adminTotpInput = document.getElementById("admin-totp");
 const sessionControl = document.getElementById("session-control");
 const sessionStatus = document.getElementById("session-status");
 const sessionDetail = document.getElementById("session-detail");
@@ -445,6 +447,16 @@ function tokenFor() {
   return adminTokenInput.value;
 }
 
+function credentialBody(credential) {
+  const totp = adminTotpInput.value.trim();
+  return totp ? { bootstrapToken: credential, totp } : { bootstrapToken: credential };
+}
+
+function clearCredentialInputs() {
+  adminTokenInput.value = "";
+  adminTotpInput.value = "";
+}
+
 function cookieValue(name) {
   const prefix = `${name}=`;
   const item = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith(prefix));
@@ -496,10 +508,10 @@ async function authenticateOperator() {
   if (!credential) throw new Error("Enter the bootstrap credential.");
   const result = await apiPost(
     "/api/session/exchange",
-    { bootstrapToken: credential },
+    credentialBody(credential),
     { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
   );
-  adminTokenInput.value = "";
+  clearCredentialInputs();
   if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
   if (!cookieValue("argus_csrf")) {
     setOperatorSessionState("unavailable", { reason: "csrf-missing" });
@@ -520,11 +532,11 @@ async function ensureStepUp() {
   if (session.stepUpValid) return true;
   const credential = tokenFor();
   if (!credential) {
-    showCommandResult("Step-up required", "Enter the bootstrap credential in the operator field, then retry the mutation.");
+    showCommandResult("Step-up required", "Enter the bootstrap credential and authenticator code in the operator fields, then retry the mutation.");
     return false;
   }
-  const result = await apiPost("/api/session/step-up", { bootstrapToken: credential });
-  adminTokenInput.value = "";
+  const result = await apiPost("/api/session/step-up", credentialBody(credential));
+  clearCredentialInputs();
   if (!result.ok) {
     showCommandResult("Step-up failed", result.payload);
     return false;
@@ -1280,6 +1292,7 @@ function fillAdminControls() {
 function setAdmin(open) {
   adminEnabled = open;
   adminTokenInput.hidden = !open;
+  adminTotpInput.hidden = !open;
   if (open && operatorSessionState === "authenticated") fillAdminControls();
   document.querySelectorAll(".admin-row").forEach((row) => {
     row.hidden = !(open && operatorSessionState === "authenticated");
@@ -1326,7 +1339,7 @@ adminToggle.addEventListener("click", async () => {
       showCommandResult("Logout failed", result.payload);
       return;
     }
-    adminTokenInput.value = "";
+    clearCredentialInputs();
     operationCache.clear();
     activeOperationPolls.clear();
     migrationCache.clear();
