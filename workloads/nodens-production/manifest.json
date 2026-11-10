@@ -6,7 +6,7 @@
   "canonicalRoot": "/srv/argus/workloads/nodens-production",
   "sourcePath": "/srv/argus/workloads/nodens-production/source",
   "privacyCompatibility": "unclassified",
-  "accessCompatibility": "none",
+  "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
@@ -22,7 +22,7 @@
     "legacyComposePaths": []
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-managed",
     "originalPath": "",
     "compatibilitySymlink": false,
@@ -32,7 +32,8 @@
     ]
   },
   "health": {
-    "url": "",
+    "enabled": true,
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8451/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
@@ -92,7 +93,7 @@
   "backup": {
     "backupAllowed": false,
     "restoreAllowed": false,
-    "status": "planned",
+    "status": "stateless-by-design",
     "source": false,
     "env": false,
     "namedVolumes": [],
@@ -108,7 +109,11 @@
     },
     "restoreTested": false,
     "lastBackupAt": "",
-    "lastRestoreTestAt": ""
+    "lastRestoreTestAt": "",
+    "recovery": [
+      "Stateless by design: the only state is the pinned compose.yml tracked in git (domain-local image IDs).",
+      "Recovery: restore compose.yml from git, then run `argus op workload deploy` with the recorded image ID as targetRevision."
+    ]
   },
   "security": {
     "publicAllowed": false,

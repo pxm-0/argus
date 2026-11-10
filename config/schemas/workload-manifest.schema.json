@@ -193,6 +193,9 @@
         },
         "destination": {
           "type": "string"
+        },
+        "status": {
+          "enum": ["planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"]
         }
       }
     },
