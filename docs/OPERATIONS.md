@@ -13,8 +13,9 @@ historical evidence.
 - Human mode writes result data to stdout and diagnostics to stderr.
 - `--json` emits one schema-versioned envelope on stdout.
 - Read-only status and preview commands never mutate.
-- A mutation is allowed only at the final typed `apply`, `rollback`, or
-  `recover` boundary after preview, fresh preconditions, and exact confirmation.
+- A mutation is allowed only at the final typed `apply` or `rollback` boundary
+  (or an `api-session` create) after preview, fresh preconditions, and exact
+  confirmation.
 - A refused or unavailable command means stop. A milestone script is not a
   workaround.
 
@@ -191,15 +192,47 @@ argus workload move status nodens --json
 
 Do not run an old migration script instead of this workflow.
 
+## Operation API client
+
+`api-session` — `argus op preview <workload> <type>`
+
+`api-session` — `argus op create <workload> <type>`
+
+`api-session` — `argus op show <operation-id>`
+
+`api-session` — `argus op watch <operation-id>`
+
+`api-session` — `argus workload deploy <id>`
+
+`api-session` — `argus workload start <id>`
+
+`api-session` — `argus workload stop <id>`
+
+`api-session` — `argus workload restart <id>`
+
+These use the private dashboard API (URL from `argus dashboard url`, or
+`--base-url`) with the same tailnet identity, session, CSRF, Origin and
+bootstrap-token step-up as the dashboard. The token is read only from
+`/dev/tty`; with no terminal the command exits 2. `create` previews, then
+requires the typed workload ID (or `--yes-digest <digest>` matching the
+previewed digest), then steps up, creates, approves and watches to a terminal
+state. Exit: succeeded 0; denied/expired 3; failed/rolled-back 4;
+indeterminate or unobservable 5. The server binds approval and cancel to the
+originating session, so there are no standalone `approve`/`cancel` verbs.
+`--base-url` is accepted only for a `*.ts.net` https URL or loopback http.
+
+```bash
+argus op preview nodens workload.deploy --revision sha256:... --json
+argus workload deploy nodens --revision sha256:...
+```
+
 ## Durable operations
 
 `server-read-only` — `argus operation show <operation-id>`
 
-`server-mutation` — `argus operation recover <operation-id>`
-
 Show reads the compatible operation ledger without migration or writes.
-Recovery fails closed unless the exact ID is confirmed and a typed recovery is
-approved; generic recovery is intentionally unavailable.
+There is no generic recovery command; follow the typed recovery runbook named
+by the operation.
 
 ```bash
 argus operation show 00000000-0000-0000-0000-000000000000 --json

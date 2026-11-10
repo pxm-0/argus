@@ -224,7 +224,7 @@
       },
       "migration": {
         "status": "planned",
-        "targetTrustDomain": "personal-managed",
+        "targetTrustDomain": "personal-sandbox",
         "originalPath": "",
         "compatibilitySymlink": false,
         "bindMountRisks": [],

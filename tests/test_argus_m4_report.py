@@ -30,6 +30,15 @@ class M4ReportTest(unittest.TestCase):
         self.assertTrue(report["complete"])
         self.assertEqual(1, report["targetCount"])
 
+    def test_report_allows_personal_sandbox_staging_only(self) -> None:
+        base = {"realm":"personal","zone":"sandbox","trustDomain":"personal-sandbox","status":"classified","admission":"allowed"}
+        staging = classification_report([{"id":"s"}], {"workloads":{}}, {"workloads":{"s":{**base,"stage":"staging"}}})
+        self.assertTrue(staging["complete"])
+        production = classification_report([{"id":"p"}], {"workloads":{}}, {"workloads":{"p":{**base,"stage":"production"}}})
+        self.assertEqual(["p"], production["invalidTargetClassification"])
+        work = {**base,"realm":"work","trustDomain":"work-sandbox","stage":"staging"}
+        self.assertEqual(["w"], classification_report([{"id":"w"}], {"workloads":{}}, {"workloads":{"w":work}})["invalidTargetClassification"])
+
     def test_report_records_superseded_legacy_state_and_rejects_invalid_target(self) -> None:
         report = classification_report([{"id":"a"}], {"workloads":{"a":dict(QUARANTINE)}}, {"workloads":{"a":{"realm":"personal"}}})
         self.assertFalse(report["complete"])

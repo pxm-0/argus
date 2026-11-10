@@ -200,7 +200,7 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
 
 
 def validate_promotions(repo: Path) -> list[str]:
-    """promotesTo in config/workloads.json must name another registered workload in the same trust domain."""
+    """promotesTo in config/workloads.json must name another registered workload; staging and production sit in different trust domains."""
     path = repo / "config" / "workloads.json"
     if not path.exists():
         return []
@@ -212,8 +212,6 @@ def validate_promotions(repo: Path) -> list[str]:
             continue
         if target == workload_id or target not in items:
             add_error(errors, workload_id, "promotesTo", "must name a different registered workload")
-        elif item.get("migration", {}).get("targetTrustDomain") != items[target].get("migration", {}).get("targetTrustDomain"):
-            add_error(errors, workload_id, "promotesTo", "must target a workload in the same trust domain")
     return errors
 
 
