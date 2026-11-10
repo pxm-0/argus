@@ -11,8 +11,8 @@ from __future__ import annotations
 
 import argparse
 import datetime as dt
+import http.client
 import io
-import json
 import os
 import shutil
 import socket
@@ -139,24 +139,27 @@ def api_answers(root: Path, steps: list[str], timeout: float = 20.0) -> None:
            "ARGUS_OPERATORS_FILE": str(root / "none"), "ARGUS_PROXY_TOKEN_FILE": str(root / "none")}
     server = subprocess.Popen([sys.executable, str(root / "control-plane" / "api" / "server.py")], env=env,
                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    direct = urllib.request.build_opener(urllib.request.ProxyHandler({}))  # loopback must never go via a system proxy
+    last_error = "none"
     try:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if server.poll() is not None:
                 raise DrillError("control API exited: " + ((server.stderr.read() or "").strip().splitlines() or ["?"])[-1][:200])
             try:
-                urllib.request.urlopen(f"http://127.0.0.1:{port}/api/session", timeout=2)
+                direct.open(f"http://127.0.0.1:{port}/api/session", timeout=2)
                 status = 200
             except urllib.error.HTTPError as exc:
                 status = exc.code
-            except (urllib.error.URLError, OSError):
+            except (urllib.error.URLError, OSError, http.client.HTTPException) as exc:
+                last_error = type(exc).__name__
                 time.sleep(0.3)
                 continue
             if status in (200, 401):
                 steps.append(f"control API answered {status} on loopback")
                 return
             raise DrillError(f"control API answered unexpected status {status}")
-        raise DrillError("control API did not answer in time")
+        raise DrillError(f"control API did not answer in time (last error {last_error})")
     finally:
         server.terminate()
         try:
