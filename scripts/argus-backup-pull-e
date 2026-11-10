@@ -1,0 +1,340 @@
+#!/usr/bin/env python3
+"""Mac-side off-host backup pull: rsync encrypted Argus snapshots, verify, quarantine, retain.
+
+Run by launchd (dev.argus.backup-pull). Pulls only (rsync --ignore-existing, never --delete), verifies
+every new archive with `argus-backup-snapshot --verify --identity <age key>`, moves failures to
+quarantine/ (never deletes unverified data), records SHA256SUMS + verify.log, applies Mac retention
+(newest 30 *-nightly archives, every reason-named archive kept) and writes .last-ok.
+
+Also pulls PR3's other off-host copies: hastur `<name>-<stamp>.tar.gz.age` (verified by streaming `age -d | tar`,
+newest copy per name kept) and kadath `<workload>-<stamp>.dump.age` (verified as a complete pg_dump custom file,
+newest 14 per workload kept). Only environment-independent corruption quarantines a file; a missing `age`, wrong
+key or unwritable scratch dir is a transient failure retried on the next run.
+
+Exit codes: 0 ok, 1 verification/rsync failure, 3 newest verified archive older than the limit,
+75 server unreachable (retry on the next trigger; not an alarm until the 36h staleness limit).
+Prints names, hashes and reasons only, never archive contents or key material.
+"""
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import hashlib
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+DEFAULT_SOURCE = "oreochiserver:/var/backups/argus-snapshots-pull/"
+NIGHTLY_KEEP = 30
+DUMP_KEEP = 14
+HASTUR_KEEP = 1
+MAX_AGE_HOURS = 36
+EX_TEMPFAIL = 75
+# rsync exit codes meaning the transport (ssh) never worked: ssh failure, socket I/O, timeouts.
+UNREACHABLE = {10, 30, 35, 255}
+REASON = r"[A-Za-z0-9][A-Za-z0-9._-]{0,39}"  # as PR3's REASON_RE: names are server-chosen, so stay strict
+STAMP_RE = re.compile(rf"^(\d{{8}}T\d{{6}}Z)-({REASON})\.tar(\.age)?$")
+AUX_RE = re.compile(rf"^({REASON})-(\d{{8}}T\d{{6}}Z)\.(tar\.gz|dump)\.age$")
+TRANSIENT_MARKERS = ("not writable", "No such file", "Permission denied", "No space left", "pass --identity")
+REMOTE_RE = re.compile(r"^([A-Za-z0-9_.@-]+):(?!/{2})")  # host:path, not a local path with a colon
+
+
+def now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc)
+
+
+def stamp_of(name: str) -> dt.datetime | None:
+    match = STAMP_RE.match(name)
+    raw = match.group(1) if match else (AUX_RE.match(name) or [None, None, None])[2]
+    if not raw:
+        return None
+    return dt.datetime.strptime(raw, "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
+
+
+def aux_group(name: str) -> tuple[str, str] | None:
+    """(workload-or-name, kind) for a hastur/kadath copy, else None."""
+    match = AUX_RE.match(name)
+    return (match.group(1), match.group(3)) if match else None
+
+
+def is_nightly(name: str) -> bool:
+    match = STAMP_RE.match(name)
+    return bool(match) and match.group(2) == "nightly"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def archives(directory: Path) -> list[Path]:
+    return sorted(p for p in directory.iterdir() if p.is_file() and (STAMP_RE.match(p.name) or AUX_RE.match(p.name)))
+
+
+def read_lines(path: Path) -> list[str]:
+    return path.read_text().splitlines() if path.is_file() else []
+
+
+def read_sums(path: Path) -> dict[str, str]:
+    sums = {}
+    for line in read_lines(path):
+        digest, _, name = line.partition("  ")
+        if digest and name:
+            sums[name] = digest
+    return sums
+
+
+def write_atomic(path: Path, text: str) -> None:
+    with tempfile.NamedTemporaryFile("w", dir=path.parent, prefix=f".{path.name}.", delete=False) as handle:
+        handle.write(text)
+    os.replace(handle.name, path)
+
+
+def log_line(dest: Path, line: str) -> None:
+    stamped = f"{now_utc().strftime('%Y-%m-%dT%H:%M:%SZ')} {line}"
+    print(stamped)
+    with (dest / "verify.log").open("a") as handle:
+        handle.write(stamped + "\n")
+
+
+def notify(message: str, enabled: bool) -> None:
+    print(f"ALERT {message}", file=sys.stderr)
+    if enabled and shutil.which("osascript"):
+        # The message carries server-chosen text: pass it as argv, never inside the AppleScript source.
+        subprocess.run(["osascript", "-e", "on run argv", "-e",
+                        'display notification (item 1 of argv) with title "Argus backup pull"', "-e", "end run",
+                        "--", message], check=False, capture_output=True)
+
+
+def run_rsync(source: str, dest: Path, excluded: list[str]) -> int:
+    exclude_file = dest / ".rsync-exclude"
+    write_atomic(exclude_file, "".join(f"/{name}\n" for name in excluded))
+    command = [
+        "rsync", "-rt", "--ignore-existing", "--timeout=120",
+        "-e", "ssh -o BatchMode=yes -o ConnectTimeout=15",
+        f"--exclude-from={exclude_file}", "--include=*.tar.age", "--include=*.tar", "--include=*.tar.gz.age", "--include=*.dump.age", "--exclude=*",  # excludes first
+        source if source.endswith("/") else source + "/", f"{dest}/",
+    ]
+    proc = subprocess.run(command, capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print(proc.stderr.strip()[-500:], file=sys.stderr)
+    return proc.returncode
+
+
+def verifier_flags() -> list[str]:
+    """--no-compare skips the verifier's previous-snapshot comparison (the server already ran it at creation; a
+    legitimate shrink must not quarantine a good archive). Older verifiers lack the flag, so ask it."""
+    script = ROOT / "scripts" / "argus-backup-snapshot"
+    helped = subprocess.run([sys.executable, str(script), "--help"], capture_output=True, text=True, check=False)
+    return ["--no-compare"] if "--no-compare" in helped.stdout else []
+
+
+def verify_snapshot(path: Path, identity: Path) -> str | None:
+    script = ROOT / "scripts" / "argus-backup-snapshot"  # tracked mode may be 100644: run via the interpreter
+    proc = subprocess.run([sys.executable, str(script), "--verify", str(path), "--identity", str(identity),
+                           *verifier_flags()], capture_output=True, text=True, check=False)
+    if proc.returncode == 0:
+        return None
+    return (proc.stderr.strip().splitlines() or ["verify failed"])[-1][:300]
+
+
+def verify_aux(path: Path, identity: Path) -> str | None:
+    """Decrypt-stream a hastur tar.gz or kadath pg_dump copy; age authenticates, so a truncated file fails."""
+    try:
+        proc = subprocess.Popen(["age", "-d", "-i", str(identity), str(path)], stdout=subprocess.PIPE,
+                                stderr=subprocess.DEVNULL)
+    except OSError as exc:
+        return f"No such file: cannot run age ({exc.strerror})"
+    problem = None
+    try:
+        if aux_group(path.name)[1] == "dump":
+            head = proc.stdout.read(5)
+            if head != b"PGDMP":
+                problem = "not a pg_dump custom archive"
+        else:
+            with tarfile.open(fileobj=proc.stdout, mode="r|gz") as tar:
+                if not any(True for _ in tar):
+                    problem = "archive has no members"
+        while proc.stdout.read(1 << 20):  # drain so gzip CRC and age's final-chunk check both run
+            pass
+    except (tarfile.TarError, OSError, EOFError) as exc:
+        problem = f"unreadable archive: {type(exc).__name__}"
+    finally:
+        proc.stdout.close()
+    if proc.wait() != 0:
+        return "age decryption failed"
+    return problem
+
+
+def verify_archive(path: Path, identity: Path) -> str | None:
+    """Return None when the archive verifies, else a one-line reason."""
+    return verify_aux(path, identity) if aux_group(path.name) else verify_snapshot(path, identity)
+
+
+def is_transient(reason: str, identity: Path, dest: Path, sums: dict[str, str]) -> bool:
+    """True when the failure is the environment's (retry later), not proof the archive is bad."""
+    if any(marker in reason for marker in TRANSIENT_MARKERS):
+        return True
+    if "age decryption failed" not in reason:
+        return False
+    # Wrong key or broken age looks the same as a corrupt file; only a previously verified archive can tell.
+    known_good = sorted(n for n in sums if (dest / n).is_file())
+    if not known_good:
+        return True
+    probe = subprocess.run(["age", "-d", "-i", str(identity), str(dest / known_good[-1])],
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+    return probe.returncode != 0
+
+
+def quarantine(path: Path, dest: Path) -> Path:
+    target_dir = dest / "quarantine"
+    target_dir.mkdir(mode=0o700, exist_ok=True)
+    target = target_dir / path.name
+    if target.exists():
+        target = target_dir / f"{path.name}.{now_utc().strftime('%Y%m%dT%H%M%SZ')}"
+    os.replace(path, target)
+    return target
+
+
+def retain(dest: Path, sums: dict[str, str]) -> list[str]:
+    """Drop verified copies beyond the keep counts; reason-named snapshots and unverified files stay."""
+    present = sorted(n for n in sums if (dest / n).is_file())
+    doomed = [n for n in present if is_nightly(n)][:-NIGHTLY_KEEP]
+    groups: dict[tuple[str, str], list[str]] = {}
+    for name in present:
+        if group := aux_group(name):
+            groups.setdefault(group, []).append(name)
+    for (_, kind), names in groups.items():
+        doomed += sorted(names, key=lambda n: stamp_of(n))[: -(DUMP_KEEP if kind == "dump" else HASTUR_KEEP)]
+    for name in doomed:
+        (dest / name).unlink()
+        sums.pop(name)
+    if doomed:  # remembered so rsync does not fetch them again if the server still holds them
+        with (dest / "pruned.txt").open("a") as handle:
+            handle.writelines(f"{name}\n" for name in doomed)
+    return doomed
+
+
+def newest_verified_age(dest: Path, sums: dict[str, str]) -> tuple[str | None, float | None]:
+    names = sorted(n for n in sums if STAMP_RE.match(n) and (dest / n).is_file())
+    if not names:
+        return None, None
+    newest = names[-1]
+    created = stamp_of(newest) or dt.datetime.fromtimestamp((dest / newest).stat().st_mtime, dt.timezone.utc)
+    return newest, (now_utc() - created).total_seconds() / 3600
+
+
+def touch_server_evidence(source: str, ssh_command: list[str]) -> None:
+    match = REMOTE_RE.match(source)
+    if not match:
+        return
+    proc = subprocess.run([*ssh_command, "-o", "BatchMode=yes", "-o", "ConnectTimeout=15", match.group(1),
+                           "touch ~/argus-pull-ok"], capture_output=True, text=True, check=False)
+    if proc.returncode != 0:
+        print("WARN could not touch ~/argus-pull-ok on the server", file=sys.stderr)
+
+
+def run(args: argparse.Namespace) -> int:
+    dest: Path = args.dest
+    dest.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(dest, 0o700)
+    lock = (dest / ".lock").open("w")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        print("another pull is running; skipping")
+        return 0
+    sums = read_sums(dest / "SHA256SUMS")
+    quarantined = [p.name for p in (dest / "quarantine").iterdir()] if (dest / "quarantine").is_dir() else []
+    excluded = sorted({*sums, *quarantined, *read_lines(dest / "pruned.txt")})
+
+    rsync_code = run_rsync(args.source, dest, excluded)
+    unreachable = rsync_code in UNREACHABLE
+    if unreachable:
+        log_line(dest, "UNREACHABLE server; will retry on the next trigger")
+    elif rsync_code != 0:
+        log_line(dest, f"RSYNC_FAIL exit {rsync_code}")
+
+    failures = 0
+    for path in archives(dest):
+        if path.name in sums:
+            continue
+        os.chmod(path, 0o600)
+        reason = verify_archive(path, args.identity)
+        if reason is not None and is_transient(reason, args.identity, dest, sums):
+            failures += 1  # left in place and unrecorded: verified again on the next run
+            log_line(dest, f"RETRY {path.name}: {reason}")
+            notify(f"Snapshot {path.name} could not be verified (will retry): {reason[:80]}", not args.no_notify)
+        elif reason is None:
+            sums[path.name] = sha256_file(path)
+            log_line(dest, f"OK {path.name} sha256={sums[path.name]}")
+        else:
+            failures += 1
+            moved = quarantine(path, dest)
+            log_line(dest, f"QUARANTINED {path.name} -> {moved.relative_to(dest)}: {reason}")
+            notify(f"Snapshot {path.name} failed verification and was quarantined", not args.no_notify)
+
+    for name in retain(dest, sums):
+        log_line(dest, f"RETENTION removed verified nightly {name}")
+    write_atomic(dest / "SHA256SUMS", "".join(f"{sums[n]}  {n}\n" for n in sorted(sums) if (dest / n).is_file()))
+
+    newest, age_hours = newest_verified_age(dest, sums)
+    stale = age_hours is None or age_hours > args.max_age_hours
+    if stale:
+        detail = "no verified archive" if age_hours is None else f"{newest} is {age_hours:.0f}h old"
+    else:  # kadath dumps are nightly too; hastur is frozen so it has no freshness limit
+        newest_dump = {}
+        for name in sums:
+            if (group := aux_group(name)) and group[1] == "dump" and (dest / name).is_file():
+                newest_dump[group[0]] = max(name, newest_dump.get(group[0], name), key=stamp_of)
+        old = {w: (now_utc() - stamp_of(n)).total_seconds() / 3600 for w, n in newest_dump.items()}
+        late = sorted(w for w, hours in old.items() if hours > args.max_age_hours)
+        stale = bool(late)
+        detail = f"kadath dump(s) stale for {', '.join(late)}"
+    if stale:
+        notify(f"Off-host backup stale: {detail} (limit {args.max_age_hours}h)", not args.no_notify)
+
+    if rsync_code == 0 and failures == 0:
+        write_atomic(dest / ".last-ok", now_utc().strftime("%Y-%m-%dT%H:%M:%SZ\n"))
+        touch_server_evidence(args.source, ["ssh"])
+    if failures or (rsync_code != 0 and not unreachable):
+        return 1
+    if stale:
+        return 3
+    return EX_TEMPFAIL if unreachable else 0
+
+
+def main() -> int:
+    if sys.version_info < (3, 12):  # the snapshot verifier misreads good .age archives on 3.9 (macOS system python)
+        print("ERROR run with python 3.12+ (the mise python), not the system python", file=sys.stderr)
+        return 1
+    home = Path.home()
+    parser = argparse.ArgumentParser(description="Pull, verify and retain off-host Argus snapshots on the Mac.")
+    parser.add_argument("--source", default=os.environ.get("ARGUS_PULL_SOURCE", DEFAULT_SOURCE),
+                        help="rsync source (host:path or a local directory)")
+    parser.add_argument("--dest", type=Path, default=home / "Archives" / "argus-snapshots")
+    parser.add_argument("--identity", type=Path, default=home / ".config" / "argus" / "snapshot-age.key")
+    parser.add_argument("--max-age-hours", type=float, default=MAX_AGE_HOURS)
+    parser.add_argument("--no-notify", action="store_true", help="skip osascript notifications")
+    args = parser.parse_args()
+    if not args.identity.is_file():
+        print(f"ERROR age identity not found: {args.identity}", file=sys.stderr)
+        return 1
+    if not shutil.which("age"):  # launchd's PATH is minimal; fail before verifying (and quarantining) anything
+        print("ERROR age not found on PATH", file=sys.stderr)
+        return 1
+    return run(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
