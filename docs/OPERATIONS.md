@@ -259,6 +259,21 @@ sudo argus m1 sync --apply --confirm sha256:<digest>
 sudo argus m1 verify --json
 ```
 
+## Alerts, smoke and backup evidence
+
+`server-read-only` — `argus smoke status`
+
+`server-read-only` — `argus backup list`
+
+`server-read-only` — `argus backup freshness`
+
+`server-read-only` — `argus alerts`
+
+Run on the server. `argus smoke status [--last N]` shows the latest scheduled smoke and the capped 30-day history
+(with the failed check names); `argus backup list|freshness` reads the snapshot pull directory and
+`snapshot-last.json`; `argus alerts` shows what `argus-alert` holds open. Missing evidence is reported as
+unavailable, never as healthy. See `docs/MONITORING.md`.
+
 ## Durable operations
 
 `server-read-only` — `argus operation show <operation-id>`
@@ -278,6 +293,11 @@ argus operation show 00000000-0000-0000-0000-000000000000 --json
 `server-mutation` — `argus release pin <workload> --image <ref>`
 
 `server-mutation` — `argus promote <staging-id> <production-id>`
+
+`server-mutation` — `argus keys totp-enroll`
+
+Root-only, TTY-only enrolment of one operator's TOTP second factor; see
+`docs/RUNBOOKS/operator-session-diagnosis.md`.
 
 Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
 $ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/srv/argus`), rewrites only the workload service's `image:` line, runs
@@ -306,6 +326,33 @@ sanitized output digest through the stable CLI envelope.
 argus doctor --json
 argus check --json
 ```
+
+## Typed health observer
+
+`argus-typed-health.timer` (every 5 minutes) runs `scripts/argus-typed-health` as the
+non-human identity `argus-observer@machine.argus`. For each `lifecycle=active`
+workload in a non-legacy trust domain whose manifest allows `health`, it creates and
+approves one `health.refresh` through the control API, waits for the terminal state,
+appends a `health.observed` audit line and exits non-zero if any is not healthy.
+hastur, kadath and nodens stay on the M5 timers. The dashboard health tiles show the
+newest finished `health.refresh` in the ledger and fall back to the static
+`migration.lastHealthCheck`.
+
+The observer has its own token (`/etc/argus/observer-token`, `root:argus-control`
+0640), never the owner bootstrap token, and the API only lets it call
+`health.refresh` preview, create, approve and read. One-time operator setup, in order:
+
+1. Create the token without printing it: `sudo sh -c 'umask 037; head -c 32 /dev/urandom | base64 | tr -d "=+/\n" > /etc/argus/observer-token'; sudo chown root:argus-control /etc/argus/observer-token`.
+2. Add `{"tailnetLogin": "argus-observer@machine.argus", "role": "owner", "enabled": true}`
+   to `/etc/argus/operators.json` (the session store has one role; the API restricts
+   this login by identity).
+3. `sudo install` the two units from `systemd/`, `sudo systemctl daemon-reload`,
+   `sudo systemctl enable --now argus-typed-health.timer`, and restart
+   `argus-control-api` and `argus-operation-worker`.
+
+`operation.finished` audit lines (operationId, workloadId, state, errorClass) are
+written by the worker; the estate-refresh runner prunes status files to the newest 720
+plus the newest per UTC day for 30 days.
 
 ## Compatibility aliases
 

@@ -1,0 +1,83 @@
+# Managed by scripts/argus-sudoers-render from the reviewed repository; do not edit on the server.
+# Release path: /opt/argus/current. Apply with docs/RUNBOOKS/sudo-narrowing.md (visudo -cf first).
+# Argument rules (sudo-rs compatible): exact words, or a lone trailing * on a script that validates it.
+# noexec is the default; only ARGUS_SCRIPTS are tagged EXEC because they spawn docker, runuser and git.
+Defaults:oreo !env_keep
+Defaults:oreo env_reset
+Defaults:oreo secure_path="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Defaults:oreo noexec
+
+Cmnd_Alias ARGUS_SCRIPTS = \
+    /opt/argus/current/scripts/argus-image-import --domain personal-managed --image *, \
+    /opt/argus/current/scripts/argus-image-import --domain personal-sandbox --image *, \
+    /opt/argus/current/scripts/argus-image-import --domain work-sandbox --image *, \
+    /opt/argus/current/scripts/argus-backup-snapshot "", \
+    /opt/argus/current/scripts/argus-backup-snapshot --list, \
+    /opt/argus/current/scripts/argus-backup-snapshot --verify *, \
+    /opt/argus/current/scripts/argus-backup-snapshot --restore-plan *, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-managed --plan, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-managed --verify, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-managed --probe, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --plan, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --verify, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --probe, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --plan, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --verify, \
+    /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --probe, \
+    /opt/argus/current/scripts/argus m1 sync, \
+    /opt/argus/current/scripts/argus m1 sync --apply --confirm *, \
+    /opt/argus/current/scripts/argus m1 verify, \
+    /opt/argus/current/scripts/argus m1 verify --json, \
+    /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image *
+
+Cmnd_Alias ARGUS_SYSTEMCTL = \
+    /usr/bin/systemctl restart argus-capability-issuer.service, \
+    /usr/bin/systemctl restart argus-control-api.service, \
+    /usr/bin/systemctl restart argus-operation-worker.service, \
+    /usr/bin/systemctl restart argus-migration-coordinator.service, \
+    /usr/bin/systemctl restart argus-privileged-lifecycle-agent.service, \
+    /usr/bin/systemctl restart argus-domain-agent-legacy-rootful.service, \
+    /usr/bin/systemctl restart argus-domain-agent@personal-managed.service, \
+    /usr/bin/systemctl restart argus-domain-agent@personal-sandbox.service, \
+    /usr/bin/systemctl restart argus-domain-agent@work-sandbox.service, \
+    /usr/bin/systemctl start argus-smoke.service, \
+    /usr/bin/systemctl start argus-estate-refresh.service, \
+    /usr/bin/systemctl start argus-backup-snapshot.service, \
+    /usr/bin/systemctl --no-pager status argus-capability-issuer.service, \
+    /usr/bin/systemctl --no-pager status argus-control-api.service, \
+    /usr/bin/systemctl --no-pager status argus-operation-worker.service, \
+    /usr/bin/systemctl --no-pager status argus-migration-coordinator.service, \
+    /usr/bin/systemctl --no-pager status argus-privileged-lifecycle-agent.service, \
+    /usr/bin/systemctl --no-pager status argus-domain-agent-legacy-rootful.service, \
+    /usr/bin/systemctl --no-pager status argus-domain-agent@personal-managed.service, \
+    /usr/bin/systemctl --no-pager status argus-domain-agent@personal-sandbox.service, \
+    /usr/bin/systemctl --no-pager status argus-domain-agent@work-sandbox.service, \
+    /usr/bin/systemctl --no-pager status argus-smoke.service, \
+    /usr/bin/systemctl --no-pager status argus-smoke.timer, \
+    /usr/bin/systemctl --no-pager status argus-estate-refresh.service, \
+    /usr/bin/systemctl --no-pager status argus-estate-refresh.timer, \
+    /usr/bin/systemctl --no-pager status argus-backup-snapshot.service, \
+    /usr/bin/systemctl --no-pager status argus-backup-snapshot.timer, \
+    /usr/bin/systemctl --no-pager status argus-metrics.service, \
+    /usr/bin/systemctl --no-pager status argus-metrics.timer, \
+    /usr/bin/systemctl daemon-reload
+
+Cmnd_Alias ARGUS_READ = \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-capability-issuer.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-control-api.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-operation-worker.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-migration-coordinator.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-privileged-lifecycle-agent.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-domain-agent-legacy-rootful.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-domain-agent@personal-managed.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-domain-agent@personal-sandbox.service, \
+    /usr/bin/journalctl --no-pager -n 200 -u argus-domain-agent@work-sandbox.service
+
+Cmnd_Alias ARGUS_NET = \
+    /usr/bin/tailscale serve status, \
+    /usr/bin/ss -H -ltnp, \
+    /usr/bin/tailscale serve --bg --https\=8450 unix\:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock, \
+    /usr/bin/tailscale serve --bg --https\=8451 unix\:/var/lib/argus/managed-ingress/nodens-production/upstream.sock
+
+oreo ALL=(root) NOPASSWD: EXEC: ARGUS_SCRIPTS
+oreo ALL=(root) NOPASSWD: NOEXEC: ARGUS_SYSTEMCTL, ARGUS_READ, ARGUS_NET

@@ -15,14 +15,17 @@ from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
+import argus_cli_alerts
 import argus_cli_op
 import argus_cli_m1
+from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
 import argus_release
+import argus_totp
 from argus_workload_retire import RetireError, quiet_runner, retire
 
 
@@ -442,7 +445,7 @@ def operation_ledger_path(repo: Path) -> Path:
     configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
     if configured:
         return Path(configured)
-    if repo.resolve() == Path("/srv/argus"):
+    if is_server_checkout(repo):
         return Path("/var/lib/argus/control/operations.sqlite3")
     return repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
 
@@ -794,7 +797,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
     return _success(
         "doctor",
         argusRevision=revision,
-        deployedRevision=revision if repo == Path("/srv/argus") else "unavailable",
+        deployedRevision=revision if is_server_checkout(repo) else "unavailable",
         operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": "unverified"},
         discoveryRepositorySchema={"supported": "not-installed", "deployed": "not-installed"},
         collectorProtocol={"supported": "not-installed", "deployed": "not-installed"},
@@ -838,6 +841,18 @@ def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
         argusRevision=repository_revision(repo, runner),
         nextAction="Review the sanitized diff before opening or updating the PR.",
     )
+
+
+def keys_command(args: argparse.Namespace) -> dict[str, Any]:
+    tty = argus_cli_op.open_tty()
+    try:
+        login = argus_totp.enroll(login=args.operator, rotate=args.rotate, tty=tty, euid=os.geteuid(), stdin_is_tty=sys.stdin.isatty())
+    except argus_totp.EnrollRefused as exc:
+        return _error(exc.code, exc.message, "Run as root on the server from an interactive terminal; nothing was written.", exit_code=EXIT_REFUSAL)
+    finally:
+        if tty is not None:
+            tty.close()
+    return _success("keys.totp-enroll", operator=login, enrolled=True)
 
 
 def retire_command(repo: Path, args: argparse.Namespace, runner: Runner) -> dict[str, Any]:
@@ -984,6 +999,16 @@ def build_parser() -> argparse.ArgumentParser:
         item.add_argument("operation_id")
 
     argus_cli_op.register(commands, workload_sub, leaf, description)
+    keys = commands.add_parser("keys", help="operator credential management")
+    keys_sub = keys.add_subparsers(dest="keys_command", required=True, parser_class=ArgusArgumentParser)
+    enroll_parser = leaf(
+        keys_sub,
+        "totp-enroll",
+        help_text="enrol an operator authenticator (TOTP) and recovery codes",
+        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies"),
+    )
+    enroll_parser.add_argument("--operator", default="", help="tailnet login; optional when exactly one owner is enabled")
+    enroll_parser.add_argument("--rotate", action="store_true", help="replace an existing enrolment")
     leaf(
         commands,
         "doctor",
@@ -999,6 +1024,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     argus_release.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
 
     legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
@@ -1046,6 +1072,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
     elif command == "op" or (command == "workload" and args.workload_command in argus_cli_op.SHORTCUTS):
         result = argus_cli_op.execute(args, repo, sys.modules[__name__])
+    elif command == "keys":
+        result = keys_command(args)
     elif command in {"release", "promote"}:
         result = argus_release.dispatch(args, repo, runner, _error, _success)
     elif command == "doctor":
@@ -1054,6 +1082,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = check_command(repo, runner)
     elif command == "m1":
         result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
+    elif command in {"smoke", "backup", "alerts"}:
+        result = argus_cli_alerts.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
         result = _error("command-unsupported", "The command is unsupported.", "Run argus --help.", exit_code=EXIT_INVOCATION)
     if deprecation and result.get("ok"):

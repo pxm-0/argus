@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:312cb1f8a11fa4db2e501bcb8d413e47d8730cd12acbca45ebf1366d2eaa5683"
+    "expectedSbomDigest": "sha256:745e195131aadc5452e9d2497cb633de06e3bcbd501d283fe7894eda92e5a075"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:544afe683341a609060ffc8a41945d3bbe005e0014817579c6ec63175902351a",
+    "expectedEndpointDigest": "sha256:4f92ec6f4ea2064b568bcdcdd4268355f4838d3196289b333cb63810ace919a4",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -77,6 +77,14 @@
       {
         "path": "scripts/argus-collector-protocol-acceptance",
         "authority": "temporary-local-unix-socket-conformance-only"
+      },
+      {
+        "path": "scripts/argus-alert",
+        "authority": "configured-workload-health-read-only"
+      },
+      {
+        "path": "scripts/argus-doctor",
+        "authority": "optional-github-token-scope-read-over-curl-stdin"
       },
       {
         "path": "scripts/argus-control-plane-reconcile",

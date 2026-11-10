@@ -17,7 +17,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any, Callable
 
-from argus_common import ALLOWED_IMAGES
+from argus_common import ALLOWED_IMAGES, is_server_checkout
 from argus_operations import OperationLedger
 
 EXIT_INTERNAL, EXIT_INVOCATION, EXIT_REFUSAL, EXIT_UNAVAILABLE = 1, 2, 3, 4
@@ -302,7 +302,7 @@ def deploy_evidence(repo: Path, runner: Runner, staging_id: str, image_id: str) 
     configured = os.environ.get("ARGUS_OPERATIONS_DB", "").strip()
     if configured:
         path = Path(configured)
-    elif repo.resolve() == Path("/srv/argus"):
+    elif is_server_checkout(repo):
         path = Path("/var/lib/argus/control/operations.sqlite3")
     else:
         path = repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
