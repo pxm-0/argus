@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import importlib.machinery
+import importlib.util
 import io
 import json
 import os
@@ -9,6 +11,7 @@ import plistlib
 import sqlite3
 import subprocess
 import sys
+import shutil
 import tarfile
 import tempfile
 import unittest
@@ -23,13 +26,33 @@ def stamp(hours_ago: float) -> str:
     return when.strftime("%Y%m%dT%H%M%SZ")
 
 
-def make_archive(path: Path, tamper: bool = False, truncate: bool = False) -> None:
+def load_script(name: str):
+    loader = importlib.machinery.SourceFileLoader(name.replace("-", "_"), str(ROOT / "scripts" / name))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def make_hastur(path: Path) -> None:
+    with tarfile.open(path, "w:gz") as tar:
+        data = b"hastur state"
+        info = tarfile.TarInfo("srv/hastur/state.txt")
+        info.size = len(data)
+        tar.addfile(info, io.BytesIO(data))
+
+
+def make_dump(path: Path) -> None:
+    path.write_bytes(b"PGDMP" + b"\x01" * 64)
+
+
+def make_archive(path: Path, tamper: bool = False, truncate: bool = False, rows: int = 1) -> None:
     """A real snapshot-shaped tar (manifest + sqlite db + file), 'encrypted' by the fake age stub (identity)."""
     with tempfile.TemporaryDirectory() as tmp:
         database = Path(tmp) / "m1.sqlite3"
         connection = sqlite3.connect(database)
         connection.execute("create table t (v text)")
-        connection.execute("insert into t values ('x')")
+        connection.executemany("insert into t values (?)", [("x" * 100,)] * rows)
         connection.commit()
         connection.close()
         members = {"db/m1-state.sqlite3": database.read_bytes(), "state/git-head.txt": b"deadbeef\n"}
@@ -46,7 +69,7 @@ def make_archive(path: Path, tamper: bool = False, truncate: bool = False) -> No
         path.write_bytes(path.read_bytes()[: path.stat().st_size // 2])
 
 
-class BackupPullTests(unittest.TestCase):
+class PullFixture(unittest.TestCase):
     def setUp(self) -> None:
         self._tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self._tmp.cleanup)
@@ -70,6 +93,8 @@ class BackupPullTests(unittest.TestCase):
         text = (self.dest / "SHA256SUMS").read_text()
         return {line.split("  ")[1]: line.split("  ")[0] for line in text.splitlines()}
 
+
+class BackupPullTests(PullFixture):
     def test_new_archive_is_verified_recorded_and_marked_ok(self) -> None:
         name = f"{stamp(1)}-nightly.tar.age"
         make_archive(self.source / name)
@@ -159,6 +184,211 @@ class BackupPullTests(unittest.TestCase):
         result = self.pull()
         self.assertEqual(1, result.returncode)
         self.assertFalse(self.dest.exists())
+
+
+class AuxCopyTests(PullFixture):
+    """hastur `<name>-<stamp>.tar.gz.age` and kadath `<workload>-<stamp>.dump.age`, as PR3 publishes them."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        make_archive(self.source / f"{stamp(1)}-nightly.tar.age")
+
+    def test_hastur_and_kadath_copies_are_pulled_verified_and_recorded(self) -> None:
+        hastur, dump = f"hastur-data-{stamp(2)}.tar.gz.age", f"kadath-{stamp(3)}.dump.age"
+        make_hastur(self.source / hastur)
+        make_dump(self.source / dump)
+        result = self.pull()
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+        self.assertLessEqual({hastur, dump}, set(self.sums()))
+        self.assertEqual(0o600, (self.dest / dump).stat().st_mode & 0o777)
+
+    def test_corrupt_copies_are_quarantined(self) -> None:
+        bad_dump, bad_tar = f"kadath-{stamp(3)}.dump.age", f"hastur-data-{stamp(2)}.tar.gz.age"
+        (self.source / bad_dump).write_bytes(b"not a pg dump")
+        (self.source / bad_tar).write_bytes(b"not a gzip tar")
+        result = self.pull()
+        self.assertEqual(1, result.returncode, result.stderr)
+        for name in (bad_dump, bad_tar):
+            self.assertTrue((self.dest / "quarantine" / name).is_file(), name)
+            self.assertNotIn(name, self.sums())
+
+    def test_retention_keeps_14_dumps_per_workload_and_one_hastur_copy_per_name(self) -> None:
+        dumps = [f"kadath-{stamp(2 + 24 * i)}.dump.age" for i in range(16)]
+        other = f"dupe-{stamp(5)}.dump.age"
+        hasturs = [f"hastur-data-{stamp(40)}.tar.gz.age", f"hastur-data-{stamp(10)}.tar.gz.age"]
+        for name in dumps + [other]:
+            make_dump(self.source / name)
+        for name in hasturs:
+            make_hastur(self.source / name)
+        self.assertEqual(0, self.pull(None, "--max-age-hours", "10000").returncode)
+        kept = set(self.sums())
+        self.assertEqual(set(dumps[:14]) | {other, hasturs[1]}, {n for n in kept if "nightly" not in n})
+        self.assertFalse((self.dest / dumps[15]).exists())
+        self.assertFalse((self.dest / hasturs[0]).exists())
+        self.assertEqual(0, self.pull(None, "--max-age-hours", "10000").returncode)
+        self.assertFalse((self.dest / hasturs[0]).exists(), "pruned copy must not be pulled again")
+
+    def test_stale_kadath_dump_is_an_alarm_even_when_snapshots_are_fresh(self) -> None:
+        make_dump(self.source / f"kadath-{stamp(60)}.dump.age")
+        result = self.pull()
+        self.assertEqual(3, result.returncode, result.stderr)
+        self.assertIn("kadath", result.stderr)
+
+    def test_hostile_server_names_are_ignored_not_executed(self) -> None:
+        evil = '20260101T000000Z-x" & (do shell script "touch pwned") & ".tar.age'
+        make_archive(self.source / evil)
+        result = self.pull()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("pwned", (self.dest / "verify.log").read_text())
+        self.assertNotIn(evil, self.sums())
+        self.assertFalse((self.dest / "quarantine").exists())
+
+
+class NotifyAndEvidenceTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.bin = self.base / "bin"
+        self.bin.mkdir()
+        self.calls = self.base / "calls.txt"
+        for tool in ("osascript", "ssh"):
+            (self.bin / tool).write_text(f'#!/bin/sh\nprintf \'%s\\n\' "$@" >> {self.calls}\nexit ${{STUB_EXIT:-0}}\n')
+            (self.bin / tool).chmod(0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = f"{self.bin}:{old}"
+        self.addCleanup(os.environ.__setitem__, "PATH", old)
+        self.pull = load_script("argus-backup-pull")
+
+    def test_notification_text_never_reaches_the_applescript_source(self) -> None:
+        hostile = 'x" & (do shell script "touch pwned") & "'
+        self.pull.notify(hostile, True)
+        lines = self.calls.read_text().splitlines()
+        self.assertEqual(hostile, lines[-1])
+        self.assertNotIn("pwned", "".join(lines[:-1]))
+        self.assertIn("item 1 of argv", "".join(lines))
+
+    def test_server_evidence_touched_over_ssh_for_remote_sources_only(self) -> None:
+        self.pull.touch_server_evidence("/local/dir/", ["ssh"])
+        self.assertFalse(self.calls.exists())
+        self.pull.touch_server_evidence("oreochiserver:/var/backups/argus-snapshots-pull/", ["ssh"])
+        lines = self.calls.read_text().splitlines()
+        self.assertIn("oreochiserver", lines)
+        self.assertIn("touch ~/argus-pull-ok", lines)
+
+    def test_evidence_touch_failure_is_reported_not_fatal(self) -> None:
+        os.environ["STUB_EXIT"] = "1"
+        self.addCleanup(os.environ.pop, "STUB_EXIT", None)
+        self.pull.touch_server_evidence("oreochiserver:/x/", ["ssh"])  # must not raise
+
+    def test_last_ok_and_evidence_skipped_when_a_local_pull_has_no_server(self) -> None:
+        source, dest = self.base / "src", self.base / "dest"
+        source.mkdir()
+        make_archive(source / f"{stamp(1)}-nightly.tar.age")
+        (self.bin / "age").write_text('#!/bin/sh\ncat "$4"\n')
+        (self.bin / "age").chmod(0o755)
+        identity = self.base / "k"
+        identity.write_text("x\n")
+        done = subprocess.run([sys.executable, str(PULL), "--source", f"{source}/", "--dest", str(dest),
+                               "--identity", str(identity), "--no-notify"], text=True, capture_output=True, check=False)
+        self.assertEqual(0, done.returncode, done.stderr)
+        self.assertTrue((dest / ".last-ok").is_file())
+        self.assertFalse(self.calls.exists(), "no ssh for a local source")
+
+
+@unittest.skipUnless(shutil.which("age") and shutil.which("age-keygen"), "real age not installed")
+class RealAgeTests(unittest.TestCase):
+    """Real encryption: a wrong key and a truncated .age must behave as they will on the Mac."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        base = Path(self._tmp.name)
+        self.source, self.dest = base / "src", base / "dest"
+        self.source.mkdir()
+        self.identity, self.other = base / "id.key", base / "other.key"
+        for key in (self.identity, self.other):
+            subprocess.run(["age-keygen", "-o", str(key)], check=True, capture_output=True)
+        self.recipient = subprocess.run(["age-keygen", "-y", str(self.identity)], check=True, capture_output=True,
+                                        text=True).stdout.strip()
+
+    def encrypt(self, plain: Path, name: str) -> Path:
+        out = self.source / name
+        subprocess.run(["age", "-r", self.recipient, "-o", str(out), str(plain)], check=True, capture_output=True)
+        return out
+
+    def pull(self, identity: Path | None = None) -> subprocess.CompletedProcess:
+        return subprocess.run([sys.executable, str(PULL), "--source", f"{self.source}/", "--dest", str(self.dest),
+                               "--identity", str(identity or self.identity), "--no-notify"],
+                              text=True, capture_output=True, check=False)
+
+    def seed_all(self) -> tuple[str, str, str]:
+        names = (f"{stamp(1)}-nightly.tar.age", f"hastur-data-{stamp(2)}.tar.gz.age", f"kadath-{stamp(3)}.dump.age")
+        plain = Path(self._tmp.name) / "plain"
+        make_archive(plain)
+        self.encrypt(plain, names[0])
+        make_hastur(plain)
+        self.encrypt(plain, names[1])
+        make_dump(plain)
+        self.encrypt(plain, names[2])
+        return names
+
+    def test_real_encrypted_copies_verify(self) -> None:
+        names = self.seed_all()
+        result = self.pull()
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+        self.assertEqual(set(names), set((self.dest / "SHA256SUMS").read_text().split()[1::2]))
+
+    def test_truncated_real_age_is_quarantined(self) -> None:
+        names = self.seed_all()
+        self.assertEqual(0, self.pull().returncode)
+        plain = Path(self._tmp.name) / "plain"
+        make_dump(plain)
+        cut = self.encrypt(plain, f"kadath-{stamp(0.5)}.dump.age")
+        cut.write_bytes(cut.read_bytes()[:-10])
+        result = self.pull()
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertTrue((self.dest / "quarantine" / cut.name).is_file())
+        self.assertTrue(all((self.dest / n).is_file() for n in names), "verified copies untouched")
+
+    def test_wrong_key_is_transient_and_quarantines_nothing(self) -> None:
+        names = self.seed_all()
+        self.assertEqual(0, self.pull().returncode)
+        plain = Path(self._tmp.name) / "plain"
+        make_dump(plain)
+        fresh = self.encrypt(plain, f"kadath-{stamp(0.5)}.dump.age")
+        result = self.pull(self.other)  # the identity the Mac holds no longer matches the recipient
+        self.assertEqual(1, result.returncode, result.stderr)
+        self.assertFalse((self.dest / "quarantine").exists())
+        self.assertTrue((self.dest / fresh.name).is_file(), "kept for the next run")
+        self.assertIn(f"RETRY {fresh.name}", (self.dest / "verify.log").read_text())
+        self.assertNotIn(fresh.name, (self.dest / "SHA256SUMS").read_text())
+        self.assertEqual(0, self.pull().returncode, "right key again: it verifies on the next run")
+        self.assertIn(fresh.name, (self.dest / "SHA256SUMS").read_text())
+        self.assertTrue(all(n in (self.dest / "SHA256SUMS").read_text() for n in names))
+
+    def test_missing_age_on_path_fails_before_verifying_anything(self) -> None:
+        self.seed_all()
+        env = {**os.environ, "PATH": "/nonexistent"}
+        result = subprocess.run([sys.executable, str(PULL), "--source", f"{self.source}/", "--dest", str(self.dest),
+                                 "--identity", str(self.identity), "--no-notify"], env=env, text=True,
+                                capture_output=True, check=False)
+        self.assertEqual(1, result.returncode)
+        self.assertIn("age not found", result.stderr)
+        self.assertFalse(self.dest.exists())
+
+    @unittest.skipUnless("--no-compare" in subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "argus-backup-snapshot"), "--help"],
+        capture_output=True, text=True, check=False).stdout, "verifier predates --no-compare (PR3)")
+    def test_legitimate_shrink_against_the_previous_snapshot_is_not_quarantined(self) -> None:
+        plain = Path(self._tmp.name) / "plain"
+        make_archive(plain, rows=2000)
+        self.encrypt(plain, f"{stamp(30)}-nightly.tar.age")
+        make_archive(plain, rows=1)
+        self.encrypt(plain, f"{stamp(1)}-nightly.tar.age")
+        result = self.pull()
+        self.assertEqual(0, result.returncode, result.stderr + result.stdout)
+        self.assertFalse((self.dest / "quarantine").exists())
 
 
 class LaunchdPlistTests(unittest.TestCase):
@@ -256,6 +486,70 @@ class RestoreDrillTests(unittest.TestCase):
         result = self.drill()
         self.assertEqual(1, result.returncode)
         self.assertIn("no verified archive", (self.archives / "drill.log").read_text())
+
+
+class RestoreDrillUnitTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.base = Path(self._tmp.name)
+        self.drill = load_script("argus-restore-drill")
+        bin_dir = self.base / "bin"
+        bin_dir.mkdir()
+        (bin_dir / "age").write_text('#!/bin/sh\ncat "$4"\n')
+        (bin_dir / "age").chmod(0o755)
+        old = os.environ["PATH"]
+        os.environ["PATH"] = f"{bin_dir}:{old}"
+        self.addCleanup(os.environ.__setitem__, "PATH", old)
+
+    def tar_with(self, name: str) -> Path:
+        path = self.base / "evil.tar"
+        with tarfile.open(path, "w") as tar:
+            info = tarfile.TarInfo(name)
+            info.size = 1
+            tar.addfile(info, io.BytesIO(b"x"))
+        return path
+
+    def test_extract_writes_regular_members_and_rejects_path_escapes(self) -> None:
+        good, target = self.base / "good.tar", self.base / "out"
+        make_archive(good)
+        target.mkdir()
+        self.drill.extract(good, self.base / "k", target)
+        self.assertTrue((target / "db" / "m1-state.sqlite3").is_file())
+        for name in ("../escape", "/abs/escape"):
+            with self.assertRaises(self.drill.DrillError):
+                self.drill.extract(self.tar_with(name), self.base / "k", self.base / "out2")
+        self.assertFalse((self.base / "escape").exists())
+
+    def test_extract_reports_a_failed_decrypt(self) -> None:
+        (self.base / "bin" / "age").write_text("#!/bin/sh\nexit 1\n")
+        with self.assertRaises(self.drill.DrillError):
+            self.drill.extract(self.base / "nothing.tar", self.base / "k", self.base)
+
+    def test_build_root_lays_out_runtime_and_falls_back_to_working_tree_config(self) -> None:
+        extracted, root, repo = self.base / "x", self.base / "root", self.base / "repo"
+        for directory in (extracted / "db", extracted / "m1", repo / "scripts", repo / "control-plane", repo / "config", root):
+            directory.mkdir(parents=True)
+        (extracted / "db" / "m1-state.sqlite3").write_bytes(b"m1")
+        (extracted / "db" / "session.sqlite3").write_bytes(b"sess")
+        (extracted / "m1" / "events.jsonl").write_text("{}\n")
+        (repo / "config" / "workloads.json").write_text("{}")
+        note = self.drill.build_root(extracted, root, repo)
+        self.assertIn("working tree", note)
+        self.assertEqual(b"m1", (root / "runtime" / "argus" / "m1" / "state.sqlite3").read_bytes())
+        self.assertEqual(b"sess", (root / "runtime" / "m5" / "sessions.sqlite3").read_bytes())
+        self.assertTrue((root / "runtime" / "argus" / "m1" / "events.jsonl").is_file())
+        self.assertTrue((root / "scripts").is_symlink())
+        self.assertTrue((root / "config" / "workloads.json").is_file())
+
+    def test_newest_verified_ignores_hastur_and_kadath_copies(self) -> None:
+        directory = self.base / "arch"
+        directory.mkdir()
+        names = [f"{stamp(5)}-nightly.tar.age", f"kadath-{stamp(1)}.dump.age", f"hastur-data-{stamp(2)}.tar.gz.age"]
+        for name in names:
+            (directory / name).write_bytes(b"x")
+        (directory / "SHA256SUMS").write_text("".join(f"{'0' * 64}  {n}\n" for n in names))
+        self.assertEqual(names[0], self.drill.newest_verified(directory).name)
 
 
 if __name__ == "__main__":

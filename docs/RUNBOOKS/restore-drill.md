@@ -39,11 +39,15 @@ Rollback: `launchctl bootout gui/$UID/dev.argus.backup-pull` and delete the plis
 1. `rsync --ignore-existing` (never `--delete`) from `oreochiserver:/var/backups/argus-snapshots-pull/` to
    `~/Archives/argus-snapshots/` (0700). Already-known, quarantined and retention-pruned names are not fetched again.
 2. Verifies each new archive with `argus-backup-snapshot --verify --identity ~/.config/argus/snapshot-age.key`.
-   Good archives are recorded in `SHA256SUMS` and `verify.log`. A failing archive (tampered, truncated, wrong key)
+   Good archives are recorded in `SHA256SUMS` and `verify.log`. A failing archive (tampered or truncated)
    is moved to `quarantine/` with a macOS notification. Nothing unverified is ever deleted.
 3. Retention on the Mac: the newest 30 `*-nightly` archives; every reason-named archive (`pre-deploy` and so on) is kept.
 4. Writes `.last-ok` after a clean run and touches `~/argus-pull-ok` on the server.
 5. Notifies when the newest verified archive is older than 36h.
+6. Also pulls and verifies the hastur copy (`<name>-<stamp>.tar.gz.age`, newest one per name kept) and the kadath
+   dumps (`<workload>-<stamp>.dump.age`, newest 14 per workload): age stream decrypt plus a tar or `PGDMP` check. A
+   stale kadath dump raises the same staleness alarm. A missing `age`, a wrong key or an unwritable scratch dir is a
+   retry (`RETRY` in verify.log), never a quarantine: only a failure confirmed against a known-good archive quarantines.
 
 Exit codes: 0 ok, 1 verification or rsync failure, 3 stale (over 36h or nothing verified), 75 server
 unreachable (retry on the next trigger; it becomes an alarm only when the 36h limit passes).

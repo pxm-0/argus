@@ -14,6 +14,7 @@ import datetime as dt
 import http.client
 import io
 import os
+import re
 import shutil
 import socket
 import sqlite3
@@ -35,6 +36,9 @@ STAGE = {  # archive member -> path inside the rebuilt root
     "db/session.sqlite3": "runtime/m5/sessions.sqlite3",
     "m1/audit-checkpoint.json": "runtime/argus/audit-checkpoint.json",
 }
+
+
+SNAPSHOT_RE = re.compile(r"^\d{8}T\d{6}Z-[A-Za-z0-9][A-Za-z0-9._-]{0,39}\.tar(\.age)?$")
 
 
 class DrillError(Exception):
@@ -60,14 +64,16 @@ def extract(archive: Path, identity: Path, target: Path) -> None:
         raise DrillError(f"unreadable archive: {type(exc).__name__}") from exc
     finally:
         proc.stdout.close()
-    if proc.wait() != 0:
+        code = proc.wait()  # also on the error paths, so no age process is left behind
+    if code != 0:
         raise DrillError("age decryption failed")
 
 
 def newest_verified(archive_dir: Path) -> Path:
     sums = archive_dir / "SHA256SUMS"
     names = [line.partition("  ")[2] for line in sums.read_text().splitlines()] if sums.is_file() else []
-    existing = sorted(n for n in names if n and (archive_dir / n).is_file())
+    # SHA256SUMS also lists hastur/kadath copies; only state snapshots (<stamp>-<reason>.tar[.age]) can be drilled.
+    existing = sorted(n for n in names if SNAPSHOT_RE.match(n) and (archive_dir / n).is_file())
     if not existing:
         raise DrillError("no verified archive recorded in SHA256SUMS (run argus-backup-pull first)")
     return archive_dir / existing[-1]
