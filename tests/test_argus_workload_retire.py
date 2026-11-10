@@ -100,7 +100,7 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(before, self.snapshot())
         self.assertEqual([c[0] for c in runner.calls], ["git"])
-        self.assertIn("1. Confirm a verified", result["data"]["runbook"])
+        self.assertIn("1. Take and verify a backup", result["data"]["runbook"])
         self.assertIn("argus-m1-reconcile-retired-workloads` (preview)", result["data"]["runbook"])
         self.assertIn("--apply --acknowledge-retired-workload-reconciliation", result["data"]["runbook"])
         self.assertNotIn("argus m1 sync", result["data"]["runbook"])
@@ -177,13 +177,12 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertIn("argus-m5-workload-gone.service", step0)
         self.assertIn("systemctl list-unit-files | grep gone` prints nothing", step0)
 
-    def test_runbook_backup_step_names_snapshot_and_restore_dry_run(self) -> None:
+    def test_runbook_backup_step_is_a_one_off_dump_not_backup_run(self) -> None:
         step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
-        self.assertIn("snapshot ID", step1)
-        self.assertIn("argus-backup-restore --workload gone --artifact-id <snapshot-id> --acknowledge-isolated-restore", step1)
-        self.assertIn("sudo python3 scripts/argus-backup-restore", step1)
-        self.assertIn("python3 scripts/argus-backup-run gone --confirm gone", step1)
-        self.assertIn("argus-m5-workload-staging/gone/", step1)
+        self.assertNotIn("argus-backup-run gone", step1)
+        self.assertNotIn("argus-backup-restore --workload", step1)
+        for needle in ("cd /var/backups/argus-retired/gone && sha256sum", "sha256sum -c checksums.sha256", 'tar -tzf "$f"', "/var/backups/argus-retired/gone", "pushing a commit to this PR branch", "BEFORE merging"):
+            self.assertIn(needle, step1)
 
     def test_runbook_serve_off_and_listener_check(self) -> None:
         rb = self.runbook()
@@ -199,16 +198,34 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertIn("keep it until then", rb)
         self.assertLess(rb.index("Directories, each only after"), rb.index("legacy source checkout"))
 
-    def test_runbook_nodens_residue_is_classified(self) -> None:
-        write(self.root, "config/workloads.json", {"workloads": [{"id": "nodens", "runtime": {"composeProject": "nodens"}}]})
+    def test_runbook_nodens_residue_is_per_daemon(self) -> None:
+        write(self.root, "config/workloads.json", {"workloads": [{"id": "nodens", "runtime": {"composeProject": "nodens"}, "migration": {"targetTrustDomain": "personal-sandbox"}}]})
         write(self.root, "config/routes.json", {"workloadRoutes": {"nodens": {"tailnet": {"url": "https://h:8444"}}}})
         rb = self.runbook("nodens")
+        dd = "sudo docker --host unix:///var/lib/argus/personal-sandbox/docker.sock"
         self.assertIn("sudo tailscale serve --https=8444 off", rb)
         self.assertIn("`nodens-live_postgres-data` (KEEP)", rb)
         self.assertIn("`nodens-live_caddy-data` (REMOVE)", rb)
+        self.assertIn(f"`{dd} compose -p nodens down`", rb)
+        self.assertIn(f"`{dd} rm -f nodens nodens-argus-ingress-1`", rb)
+        self.assertIn(f"`{dd} image rm sha256:2633eeb26a5f`", rb)
+        self.assertIn(f"`{dd} network rm nodens_default`", rb)
+        self.assertNotIn(f"{dd} network rm nodens-net", rb)
+        self.assertNotIn(f"{dd} volume", rb)
         for network in ("nodens_default", "nodens-net", "nodens-sprint55-net"):
-            self.assertIn(f"docker network rm {network}", rb)
-        self.assertIn("docker image rm sha256:2633eeb26a5f", rb)
+            self.assertIn(f"`sudo docker network rm {network}`", rb)
+        self.assertIn("`sudo docker rm nodens`", rb)
+        self.assertIn("`sudo docker image rm sha256:2633eeb26a5f`", rb)
+        self.assertNotIn("`docker ", rb)
+        self.assertLess(rb.index("compose -p nodens down"), rb.index("`sudo docker rm nodens`"))
+
+    def test_runbook_applies_firewall_after_merge_before_reconcile(self) -> None:
+        rb = self.runbook()
+        fw = rb.index("argus-sandbox-firewall --domain personal-sandbox --plan")
+        self.assertLess(rb.index("Merge this PR"), fw)
+        self.assertLess(fw, rb.index("argus-m1-reconcile-retired-workloads"))
+        self.assertIn("argus-m5-egress-verify", rb)
+        self.assertIn("argus-personal-sandbox.nft.pre", rb)
 
     def test_runbook_warns_when_image_digest_is_shared(self) -> None:
         shared = "sha256:" + "e8f2abf0300b" + "0" * 52
@@ -217,8 +234,8 @@ class WorkloadRetireTests(unittest.TestCase):
         write(self.root, "workloads/gone-staging/source/compose.yml", f"services:\n  a:\n    image: {shared}\n")
         rb = self.runbook()
         self.assertIn(f"WARNING: `{shared[:19]}` is also pinned by `gone-staging`; do NOT remove it", rb)
-        self.assertIn(f"docker image rm {own[:19]}", rb)
-        self.assertNotIn(f"docker image rm {shared[:19]}", rb)
+        self.assertIn(f"image rm {own[:19]}`", rb)
+        self.assertNotIn(f"image rm {shared[:19]}", rb)
 
     def test_real_repo_staging_runbook_warns_about_production_image(self) -> None:
         out, err = io.StringIO(), io.StringIO()
