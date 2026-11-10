@@ -175,7 +175,10 @@ class WorkloadRetireTests(unittest.TestCase):
         step0 = next(line for line in rb.splitlines() if line.startswith("0. "))
         self.assertIn("argus-m5-workload-gone.timer", step0)
         self.assertIn("argus-m5-workload-gone.service", step0)
-        self.assertIn("systemctl list-unit-files | grep gone` prints nothing", step0)
+        self.assertIn("reconcile retry timer", step0)
+        self.assertNotIn("backup timer", step0)
+        self.assertIn("systemctl list-unit-files 'argus-m5-workload-gone*'` prints nothing", step0)
+        self.assertIn("gone-staging", step0)
 
     def test_runbook_backup_step_is_a_one_off_dump_not_backup_run(self) -> None:
         step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
@@ -183,6 +186,8 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertNotIn("argus-backup-restore --workload", step1)
         for needle in ("cd /var/backups/argus-retired/gone && sha256sum", "sha256sum -c checksums.sha256", 'tar -tzf "$f"', "/var/backups/argus-retired/gone", "pushing a commit to this PR branch", "BEFORE merging", "-v <volume>:/d:ro", "docker pull alpine"):
             self.assertIn(needle, step1)
+        self.assertIn("backup is not allowed", step1)
+        self.assertIn("operations.backupAllowed=false", step1)
 
     def test_runbook_serve_off_and_listener_check(self) -> None:
         rb = self.runbook()
