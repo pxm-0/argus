@@ -1,179 +1,142 @@
-# Monitoring: btop-Style Toggle
+# Monitoring and alerts
 
-## Goal
+Argus raises alerts from evidence it already writes. Nothing here sends mail, pages a phone service or calls an
+external API. Alerts reach the operator two ways: a banner on the private dashboard (next to the exposure banner,
+red while any alert is open) and a macOS notification from a launchd poller on the operator's Mac.
 
-Provide a btop-inspired monitor panel in the private dashboard without embedding a terminal or exposing sensitive host data.
+## Pieces
 
-## Architecture
+| Piece | Where | What it does |
+| --- | --- | --- |
+| `scripts/argus-alert` | server, `oreo`, every 2 min (`argus-alert.timer`, `OnBootSec=2min`) | collects read-only evidence, evaluates the checks, writes `runtime/alerts/state.json`, audits each open and resolve |
+| `argus-alert-unit@.service` | server | started by `OnFailure=` drop-ins on the smoke, metrics, estate-refresh and backup services so a failure is evaluated at once instead of at the next tick |
+| dashboard banner | `/api/dashboard-state` `alerts` key | the existing dashboard-state path reads the state file; no API change |
+| `scripts/argus-alert-poller` | Mac, launchd `dev.argus.alert-poller`, every 60 s | reads the state over ssh and runs `osascript` for new or changed alerts |
+| `argus smoke status`, `argus backup list\|freshness`, `argus alerts` | server | read-only views of the same evidence |
 
-```text
-systemd timer
-      |
-      v
-collect_metrics.py
-      |
-      v
-control-plane/dashboard/public/metrics.json
-      |
-      v
-dashboard monitor toggle
-```
+## Checks
 
-## Dashboard Behavior
+Severity `page` is red-and-act-now, `warn` is act-this-week. Limits are strict: exactly at the limit is still healthy.
 
-The monitor panel is hidden by default.
+| Alert id | Opens when | Severity |
+| --- | --- | --- |
+| `unit-failed:<unit>` | `systemctl --failed` lists an `argus-*` unit | page |
+| `smoke-failed` | `runtime/smoke/latest.json` has `ok == false` | page |
+| `smoke-stale` | `latest.json` older than 26 h (smoke runs every 6 h) | warn |
+| `snapshot-stale` | `/var/lib/argus/snapshot-last.json` older than 24 h | page |
+| `db-backup-stale:<name>` | last successful `argus-workload-db-backup@<name>` finish older than 26 h | page |
+| `health:<workload>` | health URL fails twice in a row for an active typed workload | page for `personal-managed`, warn otherwise |
+| `container-exited:<name>` | a registered, not yet migrated workload's container exited more than 7 d ago | warn |
+| `disk-usage` | root filesystem at 80 % (warn) or 90 % (page) | warn / page |
+| `deploy-behind` | `/srv/argus` is behind `origin/main` and the oldest missing commit is older than 24 h | warn |
+| `egress-drift:<workload>` | the workload's `argus-m5-workload-*` run reports `egressPolicyDrift` | warn |
+| `m1-drift` | `argus doctor`'s M1 drift check reports drift | warn |
+| `tailscale-backend` / `tailscale-key-expiry` | `BackendState` is not `Running` / node key expires within 14 d (page once expired) | page / warn |
+| `cert-expiry:<file>` | a certificate under `$ARGUS_ALERT_CERT_GLOB` (default `/var/lib/tailscale/certs/*.crt`) expires within 14 d, when `openssl` exists | warn (page once expired) |
 
-Button states:
+Every input is optional. A missing or unreadable file, an absent tool or a failed command makes that check
+"unknown": it opens nothing and leaves already-open alerts alone. "Healthy" is only ever concluded from evidence.
 
-```text
-Show Monitor
-Hide Monitor
-```
+Alert details are fixed-format text, run through a scrubber (tokens, bearer headers, age identities, long opaque
+strings) and capped at 200 characters. Health probes record the failure class (`status 503`, `request failed:
+URLError`), never the URL or the response body.
 
-When open, dashboard fetches `/metrics.json` every `refreshSeconds` from `monitoring.json`.
+Known limits: `deploy-behind` compares local refs, so it only sees what the last deploy-time `git fetch` saw;
+rootless sandbox containers are in daemons this identity cannot read, so `container-exited` covers rootful
+registered workloads only, and it needs the `docker` group that the sudo-narrowing change removes (the check then
+becomes unknown, not failing); the `argus-m5-workload-*` journal is read through the `adm` group.
 
-When closed, dashboard stops fetching metrics.
+## State file
 
-## Metrics to Show
-
-P0 metrics:
-
-- timestamp
-- hostname
-- uptime seconds
-- load average
-- CPU percent
-- memory total/used/percent
-- swap total/used/percent
-- disk total/used/percent for `/`
-- network rx/tx by interface
-- Docker container status
-- Docker stats if available
-- safe top processes by process name only
-- thermal temperature if available
-
-## Forbidden Data
-
-The collector must not read or expose:
-
-- environment variables
-- process command-line arguments
-- container env
-- Docker inspect output
-- secret files
-- `.env` contents
-- tokens
-- database connection strings
-
-Allowed commands:
-
-```bash
-docker ps --format '{{json .}}'
-docker stats --no-stream --format '{{json .}}'
-ps -eo pid,comm,%cpu,%mem --sort=-%cpu
-```
-
-Disallowed commands:
-
-```bash
-env
-printenv
-docker inspect
-cat /proc/*/environ
-ps aux
-ps -ef
-```
-
-## Metrics JSON Shape
+`runtime/alerts/state.json`, mode 0644, written atomically:
 
 ```json
-{
-  "timestamp": "2026-06-30T00:00:00Z",
-  "hostname": "oreochiserver",
-  "uptimeSeconds": 123456,
-  "load": {
-    "one": 0.42,
-    "five": 0.36,
-    "fifteen": 0.31
-  },
-  "cpu": {
-    "percent": 18.4
-  },
-  "memory": {
-    "totalBytes": 16777216000,
-    "usedBytes": 6291456000,
-    "percent": 37.5
-  },
-  "disk": {
-    "mount": "/",
-    "totalBytes": 1000000000000,
-    "usedBytes": 380000000000,
-    "percent": 38.0
-  },
-  "docker": {
-    "containers": [
-      {
-        "name": "uptime-kuma",
-        "image": "louislam/uptime-kuma",
-        "status": "Up 2 days"
-      }
-    ]
-  },
-  "processes": [
-    {
-      "pid": 1234,
-      "name": "caddy",
-      "cpuPercent": 1.2,
-      "memoryPercent": 0.8
-    }
-  ]
-}
+{"schemaVersion": 1, "generatedAt": "...Z", "summary": {"open": 1, "page": 1, "warn": 0},
+ "probeFailures": {"nodens-production": 1},
+ "alerts": [{"id": "unit-failed:argus-smoke.service", "severity": "page", "since": "...Z",
+             "detail": "systemd unit is in the failed state", "lastSeen": "...Z", "acked": false}]}
 ```
 
-## UI Layout
+`since` is when the alert opened and survives re-evaluation (dedupe); `lastSeen` moves every run. An alert
+that stops matching is removed and an `alert.resolved` audit event is written (`alert.opened` on the way in,
+`alert.changed` if its severity moves). `acked` is carried through but nothing sets it yet.
 
-```text
-+--------------------------------+
-| CPU      ########..   34%       |
-| RAM      #####.....   51%       |
-| DISK     ###.......   28%       |
-| LOAD     0.42 0.36 0.31         |
-+--------------------------------+
-| Containers                     |
-| uptime-kuma       Up           |
-| intake-os         Up           |
-+--------------------------------+
-| Top Processes                  |
-| caddy             1.2%          |
-| dockerd           0.8%          |
-+--------------------------------+
-```
+## Smoke history
 
-Use plain CSS. No CDN. No external JS. No remote fonts.
+`argus-smoke-scheduled` appends one row per server run to `runtime/smoke/smoke-history.jsonl` and drops rows older
+than 30 days. Each row has the result, counts, the runtime-probe verdict and up to ten `FAIL`/`WARN` check names, so a
+transient failure stays diagnosable after `latest.log` is rewritten by the next run. `argus smoke status --last 20`
+prints it. `argus-smoke.timer` now fires at 00, 06, 12 and 18 UTC with up to 15 minutes of jitter.
 
-## Systemd
+## Install (server, operator approval)
 
-Templates:
-
-```text
-templates/systemd/argus-metrics.service
-templates/systemd/argus-metrics.timer
-```
-
-P0 install command:
+Run from `/srv/argus` after the merge is pulled:
 
 ```bash
-sudo cp /srv/argus/systemd/argus-metrics.service /etc/systemd/system/argus-metrics.service
-sudo cp /srv/argus/systemd/argus-metrics.timer /etc/systemd/system/argus-metrics.timer
+stamp=$(date -u +%Y%m%dT%H%M%SZ)
+sudo install -d -m 0700 "/var/lib/argus/config-backups/alerting-$stamp"
+sudo cp --preserve=all -r /etc/systemd/system/argus-smoke.timer /etc/systemd/system/argus-smoke.service \
+  /etc/systemd/system/argus-metrics.service /etc/systemd/system/argus-estate-refresh.service \
+  "/var/lib/argus/config-backups/alerting-$stamp/"
+sudo install -m 0644 systemd/argus-alert.service systemd/argus-alert.timer 'systemd/argus-alert-unit@.service' /etc/systemd/system/
+sudo install -m 0644 systemd/argus-smoke.timer /etc/systemd/system/argus-smoke.timer
+for unit in argus-smoke.service argus-metrics.service argus-estate-refresh.service \
+            'argus-workload-db-backup@.service' argus-backup-snapshot.service; do
+  sudo install -d -m 0755 "/etc/systemd/system/$unit.d"
+  sudo install -m 0644 "systemd/$unit.d/onfailure.conf" "/etc/systemd/system/$unit.d/onfailure.conf"
+done
+sudo systemd-analyze verify /etc/systemd/system/argus-alert.service 'argus-alert-unit@x.service'
 sudo systemctl daemon-reload
-sudo systemctl enable --now argus-metrics.timer
+sudo systemctl enable --now argus-alert.timer
+sudo systemctl restart argus-smoke.timer
 ```
 
-## Acceptance
+Verify:
 
 ```bash
-python3 /srv/argus/control-plane/monitoring/collect_metrics.py
-python3 -m json.tool /srv/argus/control-plane/dashboard/public/metrics.json >/dev/null
+systemctl list-timers 'argus-alert*' 'argus-smoke*' --no-pager
+python3 -m json.tool runtime/alerts/state.json
+argus alerts --json
 ```
 
-Then dashboard must show monitor only after toggle.
+Prove the loop with a temporary failing unit, then remove it:
+
+```bash
+printf '[Service]\nType=oneshot\nExecStart=/bin/false\n' | sudo tee /etc/systemd/system/argus-alerttest.service >/dev/null
+sudo systemctl daemon-reload && sudo systemctl start argus-alerttest.service || true
+sudo systemctl start argus-alert.service && argus alerts       # unit-failed:argus-alerttest.service is open
+sudo systemctl reset-failed argus-alerttest.service
+sudo rm /etc/systemd/system/argus-alerttest.service && sudo systemctl daemon-reload
+sudo systemctl start argus-alert.service && argus alerts       # resolved
+grep alert. runtime/audit.log | tail -2
+```
+
+The next scheduled smoke run must add a row to `runtime/smoke/smoke-history.jsonl`.
+
+## Install (Mac, operator)
+
+```bash
+cp ops/launchd/dev.argus.alert-poller.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/dev.argus.alert-poller.plist
+launchctl print gui/$(id -u)/dev.argus.alert-poller | head
+tail ~/Library/Logs/argus-alert-poller.log
+```
+
+The plist assumes the repo at `~/Code/nodens/argus` and ssh host `oreochiserver` with key auth (`BatchMode`, so no
+prompts). Override with `ARGUS_SSH_HOST`, `ARGUS_ARCHIVE_DIR` or `ARGUS_POLLER_STATE` in the plist's
+`EnvironmentVariables`. The poller also warns when the newest `*.tar*` in `~/Archives/argus-snapshots` is older than
+7 days (skipped while that directory does not exist), and raises `poller-unreachable` after five failed polls.
+Notifications fire once per new or changed alert; a recurrence after resolution notifies again.
+
+## Rollback
+
+```bash
+sudo systemctl disable --now argus-alert.timer
+sudo rm -r /etc/systemd/system/{argus-smoke,argus-metrics,argus-estate-refresh,argus-backup-snapshot}.service.d \
+  '/etc/systemd/system/argus-workload-db-backup@.service.d'
+sudo systemctl daemon-reload
+launchctl bootout gui/$(id -u)/dev.argus.alert-poller
+```
+
+Restore the previous smoke cadence by reinstalling the old `argus-smoke.timer` from the config backup. No other
+state is touched; `runtime/alerts/` is disposable.

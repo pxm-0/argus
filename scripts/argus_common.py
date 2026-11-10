@@ -256,6 +256,21 @@ def compose_image_pin(compose_path: str, service: str = "") -> str:
     return found.pop() if len(found) == 1 else ""
 
 
+def alert_state() -> dict[str, Any]:
+    """Sanitized view of runtime/alerts/state.json written by argus-alert; never raises."""
+    try:
+        document = json.loads((root() / "runtime" / "alerts" / "state.json").read_text())
+        rows = [item for item in document["alerts"] if isinstance(item, dict)]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"available": False, "alerts": []}
+    keys = ("id", "severity", "since", "detail", "lastSeen", "acked")
+    return {
+        "available": True,
+        "generatedAt": str(document.get("generatedAt", "")),
+        "alerts": [{key: item.get(key) for key in keys} for item in rows],
+    }
+
+
 def dashboard_state() -> dict[str, Any]:
     privacy = load_json("privacy.json")
     access = load_json("access.json")
@@ -299,6 +314,7 @@ def dashboard_state() -> dict[str, Any]:
         "exposure": exposure,
         "monitoring": monitoring,
         "events": events[-20:],
+        "alerts": alert_state(),
         "reconciliation": dashboard_reconciliation(),
         "topology": build_topology(
             workloads=merged,
