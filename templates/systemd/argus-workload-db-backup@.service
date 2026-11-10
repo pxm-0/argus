@@ -6,6 +6,6 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=/srv/argus
-ExecStart=/srv/argus/scripts/argus-m5-workload-db-backup --workload %i
+ExecStart=/srv/argus/scripts/argus-m5-workload-db-backup --workload %i --age-recipient-file /etc/argus/snapshot-recipients.txt
 User=root
 Group=root

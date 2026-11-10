@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Argus encrypted state snapshot (before the 02:35 workload dumps)
+
+[Timer]
+OnCalendar=*-*-* 02:10:00 UTC
+RandomizedDelaySec=5m
+Persistent=true
+Unit=argus-backup-snapshot.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Record a failed Argus snapshot in backup-status.json
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus-backup-snapshot --record-failure "argus-backup-snapshot.service failed; see journalctl -u argus-backup-snapshot.service"
+UMask=0022

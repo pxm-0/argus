@@ -7,6 +7,7 @@ import sqlite3
 import subprocess
 import tarfile
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
@@ -105,7 +106,8 @@ class SnapshotTests(unittest.TestCase):
         report = json.loads(result.stdout)
         archive = Path(report["archive"])
         self.assertTrue(archive.name.endswith(".tar.age"))
-        self.assertFalse(report["verified"])  # final .age bytes not re-read at creation
+        self.assertNotIn("verified", report)
+        self.assertFalse(report["final_verified"])  # final .age bytes not re-read at creation
         self.assertTrue(report["staged_tar_verified"])
         identity = Path(self._tmp.name) / "id.txt"
         identity.write_text("unused")
@@ -176,7 +178,9 @@ class SnapshotTests(unittest.TestCase):
         git_commands = [argv for argv in mod.COMMANDS.values() if argv[0] == "git"]
         self.assertTrue(git_commands)
         for argv in git_commands:
-            self.assertEqual(argv[1], "--no-optional-locks", argv)
+            self.assertIn("--no-optional-locks", argv)
+            # root reading the oreo-owned repo must not hit "dubious ownership"
+            self.assertIn("safe.directory={root}", argv)
 
     def test_m1_verify_failure_aborts_without_archive(self) -> None:
         verify = self.root / "scripts" / "argus-m1-verify"
@@ -185,16 +189,101 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1)
         self.assertEqual(list(self.out.glob("*.tar*")), [])
 
-    def test_retention_keeps_newest_14_and_pinned(self) -> None:
+    def test_retention_prunes_only_nightlies_and_ages_out_reasons(self) -> None:
+        import datetime as dt
         self.out.mkdir()
         for day in range(1, 21):
-            (self.out / f"202601{day:02d}T000000Z-old.tar").write_bytes(b"x")
-        (self.out / "20260101T000000Z-old.tar.pinned").write_text("")
+            (self.out / f"202601{day:02d}T000000Z-nightly.tar.age").write_bytes(b"x")
+        today = dt.datetime.now(dt.timezone.utc)
+        recent = [f"{(today - dt.timedelta(days=d)):%Y%m%dT%H%M%SZ}-pre-deploy{d}.tar.age" for d in (1, 2, 3)]
+        for name in recent:
+            (self.out / name).write_bytes(b"x")
+        (self.out / "20250101T000000Z-pre-ancient.tar.age").write_bytes(b"x")
+        (self.out / "20250102T000000Z-pre-pinned.tar.age").write_bytes(b"x")
+        (self.out / "20250102T000000Z-pre-pinned.tar.age.pinned").write_text("")
+        (self.out / "20260101T000000Z-nightly.tar.age.pinned").write_text("")
         self.snapshot("new")
-        remaining = sorted(p.name for p in self.out.glob("*.tar"))
-        self.assertEqual(len(remaining), 15)  # 14 newest + pinned oldest
-        self.assertIn("20260101T000000Z-old.tar", remaining)
-        self.assertNotIn("20260102T000000Z-old.tar", remaining)
+        names = sorted(p.name for p in self.out.glob("*.tar*") if not p.name.endswith(".pinned"))
+        nightlies = [n for n in names if n.endswith("-nightly.tar.age")]
+        self.assertEqual(len(nightlies), 15)  # 14 newest + the pinned oldest
+        self.assertIn("20260101T000000Z-nightly.tar.age", nightlies)
+        self.assertNotIn("20260102T000000Z-nightly.tar.age", nightlies)
+        for name in recent:
+            self.assertIn(name, names)  # 3 pre-deploy fixtures survive 20 nightlies
+        self.assertIn("20250102T000000Z-pre-pinned.tar.age", names)
+        self.assertNotIn("20250101T000000Z-pre-ancient.tar.age", names)
+
+    def test_encrypted_run_mirrors_to_pull_dir_and_writes_freshness_files(self) -> None:
+        recipients = Path(self._tmp.name) / "recipients.txt"
+        recipients.write_text(RECIPIENT)
+        pull = Path(self._tmp.name) / "pull"
+        (self.out).mkdir()
+        (self.out / "20200101T000000Z-pre-gone.tar").write_bytes(b"plain")  # plaintext must never be mirrored
+        result = self.run_cli("--recipient-file", str(recipients), "--pull-dir", str(pull), "--reason", "nightly",
+                              "--json", plaintext=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        report = json.loads(result.stdout)
+        archive = Path(report["archive"])
+        self.assertEqual([p.name for p in pull.iterdir()], [archive.name])
+        self.assertEqual(pull.stat().st_mode & 0o777, 0o750)
+        self.assertEqual((pull / archive.name).stat().st_mode & 0o777, 0o640)
+        self.assertEqual(self.out.stat().st_mode & 0o777, 0o700)
+        last = self.state / "snapshot-last.json"
+        self.assertEqual(last.stat().st_mode & 0o777, 0o644)
+        data = json.loads(last.read_text())
+        self.assertEqual(set(data), {"timestamp", "size"})
+        self.assertEqual(data["size"], archive.stat().st_size)
+        status = json.loads((self.state / "backup-status.json").read_text())
+        self.assertEqual(status["status"], "ok")
+        self.assertFalse(status["final_verified"])
+        self.assertTrue(status["staged_tar_verified"])
+
+    def test_mirror_never_follows_a_planted_partial_symlink(self) -> None:
+        from importlib.machinery import SourceFileLoader
+        mod = SourceFileLoader("snapmod_mirror", str(SCRIPT)).load_module()
+        out, pull = Path(self._tmp.name) / "o", Path(self._tmp.name) / "p"
+        out.mkdir()
+        pull.mkdir()
+        (out / "20200101T000000Z-nightly.tar.age").write_bytes(b"cipher")
+        victim = Path(self._tmp.name) / "victim"
+        victim.write_text("keep")
+        (pull / ".20200101T000000Z-nightly.tar.age.partial").symlink_to(victim)
+        mod.mirror_to_pull_dir(out, pull, "nobody-such-user")
+        self.assertEqual(victim.read_text(), "keep")
+        copied = pull / "20200101T000000Z-nightly.tar.age"
+        self.assertFalse(copied.is_symlink())
+        self.assertEqual(copied.read_bytes(), b"cipher")
+
+    def test_record_failure_updates_status_file(self) -> None:
+        result = self.run_cli("--record-failure", "boom", plaintext=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        status = json.loads((self.state / "backup-status.json").read_text())
+        self.assertEqual((status["status"], status["error"]), ("failed", "boom"))
+
+    def test_verify_compares_with_previous_snapshot(self) -> None:
+        first = self.snapshot("a")
+        ok = self.run_cli("--verify", str(first), plaintext=False)
+        self.assertEqual(ok.returncode, 0, ok.stderr)
+        time.sleep(1.1)  # stamps are second-granular
+        # a member vanished: the next snapshot (built without it) must fail verification
+        (self.state / "personal-managed" / "capabilities.sqlite3").unlink()
+        second = self.snapshot("b")
+        result = self.run_cli("--verify", str(second), plaintext=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("disappeared", result.stderr)
+        self.assertIn("capabilities-personal-managed", result.stderr)
+        self.assertEqual(self.run_cli("--verify", str(second), "--no-compare", plaintext=False).returncode, 0)
+
+    def test_verify_fails_when_member_size_halves(self) -> None:
+        (self.etc / "control-token").write_text("x" * 6000)
+        self.snapshot("big")
+        time.sleep(1.1)
+        (self.etc / "control-token").write_text("x")
+        small = self.snapshot("small")
+        result = self.run_cli("--verify", str(small), plaintext=False)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("shrank by more than 50%", result.stderr)
+        self.assertIn("etc-argus/control-token", result.stderr)
 
     def test_list_and_restore_plan_are_read_only(self) -> None:
         archive = self.snapshot("plan")

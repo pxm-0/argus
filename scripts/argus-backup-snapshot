@@ -12,6 +12,7 @@ import hashlib
 import io
 import json
 import os
+import pwd
 import re
 import shutil
 import sqlite3
@@ -23,12 +24,19 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RETENTION = 14
+REASON_KEEP_DAYS = 60
+PULL_DIR = Path("/var/backups/argus-snapshots-pull")
+PULL_OWNER = "oreo"
+NIGHTLY_RE = re.compile(r"-nightly\.tar\.age$")
+STAMP_RE = re.compile(r"^(\d{8}T\d{6}Z)-")
+GUARDED_PREFIXES = ("db/", "etc-argus/")
+MAX_SIZE_DROP = 0.5
 REASON_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,39}$")
 SQLITE_MAGIC = b"SQLite format 3\x00"
 RECIPIENT_RE = re.compile(r"^(age1[a-z0-9]+|ssh-(ed25519|rsa) \S+.*)$")
 COMMANDS = {
-    "state/git-head.txt": ["git", "--no-optional-locks", "-C", "{root}", "rev-parse", "HEAD"],
-    "state/git-status.txt": ["git", "--no-optional-locks", "-C", "{root}", "status", "--porcelain"],
+    "state/git-head.txt": ["git", "-c", "safe.directory={root}", "--no-optional-locks", "-C", "{root}", "rev-parse", "HEAD"],
+    "state/git-status.txt": ["git", "-c", "safe.directory={root}", "--no-optional-locks", "-C", "{root}", "status", "--porcelain"],
     "state/nft-ruleset.nft": ["nft", "list", "ruleset"],
     "state/tailscale-serve.json": ["tailscale", "serve", "status", "--json"],
     "state/systemd-argus-units.json": ["systemctl", "list-units", "argus-*", "--all", "--output", "json"],
@@ -191,10 +199,19 @@ def open_archive(path: Path, identity: Path | None):
     return proc.stdout, proc
 
 
-def verify_archive(path: Path, identity: Path | None = None) -> dict:
+def verify_archive(path: Path, identity: Path | None = None, previous: Path | None = None,
+                   compare: bool = False) -> dict:
     old_umask = os.umask(0o077)
     try:
-        return _verify_archive(path, identity)
+        info = _verify_archive(path, identity)
+        if compare:
+            before = previous or previous_snapshot(path)
+            info["previous"] = before.name if before else None
+            if before is not None:
+                problems = compare_with_previous(info["manifest"], read_manifest(before, identity))
+                if problems:
+                    raise SnapshotError("verification failed: " + "; ".join(problems))
+        return info
     finally:
         os.umask(old_umask)
 
@@ -270,15 +287,110 @@ def is_pinned(path: Path) -> bool:
     return path.with_name(path.name + ".pinned").exists()
 
 
-def prune(out_dir: Path) -> list[str]:
+def snapshot_time(path: Path) -> dt.datetime:
+    match = STAMP_RE.match(path.name)
+    if match:
+        return dt.datetime.strptime(match.group(1), "%Y%m%dT%H%M%SZ").replace(tzinfo=dt.timezone.utc)
+    return dt.datetime.fromtimestamp(path.stat().st_mtime, dt.timezone.utc)
+
+
+def prune(out_dir: Path, now: dt.datetime | None = None) -> list[str]:
+    """Keep the newest 14 nightlies; reason-named snapshots live 60 days; pinned ones live until unpinned."""
+    now = now or dt.datetime.now(dt.timezone.utc)
     candidates = snapshots(out_dir)
-    keep = set(candidates[-RETENTION:]) | {p for p in candidates if is_pinned(p)}
+    nightlies = [p for p in candidates if NIGHTLY_RE.search(p.name)]
+    keep = set(nightlies[-RETENTION:]) | {p for p in candidates if is_pinned(p)}
+    keep |= {p for p in candidates if p not in nightlies
+             and now - snapshot_time(p) <= dt.timedelta(days=REASON_KEEP_DAYS)}
     removed = []
     for path in candidates:
         if path not in keep:
             path.unlink()
             removed.append(path.name)
     return removed
+
+
+def atomic_write_json(path: Path, payload: dict, mode: int = 0o644) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    partial = path.with_name(f".{path.name}.partial")
+    partial.write_text(json.dumps(payload, sort_keys=True) + "\n")
+    os.chmod(partial, mode)
+    os.replace(partial, path)
+
+
+def copy_nofollow(source: Path, partial: Path, mode: int, uid: int | None, gid: int | None) -> None:
+    """Write partial as a fresh file in an oreo-writable dir: never follow a planted symlink, never reuse a file."""
+    partial.unlink(missing_ok=True)
+    fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    with os.fdopen(fd, "wb") as out, source.open("rb") as handle:
+        if uid is not None:
+            os.fchown(out.fileno(), uid, gid)
+        os.fchmod(out.fileno(), mode)
+        shutil.copyfileobj(handle, out)
+
+
+def mirror_to_pull_dir(out_dir: Path, pull_dir: Path, owner: str) -> list[str]:
+    """Copy encrypted archives only (never plaintext) to the oreo-readable pull dir; drop what pruning removed."""
+    try:
+        ids = pwd.getpwnam(owner)
+    except KeyError:
+        ids = None
+    pull_dir.mkdir(parents=True, exist_ok=True)
+    if ids is not None and os.geteuid() == 0:
+        os.chown(pull_dir, ids.pw_uid, ids.pw_gid)
+    os.chmod(pull_dir, 0o750)
+    wanted = {p.name: p for p in snapshots(out_dir) if p.suffix == ".age"}
+    copied = []
+    for name, source in wanted.items():
+        target = pull_dir / name
+        if target.exists() and target.stat().st_size == source.stat().st_size:
+            continue
+        partial = pull_dir / f".{name}.partial"
+        root_owned = ids is not None and os.geteuid() == 0
+        copy_nofollow(source, partial, 0o640, ids.pw_uid if root_owned else None, ids.pw_gid if root_owned else None)
+        os.replace(partial, target)
+        copied.append(name)
+    for stale in pull_dir.glob("*.tar.age"):
+        if stale.name not in wanted:
+            stale.unlink()
+    return copied
+
+
+def read_manifest(path: Path, identity: Path | None) -> dict:
+    """manifest.json is the first tar member, so stop reading right after it."""
+    handle, proc = open_archive(path, identity)
+    try:
+        with tarfile.open(fileobj=handle, mode="r|") as tar:
+            item = tar.next()
+            if item is None or item.name != "manifest.json":
+                raise SnapshotError(f"no leading manifest.json in {path.name}")
+            return json.loads(tar.extractfile(item).read())
+    except (tarfile.TarError, json.JSONDecodeError) as exc:
+        raise SnapshotError(f"unreadable previous archive {path.name}: {type(exc).__name__}") from exc
+    finally:
+        handle.close()
+        if proc is not None:
+            proc.kill()
+            proc.wait()
+
+
+def previous_snapshot(path: Path) -> Path | None:
+    older = [p for p in snapshots(path.parent) if p.suffix == path.suffix and p.name < path.name]
+    return older[-1] if older else None
+
+
+def compare_with_previous(current: dict, previous: dict) -> list[str]:
+    """Guard against a snapshot that silently lost state: a vanished or collapsed db/ or etc-argus/ member."""
+    problems = []
+    for name, meta in previous["members"].items():
+        if not name.startswith(GUARDED_PREFIXES):
+            continue
+        now = current["members"].get(name)
+        if now is None:
+            problems.append(f"member disappeared since previous snapshot: {name}")
+        elif meta["size"] > 0 and now["size"] < meta["size"] * (1 - MAX_SIZE_DROP):
+            problems.append(f"member shrank by more than 50% since previous snapshot: {name} ({meta['size']} -> {now['size']})")
+    return problems
 
 
 def create(args: argparse.Namespace) -> dict:
@@ -318,12 +430,29 @@ def create(args: argparse.Namespace) -> dict:
     with final.open("rb") as raw:
         fingerprint = sha256_stream(raw)
     removed = prune(args.out_dir)
+    pull_dir = getattr(args, "pull_dir", None)
+    mirrored = mirror_to_pull_dir(args.out_dir, pull_dir, getattr(args, "pull_owner", PULL_OWNER)) if pull_dir else []
+    size = final.stat().st_size
+    stamp_now = dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    atomic_write_json(args.state_dir / "snapshot-last.json", {"timestamp": stamp_now, "size": size})
+    atomic_write_json(args.state_dir / "backup-status.json", {
+        "status": "ok", "timestamp": stamp_now, "archive": final.name, "size": size,
+        "encrypted": bool(recipients_file), "pull_mirrored": bool(pull_dir) and bool(recipients_file),
+        "staged_tar_verified": True, "final_verified": not recipients_file})
     return {"archive": str(final), "sha256": fingerprint, "encrypted": bool(recipients_file),
-            "members": len(manifest["members"]),
+            "members": len(manifest["members"]), "size": size,
             # Final bytes are only re-read for plaintext; encrypted needs --verify --identity.
-            "verified": not recipients_file, "staged_tar_verified": True,
-            "pruned": removed, "note": "encrypted: staged tar verified before encryption; run --verify <file> --identity <key> to re-read the .age"
+            "final_verified": not recipients_file, "staged_tar_verified": True,
+            "pruned": removed, "mirrored": mirrored,
+            "note": "encrypted: staged tar verified before encryption; run --verify <file> --identity <key> to re-read the .age"
             if recipients_file else None}
+
+
+def record_failure(state_dir: Path, message: str) -> None:
+    """Called by the OnFailure unit: keep the last good fields out of it, just say it failed."""
+    atomic_write_json(state_dir / "backup-status.json", {
+        "status": "failed", "timestamp": dt.datetime.now(dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "error": message})
 
 
 def restore_plan(info: dict) -> str:
@@ -361,6 +490,13 @@ def main() -> int:
     parser.add_argument("--recipient-file", type=Path, default=os.environ.get("ARGUS_SNAPSHOT_AGE_RECIPIENTS") or None,
                         help="age recipients (public keys only)")
     parser.add_argument("--allow-plaintext", action="store_true")
+    parser.add_argument("--previous", type=Path, help="--verify: compare against this snapshot (default: the previous one)")
+    parser.add_argument("--no-compare", action="store_true", help="--verify: skip the previous-snapshot comparison")
+    parser.add_argument("--pull-dir", type=Path, default=None,
+                        help=f"mirror encrypted archives here after a successful run (production: {PULL_DIR})")
+    parser.add_argument("--pull-owner", default=PULL_OWNER)
+    parser.add_argument("--record-failure", metavar="MESSAGE",
+                        help="write status=failed to backup-status.json (used by the OnFailure unit)")
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--etc-dir", type=Path, default=Path("/etc/argus"))
     parser.add_argument("--state-dir", type=Path, default=Path("/var/lib/argus"))
@@ -369,13 +505,15 @@ def main() -> int:
     if args.recipient_file:
         args.recipient_file = Path(args.recipient_file)
     try:
-        if args.list:
+        if args.record_failure:
+            record_failure(args.state_dir, args.record_failure)
+        elif args.list:
             rows = [{"name": p.name, "bytes": p.stat().st_size, "pinned": is_pinned(p)}
                     for p in (snapshots(args.out_dir) if args.out_dir.is_dir() else [])]
             print(json.dumps(rows, indent=2) if args.json else "\n".join(
                 f"{r['name']}\t{r['bytes']}\t{'pinned' if r['pinned'] else ''}" for r in rows))
         elif args.verify:
-            info = verify_archive(args.verify, args.identity)
+            info = verify_archive(args.verify, args.identity, args.previous, compare=not args.no_compare)
             info.pop("manifest")
             print(json.dumps(info, indent=2) if args.json else f"OK {info['archive']} members={info['members']} sha256={info['sha256']}")
         elif args.restore_plan:
