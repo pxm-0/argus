@@ -171,7 +171,11 @@ class AgentService:
             return {"ok": False, "status": "unavailable", "detail": "typed runtime health command failed"}
         try:
             stripped = result.stdout.strip()
-            decoded = json.loads(stripped) if stripped.startswith(("[", "{")) else [json.loads(line) for line in stripped.splitlines() if line]
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                # compose prints one JSON object per container line, so multi-container projects are NDJSON
+                decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
             payload = decoded if isinstance(decoded, list) else [decoded]
         except json.JSONDecodeError:
             return {"ok": False, "status": "invalid", "detail": "typed runtime health output was invalid"}

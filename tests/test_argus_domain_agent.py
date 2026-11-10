@@ -234,5 +234,21 @@ class DomainAgentServiceTests(unittest.TestCase):
         self.assertIn("completed", result["summary"])
 
 
+    def test_multi_container_compose_ps_ndjson_is_healthy(self) -> None:
+        # app plus caddy ingress: `compose ps --format json` prints one object per line
+        two = subprocess.CompletedProcess([], 0, stdout=(
+            '{"Service":"argus-ingress","State":"running","Health":""}\n'
+            '{"Service":"nodens","State":"running","Health":"healthy"}\n'
+        ))
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            with (
+                patch.object(service, "compose_service", return_value="nodens"),
+                patch("argus_domain_agent.subprocess.run", return_value=two),
+            ):
+                health = service.domain_health("hastur")
+        self.assertTrue(health["ok"], health)
+        self.assertEqual("healthy", health["status"])
+
 if __name__ == "__main__":
     unittest.main()
