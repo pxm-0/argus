@@ -29,29 +29,39 @@ STEP_UP_REQUIRED = "step-up reauthentication required"
 
 
 class _Tty:
-    def __init__(self, handle: Any) -> None:
-        self._handle = handle
+    """Separate read and write handles: a terminal is not seekable, so text-mode "r+" fails."""
+
+    def __init__(self, reader: Any, writer: Any) -> None:
+        self._reader = reader
+        self._writer = writer
 
     def write(self, text: str) -> None:
-        self._handle.write(text)
-        self._handle.flush()
+        self._writer.write(text)
+        self._writer.flush()
 
     def read_line(self, prompt: str) -> str:
         self.write(prompt)
-        return self._handle.readline().rstrip("\n")
+        return self._reader.readline().rstrip("\n")
 
     def read_secret(self, prompt: str) -> str:
-        return getpass.getpass(prompt, stream=self._handle)
+        return getpass.getpass(prompt, stream=self._writer)
 
     def close(self) -> None:
-        self._handle.close()
+        self._reader.close()
+        self._writer.close()
 
 
-def open_tty() -> _Tty | None:
+def open_tty(path: str = "/dev/tty") -> _Tty | None:
     try:
-        return _Tty(open("/dev/tty", "r+"))  # noqa: SIM115 - closed by the flow
+        reader = open(path, "r")  # noqa: SIM115 - closed by the flow
     except OSError:
         return None
+    try:
+        writer = open(path, "w")  # noqa: SIM115 - closed by the flow
+    except OSError:
+        reader.close()
+        return None
+    return _Tty(reader, writer)
 
 
 class _Stop(Exception):

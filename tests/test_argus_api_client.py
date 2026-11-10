@@ -312,3 +312,27 @@ class OpCommandTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(hasattr(__import__("os"), "openpty"), "needs a pseudo-terminal")
+class RealTerminalTests(unittest.TestCase):
+    """open_tty against a real (non-seekable) terminal device, not a fake."""
+
+    def test_open_tty_works_on_a_real_terminal(self) -> None:
+        import os
+
+        master, slave = os.openpty()
+        try:
+            tty = argus_cli_op.open_tty(os.ttyname(slave))
+            self.assertIsNotNone(tty, "a non-seekable terminal must still open")
+            tty.write("prompt> ")
+            self.assertIn(b"prompt> ", os.read(master, 1024))
+            os.write(master, b"nodens-staging\n")
+            self.assertEqual("nodens-staging", tty.read_line(""))
+            tty.close()
+        finally:
+            os.close(master)
+            os.close(slave)
+
+    def test_open_tty_returns_none_without_a_terminal(self) -> None:
+        self.assertIsNone(argus_cli_op.open_tty("/nonexistent/argus-tty"))
