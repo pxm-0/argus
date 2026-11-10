@@ -207,8 +207,8 @@
         "observedBindings": []
       },
       "health": {
-        "enabled": false,
-        "url": "",
+        "enabled": true,
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8450/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
@@ -223,7 +223,7 @@
         "privacyToggle": false
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
         "targetTrustDomain": "personal-sandbox",
         "originalPath": "",
         "compatibilitySymlink": false,
@@ -232,6 +232,10 @@
         "notes": [
           "Admission and every mutation capability remain denied pending reviewed evidence."
         ]
+      },
+      "access": "tailnet",
+      "urls": {
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8450"
       }
     },
     {
@@ -259,8 +263,8 @@
         "observedBindings": []
       },
       "health": {
-        "enabled": false,
-        "url": "",
+        "enabled": true,
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8451/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
@@ -275,7 +279,7 @@
         "privacyToggle": false
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
         "targetTrustDomain": "personal-managed",
         "originalPath": "",
         "compatibilitySymlink": false,
@@ -284,6 +288,10 @@
         "notes": [
           "Admission and every mutation capability remain denied pending reviewed evidence."
         ]
+      },
+      "access": "tailnet",
+      "urls": {
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8451"
       }
     }
   ]
