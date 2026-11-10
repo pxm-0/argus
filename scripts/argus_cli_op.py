@@ -1,6 +1,6 @@
 """`argus op` and `argus workload deploy|start|stop|restart`: operator API flows.
 
-The bootstrap token is read only through getpass on /dev/tty. Preview and
+The bootstrap token and then the authenticator code are read only through getpass on /dev/tty. Preview and
 approval stay separate steps: the operator confirms the previewed digest (typed
 workload ID on a TTY, or --yes-digest) before anything is created.
 The server binds approval to the originating session, so `create` carries the
@@ -83,6 +83,7 @@ class _Flow:
         self.cli, self.repo, self.args = cli, repo, args
         self.client: ApiClient | None = None
         self.tty: _Tty | None = None
+        self.prompted_code = False  # a second prompt in one run must not reuse the first 30 s code
 
     def stop(self, code: str, message: str, next_action: str, exit_code: int, **kwargs: Any) -> _Stop:
         return _Stop(self.cli._error(code, message, next_action, exit_code=exit_code, authority="operator-api", **kwargs))
@@ -107,16 +108,24 @@ class _Flow:
             raise self.stop("op-token-empty", "No bootstrap token was entered.", "Retry and enter the token at the prompt.", self.cli.EXIT_INVOCATION)
         return token
 
-    def authenticate(self, stage: str, send: Callable[[ApiClient, str], ApiResponse]) -> None:
-        assert self.client is not None
+    def authenticate(self, stage: str, send: Callable[[ApiClient, str, str], ApiResponse]) -> None:
+        assert self.client is not None and self.tty is not None
         token = self.secret(stage)
+        prompt = "Authenticator code or recovery code (blank if not enrolled): "
+        if self.prompted_code:
+            prompt = "Wait for the NEXT 30 s code (a code already used is rejected). " + prompt
+        self.prompted_code = True
+        code = self.tty.read_secret(prompt).strip()
         try:
-            if send(self.client, token).status not in (200, 201):
-                raise self.stop(f"op-{stage}-rejected", f"The {stage} credential was rejected.", "Verify the bootstrap token and tailnet identity, then retry.", self.cli.EXIT_REFUSAL)
+            response = send(self.client, token, code)
+            if response.status == 429:
+                raise self.stop(f"op-{stage}-locked", "Too many failed attempts; this operator is locked out for up to 15 minutes.", "Wait for the lockout to expire, then retry.", self.cli.EXIT_REFUSAL)
+            if response.status not in (200, 201):
+                raise self.stop(f"op-{stage}-rejected", f"The {stage} credential was rejected.", "Verify the bootstrap token, authenticator code and tailnet identity, then retry.", self.cli.EXIT_REFUSAL)
         except ApiUnavailable as exc:
             raise self.stop(f"op-{stage}-unavailable", _clean(exc), "Check tailnet connectivity and retry.", self.cli.EXIT_UNAVAILABLE) from None
         finally:
-            token = ""  # drop the only reference we hold
+            token = code = ""  # drop the only references we hold
 
     def connect(self) -> None:
         self.tty = open_tty()
@@ -134,7 +143,7 @@ class _Flow:
             self.client = ApiClient(url)
         except ValueError as exc:
             raise self.stop("op-base-url-invalid", _clean(exc), "Pass the URL printed by argus dashboard url.", self.cli.EXIT_INVOCATION) from None
-        self.authenticate("exchange", lambda client, token: client.exchange(token))
+        self.authenticate("exchange", lambda client, token, code: client.exchange(token, code))
 
     def preview(self) -> dict[str, Any]:
         assert self.client is not None
@@ -180,7 +189,7 @@ class _Flow:
         for attempt in (1, 2):
             response = self._approve_once(operation_id, confirmation)
             if response.status == 403 and response.body.get("error") == STEP_UP_REQUIRED and attempt == 1:
-                self.authenticate("step-up", lambda client, token: client.step_up(token))
+                self.authenticate("step-up", lambda client, token, code: client.step_up(token, code))
                 continue
             self.call("approve", lambda: response, indeterminate=True)
             return
@@ -241,7 +250,7 @@ class _Flow:
             summary = self.preview()
             self.confirm(summary)
             # Step-up precedes create so the 60 s preview window is not spent typing.
-            self.authenticate("step-up", lambda client, token: client.step_up(token))
+            self.authenticate("step-up", lambda client, token, code: client.step_up(token, code))
             created = self.call("create", lambda: self.client.create(args.workload_id, args.operation_type, summary_parameters(args), summary))
             operation_id = str(created.get("operation_id", ""))
             self.approve(operation_id, str(summary["confirmationPhrase"]))
@@ -288,7 +297,7 @@ def register(commands: Any, workload_sub: Any, leaf: Callable[..., Any], descrip
     def contract(purpose: str, side_effects: str, example: str) -> str:
         return description(
             purpose,
-            "api-session: tailnet identity, operator session, and bootstrap-token step-up",
+            "api-session: tailnet identity, operator session, and bootstrap-token plus authenticator-code step-up",
             "reachable private dashboard API, an interactive terminal, and the bootstrap token typed at the prompt",
             side_effects,
             "operation ID, state, and exit class 0/3/4/5",
