@@ -96,7 +96,8 @@ class EncryptedDumpFlowTests(unittest.TestCase):
         self.recipients.write_text("age1" + "q" * 58 + "\n")
         self.pull = self.base / "pull"
         patches = [mock.patch.dict(os.environ, {"PATH": f"{bindir}:{os.environ['PATH']}"}),
-                   mock.patch("os.chown"), mock.patch("os.geteuid", return_value=0)]
+                   mock.patch("os.chown"), mock.patch("os.geteuid", return_value=0),
+                   mock.patch("pwd.getpwnam", return_value=mock.Mock(pw_uid=1000, pw_gid=1000))]
         for item in patches:
             item.start()
             self.addCleanup(item.stop)
