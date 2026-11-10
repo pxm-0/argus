@@ -6,7 +6,7 @@ name: nodens-production
 
 services:
   nodens:
-    image: sha256:PENDING-nodens-image-id-from-argus-image-import
+    image: sha256:e8f2abf0300b7031e22ab633eade07dad327bbcab3572e26d0eb007d27569733  # ghcr.io/pxm-0/nodens@sha256:e8f2abf0300b7031e22ab633eade07dad327bbcab3572e26d0eb007d27569733 (nodens aec2b0a)
     restart: unless-stopped
     read_only: true
     tmpfs:
