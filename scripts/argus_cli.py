@@ -1275,9 +1275,6 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
     if command == "dashboard.url":
         print(f"CONFIGURED_URL {data['url']}", file=stdout)
         print(f"EFFECTIVE_STATE {data['effectiveState']}", file=stdout)
-    elif command == "workload.list":
-        for item in data["workloads"]:
-            print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
     elif command.startswith("m1."):
         argus_cli_m1.render(data, stdout)
     elif argus_cli_format.render(data, stdout):
