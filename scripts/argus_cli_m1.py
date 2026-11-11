@@ -92,7 +92,8 @@ def _off_server(error: Error, verb: str) -> dict[str, Any]:
         "m1-server-only",
         "No M1 private state exists on this machine; this command only works on the server.",
         f"Run on the server: {command}",
-        exit_code=EXIT_REFUSAL,
+        exit_code=EXIT_UNAVAILABLE,
+        retry_safe=True,
     )
 
 

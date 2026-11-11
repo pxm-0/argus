@@ -207,7 +207,23 @@ class ArgusCliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual({"error", "ok", "schemaVersion"}, set(payload))
         self.assertEqual("invalid-invocation", payload["error"]["code"])
+        self.assertIn("unknown", payload["error"]["message"])
         self.assertEqual("", stderr.getvalue())
+
+    def test_invalid_invocation_names_the_argparse_reason(self) -> None:
+        for argv, needle in (
+            (["workload", "lst"], "invalid choice: 'lst'"),
+            (["smoke", "status", "--last", "abc"], "invalid int value: 'abc'"),
+            (["doctor", "--host"], "unrecognized arguments: --host"),
+            (["workload", "show"], "the following arguments are required: workload_id"),
+        ):
+            with self.subTest(argv=argv):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                code = run(argv, repo=ROOT, stdout=stdout, stderr=stderr)
+                self.assertEqual(2, code)
+                self.assertEqual("", stdout.getvalue())
+                self.assertIn("ERROR invalid-invocation: ", stderr.getvalue())
+                self.assertIn(needle, stderr.getvalue())
 
 
 class StableCliContractTests(unittest.TestCase):
@@ -542,6 +558,27 @@ class StableCliContractTests(unittest.TestCase):
         self.assertNotIn("topology", output.lower())
         self.assertEqual("", error)
 
+    def test_doctor_audit_failure_names_the_failing_checks(self) -> None:
+        checks = [
+            {"ok": True, "message": "tracked secrets absent"},
+            {"ok": False, "message": "deterministic core boundary audit available"},
+            {"ok": False, "message": "sudoers drop-in reviewed", "path": "/etc/sudoers.d/argus"},
+        ]
+
+        def runner(command, _repo):
+            return subprocess.CompletedProcess(command, 1, json.dumps({"ok": False, "checks": checks}), "")
+
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(3, code)
+        payload = json.loads(output)
+        self.assertEqual("doctor-audit-failed", payload["error"]["code"])
+        self.assertIn("deterministic core boundary audit available", payload["error"]["message"])
+        self.assertEqual(
+            ["deterministic core boundary audit available", "sudoers drop-in reviewed"],
+            payload["data"]["failedChecks"],
+        )
+        self.assertNotIn("/etc/sudoers.d", output)
+
     def test_doctor_and_check_run_helpers_under_the_current_interpreter(self) -> None:
         calls: list[list[str]] = []
 
@@ -599,8 +636,17 @@ class StableCliContractTests(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual("internal-error", payload["error"]["code"])
         self.assertRegex(payload["error"]["evidenceId"], r"^sha256:[0-9a-f]{64}$")
-        self.assertNotIn("private-looking", output)
-        self.assertEqual("", error)
+        self.assertNotIn("private-looking", output + error)
+        self.assertNotIn("argus check", payload["error"]["nextAction"])
+        self.assertIn("TRACE RuntimeError", error)
+        self.assertIn("argus_cli.py:", error)
+        self.assertIn("in crashes", error)
+
+        def other_crash(_command, _repo):
+            raise RuntimeError("different site")
+
+        other = json.loads(self.invoke(["check", "--json"], runner=other_crash)[1])
+        self.assertNotEqual(payload["error"]["evidenceId"], other["error"]["evidenceId"])
 
     def test_human_failure_is_stderr_only_and_actionable(self) -> None:
         code, output, error = self.invoke(["estate", "refresh"])

@@ -274,7 +274,7 @@ def retire(repo: Path, workload_id: str, *, dry_run: bool, reason: str, runner: 
     workloads = _load(repo / "config/workloads.json")["workloads"]
     workload = next((w for w in workloads if w.get("id") == workload_id), None)
     if workload is None:
-        raise RetireError("workload-unknown", "The workload is not in the registry.", "Run argus workload list.")
+        raise RetireError("workload-not-found", "The requested workload is not in the canonical registry.", "Run argus workload list.")
     retired = _load(repo / RETIRED_FILE)
     if workload_id in retired["workloads"]:
         raise RetireError("workload-already-retired", "The workload is already retired.", "Nothing to do.")

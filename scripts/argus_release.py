@@ -139,7 +139,7 @@ def load_registry(repo: Path) -> dict[str, dict[str, Any]]:
 def workload_context(repo: Path, workload_id: str) -> dict[str, Any]:
     item = load_registry(repo).get(workload_id)
     if item is None:
-        raise ReleaseError("workload-unknown", "The workload is not in the registry.", "Run argus workload list.", EXIT_INVOCATION)
+        raise ReleaseError("workload-not-found", "The requested workload is not in the canonical registry.", "Run argus workload list and retry with an exact workload ID.", EXIT_REFUSAL)
     domain = str(item.get("migration", {}).get("targetTrustDomain", ""))
     service = str(item.get("runtime", {}).get("service", ""))
     compose = repo / "workloads" / workload_id / "source" / "compose.yml"

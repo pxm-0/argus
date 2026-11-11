@@ -124,6 +124,7 @@ class WorkloadRetireTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertFalse(result["ok"])
             self.assertEqual(before, self.snapshot())
+        self.assertEqual("workload-not-found", self.invoke(FakeRunner(self.root), "nope")[1]["error"]["code"])
 
     def test_invalid_id_is_refused(self) -> None:
         code, result = self.invoke(FakeRunner(self.root), "../x")

@@ -11,6 +11,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
@@ -776,11 +777,18 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             exit_code=EXIT_UNAVAILABLE,
         )
     if audit.returncode != 0 or audit_payload.get("ok") is not True:
+        checks = audit_payload.get("checks")
+        failed = [
+            check["message"]
+            for check in (checks if isinstance(checks, list) else [])
+            if isinstance(check, dict) and check.get("ok") is not True and isinstance(check.get("message"), str)
+        ]
         return _error(
             "doctor-audit-failed",
-            "One or more deterministic security checks failed.",
-            "Review ./scripts/argus-doctor --json and fix the named check before mutation.",
+            "Deterministic security checks failed: " + ("; ".join(failed) if failed else "no check was named") + ".",
+            "Fix the named check (details: ./scripts/argus-doctor --json) before mutation.",
             exit_code=EXIT_REFUSAL,
+            data={"failedChecks": failed},
         )
     try:
         boundary = load_json(repo, "config/core-boundary-policy.json")
@@ -1136,10 +1144,11 @@ def run(
     json_output = "--json" in argv
     try:
         args = build_parser().parse_args(argv)
-    except CliInvocationError:
+    except CliInvocationError as exc:
+        reason = "".join(character for character in str(exc) if character.isprintable())
         result = _error(
             "invalid-invocation",
-            "The command arguments are invalid.",
+            f"The command arguments are invalid: {reason}",
             "Run argus --help or the selected noun/verb --help.",
             exit_code=EXIT_INVOCATION,
         )
@@ -1152,11 +1161,16 @@ def run(
     try:
         result, deprecation = dispatch(args, repo, command_runner)
     except Exception as exc:
-        evidence_id = "sha256:" + hashlib.sha256(type(exc).__name__.encode("utf-8")).hexdigest()
+        # Frames only: the exception message can carry private payloads.
+        frames = [f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}" for frame in traceback.extract_tb(exc.__traceback__)]
+        print(f"TRACE {type(exc).__name__}", file=stderr)
+        for frame in frames:
+            print(f"TRACE   at {frame}", file=stderr)
+        evidence_id = "sha256:" + hashlib.sha256("\n".join([type(exc).__name__, *frames]).encode("utf-8")).hexdigest()
         result = _error(
             "internal-error",
             "The command failed without a safe typed result.",
-            "Run argus doctor --json and report the command plus repository revision; do not include private payloads.",
+            "Report the evidenceId, the TRACE lines printed on stderr and git rev-parse HEAD; do not include private payloads.",
             exit_code=EXIT_INTERNAL,
             evidence_id=evidence_id,
         )
