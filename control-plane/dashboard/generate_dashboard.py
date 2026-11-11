@@ -63,9 +63,10 @@ def render_html() -> str:
       <div class="title-lockup">
         <h1>Argus</h1>
         <p id="route-summary">Loading estate evidence</p>
+        <p id="state-age" class="state-age"><span class="state-badge info">Loading</span><span>Loading dashboard state</span></p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
-        <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
+        <input id="admin-token" type="password" autocomplete="off" aria-label="Bootstrap credential" placeholder="bootstrap credential" hidden>
         <input id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" hidden>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
         <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
@@ -82,6 +83,11 @@ def render_html() -> str:
     </header>
     <main id="overview">
       <section class="summary" id="summary" aria-label="System summary"></section>
+      <section class="alert" id="state-alert" data-state="open" role="alert" hidden>
+        <strong>State unavailable</strong>
+        <span id="state-alert-detail">Argus could not load the dashboard state. No action is authorized from stale or missing state.</span>
+        <button type="button" id="state-retry">Retry</button>
+      </section>
       <section class="alert" id="exposure-alert">
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
@@ -95,7 +101,7 @@ def render_html() -> str:
           <div><p class="eyebrow">Evidence gate</p><h2 id="evidence-state-title">Estate completeness</h2></div>
           <span id="evidence-state-label" class="state-badge info">Loading</span>
         </div>
-        <div id="evidence-state-body">Loading estate evidence.</div>
+        <div id="evidence-state-body" class="evidence-state-body">Loading estate evidence.</div>
       </section>
       <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
@@ -197,6 +203,10 @@ const sessionStatus = document.getElementById("session-status");
 const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
+const stateAgeEl = document.getElementById("state-age");
+const stateAlert = document.getElementById("state-alert");
+const stateAlertDetail = document.getElementById("state-alert-detail");
+const stateRetry = document.getElementById("state-retry");
 const exposureAlert = document.getElementById("exposure-alert");
 const alertBanner = document.getElementById("alert-banner");
 const evidenceStateEl = document.getElementById("evidence-state");
@@ -235,6 +245,15 @@ function setTheme(theme) {
   document.documentElement.dataset.theme = light ? "light" : "dark";
   themeToggle.textContent = light ? "Dark Mode" : "Light Mode";
   themeToggle.setAttribute("aria-pressed", String(light));
+}
+
+const liveRegionMarkup = new WeakMap();
+
+function setLiveRegionHTML(element, html) {
+  // Rewriting unchanged live-region content makes screen readers announce it again on every poll.
+  if (liveRegionMarkup.get(element) === html) return;
+  liveRegionMarkup.set(element, html);
+  element.innerHTML = html;
 }
 
 function escapeHtml(value) {
@@ -319,6 +338,7 @@ function setOperatorSessionState(nextState, { reason = "", session = null } = {}
     operatorIdentity = "";
     setAdmin(false);
   }
+  if (state) renderStages();
 }
 
 function statusClass(value) {
@@ -589,14 +609,15 @@ function setMonitor(open) {
   }
 }
 
+// Actions follow prototypes/states.json; loading has none ("No action yet").
 const EVIDENCE_PRESENTATIONS = Object.freeze({
-  loading: { label: "Loading", tone: "info", headline: "Loading estate evidence", detail: "Waiting for the private evidence summary.", action: "Review coverage" },
-  empty: { label: "Empty", tone: "info", headline: "No estate evidence configured", detail: "The dashboard has no configured observation repository to reconcile.", action: "Review coverage" },
-  error: { label: "Error", tone: "bad", headline: "Estate evidence unavailable", detail: "The private evidence summary could not be loaded. No action is authorized.", action: "Review coverage" },
+  loading: { label: "Loading", tone: "info", headline: "Loading estate evidence", detail: "Waiting for the private evidence summary.", action: null },
+  empty: { label: "Empty", tone: "info", headline: "No estate evidence configured", detail: "The dashboard has no configured observation repository to reconcile.", action: "Open coverage" },
+  error: { label: "Error", tone: "bad", headline: "Estate evidence unavailable", detail: "The private evidence summary could not be loaded. No action is authorized.", action: "Retry failed sources", refresh: true },
   partial: { label: "Partial", tone: "warn", headline: "Estate evidence is incomplete", detail: "Some sources or workload identities still need evidence before review can finish.", action: "Review coverage" },
-  stale: { label: "Stale", tone: "warn", headline: "Estate evidence is stale", detail: "One or more source observations are outside the freshness window.", action: "Review coverage" },
-  conflict: { label: "Conflict", tone: "bad", headline: "Estate identity conflict", detail: "The same workload evidence maps to incompatible trust-domain identities.", action: "Review coverage" },
-  complete: { label: "Complete", tone: "good", headline: "Estate evidence is complete", detail: "All reconciled workload identities are known and the configured sources are fresh.", action: "Review coverage" }
+  stale: { label: "Stale", tone: "warn", headline: "Estate evidence is stale", detail: "One or more source observations are outside the freshness window.", action: "Refresh estate", refresh: true },
+  conflict: { label: "Conflict", tone: "bad", headline: "Estate identity conflict", detail: "The same workload evidence maps to incompatible trust-domain identities.", action: "Inspect evidence" },
+  complete: { label: "Complete", tone: "good", headline: "Estate evidence is complete", detail: "All reconciled workload identities are known and the configured sources are fresh.", action: "Open workload", href: "#workloads-heading" }
 });
 
 function safeEvidenceToken(value) {
@@ -618,7 +639,7 @@ function boundedCount(value) {
 }
 
 function reconciliationState(reconciliation) {
-  if (!reconciliation) return "loading";
+  if (!reconciliation || reconciliation.status === "loading") return "loading";
   if (reconciliation.status === "unavailable") return "error";
   const coverage = reconciliation.coverage || {};
   const workloads = Array.isArray(reconciliation.workloads) ? reconciliation.workloads : [];
@@ -638,6 +659,10 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
   const workloads = Array.isArray(reconciliation?.workloads) ? reconciliation.workloads : [];
   const sources = Array.isArray(coverage.sources) ? coverage.sources : [];
   const blockers = Array.isArray(reconciliation?.blockers) ? reconciliation.blockers : [];
+  const actionMarkup = !presentation.action ? ""
+    : presentation.refresh ? `<button type="button" class="action evidence-action" data-evidence-refresh>${presentation.action}</button>`
+    : presentation.href ? `<a class="action evidence-action" href="${presentation.href}">${presentation.action}</a>`
+    : `<a class="action evidence-action" href="#estate-coverage">${presentation.action}</a>`;
   const sourceMarkup = sources.length
     ? `<ul class="evidence-state-sources">${sources.slice(0, 8).map((source) => `<li><span>${escapeHtml(safeEvidenceToken(source?.sourceId))}</span><strong>${escapeHtml(safeEvidenceToken(source?.state || "unknown"))}</strong></li>`).join("")}</ul>`
     : `<p class="evidence-state-empty">No source rows are available.</p>`;
@@ -646,11 +671,11 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
     : `<p class="evidence-state-empty">No reconciliation blockers reported.</p>`;
   evidenceStateEl.dataset.state = stateId;
   evidenceStateLabelEl.className = `state-badge ${presentation.tone}`;
-  evidenceStateLabelEl.textContent = presentation.label;
-  evidenceStateBodyEl.innerHTML = `
-    <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p><a class="action evidence-action" href="#estate-coverage">${presentation.action}</a></div>
+  if (evidenceStateLabelEl.textContent !== presentation.label) evidenceStateLabelEl.textContent = presentation.label;
+  setLiveRegionHTML(evidenceStateBodyEl, `
+    <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p>${actionMarkup}</div>
     <dl class="evidence-state-meta"><div><dt>Sources</dt><dd>${boundedCount(coverage.freshSources)} fresh / ${boundedCount(coverage.configuredSources)} configured</dd></div><div><dt>Workloads</dt><dd>${boundedCount(workloads.length)} reconciled</dd></div><div><dt>Mutation authority</dt><dd>None granted</dd></div></dl>
-    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`;
+    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`);
 }
 
 function renderSummary() {
@@ -660,15 +685,17 @@ function renderSummary() {
   const topologySummary = topology.summary || {};
   const funnel = exposure?.tailscale?.funnel || {};
   const cloudflareState = exposure?.cloudflare?.enabled ? "Enabled" : "Disabled";
-  const exceptions = Number(topologySummary.accessDrift || 0) + Number(topologySummary.unresolvedClassifications || 0);
+  const reasons = exceptionReasons(state, reconciliationState(state?.reconciliation));
+  const exceptions = reasons.reduce((total, item) => total + item.count, 0);
   const privateExposure = !funnel.observedEnabled && !exposure?.cloudflare?.enabled;
+  const agents = Number(topologySummary.domainAgentsAvailable || 0);
   summaryEl.innerHTML = [
-    ["Exceptions", exceptions],
-    ["Workloads", workloads.length],
-    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length],
-    ["Agents available", Number(topologySummary.domainAgentsAvailable || 0)],
-    ["Exposure", privateExposure ? "Private" : "Review"]
-  ].map(([label, value]) => `<div><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+    ["Exceptions", exceptions, exceptions ? "bad" : "good", exceptions ? reasons.map((item) => item.text).join(" · ") : "None open"],
+    ["Workloads", workloads.length, workloads.length ? "" : "warn", workloads.length ? "" : "None registered"],
+    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length, "", ""],
+    ["Agents available", agents, workloads.length && !agents ? "bad" : "", workloads.length && !agents ? "Controls blocked" : ""],
+    ["Exposure", privateExposure ? "Private" : "Review", privateExposure ? "" : "warn", ""]
+  ].map(([label, value, tone, detail]) => `<div${tone ? ` data-tone="${tone}"` : ""}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</div>`).join("");
   renderAlertBanner();
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
 }
@@ -677,16 +704,16 @@ function renderAlertBanner() {
   const alerts = state?.alerts;
   if (!alerts || alerts.available === false) {
     alertBanner.dataset.state = "unavailable";
-    alertBanner.innerHTML = "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>";
+    setLiveRegionHTML(alertBanner, "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>");
     return;
   }
   const open = alerts.alerts || [];
   alertBanner.dataset.state = open.length ? "open" : "clear";
   const lines = open.slice(0, 5).map((item) => `${escapeHtml(item.severity)} ${escapeHtml(item.id)}: ${escapeHtml(item.detail)}`);
   const more = open.length > 5 ? ` (+${open.length - 5} more)` : "";
-  alertBanner.innerHTML = open.length
+  setLiveRegionHTML(alertBanner, open.length
     ? `<strong>${open.length} open alert${open.length === 1 ? "" : "s"}</strong><span>${lines.join(" | ")}${more}</span>`
-    : "<strong>Alerts</strong><span>no open alerts</span>";
+    : "<strong>Alerts</strong><span>no open alerts</span>");
 }
 
 function renderTopology() {
@@ -772,17 +799,6 @@ function observedAccessEvidence(workload) {
   return observations.join(" + ") || "none recorded";
 }
 
-function evidenceFreshness(value) {
-  if (!value) return "never recorded";
-  const instant = Date.parse(value);
-  if (!Number.isFinite(instant)) return String(value);
-  const seconds = Math.max(0, Math.floor((Date.now() - instant) / 1000));
-  if (seconds < 60) return "less than 1m old";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m old`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h old`;
-  return `${Math.floor(seconds / 86400)}d old`;
-}
-
 function operationBlockers({
   agentAvailable,
   logsAllowed,
@@ -865,7 +881,8 @@ function renderWorkload(workload) {
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
   const healthEvidenceAt = health.lastObservedAt || migration.lastHealthCheck || "";
-  const healthVerdict = health.ok === true ? "Healthy" : health.ok === false ? "Unhealthy" : (health.enabled ? "Configured" : "Unknown");
+  const healthState = healthPresentation(health);
+  const freshness = freshnessPresentation(healthEvidenceAt, HEALTH_STALE_SECONDS);
   const blockers = operationBlockers({
     agentAvailable,
     logsAllowed,
@@ -882,6 +899,7 @@ function renderWorkload(workload) {
     <article
       class="workload"
       data-workload="${escapeHtml(id)}"
+      data-health="${escapeHtml(healthState.label.toLowerCase())}"
       data-privacy="${escapeHtml(privacy.privacy || "")}"
       data-access="${escapeHtml(access.effective || "")}"
       data-migration="${escapeHtml(migration.status || "")}"
@@ -889,9 +907,9 @@ function renderWorkload(workload) {
       <div class="workload-overview">
         <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
         <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        <span data-label="Health"><strong data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthVerdict)}</strong></span>
+        <span data-label="Health"><strong class="tone-${healthState.tone}" data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthState.label)}</strong><small>${escapeHtml(healthState.detail)}</small></span>
         <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
-        <span data-label="Evidence"><strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+        <span data-label="Evidence"><strong class="tone-${freshness.tone}" data-health-freshness="${escapeHtml(id)}">${escapeHtml(freshness.label)}</strong><small>${escapeHtml(freshness.age)}</small></span>
         <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
       </div>
       <div class="workload-detail" data-workload-detail="${escapeHtml(id)}" hidden>
@@ -914,7 +932,7 @@ function renderWorkload(workload) {
           <span>Observed access<strong>${escapeHtml(observedAccessEvidence(workload))}</strong></span>
           <span>Effective access<strong>${escapeHtml(effectiveAccess)}</strong></span>
           <span class="${accessDrift ? "drift" : ""}">Alignment<strong>${accessDrift ? "Drift detected" : "Aligned"}</strong></span>
-          <span>Health evidence<strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+          <span>Health evidence<strong>${escapeHtml(`${freshness.label} · ${freshness.age}`)}</strong></span>
           <span>Trust domain<strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
         </div>
       </div>
@@ -1009,7 +1027,8 @@ function renderPlans() {
   const workloads = state?.workloads || [];
   const backupPlans = workloads.filter((item) => item.backup?.status).length;
   const healthEvidence = workloads.map((item) => item.health?.lastObservedAt || item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
-  routeSummary.textContent = `${workloads.length} workloads · oldest evidence ${evidenceFreshness(healthEvidence[0] || "")}`;
+  const oldest = freshnessPresentation(healthEvidence[0] || "", HEALTH_STALE_SECONDS);
+  routeSummary.textContent = `${workloads.length} workloads · oldest health evidence ${oldest.label.toLowerCase()} (${oldest.age})`;
   document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
   document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
   document.querySelector("#backup-plan p").textContent = `${backupPlans} workloads have manifest-backed backup metadata. Backup runs remain blocked unless the workload manifest allows them.`;
@@ -1029,7 +1048,12 @@ function renderDashboard() {
   renderSummary();
   renderTopology();
   renderStages();
-  workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
+  // Down first, then Unknown, then Healthy; sort is stable so registry order holds within a verdict.
+  const workloads = [...(state.workloads || [])].sort((a, b) => healthPresentation(b.health).rank - healthPresentation(a.health).rank);
+  workloadsEl.innerHTML = workloads.length
+    ? workloads.map(renderWorkload).join("")
+    : '<p class="history-empty"><strong>No workloads registered.</strong> Registered workloads appear here with health, access, and evidence freshness.</p>';
+  if (!csrfToken) document.getElementById("activity").innerHTML = '<p class="history-empty">Sign in to view recent operations.</p>';
   renderPlans();
   renderEvents();
   syncWorkloadRoute();
@@ -1061,25 +1085,116 @@ function syncWorkloadRoute() {
 
 window.addEventListener("hashchange", syncWorkloadRoute);
 
+const topbarEl = document.querySelector(".topbar");
+new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${topbarEl.offsetHeight}px`)).observe(topbarEl);
+
+const navLinks = [...document.querySelectorAll(".nav-rail nav a")];
+// The current section is the lowest nav target scrolled past the sticky chrome; at the page end, the lowest target.
+function syncNavCurrent() {
+  const offset = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--topbar-h")) || 72) + 24;
+  const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+  let current = navLinks[0];
+  let currentTop = -Infinity;
+  navLinks.forEach((link) => {
+    const top = document.querySelector(link.getAttribute("href"))?.getBoundingClientRect().top;
+    if (top !== undefined && (atEnd || top <= offset) && top > currentTop) {
+      current = link;
+      currentTop = top;
+    }
+  });
+  navLinks.forEach((link) => (link === current ? link.setAttribute("aria-current", "page") : link.removeAttribute("aria-current")));
+}
+let navFrame = 0;
+window.addEventListener("scroll", () => {
+  cancelAnimationFrame(navFrame);
+  navFrame = requestAnimationFrame(syncNavCurrent);
+}, { passive: true });
+window.addEventListener("hashchange", syncNavCurrent);
+
+let stateLoadFailed = false;
+const STATE_FETCH_TIMEOUT_MS = 15000;
+
+function stateRefreshPaused() {
+  // Re-rendering would discard typed confirmations, admin controls, the open workload detail,
+  // keyboard focus inside the page, and expanded <details>.
+  return adminEnabled
+    || location.hash.startsWith("#/workloads/")
+    || Boolean(document.activeElement?.closest?.("main"))
+    || Boolean(document.querySelector("main details[open]"))
+    || [...document.querySelectorAll("main input, main textarea")].some((field) => field === document.activeElement || field.value);
+}
+
+function renderStateAge() {
+  const generatedAt = state?.generatedAt;
+  const freshness = freshnessPresentation(generatedAt, STATE_STALE_SECONDS);
+  const paused = state && stateRefreshPaused() ? " · Auto-refresh paused" : "";
+  const [label, tone, detail] = stateLoadFailed
+    ? ["Unavailable", "bad", state ? `Refresh failed · showing state ${generatedAt ? `as of ${operationTime(generatedAt)} (${freshness.age})` : "of unknown age"}` : "No dashboard state loaded"]
+    : !state ? ["Loading", "info", "Loading dashboard state"]
+    : !generatedAt ? ["Stale", "warn", `State time not reported${paused}`]
+    : [freshness.label, freshness.tone, `State as of ${operationTime(generatedAt)} · ${freshness.age}${paused}`];
+  stateAgeEl.dataset.tone = tone;
+  stateAgeEl.innerHTML = `<span class="state-badge ${tone}">${escapeHtml(label)}</span><span>${escapeHtml(detail)}</span>`;
+}
+
+function renderStateUnavailable() {
+  const unavailable = "Unavailable: dashboard state not loaded.";
+  routeSummary.textContent = "Estate state unavailable";
+  summaryEl.innerHTML = '<div data-tone="bad"><strong>Unavailable</strong><span>Estate summary</span><small>Exceptions cannot be counted without dashboard state</small></div>';
+  renderEvidenceState({ status: "unavailable" });
+  alertBanner.dataset.state = "unavailable";
+  setLiveRegionHTML(alertBanner, `<strong>Alerts</strong><span>${unavailable}</span>`);
+  exposureAlert.innerHTML = `<strong>Exposure control</strong><span>${unavailable}</span>`;
+  ["#access-plan p", "#backup-plan p", "#cloudflare-plan p", "#system-plan p"].forEach((selector) => { document.querySelector(selector).textContent = unavailable; });
+  document.getElementById("stages").innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  topologyEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  workloadsEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
+}
+
 async function loadDashboardState() {
   try {
-    let response = await fetch("/api/dashboard-state", { cache: "no-store" });
-    if (!response.ok) response = await fetch("./dashboard-state.json", { cache: "no-store" });
-    if (!response.ok) throw new Error(`dashboard state ${response.status}`);
+    let response = await fetch("/api/dashboard-state", { cache: "no-store", signal: AbortSignal.timeout(STATE_FETCH_TIMEOUT_MS) });
+    if (!response.ok) response = await fetch("./dashboard-state.json", { cache: "no-store", signal: AbortSignal.timeout(STATE_FETCH_TIMEOUT_MS) });
+    if (!response.ok) throw new Error(`dashboard state request returned HTTP ${response.status}`);
     state = await response.json();
+    stateLoadFailed = false;
+    stateAlert.hidden = true;
     renderDashboard();
     if (csrfToken) {
       await loadOperationHistory();
       await loadActivity();
     }
   } catch (error) {
-    routeSummary.textContent = "dashboard state unavailable";
-    summaryEl.innerHTML = `<div><strong>!</strong><span>${escapeHtml(error.message)}</span></div>`;
-    renderEvidenceState({ status: "unavailable" });
-    workloadsEl.innerHTML = "";
-    eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
+    console.warn("Argus dashboard state load failed", error);
+    stateLoadFailed = true;
+    stateAlert.hidden = false;
+    stateAlertDetail.textContent = state
+      ? "Argus could not refresh the dashboard state. The data below may be out of date; no action is authorized from it."
+      : "Argus could not load the dashboard state. No estate data or action is available until it loads.";
+    if (!state) renderStateUnavailable();
+  } finally {
+    renderStateAge();
   }
 }
+
+async function pollDashboardState() {
+  for (;;) {
+    const delay = document.visibilityState === "hidden" ? 4 * STATE_POLL_SECONDS * 1000 : STATE_POLL_SECONDS * 1000;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (stateRefreshPaused()) renderStateAge();
+    else await loadDashboardState();
+  }
+}
+
+stateRetry.addEventListener("click", () => { void loadDashboardState(); });
+// The age badge must turn Stale on time even while a fetch is pending or the poll sleeps in a hidden tab.
+setInterval(renderStateAge, 10000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  renderStateAge();
+  if (!stateRefreshPaused()) void loadDashboardState();
+});
 
 async function operationStatus(operationId) {
   const response = await fetch(`/api/operations/${encodeURIComponent(operationId)}`, {
@@ -1149,10 +1264,13 @@ function renderOperationHistory(workloadId, operations) {
   const latestHealth = operations.find((item) => item.operation_type === "health.refresh");
   const freshness = document.querySelector(`[data-health-freshness="${CSS.escape(workloadId)}"]`);
   if (latestHealth && freshness) {
-    freshness.textContent = `${evidenceFreshness(latestHealth.finished_at || latestHealth.created_at)} · ${latestHealth.state}`;
+    const latest = freshnessPresentation(latestHealth.finished_at || latestHealth.created_at, HEALTH_STALE_SECONDS);
+    freshness.className = `tone-${latest.tone}`;
+    freshness.textContent = `${latest.label} · ${latest.age} · ${latestHealth.state}`;
   }
 }
 
+// @include status.js
 // @include operations.js
 // @include stages.js
 async function pollOperation(operationId, workload, { present = true } = {}) {
@@ -1165,7 +1283,7 @@ async function pollOperation(operationId, workload, { present = true } = {}) {
       updateActiveOperation(operation, workload);
       if (present) showCommandResult(`${workload} operation`, operation);
       await loadOperationHistory(workload);
-      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) return;
+      if (TERMINAL_STATES.includes(operation.state)) return;
       const delay = document.visibilityState === "hidden" ? 10000 : 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -1211,7 +1329,7 @@ async function pollMigration(migrationId, workloadId) {
       migrationCache.set(migrationId, migration);
       showCommandResult(`${workloadId} migration`, migration);
       await loadMigrationHistory(workloadId);
-      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase)) return;
+      if (TERMINAL_STATES.includes(migration.phase)) return;
       const delay = document.visibilityState === "hidden" ? 10000 : 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -1239,7 +1357,7 @@ async function loadMigrationHistory(workloadId = "") {
       const payload = await response.json();
       const migrations = payload.migrations || [];
       renderMigrationHistory(item.id, migrations);
-      const active = migrations.find((migration) => !["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase));
+      const active = migrations.find((migration) => !TERMINAL_STATES.includes(migration.phase));
       if (active) void pollMigration(active.migrationId, item.id);
     } catch {
       target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">Migration history temporarily unavailable.</p>';
@@ -1399,12 +1517,17 @@ function closeCommandPanel() {
 commandClose.addEventListener("click", closeCommandPanel);
 
 document.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-evidence-refresh]")) {
+    workloadDiscoverButton.click();
+    return;
+  }
   const focus = event.target.closest("[data-focus-workload]");
   if (focus) {
     selectedTopologyId = focus.dataset.focusWorkload;
     renderTopology();
     if (focus.dataset.openDetail === "true") {
-      document.querySelector(`[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      location.hash = `#/workloads/${encodeURIComponent(selectedTopologyId)}`;
+      document.querySelector(`.workload[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     return;
   }
@@ -1657,11 +1780,19 @@ async function restoreOperatorSession() {
   }
 }
 restoreOperatorSession();
+void pollDashboardState();
 """
 
 
-JS = JS.replace("// @include operations.js\n", (Path(__file__).resolve().parent / "assets" / "operations.js").read_text())
-JS = JS.replace("// @include stages.js\n", (Path(__file__).resolve().parent / "assets" / "stages.js").read_text())
+def splice_include(js: str, name: str) -> str:
+    marker = f"// @include {name}\n"
+    if js.count(marker) != 1:
+        raise RuntimeError(f"app.js include marker for {name} must appear exactly once")
+    return js.replace(marker, (Path(__file__).resolve().parent / "assets" / name).read_text())
+
+
+for _include in ("status.js", "operations.js", "stages.js"):
+    JS = splice_include(JS, _include)
 
 
 def main() -> int:
