@@ -284,6 +284,19 @@ exits `4` (unavailable), never as healthy. A failed or stale smoke run, a stale 
 state (older than two `argus-alert.timer` periods) or an open page alert exits `3`, with the full report
 still in `data` (and on stdout in human mode). Backup freshness reports `allFresh`. See `docs/MONITORING.md`.
 
+`server-read-only` — `argus status`
+
+`argus status` is the one read-only "what is broken right now" view. It reuses the readers above plus
+`argus doctor`, the operation ledger (anything in flight, failed in the last 24h, or indeterminate) and
+`argus estate status`, and prints one row per source with its state (`ok`, `degraded`, `unavailable`), age
+and summary. It exits `3` when any source is degraded, otherwise `4` when any source has no evidence, and `0`
+only when every source is ok. Off the server most sources are `unavailable`, never healthy.
+
+```bash
+argus status
+argus status --json
+```
+
 ## Durable operations
 
 `server-read-only` — `argus operation show <operation-id>`

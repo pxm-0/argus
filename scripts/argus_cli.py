@@ -17,8 +17,10 @@ from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
 import argus_cli_alerts
+import argus_cli_format
 import argus_cli_op
 import argus_cli_m1
+import argus_cli_status
 from argus_collectors import CURRENT_PROTOCOL_VERSION
 from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
@@ -1175,6 +1177,7 @@ def build_parser() -> argparse.ArgumentParser:
     argus_release.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_status.register(commands, leaf, description)
 
     # Deprecated aliases: added without help= so they stay out of the help listing.
     legacy_workloads = commands.add_parser("workloads")
@@ -1235,6 +1238,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = check_command(repo, runner)
     elif command == "m1":
         result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
+    elif command == "status":
+        result = argus_cli_status.status_command(repo, sys.modules[__name__], runner)
     elif command in {"smoke", "backup", "alerts"}:
         result = argus_cli_alerts.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
@@ -1252,9 +1257,10 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
         print(f"ERROR {error['code']}: {error['message']}", file=stderr)
         print(f"AUTHORITY {error['authority']} RETRY_SAFE {str(error['retrySafe']).lower()}", file=stderr)
         data = result.get("data")
-        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts"}:
+        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts", "status"}:
             # Degraded health reports still carry the full report the operator needs to act on.
-            print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
+            if not argus_cli_format.render(data, stdout):
+                print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
         if isinstance(data, dict) and str(data.get("command", "")).startswith("workload.move."):
             print(
                 f"MIGRATION_ID {data.get('migrationId') or 'none'} PHASE {data.get('phase', 'unknown')}",
@@ -1274,6 +1280,8 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
             print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
     elif command.startswith("m1."):
         argus_cli_m1.render(data, stdout)
+    elif argus_cli_format.render(data, stdout):
+        pass
     elif data.get("dryRun") and ("diff" in data or "runbook" in data):
         # release dry-runs carry a diff; workload retire dry-runs carry the teardown runbook
         print(data.get("diff") or data["runbook"], end="", file=stdout)
