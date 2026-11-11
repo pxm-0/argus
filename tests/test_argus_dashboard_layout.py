@@ -101,9 +101,10 @@ class DashboardLayoutTests(unittest.TestCase):
           state = { workloads: [{ id: "a-staging", runtime: { pinnedImage: stagingPin } }, { id: "a-production", runtime: { pinnedImage: prodPin } }] };
           renderStages();
           const html = target.innerHTML;
-          return { promote: /data-stage-action="promote"[^>]*disabled/.test(html), rollback: /data-stage-action="rollback"[^>]*disabled/.test(html), html };
+          return { promote: /data-stage-action="promote"[^>]*disabled/.test(html), rollback: /data-stage-action="rollback"[^>]*disabled/.test(html), input: /data-stage-confirm="a"[^>]*disabled/.test(html), html };
         };
-        console.log(JSON.stringify({ anon: render("", "PIN", "PIN"), nopin: render("t", "", ""), ok: render("t", "PIN", "PIN") }));
+        console.log(JSON.stringify({ anon: render("", "PIN", "PIN"), nopin: render("t", "", ""), ok: render("t", "PIN", "PIN"),
+          prodOnly: render("t", "", "PIN"), stagingOnly: render("t", "PIN", "") }));
         """.replace("PIN", pin)
         out = run_node(harness)
         self.assertTrue(out["anon"]["promote"] and out["anon"]["rollback"])
@@ -112,6 +113,12 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("No pinned image", out["nopin"]["html"])
         self.assertFalse(out["ok"]["promote"] or out["ok"]["rollback"])
         self.assertIn("aria-describedby=", out["anon"]["html"])
+        self.assertTrue(out["nopin"]["input"])
+        # Rollback acts on production only, so an unpinned staging must not block it (and vice versa).
+        self.assertEqual((True, False, False), (out["prodOnly"]["promote"], out["prodOnly"]["rollback"], out["prodOnly"]["input"]))
+        self.assertIn("No pinned staging image to promote", out["prodOnly"]["html"])
+        self.assertEqual((False, True, False), (out["stagingOnly"]["promote"], out["stagingOnly"]["rollback"], out["stagingOnly"]["input"]))
+        self.assertIn("No pinned production image to roll back", out["stagingOnly"]["html"])
 
 
     def test_include_splice_fails_loudly_when_a_marker_is_missing(self) -> None:

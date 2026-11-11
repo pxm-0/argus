@@ -47,22 +47,27 @@ function renderStages() {
     <tbody>${families.map(({ name, staging, production }) => {
       const outOfSync = pinOf(staging) !== pinOf(production);
       const reasonId = `stage-reason-${escapeHtml(name)}`;
-      const blocked = !csrfToken ? "Sign in to promote or roll back."
-        : !pinOf(staging) ? "No pinned image to promote or roll back."
-        : "";
-      const rollbackBlocked = blocked || (!pinOf(production) ? "No pinned production image to roll back." : "");
-      const gate = (reason) => (reason ? `disabled aria-describedby="${reasonId}"` : "");
+      // Promote needs a staging pin; Rollback acts on production only, so it needs a production pin.
+      const promoteBlocked = !csrfToken ? "Sign in to promote or roll back."
+        : !pinOf(staging) ? "No pinned staging image to promote." : "";
+      const rollbackBlocked = !production ? "" : !csrfToken ? promoteBlocked
+        : !pinOf(production) ? "No pinned production image to roll back." : "";
+      const bothBlocked = promoteBlocked && (!production || rollbackBlocked);
+      const reason = !csrfToken ? promoteBlocked
+        : promoteBlocked && rollbackBlocked ? "No pinned image to promote or roll back."
+        : promoteBlocked || rollbackBlocked;
+      const gate = (blocked) => (blocked ? `disabled aria-describedby="${reasonId}"` : "");
       return `<tr>
         <th scope="row">${escapeHtml(name)} ${outOfSync ? '<span class="history-state warn">out of sync</span>' : ""}</th>
         ${stageCell(staging, "Staging")}${stageCell(production, "Production")}
         <td data-label="Actions">
           <label class="sr-only" for="stage-confirm-${escapeHtml(name)}">Confirmation phrase for ${escapeHtml(name)}</label>
-          <input id="stage-confirm-${escapeHtml(name)}" data-stage-confirm="${escapeHtml(name)}" autocomplete="off" placeholder="confirmation phrase" ${blocked ? "disabled" : ""}>
+          <input id="stage-confirm-${escapeHtml(name)}" data-stage-confirm="${escapeHtml(name)}" autocomplete="off" placeholder="confirmation phrase" ${bothBlocked ? "disabled" : ""}>
           <div class="command-actions">
-            <button type="button" data-stage-action="promote" data-workload="${escapeHtml(staging.id)}" data-stage="${escapeHtml(name)}" ${gate(blocked)}>Promote</button>
+            <button type="button" data-stage-action="promote" data-workload="${escapeHtml(staging.id)}" data-stage="${escapeHtml(name)}" ${gate(promoteBlocked)}>Promote</button>
             ${production ? `<button type="button" data-stage-action="rollback" data-workload="${escapeHtml(production.id)}" data-stage="${escapeHtml(name)}" ${gate(rollbackBlocked)}>Rollback</button>` : ""}
           </div>
-          ${blocked || (production && rollbackBlocked) ? `<p class="operation-blockers" id="${reasonId}">${escapeHtml(blocked || rollbackBlocked)}</p>` : ""}
+          ${reason ? `<p class="operation-blockers" id="${reasonId}">${escapeHtml(reason)}</p>` : ""}
         </td></tr>`;
     }).join("")}</tbody></table>`;
 }
