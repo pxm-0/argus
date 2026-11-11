@@ -183,9 +183,11 @@ under `config/` and `workloads/<id>/`, records the ID in
 `config/argus/retired-workloads.json`, generates `docs/RETIRED_<ID>.md` from
 `docs/RETIRED_TEMPLATE.md`, runs `argus check`, and opens a PR with a numbered
 server teardown runbook as a comment. Remaining text references (docs, tests,
-scripts) are listed for manual review. After merge and teardown, run
-`scripts/argus-m1-reconcile-retired-workloads` (preview), then the same with
-`--apply --acknowledge-retired-workload-reconciliation`, on the server.
+scripts) are listed for manual review. After merge and teardown, on the server run `sudo argus m1 sync` (preview),
+then `sudo argus m1 sync --apply --confirm <plan-digest>`, then
+`argus m1 verify`. The legacy `scripts/argus-m1-reconcile-retired-workloads`
+remains the fallback when `m1 sync` refuses with `m1-plan-needs-legacy-path`
+(rows both missing and drifted).
 
 ## Workload moves
 
