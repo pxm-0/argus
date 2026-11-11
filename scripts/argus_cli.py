@@ -356,16 +356,32 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
             coverage=coverage,
             observationState=(reconciliation or {}).get("observationState", "incomplete"),
             safeToMoveWorkloads=False,
+            nextAction="Run argus estate status after the coordinator finishes the queued request.",
         )
     refresh = status_summary(repo)
+    safe_to_move = (reconciliation or {}).get("safeToMoveWorkloads", False)
+    # status is the summary; coverage adds the per-source reconciliation table.
+    detail = {"reconciliation": reconciliation} if action == "coverage" and reconciliation is not None else {}
     return _success(
         f"estate.{action}",
         coverage=coverage,
         observationState=(reconciliation or {}).get("observationState", "incomplete"),
-        safeToMoveWorkloads=(reconciliation or {}).get("safeToMoveWorkloads", False),
+        safeToMoveWorkloads=safe_to_move,
         refresh=refresh,
-        **({"reconciliation": reconciliation} if reconciliation is not None else {}),
+        nextAction=estate_next_action(refresh, coverage, safe_to_move),
+        **detail,
     )
+
+
+def estate_next_action(refresh: dict[str, Any], coverage: dict[str, Any], safe_to_move: bool) -> str:
+    if refresh.get("state") == "never-run":
+        return "Run argus estate refresh to queue the first whole-estate collection."
+    if refresh.get("state") == "failed":
+        return "Check the estate-refresh service on the server, then run argus estate refresh."
+    if safe_to_move:
+        return "Coverage is complete; preview a move with argus workload move preview <id>."
+    blockers = ", ".join(coverage["actionBlockers"]) or "missing or stale sources"
+    return f"Resolve {blockers} (per source: argus estate coverage), then run argus estate refresh."
 
 
 def workload_list(repo: Path) -> dict[str, Any]:
@@ -1007,21 +1023,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     estate = commands.add_parser("estate", help="configured-estate status and coverage")
     estate_sub = estate.add_subparsers(dest="estate_command", required=True, parser_class=ArgusArgumentParser)
-    for action in ("status", "coverage", "refresh"):
-        privilege = "local refresh request" if action == "refresh" else "unprivileged, read-only"
+    for action, help_text, purpose, privilege, side_effects, output, recovery in (
+        (
+            "status",
+            "summarize configured-estate coverage and the next action",
+            "Summarize configured-estate coverage, blockers and last refresh without claiming missing sources.",
+            "unprivileged, read-only",
+            "none",
+            "coverage summary, blockers, last refresh, and exact next action",
+            "run argus estate coverage for the per-source table",
+        ),
+        (
+            "coverage",
+            "show per-source configured-estate coverage",
+            "Show the status summary plus the per-source reconciliation table from the last completed collection.",
+            "unprivileged, read-only",
+            "none",
+            "status summary, per-source reconciliation rows, and exact next action",
+            "complete the named collector gate, then run argus estate refresh",
+        ),
+        (
+            "refresh",
+            "queue an inert configured-estate refresh request",
+            "Queue an inert configured-estate refresh request for the collection coordinator.",
+            "local refresh request",
+            "queues an inert request; it cannot change workload authority",
+            "queued request, current coverage summary, and next action",
+            "run argus estate status to follow the request",
+        ),
+    ):
         leaf(
             estate_sub,
             action,
-            help_text=f"{action} configured-estate evidence",
-            contract=description(
-                f"{action.title()} configured-estate evidence without claiming missing sources.",
-                privilege,
-                "reviewed workload registry",
-                "refresh queues an inert request; it cannot change workload authority",
-                "coverage, blockers, and exact next action",
-                f"argus estate {action} --json",
-                "inspect argus estate coverage and complete the named collector gate",
-            ),
+            help_text=help_text,
+            contract=description(purpose, privilege, "reviewed workload registry", side_effects, output, f"argus estate {action} --json", recovery),
         )
 
     workload = commands.add_parser("workload", help="canonical workload information and moves")

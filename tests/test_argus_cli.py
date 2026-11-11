@@ -292,6 +292,36 @@ class StableCliContractTests(unittest.TestCase):
         self.assertFalse(payload["data"]["safeToMoveWorkloads"])
         self.assertEqual("", error)
 
+    def test_estate_status_summarizes_and_coverage_adds_the_source_table(self) -> None:
+        code, output, _ = self.invoke(["estate", "status", "--json"])
+        self.assertEqual(0, code)
+        status = json.loads(output)["data"]
+        self.assertIn("argus estate refresh", status["nextAction"])
+        (self.root / "config" / "argus" / "observation-sources.json").write_text("{}")
+        runtime = self.root / "runtime" / "argus"
+        runtime.mkdir(parents=True)
+        (runtime / "observations.sqlite3").write_text("not a database")
+        _, status_output, _ = self.invoke(["estate", "status", "--json"])
+        _, coverage_output, _ = self.invoke(["estate", "coverage", "--json"])
+        status, coverage = json.loads(status_output)["data"], json.loads(coverage_output)["data"]
+        self.assertNotIn("reconciliation", status)
+        self.assertEqual("unavailable", coverage["reconciliation"]["status"])
+        self.assertEqual(status["nextAction"], coverage["nextAction"])
+
+    def test_estate_help_states_per_verb_side_effects(self) -> None:
+        from argus_cli import build_parser
+
+        def help_for(*argv: str) -> str:
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout), self.assertRaises(SystemExit):
+                build_parser().parse_args([*argv, "--help"])
+            return " ".join(stdout.getvalue().split())
+
+        for verb in ("status", "coverage"):
+            self.assertIn("Side effects: none.", help_for("estate", verb))
+        self.assertIn("queues an inert request", help_for("estate", "refresh"))
+        self.assertNotEqual(help_for("estate", "status").split("Privilege")[0], help_for("estate", "coverage").split("Privilege")[0])
+
     def test_workload_list_and_show_are_sanitized_and_deterministic(self) -> None:
         code, output, _ = self.invoke(["workload", "list", "--json"])
         self.assertEqual(0, code)

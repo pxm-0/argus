@@ -47,7 +47,9 @@ argus dashboard url --json
 
 Refresh queues an inert, status-addressable request for the D1–D5 coordinator;
 it cannot change workload authority. Status and coverage report the last
-completed whole-estate reconciliation, including any missing or stale source.
+completed whole-estate reconciliation and an exact `nextAction`: status is the
+summary (coverage, blockers, last refresh); coverage adds the per-source
+reconciliation table, including any missing or stale source.
 Explicitly terminal Docker history (`exited` or `dead`) remains observable but
 does not claim current workload authority; an unknown or transitional state
 continues to block movement.
