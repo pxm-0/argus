@@ -63,6 +63,7 @@ def render_html() -> str:
       <div class="title-lockup">
         <h1>Argus</h1>
         <p id="route-summary">Loading estate evidence</p>
+        <p id="state-age" class="state-age"><span class="state-badge info">Loading</span><span>Loading dashboard state</span></p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
@@ -82,6 +83,11 @@ def render_html() -> str:
     </header>
     <main id="overview">
       <section class="summary" id="summary" aria-label="System summary"></section>
+      <section class="alert" id="state-alert" data-state="open" role="alert" hidden>
+        <strong>State unavailable</strong>
+        <span id="state-alert-detail">Argus could not load the dashboard state. No action is authorized from stale or missing state.</span>
+        <button type="button" id="state-retry">Retry</button>
+      </section>
       <section class="alert" id="exposure-alert">
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
@@ -197,6 +203,10 @@ const sessionStatus = document.getElementById("session-status");
 const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
+const stateAgeEl = document.getElementById("state-age");
+const stateAlert = document.getElementById("state-alert");
+const stateAlertDetail = document.getElementById("state-alert-detail");
+const stateRetry = document.getElementById("state-retry");
 const exposureAlert = document.getElementById("exposure-alert");
 const alertBanner = document.getElementById("alert-banner");
 const evidenceStateEl = document.getElementById("evidence-state");
@@ -660,15 +670,17 @@ function renderSummary() {
   const topologySummary = topology.summary || {};
   const funnel = exposure?.tailscale?.funnel || {};
   const cloudflareState = exposure?.cloudflare?.enabled ? "Enabled" : "Disabled";
-  const exceptions = Number(topologySummary.accessDrift || 0) + Number(topologySummary.unresolvedClassifications || 0);
+  const reasons = exceptionReasons(state, reconciliationState(state?.reconciliation));
+  const exceptions = reasons.reduce((total, item) => total + item.count, 0);
   const privateExposure = !funnel.observedEnabled && !exposure?.cloudflare?.enabled;
+  const agents = Number(topologySummary.domainAgentsAvailable || 0);
   summaryEl.innerHTML = [
-    ["Exceptions", exceptions],
-    ["Workloads", workloads.length],
-    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length],
-    ["Agents available", Number(topologySummary.domainAgentsAvailable || 0)],
-    ["Exposure", privateExposure ? "Private" : "Review"]
-  ].map(([label, value]) => `<div><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+    ["Exceptions", exceptions, exceptions ? "bad" : "good", exceptions ? reasons.map((item) => item.text).join(" · ") : "None open"],
+    ["Workloads", workloads.length, workloads.length ? "" : "warn", workloads.length ? "" : "None registered"],
+    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length, "", ""],
+    ["Agents available", agents, workloads.length && !agents ? "bad" : "", workloads.length && !agents ? "Controls blocked" : ""],
+    ["Exposure", privateExposure ? "Private" : "Review", privateExposure ? "" : "warn", ""]
+  ].map(([label, value, tone, detail]) => `<div${tone ? ` data-tone="${tone}"` : ""}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</div>`).join("");
   renderAlertBanner();
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
 }
@@ -772,17 +784,6 @@ function observedAccessEvidence(workload) {
   return observations.join(" + ") || "none recorded";
 }
 
-function evidenceFreshness(value) {
-  if (!value) return "never recorded";
-  const instant = Date.parse(value);
-  if (!Number.isFinite(instant)) return String(value);
-  const seconds = Math.max(0, Math.floor((Date.now() - instant) / 1000));
-  if (seconds < 60) return "less than 1m old";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m old`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h old`;
-  return `${Math.floor(seconds / 86400)}d old`;
-}
-
 function operationBlockers({
   agentAvailable,
   logsAllowed,
@@ -865,7 +866,8 @@ function renderWorkload(workload) {
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
   const healthEvidenceAt = health.lastObservedAt || migration.lastHealthCheck || "";
-  const healthVerdict = health.ok === true ? "Healthy" : health.ok === false ? "Unhealthy" : (health.enabled ? "Configured" : "Unknown");
+  const healthState = healthPresentation(health);
+  const freshness = freshnessPresentation(healthEvidenceAt, HEALTH_STALE_SECONDS);
   const blockers = operationBlockers({
     agentAvailable,
     logsAllowed,
@@ -882,6 +884,7 @@ function renderWorkload(workload) {
     <article
       class="workload"
       data-workload="${escapeHtml(id)}"
+      data-health="${escapeHtml(healthState.label.toLowerCase())}"
       data-privacy="${escapeHtml(privacy.privacy || "")}"
       data-access="${escapeHtml(access.effective || "")}"
       data-migration="${escapeHtml(migration.status || "")}"
@@ -889,9 +892,9 @@ function renderWorkload(workload) {
       <div class="workload-overview">
         <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
         <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        <span data-label="Health"><strong data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthVerdict)}</strong></span>
+        <span data-label="Health"><strong class="tone-${healthState.tone}" data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthState.label)}</strong><small>${escapeHtml(healthState.detail)}</small></span>
         <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
-        <span data-label="Evidence"><strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+        <span data-label="Evidence"><strong class="tone-${freshness.tone}" data-health-freshness="${escapeHtml(id)}">${escapeHtml(freshness.label)}</strong><small>${escapeHtml(freshness.age)}</small></span>
         <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
       </div>
       <div class="workload-detail" data-workload-detail="${escapeHtml(id)}" hidden>
@@ -914,7 +917,7 @@ function renderWorkload(workload) {
           <span>Observed access<strong>${escapeHtml(observedAccessEvidence(workload))}</strong></span>
           <span>Effective access<strong>${escapeHtml(effectiveAccess)}</strong></span>
           <span class="${accessDrift ? "drift" : ""}">Alignment<strong>${accessDrift ? "Drift detected" : "Aligned"}</strong></span>
-          <span>Health evidence<strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
+          <span>Health evidence<strong>${escapeHtml(`${freshness.label} · ${freshness.age}`)}</strong></span>
           <span>Trust domain<strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
         </div>
       </div>
@@ -1009,7 +1012,8 @@ function renderPlans() {
   const workloads = state?.workloads || [];
   const backupPlans = workloads.filter((item) => item.backup?.status).length;
   const healthEvidence = workloads.map((item) => item.health?.lastObservedAt || item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
-  routeSummary.textContent = `${workloads.length} workloads · oldest evidence ${evidenceFreshness(healthEvidence[0] || "")}`;
+  const oldest = freshnessPresentation(healthEvidence[0] || "", HEALTH_STALE_SECONDS);
+  routeSummary.textContent = `${workloads.length} workloads · oldest health evidence ${oldest.label.toLowerCase()} (${oldest.age})`;
   document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
   document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
   document.querySelector("#backup-plan p").textContent = `${backupPlans} workloads have manifest-backed backup metadata. Backup runs remain blocked unless the workload manifest allows them.`;
@@ -1029,7 +1033,12 @@ function renderDashboard() {
   renderSummary();
   renderTopology();
   renderStages();
-  workloadsEl.innerHTML = (state.workloads || []).map(renderWorkload).join("");
+  // Down first, then Unknown, then Healthy; sort is stable so registry order holds within a verdict.
+  const workloads = [...(state.workloads || [])].sort((a, b) => healthPresentation(b.health).rank - healthPresentation(a.health).rank);
+  workloadsEl.innerHTML = workloads.length
+    ? workloads.map(renderWorkload).join("")
+    : '<p class="history-empty"><strong>No workloads registered.</strong> Registered workloads appear here with health, access, and evidence freshness.</p>';
+  if (!csrfToken) document.getElementById("activity").innerHTML = '<p class="history-empty">Sign in to view recent operations.</p>';
   renderPlans();
   renderEvents();
   syncWorkloadRoute();
@@ -1061,25 +1070,79 @@ function syncWorkloadRoute() {
 
 window.addEventListener("hashchange", syncWorkloadRoute);
 
+let stateLoadFailed = false;
+
+function stateRefreshPaused() {
+  // Re-rendering would discard typed confirmations, admin controls, and the open workload detail.
+  return adminEnabled
+    || location.hash.startsWith("#/workloads/")
+    || [...document.querySelectorAll("main input, main textarea")].some((field) => field === document.activeElement || field.value);
+}
+
+function renderStateAge() {
+  const generatedAt = state?.generatedAt;
+  const freshness = freshnessPresentation(generatedAt, STATE_STALE_SECONDS);
+  const paused = state && stateRefreshPaused() ? " · Auto-refresh paused" : "";
+  const [label, tone, detail] = stateLoadFailed
+    ? ["Unavailable", "bad", state ? `Refresh failed · showing state ${generatedAt ? `as of ${operationTime(generatedAt)} (${freshness.age})` : "of unknown age"}` : "No dashboard state loaded"]
+    : !state ? ["Loading", "info", "Loading dashboard state"]
+    : !generatedAt ? ["Stale", "warn", `State time not reported${paused}`]
+    : [freshness.label, freshness.tone, `State as of ${operationTime(generatedAt)} · ${freshness.age}${paused}`];
+  stateAgeEl.dataset.tone = tone;
+  stateAgeEl.innerHTML = `<span class="state-badge ${tone}">${escapeHtml(label)}</span><span>${escapeHtml(detail)}</span>`;
+}
+
+function renderStateUnavailable() {
+  const unavailable = "Unavailable: dashboard state not loaded.";
+  routeSummary.textContent = "Estate state unavailable";
+  summaryEl.innerHTML = '<div data-tone="bad"><strong>Unavailable</strong><span>Estate summary</span><small>Exceptions cannot be counted without dashboard state</small></div>';
+  renderEvidenceState({ status: "unavailable" });
+  alertBanner.dataset.state = "unavailable";
+  alertBanner.innerHTML = `<strong>Alerts</strong><span>${unavailable}</span>`;
+  exposureAlert.innerHTML = `<strong>Exposure control</strong><span>${unavailable}</span>`;
+  ["#access-plan p", "#backup-plan p", "#cloudflare-plan p", "#system-plan p"].forEach((selector) => { document.querySelector(selector).textContent = unavailable; });
+  document.getElementById("stages").innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  topologyEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  workloadsEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
+}
+
 async function loadDashboardState() {
   try {
     let response = await fetch("/api/dashboard-state", { cache: "no-store" });
     if (!response.ok) response = await fetch("./dashboard-state.json", { cache: "no-store" });
-    if (!response.ok) throw new Error(`dashboard state ${response.status}`);
+    if (!response.ok) throw new Error(`dashboard state request returned HTTP ${response.status}`);
     state = await response.json();
+    stateLoadFailed = false;
+    stateAlert.hidden = true;
     renderDashboard();
     if (csrfToken) {
       await loadOperationHistory();
       await loadActivity();
     }
   } catch (error) {
-    routeSummary.textContent = "dashboard state unavailable";
-    summaryEl.innerHTML = `<div><strong>!</strong><span>${escapeHtml(error.message)}</span></div>`;
-    renderEvidenceState({ status: "unavailable" });
-    workloadsEl.innerHTML = "";
-    eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
+    console.warn("Argus dashboard state load failed", error);
+    stateLoadFailed = true;
+    stateAlert.hidden = false;
+    stateAlertDetail.textContent = state
+      ? "Argus could not refresh the dashboard state. The data below may be out of date; no action is authorized from it."
+      : "Argus could not load the dashboard state. No estate data or action is available until it loads.";
+    if (!state) renderStateUnavailable();
+  } finally {
+    renderStateAge();
   }
 }
+
+async function pollDashboardState() {
+  for (;;) {
+    const delay = document.visibilityState === "hidden" ? 4 * STATE_POLL_SECONDS * 1000 : STATE_POLL_SECONDS * 1000;
+    await new Promise((resolve) => setTimeout(resolve, delay));
+    if (stateRefreshPaused()) renderStateAge();
+    else await loadDashboardState();
+  }
+}
+
+stateRetry.addEventListener("click", () => { void loadDashboardState(); });
 
 async function operationStatus(operationId) {
   const response = await fetch(`/api/operations/${encodeURIComponent(operationId)}`, {
@@ -1149,10 +1212,13 @@ function renderOperationHistory(workloadId, operations) {
   const latestHealth = operations.find((item) => item.operation_type === "health.refresh");
   const freshness = document.querySelector(`[data-health-freshness="${CSS.escape(workloadId)}"]`);
   if (latestHealth && freshness) {
-    freshness.textContent = `${evidenceFreshness(latestHealth.finished_at || latestHealth.created_at)} · ${latestHealth.state}`;
+    const latest = freshnessPresentation(latestHealth.finished_at || latestHealth.created_at, HEALTH_STALE_SECONDS);
+    freshness.className = `tone-${latest.tone}`;
+    freshness.textContent = `${latest.label} · ${latest.age} · ${latestHealth.state}`;
   }
 }
 
+// @include status.js
 // @include operations.js
 // @include stages.js
 async function pollOperation(operationId, workload, { present = true } = {}) {
@@ -1657,9 +1723,11 @@ async function restoreOperatorSession() {
   }
 }
 restoreOperatorSession();
+void pollDashboardState();
 """
 
 
+JS = JS.replace("// @include status.js\n", (Path(__file__).resolve().parent / "assets" / "status.js").read_text())
 JS = JS.replace("// @include operations.js\n", (Path(__file__).resolve().parent / "assets" / "operations.js").read_text())
 JS = JS.replace("// @include stages.js\n", (Path(__file__).resolve().parent / "assets" / "stages.js").read_text())
 

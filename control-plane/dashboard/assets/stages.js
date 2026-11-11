@@ -86,7 +86,7 @@ async function loadActivity() {
   try {
     const response = await fetch("/api/operations?limit=25", { cache: "no-store", credentials: "same-origin" });
     if (!response.ok) {
-      target.innerHTML = `<p class="history-empty">${response.status === 401 ? "Authenticate to load activity." : "Activity temporarily unavailable."}</p>`;
+      target.innerHTML = `<p class="history-empty">${response.status === 401 ? "Sign in to view recent operations." : "Activity temporarily unavailable."}</p>`;
       return;
     }
     const operations = (await response.json()).operations || [];

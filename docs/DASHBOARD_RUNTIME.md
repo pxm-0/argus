@@ -51,10 +51,16 @@ runtime/dashboard-state.json
 
 That file is ignored by Git.
 
+The dashboard re-polls `/api/dashboard-state` every 30 seconds while visible
+(see `control-plane/dashboard/assets/status.js`). A failed load shows a "State
+unavailable" alert with Retry instead of raw HTTP errors.
+
 ## Included State
 
 The runtime state contains:
 
+- `generatedAt`, the UTC time the state was built, shown in the dashboard topbar
+  with its age and a Fresh/Stale label
 - workload registry data
 - privacy state
 - desired and effective access state
