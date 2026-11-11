@@ -1233,7 +1233,10 @@ async function loadMigrationHistory(workloadId = "") {
         credentials: "same-origin"
       });
       if (!response.ok) {
-        target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">Authenticate to inspect migration state.</p>';
+        const message = response.status === 401
+          ? "Authenticate to inspect migration state."
+          : "Migration history temporarily unavailable.";
+        target.innerHTML = `<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">${message}</p>`;
         return;
       }
       const payload = await response.json();

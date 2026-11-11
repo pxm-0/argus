@@ -10,6 +10,8 @@ historical evidence.
 
 ## Command rules
 
+- `argus` needs Python 3.14; under an older `python3` it exits `2` with
+  `unsupported-python` (run it via `mise exec python@3.14 -- argus ...`).
 - Human mode writes result data to stdout and diagnostics to stderr.
 - `--json` emits one schema-versioned envelope on stdout.
 - Read-only status and preview commands never mutate.
