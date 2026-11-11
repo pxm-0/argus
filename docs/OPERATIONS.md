@@ -207,7 +207,12 @@ eligible-target list, and exact status/recovery commands. The current CLI
 recomputes the bounded preview against fresh configured-source coverage. `apply`
 and `rollback` require exact confirmation but create only a 15-minute inert
 dashboard handoff draft; they have no mutation authority and cannot bypass the
-private operator session.
+private operator session. The draft is written under
+`runtime/argus/migration-drafts/` of the checkout that ran the command, so run
+`apply` and `rollback` in the server checkout (`/srv/argus`) for the dashboard
+to see it; a draft made on a laptop stays on the laptop. Preview, preflight and
+status compute the same read-only view and never write; run them on the server,
+where the durable migration ledger lives, for a current answer.
 
 The private dashboard recomputes the same preview, requires step-up and the
 exact migration phrase, then creates and approves one durable parent. The
