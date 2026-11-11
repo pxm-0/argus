@@ -394,12 +394,23 @@ class StableCliContractTests(unittest.TestCase):
             patch("argus_cli.OperationLedger", side_effect=sqlite3.OperationalError("permission denied")),
         ):
             code, output, error = self.invoke(["workload", "move", "preview", "demo", "--json"])
-        self.assertEqual(0, code)
+        self.assertEqual(4, code)
         payload = json.loads(output)
-        self.assertEqual("workload.move.preview", payload["data"]["command"])
-        self.assertIn("migration-ledger-unavailable", payload["data"]["blockers"])
+        self.assertEqual("migration-ledger-unreadable", payload["error"]["code"])
         self.assertNotIn("internal-error", output)
         self.assertEqual("", error)
+
+    def test_corrupt_migration_ledger_is_an_error_not_not_started(self) -> None:
+        ledger = self.root / "corrupt-operations.sqlite3"
+        ledger.write_text("junk")
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}, clear=False):
+            for action in ("preview", "status"):
+                with self.subTest(action=action):
+                    code, output, _ = self.invoke(["workload", "move", action, "demo", "--json"])
+                    self.assertEqual(4, code)
+                    payload = json.loads(output)
+                    self.assertEqual("migration-ledger-unreadable", payload["error"]["code"])
+                    self.assertNotIn("not-started", output)
 
     def test_operation_show_is_read_only_and_recovery_is_typed(self) -> None:
         ledger = self.root / "operations.sqlite3"

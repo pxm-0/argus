@@ -451,7 +451,8 @@ def operation_ledger_path(repo: Path) -> Path:
     return repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
 
 
-def migration_ledger(repo: Path) -> OperationLedger | None:
+def migration_ledger(repo: Path) -> OperationLedger | dict[str, Any] | None:
+    """None when no ledger exists; a typed error when one exists but cannot be used."""
     path = operation_ledger_path(repo)
     if not path.is_file():
         return None
@@ -463,7 +464,13 @@ def migration_ledger(repo: Path) -> OperationLedger | None:
             read_only=True,
         )
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
-        return None
+        return _error(
+            "migration-ledger-unreadable",
+            "The migration ledger exists but is unreadable, corrupt, or an incompatible schema.",
+            "Check the read-only ledger path and run argus doctor --json; do not treat the move as not started.",
+            exit_code=EXIT_UNAVAILABLE,
+            retry_safe=True,
+        )
 
 
 def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
@@ -472,6 +479,8 @@ def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
         return shown
     workload = shown["data"]["workload"]
     ledger = migration_ledger(repo)
+    if isinstance(ledger, dict):
+        return ledger
     if ledger is None:
         return _success(
             "workload.move.preview",
