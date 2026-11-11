@@ -19,10 +19,11 @@ from urllib.parse import urlparse
 import argus_cli_alerts
 import argus_cli_op
 import argus_cli_m1
+from argus_collectors import CURRENT_PROTOCOL_VERSION
 from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
-from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_observations import PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION, ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
 import argus_release
@@ -304,7 +305,7 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
     }
     reconciliation: dict[str, Any] | None = None
     registry_path = repo / "config" / "argus" / "observation-sources.json"
-    database = Path(os.environ.get("ARGUS_OBSERVATIONS_DB", repo / "runtime" / "argus" / "observations.sqlite3"))
+    database = observations_db_path(repo)
     if registry_path.is_file() and database.is_file():
         try:
             registry = load_registry(registry_path, repo)
@@ -811,24 +812,72 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             exit_code=EXIT_REFUSAL,
         )
     revision = repository_revision(repo, runner)
+    ledger_version = deployed_ledger_version(repo)
+    discovery_version = deployed_discovery_version(repo)
+    if "unavailable" in (ledger_version, discovery_version):
+        compatibility = "unverified"
+    elif ledger_version == OPERATIONS_SCHEMA_VERSION and discovery_version in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+        compatibility = "compatible"
+    else:
+        compatibility = "incompatible"
+    m1_drift = argus_cli_m1.drift_status(repo)
+    if compatibility == "incompatible":
+        next_action = "Reconcile the deployed and repository revisions before any mutation."
+    elif m1_drift.get("state") == "drift":
+        next_action = "Run sudo argus m1 sync on the server to preview the M1 convergence plan."
+    else:
+        next_action = "Run argus status for current health; use argus estate coverage before any move."
+    refresh = status_summary(repo)
     return _success(
         "doctor",
         argusRevision=revision,
         deployedRevision=revision if is_server_checkout(repo) else "unavailable",
-        operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": "unverified"},
-        discoveryRepositorySchema={"supported": "not-installed", "deployed": "not-installed"},
-        collectorProtocol={"supported": "not-installed", "deployed": "not-installed"},
+        operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": ledger_version},
+        discoveryRepositorySchema={"supported": REPOSITORY_VERSION, "deployed": discovery_version},
+        collectorProtocol={"supported": CURRENT_PROTOCOL_VERSION},
         coreBoundary={
             "policyVersion": boundary.get("policyVersion"),
             "auditVersion": boundary.get("auditVersion"),
             "result": "pass",
         },
-        m1Drift=argus_cli_m1.drift_status(repo),
-        lastCompletedCollection=None,
-        lastSafeRollbackPoint=None,
-        compatibility="partial-discovery-not-installed",
-        nextAction="Use argus estate coverage; do not move workloads until D5/M2 gates pass.",
+        m1Drift=m1_drift,
+        lastCompletedCollection=(
+            {key: refresh.get(key) for key in ("runId", "state", "finishedAt")}
+            if refresh.get("state") in {"completed", "partial"}
+            else None
+        ),
+        compatibility=compatibility,
+        nextAction=next_action,
     )
+
+
+def deployed_ledger_version(repo: Path) -> int | str:
+    path = operation_ledger_path(repo)
+    if not path.is_file():
+        return "unavailable"
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError):
+        return "unavailable"
+
+
+def observations_db_path(repo: Path) -> Path:
+    return Path(os.environ.get("ARGUS_OBSERVATIONS_DB", repo / "runtime" / "argus" / "observations.sqlite3"))
+
+
+def deployed_discovery_version(repo: Path) -> int | str:
+    path = observations_db_path(repo)
+    if not path.is_file():
+        return "unavailable"
+    try:
+        with ObservationRepository(path, read_only=True) as repository:
+            return repository.version
+    except (ObservationError, OSError, sqlite3.Error):
+        return "unavailable"
 
 
 def check_command(repo: Path, runner: Runner) -> dict[str, Any]:

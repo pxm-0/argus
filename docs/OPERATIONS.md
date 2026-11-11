@@ -322,10 +322,12 @@ ID is found in the operations ledger. The ledger is `argus-control` only, so whe
 
 `local-read-only` — `argus check`
 
-Doctor reports repository/deployed revision, operation schema, discovery schema,
-collector protocol, deterministic core-boundary result, last completed
-collection, last safe rollback point, compatibility state, and exact next
-action. It omits credentials, private topology, raw command lines, and payloads.
+Doctor reports repository/deployed revision, supported and deployed operation
+ledger and discovery repository schemas (`unavailable` when the local database
+is absent), the supported collector protocol, deterministic core-boundary
+result, M1 drift, last completed collection (`null` before the first refresh),
+compatibility state (`compatible`, `incompatible`, or `unverified`), and exact
+next action. It omits credentials, private topology, raw command lines, and payloads.
 
 Check runs the same deterministic validation used by CI and returns only a
 sanitized output digest through the stable CLI envelope.

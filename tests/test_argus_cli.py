@@ -563,11 +563,38 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(0, code)
         data = json.loads(output)["data"]
         self.assertEqual(revision, data["argusRevision"])
-        self.assertEqual("not-installed", data["collectorProtocol"]["deployed"])
-        self.assertEqual("partial-discovery-not-installed", data["compatibility"])
+        self.assertNotIn("not-installed", output)
+        self.assertNotIn("lastSafeRollbackPoint", data)
+        self.assertEqual("unavailable", data["operationLedgerSchema"]["deployed"])
+        self.assertEqual("unavailable", data["discoveryRepositorySchema"]["deployed"])
+        self.assertIsInstance(data["collectorProtocol"]["supported"], int)
+        self.assertIsNone(data["lastCompletedCollection"])
+        self.assertEqual("unverified", data["compatibility"])
         self.assertNotIn("credential", output.lower())
         self.assertNotIn("topology", output.lower())
         self.assertEqual("", error)
+
+    def test_doctor_reads_deployed_schemas_and_last_collection(self) -> None:
+        from argus_estate_refresh import _write_status
+        from argus_observations import ObservationRepository
+
+        def runner(command, _repo):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        runtime = self.root / "runtime" / "argus"
+        (runtime / "m5").mkdir(parents=True)
+        OperationLedger(runtime / "m5" / "operations.sqlite3")
+        ObservationRepository(runtime / "observations.sqlite3").close()
+        _write_status(self.root, {"schemaVersion": 1, "runId": "refresh-" + "0" * 36, "state": "completed", "finishedAt": "2026-11-10T00:00:00Z", "safeToMoveWorkloads": False})
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(0, code)
+        data = json.loads(output)["data"]
+        self.assertEqual(data["operationLedgerSchema"]["supported"], data["operationLedgerSchema"]["deployed"])
+        self.assertEqual(data["discoveryRepositorySchema"]["supported"], data["discoveryRepositorySchema"]["deployed"])
+        self.assertEqual({"runId": "refresh-" + "0" * 36, "state": "completed", "finishedAt": "2026-11-10T00:00:00Z"}, data["lastCompletedCollection"])
+        self.assertEqual("compatible", data["compatibility"])
 
     def test_doctor_audit_failure_names_the_failing_checks(self) -> None:
         checks = [
