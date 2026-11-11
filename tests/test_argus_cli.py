@@ -911,6 +911,44 @@ class StableCliContractTests(unittest.TestCase):
         for legacy, replacement in contract["compatibility"].items():
             self.assertIn(f"`{legacy}` → `{replacement}`", operations)
 
+    def test_operator_docs_only_name_real_argus_commands_and_flags(self) -> None:
+        import argparse
+        import re
+
+        from argus_cli import build_parser
+
+        def walk(parser: argparse.ArgumentParser, words: list[str]) -> str | None:
+            for index, word in enumerate(words):
+                subparsers = [a for a in parser._actions if isinstance(a, argparse._SubParsersAction)]
+                if subparsers and not word.startswith("-"):
+                    for alternative in word.split("|"):
+                        if alternative not in subparsers[0].choices:
+                            return f"unknown command word {alternative!r}"
+                    parser = subparsers[0].choices[word.split("|")[0]]
+                    continue
+                if subparsers:
+                    return "flag before a leaf command"
+                options = {o for a in parser._actions for o in a.option_strings}
+                for flag in words[index:]:
+                    if flag.startswith("--") and flag.split("=")[0] not in options:
+                        return f"unknown flag {flag!r}"
+                return None
+            return None
+
+        documents = [ROOT / "README.md", ROOT / "docs" / "OPERATIONS.md", ROOT / "docs" / "MONITORING.md"]
+        documents += sorted((ROOT / "docs" / "RUNBOOKS").glob("*.md"))
+        failures = []
+        for path in documents:
+            spans = re.findall(r"`([^`\n]+)`", path.read_text()) + path.read_text().splitlines()
+            for span in spans:
+                match = re.search(r"(?:^|[\s/])argus ((?:[a-z0-9|-]+|--[a-z-]+)(?: (?:[a-z0-9|-]+|--[a-z-]+))*)", span)
+                if not match or not re.match(r"(?:dashboard|estate|workload|operation|op|keys|doctor|check|release|promote|m1|smoke|backup|alerts|status)\b", match.group(1)):
+                    continue
+                problem = walk(build_parser(), match.group(1).split())
+                if problem:
+                    failures.append(f"{path.relative_to(ROOT)}: {span.strip()} ({problem})")
+        self.assertEqual([], failures, "\n".join(failures))
+
     def test_every_public_leaf_help_has_complete_contract(self) -> None:
         import argparse
         import shlex
