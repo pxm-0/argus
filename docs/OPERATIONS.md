@@ -271,8 +271,10 @@ sudo argus m1 verify --json
 
 Run on the server. `argus smoke status [--last N]` shows the latest scheduled smoke and the capped 30-day history
 (with the failed check names); `argus backup list|freshness` reads the snapshot pull directory and
-`snapshot-last.json`; `argus alerts` shows what `argus-alert` holds open. Missing evidence is reported as
-unavailable, never as healthy. See `docs/MONITORING.md`.
+`snapshot-last.json`; `argus alerts` shows what `argus-alert` holds open. Missing or unreadable evidence
+exits `4` (unavailable), never as healthy. A failed or stale smoke run, a stale backup source, a stale alert
+state (older than two `argus-alert.timer` periods) or an open page alert exits `3`, with the full report
+still in `data` (and on stdout in human mode). Backup freshness reports `allFresh`. See `docs/MONITORING.md`.
 
 ## Durable operations
 

@@ -1107,6 +1107,9 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
         print(f"ERROR {error['code']}: {error['message']}", file=stderr)
         print(f"AUTHORITY {error['authority']} RETRY_SAFE {str(error['retrySafe']).lower()}", file=stderr)
         data = result.get("data")
+        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts"}:
+            # Degraded health reports still carry the full report the operator needs to act on.
+            print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
         if isinstance(data, dict) and str(data.get("command", "")).startswith("workload.move."):
             print(
                 f"MIGRATION_ID {data.get('migrationId') or 'none'} PHASE {data.get('phase', 'unknown')}",
