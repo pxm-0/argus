@@ -19,6 +19,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_cli import run  # noqa: E402
 from argus_common import APPROVED_OPERATOR_LINKS  # noqa: E402
+from argus_cli import OPERATIONS_SCHEMA_VERSION  # noqa: E402
+from argus_observations import REPOSITORY_VERSION  # noqa: E402
 from argus_operations import OperationLedger, digest  # noqa: E402
 
 
@@ -292,6 +294,36 @@ class StableCliContractTests(unittest.TestCase):
         self.assertFalse(payload["data"]["safeToMoveWorkloads"])
         self.assertEqual("", error)
 
+    def test_estate_status_summarizes_and_coverage_adds_the_source_table(self) -> None:
+        code, output, _ = self.invoke(["estate", "status", "--json"])
+        self.assertEqual(0, code)
+        status = json.loads(output)["data"]
+        self.assertIn("argus estate refresh", status["nextAction"])
+        (self.root / "config" / "argus" / "observation-sources.json").write_text("{}")
+        runtime = self.root / "runtime" / "argus"
+        runtime.mkdir(parents=True)
+        (runtime / "observations.sqlite3").write_text("not a database")
+        _, status_output, _ = self.invoke(["estate", "status", "--json"])
+        _, coverage_output, _ = self.invoke(["estate", "coverage", "--json"])
+        status, coverage = json.loads(status_output)["data"], json.loads(coverage_output)["data"]
+        self.assertNotIn("reconciliation", status)
+        self.assertEqual("unavailable", coverage["reconciliation"]["status"])
+        self.assertEqual(status["nextAction"], coverage["nextAction"])
+
+    def test_estate_help_states_per_verb_side_effects(self) -> None:
+        from argus_cli import build_parser
+
+        def help_for(*argv: str) -> str:
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout), self.assertRaises(SystemExit):
+                build_parser().parse_args([*argv, "--help"])
+            return " ".join(stdout.getvalue().split())
+
+        for verb in ("status", "coverage"):
+            self.assertIn("Side effects: none.", help_for("estate", verb))
+        self.assertIn("queues an inert request", help_for("estate", "refresh"))
+        self.assertNotEqual(help_for("estate", "status").split("Privilege")[0], help_for("estate", "coverage").split("Privilege")[0])
+
     def test_workload_list_and_show_are_sanitized_and_deterministic(self) -> None:
         code, output, _ = self.invoke(["workload", "list", "--json"])
         self.assertEqual(0, code)
@@ -545,6 +577,128 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual("none", result["authority"])
         self.assertEqual([], ledger.list_migrations_for_workload("demo"))
 
+    def test_operation_list_is_newest_first_bounded_and_read_only(self) -> None:
+        ledger = self.root / "operations.sqlite3"
+        durable = OperationLedger(ledger)
+        created = []
+        for index in range(3):
+            with mock.patch.object(OperationLedger, "_now", return_value=1_800_000_000 + index):
+                operation, _ = durable.create(
+                    workload_id="demo",
+                    trust_domain="personal-sandbox",
+                    operation_type="health.refresh",
+                    requested_by="operator@example.com",
+                    parameters={},
+                    preview_digest="preview",
+                    expected_revision="revision",
+                    policy_version="1",
+                    idempotency_key=f"cli-operation-list-{index}",
+                )
+            created.append(str(operation["operation_id"]))
+        before = ledger.read_bytes()
+        with mock.patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}):
+            code, output, _ = self.invoke(["operation", "list", "--limit", "2", "--json"])
+            self.assertEqual(0, code)
+            data = json.loads(output)["data"]
+            self.assertEqual([created[2], created[1]], [row["operation_id"] for row in data["operations"]])
+            self.assertEqual(2, data["shown"])
+            self.assertNotIn("requested_by", data["operations"][0])
+            code, output, _ = self.invoke(["operation", "list", "--limit", "0", "--json"])
+            self.assertEqual((2, "limit-invalid"), (code, json.loads(output)["error"]["code"]))
+        self.assertEqual(before, ledger.read_bytes())
+        code, output, _ = self.invoke(["operation", "list", "--json"])
+        self.assertEqual((4, "operation-ledger-unavailable"), (code, json.loads(output)["error"]["code"]))
+
+    def _healthy_runner(self, command, _repo):
+        if command[0] == "git":
+            return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+        return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+    def test_status_without_evidence_is_unavailable_never_healthy(self) -> None:
+        missing = {key: str(self.root / "absent") for key in ("ARGUS_SNAPSHOT_PULL_DIR", "ARGUS_SNAPSHOT_LAST", "ARGUS_BACKUP_STATUS")}
+        with mock.patch.dict(os.environ, missing):
+            code, output, _ = self.invoke(["status", "--json"], runner=self._healthy_runner)
+            self.assertEqual(4, code)
+            payload = json.loads(output)
+            self.assertEqual("status-unavailable", payload["error"]["code"])
+            rows = {row["source"]: row for row in payload["data"]["sources"]}
+            self.assertEqual(["doctor", "alerts", "smoke", "backup", "operations", "estate"], [row["source"] for row in payload["data"]["sources"]])
+            self.assertEqual("ok", rows["doctor"]["state"])
+            for source in ("alerts", "smoke", "backup", "operations", "estate"):
+                self.assertEqual("unavailable", rows[source]["state"], source)
+            self.assertEqual("alert-state-unavailable", rows["alerts"]["code"])
+
+            code, output, error = self.invoke(["status"], runner=self._healthy_runner)
+        self.assertEqual(4, code)
+        self.assertRegex(output, r"(?m)^STATUS unavailable")
+        self.assertRegex(output, r"(?m)^SOURCE\s+STATE\s+AGE\s+SUMMARY$")
+        self.assertRegex(output, r"(?m)^alerts\s+unavailable\s+-\s+No alert state exists yet\.$")
+        self.assertIn("ERROR status-unavailable", error)
+
+    def test_status_is_degraded_by_a_failed_operation_and_ok_when_all_sources_pass(self) -> None:
+        import time
+
+        from argus_alerting import iso
+
+        now = time.time()
+        (self.root / "runtime" / "alerts").mkdir(parents=True)
+        (self.root / "runtime" / "alerts" / "state.json").write_text(json.dumps({"generatedAt": iso(now), "alerts": []}))
+        (self.root / "runtime" / "smoke").mkdir(parents=True)
+        (self.root / "runtime" / "smoke" / "latest.json").write_text(json.dumps({"ok": True, "timestamp": iso(now - 3600)}))
+        pull = self.root / "pull"
+        pull.mkdir()
+        (pull / "20261110T020000Z-nightly.tar.age").write_text("x")
+        (self.root / "snapshot-last.json").write_text(json.dumps({"timestamp": iso(now - 7200)}))
+        ledger = self.root / "operations.sqlite3"
+        durable = OperationLedger(ledger)
+        operation, _ = durable.create(
+            workload_id="demo",
+            trust_domain="personal-sandbox",
+            operation_type="health.refresh",
+            requested_by="operator@example.com",
+            parameters={},
+            preview_digest="preview",
+            expected_revision="revision",
+            policy_version="1",
+            idempotency_key="cli-status",
+        )
+        operation_id = str(operation["operation_id"])
+        durable.transition(operation_id, {"queued"}, "running", started_at=1)
+        durable.transition(operation_id, {"running"}, "failed", finished_at=2)
+        env = {
+            "ARGUS_SNAPSHOT_PULL_DIR": str(pull),
+            "ARGUS_SNAPSHOT_LAST": str(self.root / "snapshot-last.json"),
+            "ARGUS_BACKUP_STATUS": str(self.root / "absent.json"),
+            "ARGUS_OPERATIONS_DB": str(ledger),
+        }
+        complete = {
+            "ok": True,
+            "schemaVersion": 1,
+            "data": {
+                "command": "estate.status",
+                "coverage": {"complete": True, "freshSources": ["a"], "requiredSources": ["a"], "actionBlockers": []},
+                "refresh": {"state": "completed", "finishedAt": iso(now - 600)},
+                "nextAction": "Coverage is complete.",
+            },
+        }
+        with mock.patch.dict(os.environ, env), mock.patch("argus_cli.estate_command", return_value=complete):
+            code, output, _ = self.invoke(["status", "--json"], runner=self._healthy_runner)
+            payload = json.loads(output)
+            self.assertEqual((3, "status-degraded"), (code, payload["error"]["code"]))
+            self.assertEqual("Degraded: operations.", payload["error"]["message"])
+            rows = {row["source"]: row for row in payload["data"]["sources"]}
+            self.assertIn("1 failed", rows["operations"]["summary"])
+            self.assertEqual(600, rows["estate"]["ageSeconds"] // 10 * 10)
+
+            connection = sqlite3.connect(ledger)
+            with connection:
+                connection.execute("UPDATE operations SET created_at = '2000-01-01T00:00:00Z'")
+            connection.close()
+            code, output, _ = self.invoke(["status", "--json"], runner=self._healthy_runner)
+        payload = json.loads(output)
+        self.assertEqual(0, code, payload)
+        self.assertEqual({"ok"}, {row["state"] for row in payload["data"]["sources"]})
+
     def test_operation_missing_is_unavailable_not_not_found(self) -> None:
         operation_id = "00000000-0000-0000-0000-000000000001"
         code, output, _ = self.invoke(["operation", "show", operation_id, "--json"])
@@ -563,11 +717,73 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(0, code)
         data = json.loads(output)["data"]
         self.assertEqual(revision, data["argusRevision"])
-        self.assertEqual("not-installed", data["collectorProtocol"]["deployed"])
-        self.assertEqual("partial-discovery-not-installed", data["compatibility"])
+        self.assertNotIn("not-installed", output)
+        self.assertNotIn("lastSafeRollbackPoint", data)
+        self.assertEqual("unavailable", data["operationLedgerSchema"]["deployed"])
+        self.assertEqual("unavailable", data["discoveryRepositorySchema"]["deployed"])
+        self.assertIsInstance(data["collectorProtocol"]["supported"], int)
+        self.assertIsNone(data["lastCompletedCollection"])
+        self.assertEqual("unverified", data["compatibility"])
         self.assertNotIn("credential", output.lower())
         self.assertNotIn("topology", output.lower())
         self.assertEqual("", error)
+
+    def test_doctor_reads_deployed_schemas_and_last_collection(self) -> None:
+        from argus_estate_refresh import _write_status
+        from argus_observations import ObservationRepository
+
+        def runner(command, _repo):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        runtime = self.root / "runtime" / "argus"
+        (runtime / "m5").mkdir(parents=True)
+        OperationLedger(runtime / "m5" / "operations.sqlite3")
+        ObservationRepository(runtime / "observations.sqlite3").close()
+        _write_status(self.root, {"schemaVersion": 1, "runId": "refresh-" + "0" * 36, "state": "completed", "finishedAt": "2026-11-10T00:00:00Z", "safeToMoveWorkloads": False})
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(0, code)
+        data = json.loads(output)["data"]
+        self.assertEqual(data["operationLedgerSchema"]["supported"], data["operationLedgerSchema"]["deployed"])
+        self.assertEqual(data["discoveryRepositorySchema"]["supported"], data["discoveryRepositorySchema"]["deployed"])
+        self.assertEqual({"runId": "refresh-" + "0" * 36, "state": "completed", "finishedAt": "2026-11-10T00:00:00Z"}, data["lastCompletedCollection"])
+        self.assertEqual("compatible", data["compatibility"])
+
+    def _doctor_with_schemas(self, ledger_version: int, discovery_version: int) -> dict:
+        from argus_observations import ObservationRepository
+
+        def runner(command, _repo):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        runtime = self.root / "runtime" / "argus"
+        (runtime / "m5").mkdir(parents=True)
+        OperationLedger(runtime / "m5" / "operations.sqlite3")
+        ObservationRepository(runtime / "observations.sqlite3").close()
+        connection = sqlite3.connect(runtime / "m5" / "operations.sqlite3")
+        connection.execute(f"PRAGMA user_version={int(ledger_version)}")
+        connection.close()
+        connection = sqlite3.connect(runtime / "observations.sqlite3")
+        with connection:
+            connection.execute("UPDATE metadata SET value=? WHERE key='repository_version'", (str(discovery_version),))
+        connection.close()
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(0, code)
+        return json.loads(output)["data"]
+
+    def test_doctor_reports_incompatible_discovery_schema(self) -> None:
+        data = self._doctor_with_schemas(OPERATIONS_SCHEMA_VERSION, REPOSITORY_VERSION + 1)
+        self.assertEqual(REPOSITORY_VERSION + 1, data["discoveryRepositorySchema"]["deployed"])
+        self.assertEqual("incompatible", data["compatibility"])
+        self.assertIn("Reconcile the deployed and repository revisions", data["nextAction"])
+
+    def test_doctor_reports_incompatible_ledger_schema(self) -> None:
+        data = self._doctor_with_schemas(OPERATIONS_SCHEMA_VERSION + 1, REPOSITORY_VERSION)
+        self.assertEqual(OPERATIONS_SCHEMA_VERSION + 1, data["operationLedgerSchema"]["deployed"])
+        self.assertEqual("incompatible", data["compatibility"])
+        self.assertIn("Reconcile the deployed and repository revisions", data["nextAction"])
 
     def test_doctor_audit_failure_names_the_failing_checks(self) -> None:
         checks = [
@@ -729,6 +945,33 @@ class StableCliContractTests(unittest.TestCase):
                     for key in ("workload_id", "staging_id", "production_id"):
                         if hasattr(parsed, key):
                             self.assertIn(getattr(parsed, key), registry)
+
+    def test_confirmation_and_dry_run_flags_share_help_wording(self) -> None:
+        import argparse
+
+        from argus_cli import build_parser
+
+        def walk(parser: argparse.ArgumentParser):
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for child in action.choices.values():
+                        yield from walk(child)
+                else:
+                    yield parser, action
+
+        seen = {"--dry-run": 0, "--confirm": 0}
+        for parser, action in walk(build_parser()):
+            for flag in seen:
+                if flag in action.option_strings:
+                    seen[flag] += 1
+                    prefix = "preview only:" if flag == "--dry-run" else "confirm with"
+                    self.assertTrue(action.help.startswith(prefix), f"{parser.prog} {flag}: {action.help}")
+        self.assertGreaterEqual(seen["--dry-run"], 3)
+        self.assertGreaterEqual(seen["--confirm"], 3)
+        release = build_parser()._subparsers._group_actions[0].choices["release"]
+        for choice in release._subparsers._group_actions[0]._choices_actions:
+            self.assertEqual(choice.help[0].lower(), choice.help[0], choice.help)
+            self.assertFalse(choice.help.endswith("."), choice.help)
 
     def test_top_level_help_hides_aliases_and_documents_exit_classes(self) -> None:
         result = subprocess.run([str(ROOT / "scripts" / "argus"), "--help"], text=True, capture_output=True, check=False)

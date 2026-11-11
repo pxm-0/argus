@@ -17,12 +17,15 @@ from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
 
 import argus_cli_alerts
+import argus_cli_format
 import argus_cli_op
 import argus_cli_m1
+import argus_cli_status
+from argus_collectors import CURRENT_PROTOCOL_VERSION
 from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
-from argus_observations import ObservationError, ObservationRepository, digest, load_registry
+from argus_observations import PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION, ObservationError, ObservationRepository, digest, load_registry
 from argus_operations import OperationLedger, SCHEMA_VERSION
 from argus_reconciliation import reconcile
 import argus_release
@@ -304,7 +307,7 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
     }
     reconciliation: dict[str, Any] | None = None
     registry_path = repo / "config" / "argus" / "observation-sources.json"
-    database = Path(os.environ.get("ARGUS_OBSERVATIONS_DB", repo / "runtime" / "argus" / "observations.sqlite3"))
+    database = observations_db_path(repo)
     if registry_path.is_file() and database.is_file():
         try:
             registry = load_registry(registry_path, repo)
@@ -355,16 +358,32 @@ def estate_command(repo: Path, action: str) -> dict[str, Any]:
             coverage=coverage,
             observationState=(reconciliation or {}).get("observationState", "incomplete"),
             safeToMoveWorkloads=False,
+            nextAction="Run argus estate status after the coordinator finishes the queued request.",
         )
     refresh = status_summary(repo)
+    safe_to_move = (reconciliation or {}).get("safeToMoveWorkloads", False)
+    # status is the summary; coverage adds the per-source reconciliation table.
+    detail = {"reconciliation": reconciliation} if action == "coverage" and reconciliation is not None else {}
     return _success(
         f"estate.{action}",
         coverage=coverage,
         observationState=(reconciliation or {}).get("observationState", "incomplete"),
-        safeToMoveWorkloads=(reconciliation or {}).get("safeToMoveWorkloads", False),
+        safeToMoveWorkloads=safe_to_move,
         refresh=refresh,
-        **({"reconciliation": reconciliation} if reconciliation is not None else {}),
+        nextAction=estate_next_action(refresh, coverage, safe_to_move),
+        **detail,
     )
+
+
+def estate_next_action(refresh: dict[str, Any], coverage: dict[str, Any], safe_to_move: bool) -> str:
+    if refresh.get("state") == "never-run":
+        return "Run argus estate refresh to queue the first whole-estate collection."
+    if refresh.get("state") == "failed":
+        return "Check the estate-refresh service on the server, then run argus estate refresh."
+    if safe_to_move:
+        return "Coverage is complete; preview a move with argus workload move preview <id>."
+    blockers = ", ".join(coverage["actionBlockers"]) or "missing or stale sources"
+    return f"Resolve {blockers} (per source: argus estate coverage), then run argus estate refresh."
 
 
 def workload_list(repo: Path) -> dict[str, Any]:
@@ -700,7 +719,17 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
     )
 
 
-def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
+OPERATION_COLUMNS = """
+    SELECT operation_id, workload_id, trust_domain, operation_type,
+           state, created_at, started_at, finished_at, error_class,
+           redacted_summary
+    FROM operations
+"""
+MAX_OPERATION_LIMIT = 200
+
+
+def query_operations(repo: Path, where: str, params: tuple[Any, ...]) -> list[dict[str, Any]] | dict[str, Any]:
+    """Rows from the read-only ledger, or a typed error envelope."""
     ledger = operation_ledger_path(repo)
     if not ledger.is_file():
         return _error(
@@ -722,15 +751,7 @@ def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
                     "Run argus doctor --json and reconcile deployed/repository revisions.",
                     exit_code=EXIT_REFUSAL,
                 )
-            row = connection.execute(
-                """
-                SELECT operation_id, workload_id, trust_domain, operation_type,
-                       state, created_at, started_at, finished_at, error_class,
-                       redacted_summary
-                FROM operations WHERE operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
+            rows = connection.execute(OPERATION_COLUMNS + where, params).fetchall()
         finally:
             connection.close()
     except (sqlite3.Error, OSError):
@@ -740,14 +761,30 @@ def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
             "Check the read-only ledger path and run argus doctor --json.",
             exit_code=EXIT_UNAVAILABLE,
         )
-    if row is None:
+    return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
+    rows = query_operations(repo, "WHERE operation_id = ?", (operation_id,))
+    if isinstance(rows, dict):
+        return rows
+    if not rows:
         return _error(
             "operation-not-found",
             "The requested operation is not present in the durable ledger.",
-            "Verify the operation ID with the initiating workflow.",
+            "Run argus operation list to find recent operation IDs.",
             exit_code=EXIT_REFUSAL,
         )
-    return _success("operation.show", operation={key: row[key] for key in row.keys()})
+    return _success("operation.show", operation=rows[0])
+
+
+def operation_list(repo: Path, limit: int) -> dict[str, Any]:
+    if not 1 <= limit <= MAX_OPERATION_LIMIT:
+        return _error("limit-invalid", f"--limit must be between 1 and {MAX_OPERATION_LIMIT}.", f"Pass --limit between 1 and {MAX_OPERATION_LIMIT}.", exit_code=EXIT_INVOCATION)
+    rows = query_operations(repo, "ORDER BY created_at DESC, operation_id DESC LIMIT ?", (limit,))
+    if isinstance(rows, dict):
+        return rows
+    return _success("operation.list", operations=rows, shown=len(rows))
 
 
 def default_runner(command: list[str], repo: Path) -> subprocess.CompletedProcess[str]:
@@ -811,24 +848,76 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             exit_code=EXIT_REFUSAL,
         )
     revision = repository_revision(repo, runner)
+    ledger_version = deployed_ledger_version(repo)
+    discovery_version = deployed_discovery_version(repo)
+    if "unavailable" in (ledger_version, discovery_version):
+        compatibility = "unverified"
+    elif ledger_version == OPERATIONS_SCHEMA_VERSION and discovery_version in {PREVIOUS_REPOSITORY_VERSION, REPOSITORY_VERSION}:
+        compatibility = "compatible"
+    else:
+        compatibility = "incompatible"
+    m1_drift = argus_cli_m1.drift_status(repo)
+    if compatibility == "incompatible":
+        next_action = "Reconcile the deployed and repository revisions before any mutation."
+    elif m1_drift.get("state") == "drift":
+        next_action = "Run sudo argus m1 sync on the server to preview the M1 convergence plan."
+    else:
+        next_action = "Run argus status for current health; use argus estate coverage before any move."
+    refresh = status_summary(repo)
     return _success(
         "doctor",
         argusRevision=revision,
         deployedRevision=revision if is_server_checkout(repo) else "unavailable",
-        operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": "unverified"},
-        discoveryRepositorySchema={"supported": "not-installed", "deployed": "not-installed"},
-        collectorProtocol={"supported": "not-installed", "deployed": "not-installed"},
+        operationLedgerSchema={"supported": OPERATIONS_SCHEMA_VERSION, "deployed": ledger_version},
+        discoveryRepositorySchema={"supported": REPOSITORY_VERSION, "deployed": discovery_version},
+        collectorProtocol={"supported": CURRENT_PROTOCOL_VERSION},
         coreBoundary={
             "policyVersion": boundary.get("policyVersion"),
             "auditVersion": boundary.get("auditVersion"),
             "result": "pass",
         },
-        m1Drift=argus_cli_m1.drift_status(repo),
-        lastCompletedCollection=None,
-        lastSafeRollbackPoint=None,
-        compatibility="partial-discovery-not-installed",
-        nextAction="Use argus estate coverage; do not move workloads until D5/M2 gates pass.",
+        m1Drift=m1_drift,
+        lastCompletedCollection=(
+            {key: refresh.get(key) for key in ("runId", "state", "finishedAt")}
+            if refresh.get("state") in {"completed", "partial"}
+            else None
+        ),
+        compatibility=compatibility,
+        nextAction=next_action,
     )
+
+
+def deployed_ledger_version(repo: Path) -> int | str:
+    path = operation_ledger_path(repo)
+    if not path.is_file():
+        return "unavailable"
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+        finally:
+            connection.close()
+    except (sqlite3.Error, OSError):
+        return "unavailable"
+
+
+def observations_db_path(repo: Path) -> Path:
+    return Path(os.environ.get("ARGUS_OBSERVATIONS_DB", repo / "runtime" / "argus" / "observations.sqlite3"))
+
+
+def deployed_discovery_version(repo: Path) -> int | str:
+    path = observations_db_path(repo)
+    if not path.is_file():
+        return "unavailable"
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = connection.execute("SELECT value FROM metadata WHERE key='repository_version'").fetchone()
+        finally:
+            connection.close()
+        return int(row[0])
+    except (sqlite3.Error, OSError, TypeError, ValueError):
+        return "unavailable"
 
 
 def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
@@ -940,21 +1029,40 @@ def build_parser() -> argparse.ArgumentParser:
 
     estate = commands.add_parser("estate", help="configured-estate status and coverage")
     estate_sub = estate.add_subparsers(dest="estate_command", required=True, parser_class=ArgusArgumentParser)
-    for action in ("status", "coverage", "refresh"):
-        privilege = "local refresh request" if action == "refresh" else "unprivileged, read-only"
+    for action, help_text, purpose, privilege, side_effects, output, recovery in (
+        (
+            "status",
+            "summarize configured-estate coverage and the next action",
+            "Summarize configured-estate coverage, blockers and last refresh without claiming missing sources.",
+            "unprivileged, read-only",
+            "none",
+            "coverage summary, blockers, last refresh, and exact next action",
+            "run argus estate coverage for the per-source table",
+        ),
+        (
+            "coverage",
+            "show per-source configured-estate coverage",
+            "Show the status summary plus the per-source reconciliation table from the last completed collection.",
+            "unprivileged, read-only",
+            "none",
+            "status summary, per-source reconciliation rows, and exact next action",
+            "complete the named collector gate, then run argus estate refresh",
+        ),
+        (
+            "refresh",
+            "queue an inert configured-estate refresh request",
+            "Queue an inert configured-estate refresh request for the collection coordinator.",
+            "local refresh request",
+            "queues an inert request; it cannot change workload authority",
+            "queued request, current coverage summary, and next action",
+            "run argus estate status to follow the request",
+        ),
+    ):
         leaf(
             estate_sub,
             action,
-            help_text=f"{action} configured-estate evidence",
-            contract=description(
-                f"{action.title()} configured-estate evidence without claiming missing sources.",
-                privilege,
-                "reviewed workload registry",
-                "refresh queues an inert request; it cannot change workload authority",
-                "coverage, blockers, and exact next action",
-                f"argus estate {action} --json",
-                "inspect argus estate coverage and complete the named collector gate",
-            ),
+            help_text=help_text,
+            contract=description(purpose, privilege, "reviewed workload registry", side_effects, output, f"argus estate {action} --json", recovery),
         )
 
     workload = commands.add_parser("workload", help="canonical workload information and moves")
@@ -979,7 +1087,7 @@ def build_parser() -> argparse.ArgumentParser:
         contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire nodens-staging --dry-run --json", "inspect the printed plan; fix and rerun", "reviewed Argus configuration and tracked files in this checkout"),
     )
     retire_parser.add_argument("workload_id")
-    retire_parser.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
+    retire_parser.add_argument("--dry-run", action="store_true", help="preview only: print the plan; write nothing")
     retire_parser.add_argument("--reason", default="Operator-approved retirement; record the reason and backup evidence before merge.")
     move = workload_sub.add_parser("move", help="preview and control reviewed workload moves")
     move_sub = move.add_subparsers(dest="move_command", required=True, parser_class=ArgusArgumentParser)
@@ -1009,27 +1117,42 @@ def build_parser() -> argparse.ArgumentParser:
         )
         item.add_argument("workload_id")
         if action in {"apply", "rollback"}:
-            item.add_argument("--confirm", default="", help="exact workload ID confirmation")
+            item.add_argument("--confirm", default="", help="confirm with the exact workload ID")
 
     operation = commands.add_parser("operation", help="durable operation status")
     operation_sub = operation.add_subparsers(dest="operation_command", required=True, parser_class=ArgusArgumentParser)
-    for action in ("show",):
-        item = leaf(
-            operation_sub,
-            action,
-            help_text=f"{action} a durable operation",
-            contract=description(
-                f"{action.title()} a durable operation without guessing current authority.",
-                "server read-only",
-                "exact operation ID and compatible durable ledger",
-                "none",
-                "state, authority, retry safety, and typed recovery",
-                f"argus operation {action} 00000000-0000-0000-0000-000000000000 --json",
-                "inspect operation state and follow only its typed runbook",
-                "the durable operation ledger, opened read-only",
-            ),
-        )
-        item.add_argument("operation_id")
+    item = leaf(
+        operation_sub,
+        "show",
+        help_text="show a durable operation",
+        contract=description(
+            "Show a durable operation without guessing current authority.",
+            "server read-only",
+            "exact operation ID and compatible durable ledger",
+            "none",
+            "state, authority, retry safety, and typed recovery",
+            "argus operation show 00000000-0000-0000-0000-000000000000 --json",
+            "inspect operation state and follow only its typed runbook",
+            "the durable operation ledger, opened read-only",
+        ),
+    )
+    item.add_argument("operation_id")
+    item = leaf(
+        operation_sub,
+        "list",
+        help_text="list recent durable operations, newest first",
+        contract=description(
+            "List the most recent durable operations across workloads, newest first.",
+            "server read-only",
+            "compatible durable ledger",
+            "none",
+            "operation ID, workload, type, state and timestamps per row",
+            "argus operation list --limit 5 --json",
+            "pass an operation ID to argus operation show for its full record",
+            "the durable operation ledger, opened read-only",
+        ),
+    )
+    item.add_argument("--limit", type=int, default=20, help=f"operations to show (1-{MAX_OPERATION_LIMIT}, default 20)")
 
     argus_cli_op.register(commands, workload_sub, leaf, description)
     keys = commands.add_parser("keys", help="operator credential management")
@@ -1058,6 +1181,7 @@ def build_parser() -> argparse.ArgumentParser:
     argus_release.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
+    argus_cli_status.register(commands, leaf, description)
 
     # Deprecated aliases: added without help= so they stay out of the help listing.
     legacy_workloads = commands.add_parser("workloads")
@@ -1104,6 +1228,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = move_command(repo, args.move_command, args.workload_id, getattr(args, "confirm", "")) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
     elif command == "operation" and args.operation_command == "show":
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
+    elif command == "operation" and args.operation_command == "list":
+        result = operation_list(repo, args.limit)
     elif command == "op" or (command == "workload" and args.workload_command in argus_cli_op.SHORTCUTS):
         result = argus_cli_op.execute(args, repo, sys.modules[__name__])
     elif command == "keys":
@@ -1116,6 +1242,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = check_command(repo, runner)
     elif command == "m1":
         result = argus_cli_m1.dispatch(args, repo, error=_error, success=_success)
+    elif command == "status":
+        result = argus_cli_status.status_command(repo, sys.modules[__name__], runner)
     elif command in {"smoke", "backup", "alerts"}:
         result = argus_cli_alerts.dispatch(args, repo, error=_error, success=_success)
     else:  # pragma: no cover - argparse owns the grammar.
@@ -1133,9 +1261,10 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
         print(f"ERROR {error['code']}: {error['message']}", file=stderr)
         print(f"AUTHORITY {error['authority']} RETRY_SAFE {str(error['retrySafe']).lower()}", file=stderr)
         data = result.get("data")
-        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts"}:
+        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts", "status"}:
             # Degraded health reports still carry the full report the operator needs to act on.
-            print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
+            if not argus_cli_format.render(data, stdout):
+                print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
         if isinstance(data, dict) and str(data.get("command", "")).startswith("workload.move."):
             print(
                 f"MIGRATION_ID {data.get('migrationId') or 'none'} PHASE {data.get('phase', 'unknown')}",
@@ -1150,11 +1279,10 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
     if command == "dashboard.url":
         print(f"CONFIGURED_URL {data['url']}", file=stdout)
         print(f"EFFECTIVE_STATE {data['effectiveState']}", file=stdout)
-    elif command == "workload.list":
-        for item in data["workloads"]:
-            print(f"{item['id']}\t{item['trustDomain']}\t{item['migrationStatus']}", file=stdout)
     elif command.startswith("m1."):
         argus_cli_m1.render(data, stdout)
+    elif argus_cli_format.render(data, stdout):
+        pass
     elif data.get("dryRun") and ("diff" in data or "runbook" in data):
         # release dry-runs carry a diff; workload retire dry-runs carry the teardown runbook
         print(data.get("diff") or data["runbook"], end="", file=stdout)

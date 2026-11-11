@@ -47,7 +47,9 @@ argus dashboard url --json
 
 Refresh queues an inert, status-addressable request for the D1–D5 coordinator;
 it cannot change workload authority. Status and coverage report the last
-completed whole-estate reconciliation, including any missing or stale source.
+completed whole-estate reconciliation and an exact `nextAction`: status is the
+summary (coverage, blockers, last refresh); coverage adds the per-source
+reconciliation table, including any missing or stale source.
 Explicitly terminal Docker history (`exited` or `dead`) remains observable but
 does not claim current workload authority; an unknown or transitional state
 continues to block movement.
@@ -282,15 +284,33 @@ exits `4` (unavailable), never as healthy. A failed or stale smoke run, a stale 
 state (older than two `argus-alert.timer` periods) or an open page alert exits `3`, with the full report
 still in `data` (and on stdout in human mode). Backup freshness reports `allFresh`. See `docs/MONITORING.md`.
 
+`server-read-only` — `argus status`
+
+`argus status` is the one read-only "what is broken right now" view. It reuses the readers above plus
+`argus doctor`, the operation ledger (anything in flight, failed in the last 24h, or indeterminate) and
+`argus estate status`, and prints one row per source with its state (`ok`, `degraded`, `unavailable`), age
+and summary. It exits `3` when any source is degraded, otherwise `4` when any source has no evidence, and `0`
+only when every source is ok. Off the server most sources are `unavailable`, never healthy.
+
+```bash
+argus status
+argus status --json
+```
+
 ## Durable operations
 
 `server-read-only` — `argus operation show <operation-id>`
 
-Show reads the compatible operation ledger without migration or writes.
+`server-read-only` — `argus operation list`
+
+Show and list read the compatible operation ledger without migration or writes.
+List prints the most recent operations across workloads, newest first
+(`--limit`, 1–200, default 20); pass an ID from it to show.
 There is no generic recovery command; follow the typed recovery runbook named
 by the operation.
 
 ```bash
+argus operation list --limit 5 --json
 argus operation show 00000000-0000-0000-0000-000000000000 --json
 ```
 
@@ -322,10 +342,12 @@ ID is found in the operations ledger. The ledger is `argus-control` only, so whe
 
 `local-read-only` — `argus check`
 
-Doctor reports repository/deployed revision, operation schema, discovery schema,
-collector protocol, deterministic core-boundary result, last completed
-collection, last safe rollback point, compatibility state, and exact next
-action. It omits credentials, private topology, raw command lines, and payloads.
+Doctor reports repository/deployed revision, supported and deployed operation
+ledger and discovery repository schemas (`unavailable` when the local database
+is absent), the supported collector protocol, deterministic core-boundary
+result, M1 drift, last completed collection (`null` before the first refresh),
+compatibility state (`compatible`, `incompatible`, or `unverified`), and exact
+next action. It omits credentials, private topology, raw command lines, and payloads.
 
 Check runs the same deterministic validation used by CI and returns only a
 sanitized output digest through the stable CLI envelope.

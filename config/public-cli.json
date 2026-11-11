@@ -17,6 +17,7 @@
     {"command": "argus workload move status <id>", "privilege": "server-read-only"},
     {"command": "argus workload move rollback <id>", "privilege": "local-write"},
     {"command": "argus operation show <operation-id>", "privilege": "server-read-only"},
+    {"command": "argus operation list", "privilege": "server-read-only"},
     {"command": "argus op preview <workload> <type>", "privilege": "api-session", "where": "api"},
     {"command": "argus op create <workload> <type>", "privilege": "api-session", "where": "api"},
     {"command": "argus op show <operation-id>", "privilege": "api-session", "where": "api"},
@@ -37,7 +38,8 @@
     {"command": "argus smoke status", "privilege": "server-read-only"},
     {"command": "argus backup list", "privilege": "server-read-only"},
     {"command": "argus backup freshness", "privilege": "server-read-only"},
-    {"command": "argus alerts", "privilege": "server-read-only"}
+    {"command": "argus alerts", "privilege": "server-read-only"},
+    {"command": "argus status", "privilege": "server-read-only"}
   ],
   "compatibility": {
     "argus health": "argus estate status",
