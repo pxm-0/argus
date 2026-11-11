@@ -21,7 +21,23 @@ These files are generated locally and ignored by Git:
 control-plane/dashboard/public/index.html
 control-plane/dashboard/public/style.css
 control-plane/dashboard/public/app.js
+control-plane/dashboard/public/state-prototypes.html
+control-plane/dashboard/public/manifest.webmanifest
+control-plane/dashboard/public/favicon.svg
+control-plane/dashboard/public/favicon-16.png
+control-plane/dashboard/public/favicon-32.png
+control-plane/dashboard/public/apple-touch-icon.png
+control-plane/dashboard/public/icon-192.png
+control-plane/dashboard/public/icon-512.png
+control-plane/dashboard/public/icon-maskable-512.png
 ```
+
+`app.js` inlines `control-plane/dashboard/assets/{status,operations,stages}.js`;
+generation fails if an `// @include` marker is missing. `state-prototypes.html`
+is the fixture-only state gallery built from `prototypes/states.json`; it is
+written into the same served directory but reads no runtime state.
+`public/metrics.json` is not generated here; the metrics job writes it and it
+is also ignored.
 
 Regenerate them with:
 
@@ -67,8 +83,18 @@ The runtime state contains:
 - route and exposure state
 - manifest-derived operation and backup state
 - last sanitized audit event per workload
-- recent sanitized audit event summaries
+- recent sanitized audit event summaries (`events`)
 - monitoring configuration
+- `alerts`, the argus-alert evaluator state behind the Alerts banner
+- `reconciliation`, the sanitized estate evidence behind the Evidence gate
+  and per-workload reconciliation rows
+- `topology`, trust domains and workload nodes behind Estate coverage
+
+`GET /api/dashboard-state` additionally overlays live domain-agent
+availability on `topology`, per-workload stage runtime (pinned and observed
+images), the current `reconciliation`, and `estateRefresh`, the latest estate
+refresh run status. `scripts/argus-dashboard-state` does not include these
+overlays.
 
 Secret-like audit fields are redacted by shared audit sanitization before they reach the dashboard state.
 
