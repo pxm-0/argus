@@ -92,7 +92,8 @@ def _off_server(error: Error, verb: str) -> dict[str, Any]:
         "m1-server-only",
         "No M1 private state exists on this machine; this command only works on the server.",
         f"Run on the server: {command}",
-        exit_code=EXIT_REFUSAL,
+        exit_code=EXIT_UNAVAILABLE,
+        retry_safe=True,
     )
 
 
@@ -165,6 +166,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "per-store add/remove/drift ids and the plan digest",
             "argus m1 sync, then argus m1 sync --apply --confirm sha256:<digest>",
             "legacy scripts/argus-m1-reconcile-* scripts remain the fallback",
+            "reviewed configuration and private M1 state on the server",
         ),
     )
     sync.add_argument("--apply", action="store_true", help="apply the plan")
@@ -181,6 +183,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "verification summary without workload details",
             "argus m1 verify --json",
             "run argus m1 sync to see drift",
+            "private M1 state on the server",
         ),
     )
 

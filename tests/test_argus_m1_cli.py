@@ -85,7 +85,7 @@ class M1CliTests(OnboardedM1WorkloadRegistrationTests):
             out = io.StringIO()
             code = run(["m1", "verify", "--json"], repo=Path(empty), stdout=out, stderr=io.StringIO())
         error = json.loads(out.getvalue())["error"]
-        self.assertEqual((3, "m1-server-only"), (code, error["code"]))
+        self.assertEqual((4, "m1-server-only", True), (code, error["code"], error["retrySafe"]))
         self.assertIn("ssh oreochiserver 'sudo /srv/argus/scripts/argus m1 verify --json'", error["nextAction"])
         self.assertEqual({"state": "not-applicable"}, argus_cli_m1.drift_status(Path(empty)))
 

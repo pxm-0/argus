@@ -39,6 +39,11 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.css = (public / "style.css").read_text()
         self.javascript = (public / "app.js").read_text()
 
+    def test_migration_history_only_asks_to_authenticate_on_401(self) -> None:
+        loader = self.javascript[self.javascript.index("async function loadMigrationHistory"):self.javascript.index("async function loadOperationHistory")]
+        self.assertIn("response.status === 401", loader)
+        self.assertIn("Migration history temporarily unavailable.", loader.split("if (!response.ok)", 1)[1].split("return;", 1)[0])
+
     def test_startup_exposes_one_accessible_five_state_session_control(self) -> None:
         self.assertIn('id="session-control" data-state="checking"', self.html)
         self.assertIn('role="status" aria-live="polite" aria-atomic="true"', self.html)

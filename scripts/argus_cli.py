@@ -11,6 +11,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+import traceback
 from pathlib import Path
 from typing import Any, Callable, TextIO
 from urllib.parse import urlparse
@@ -450,7 +451,8 @@ def operation_ledger_path(repo: Path) -> Path:
     return repo / "runtime" / "argus" / "m5" / "operations.sqlite3"
 
 
-def migration_ledger(repo: Path) -> OperationLedger | None:
+def migration_ledger(repo: Path) -> OperationLedger | dict[str, Any] | None:
+    """None when no ledger exists; a typed error when one exists but cannot be used."""
     path = operation_ledger_path(repo)
     if not path.is_file():
         return None
@@ -462,7 +464,13 @@ def migration_ledger(repo: Path) -> OperationLedger | None:
             read_only=True,
         )
     except (OSError, RuntimeError, ValueError, sqlite3.Error):
-        return None
+        return _error(
+            "migration-ledger-unreadable",
+            "The migration ledger exists but is unreadable, corrupt, or an incompatible schema.",
+            "Check the read-only ledger path and run argus doctor --json; do not treat the move as not started.",
+            exit_code=EXIT_UNAVAILABLE,
+            retry_safe=True,
+        )
 
 
 def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
@@ -471,6 +479,8 @@ def move_preview(repo: Path, workload_id: str) -> dict[str, Any]:
         return shown
     workload = shown["data"]["workload"]
     ledger = migration_ledger(repo)
+    if isinstance(ledger, dict):
+        return ledger
     if ledger is None:
         return _success(
             "workload.move.preview",
@@ -758,7 +768,7 @@ def repository_revision(repo: Path, runner: Runner) -> str:
 
 
 def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
-    audit = runner([str(repo / "scripts" / "argus-doctor"), "--json"], repo)
+    audit = runner([sys.executable, str(repo / "scripts" / "argus-doctor"), "--json"], repo)
     try:
         audit_payload = json.loads(audit.stdout)
     except (json.JSONDecodeError, TypeError):
@@ -776,11 +786,18 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
             exit_code=EXIT_UNAVAILABLE,
         )
     if audit.returncode != 0 or audit_payload.get("ok") is not True:
+        checks = audit_payload.get("checks")
+        failed = [
+            check["message"]
+            for check in (checks if isinstance(checks, list) else [])
+            if isinstance(check, dict) and check.get("ok") is not True and isinstance(check.get("message"), str)
+        ]
         return _error(
             "doctor-audit-failed",
-            "One or more deterministic security checks failed.",
-            "Review ./scripts/argus-doctor --json and fix the named check before mutation.",
+            "Deterministic security checks failed: " + ("; ".join(failed) if failed else "no check was named") + ".",
+            "Fix the named check (details: ./scripts/argus-doctor --json) before mutation.",
             exit_code=EXIT_REFUSAL,
+            data={"failedChecks": failed},
         )
     try:
         boundary = load_json(repo, "config/core-boundary-policy.json")
@@ -815,7 +832,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
 
 
 def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
-    result = runner([str(repo / "scripts" / "argus-check")], repo)
+    result = runner([sys.executable, str(repo / "scripts" / "argus-check")], repo)
     output = result.stdout or ""
     output_digest = "sha256:" + hashlib.sha256(output.encode()).hexdigest()
     if result.returncode in {-2, -15, 130, 143}:
@@ -871,10 +888,11 @@ def description(
     output: str,
     example: str,
     recovery: str,
+    source: str = "reviewed Argus configuration and local evidence only",
 ) -> str:
     return (
         f"{purpose}\n\nPrivilege: {privilege}.\nPrerequisites: {prerequisites}.\n"
-        f"Side effects: {side_effects}.\nSource: reviewed Argus configuration and local evidence only.\n"
+        f"Side effects: {side_effects}.\nSource: {source}.\n"
         f"Output: {output}.\nExample: {example}\nRecovery: {recovery}."
     )
 
@@ -891,9 +909,17 @@ def leaf(parent: argparse._SubParsersAction[Any], name: str, *, help_text: str, 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = ArgusArgumentParser(prog="argus", description="Private deterministic Argus operator commands.")
+    parser = ArgusArgumentParser(
+        prog="argus",
+        description="Private deterministic Argus operator commands.",
+        epilog=(
+            "Exit classes: 0 success; 1 internal or check failure; 2 invalid invocation; "
+            "3 safe refusal, failed precondition, or degraded health report; "
+            "4 unavailable or transient (evidence missing or unreadable); 5 indeterminate, recovery required."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit canonical JSON")
-    commands = parser.add_subparsers(dest="command", required=True, parser_class=ArgusArgumentParser)
+    commands = parser.add_subparsers(dest="command", required=True, metavar="<command>", parser_class=ArgusArgumentParser)
 
     dashboard = commands.add_parser("dashboard", help="private dashboard information")
     dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True, parser_class=ArgusArgumentParser)
@@ -943,14 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
         workload_sub,
         "show",
         help_text="show one canonical workload",
-        contract=description("Show one canonical workload.", "unprivileged, read-only", "exact workload ID", "none", "sanitized identity and capability summary", "argus workload show nodens --json", "run argus workload list"),
+        contract=description("Show one canonical workload.", "unprivileged, read-only", "exact workload ID", "none", "sanitized identity and capability summary", "argus workload show nodens-staging --json", "run argus workload list"),
     )
     show.add_argument("workload_id")
     retire_parser = leaf(
         workload_sub,
         "retire",
         help_text="generate a reviewed PR that retires a workload",
-        contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire hello-nginx --dry-run --json", "inspect the printed plan; fix and rerun"),
+        contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire nodens-staging --dry-run --json", "inspect the printed plan; fix and rerun", "reviewed Argus configuration and tracked files in this checkout"),
     )
     retire_parser.add_argument("workload_id")
     retire_parser.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
@@ -958,7 +984,12 @@ def build_parser() -> argparse.ArgumentParser:
     move = workload_sub.add_parser("move", help="preview and control reviewed workload moves")
     move_sub = move.add_subparsers(dest="move_command", required=True, parser_class=ArgusArgumentParser)
     for action in ("preview", "preflight", "status", "apply", "rollback"):
-        privilege = "server mutation with exact confirmation" if action in {"apply", "rollback"} else "unprivileged, read-only"
+        drafts = action in {"apply", "rollback"}
+        privilege = (
+            "local draft write only with exact confirmation; authority is granted only in the private dashboard"
+            if drafts
+            else "unprivileged, read-only" if action == "preview" else "server read-only"
+        )
         item = leaf(
             move_sub,
             action,
@@ -967,12 +998,13 @@ def build_parser() -> argparse.ArgumentParser:
                 f"{action.title()} a typed workload move; unavailable kernels fail closed.",
                 privilege,
                 "exact workload ID, fresh coverage, and approved migration kernel",
-                "none until the final reviewed apply or rollback boundary",
+                "writes an inert local handoff draft for the private dashboard; no server change" if drafts else "none",
                 "authority, phase, blockers, retry safety, and recovery",
-                f"argus workload move {action} nodens"
-                + (" --confirm nodens" if action in {"apply", "rollback"} else "")
+                f"argus workload move {action} nodens-staging"
+                + (" --confirm nodens-staging" if drafts else "")
                 + " --json",
                 "run the matching status and preview commands; never use milestone scripts as a substitute",
+                "reviewed configuration, local evidence, and the durable migration ledger (read-only)",
             ),
         )
         item.add_argument("workload_id")
@@ -994,6 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
                 "state, authority, retry safety, and typed recovery",
                 f"argus operation {action} 00000000-0000-0000-0000-000000000000 --json",
                 "inspect operation state and follow only its typed runbook",
+                "the durable operation ledger, opened read-only",
             ),
         )
         item.add_argument("operation_id")
@@ -1005,7 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
         keys_sub,
         "totp-enroll",
         help_text="enrol an operator authenticator (TOTP) and recovery codes",
-        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies"),
+        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies", "operator records under /etc/argus on the server"),
     )
     enroll_parser.add_argument("--operator", default="", help="tailnet login; optional when exactly one owner is enabled")
     enroll_parser.add_argument("--rotate", action="store_true", help="replace an existing enrolment")
@@ -1026,11 +1059,12 @@ def build_parser() -> argparse.ArgumentParser:
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
 
-    legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
+    # Deprecated aliases: added without help= so they stay out of the help listing.
+    legacy_workloads = commands.add_parser("workloads")
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
-    legacy_health = commands.add_parser("health", help=argparse.SUPPRESS)
+    legacy_health = commands.add_parser("health")
     legacy_health.add_argument("--json", action="store_true", dest="command_json")
-    legacy_plan = commands.add_parser("migration-plan", help=argparse.SUPPRESS)
+    legacy_plan = commands.add_parser("migration-plan")
     legacy_plan.add_argument("workload_id")
     legacy_plan.add_argument("--json", action="store_true", dest="command_json")
     return parser
@@ -1099,6 +1133,9 @@ def render_human(result: dict[str, Any], stdout: TextIO, stderr: TextIO, depreca
         print(f"ERROR {error['code']}: {error['message']}", file=stderr)
         print(f"AUTHORITY {error['authority']} RETRY_SAFE {str(error['retrySafe']).lower()}", file=stderr)
         data = result.get("data")
+        if isinstance(data, dict) and data.get("command") in {"smoke.status", "backup.freshness", "alerts"}:
+            # Degraded health reports still carry the full report the operator needs to act on.
+            print(json.dumps(data, indent=2, sort_keys=True), file=stdout)
         if isinstance(data, dict) and str(data.get("command", "")).startswith("workload.move."):
             print(
                 f"MIGRATION_ID {data.get('migrationId') or 'none'} PHASE {data.get('phase', 'unknown')}",
@@ -1136,10 +1173,11 @@ def run(
     json_output = "--json" in argv
     try:
         args = build_parser().parse_args(argv)
-    except CliInvocationError:
+    except CliInvocationError as exc:
+        reason = "".join(character for character in str(exc) if character.isprintable())
         result = _error(
             "invalid-invocation",
-            "The command arguments are invalid.",
+            f"The command arguments are invalid: {reason}",
             "Run argus --help or the selected noun/verb --help.",
             exit_code=EXIT_INVOCATION,
         )
@@ -1152,11 +1190,16 @@ def run(
     try:
         result, deprecation = dispatch(args, repo, command_runner)
     except Exception as exc:
-        evidence_id = "sha256:" + hashlib.sha256(type(exc).__name__.encode("utf-8")).hexdigest()
+        # Frames only: the exception message can carry private payloads.
+        frames = [f"{Path(frame.filename).name}:{frame.lineno} in {frame.name}" for frame in traceback.extract_tb(exc.__traceback__)]
+        print(f"TRACE {type(exc).__name__}", file=stderr)
+        for frame in frames:
+            print(f"TRACE   at {frame}", file=stderr)
+        evidence_id = "sha256:" + hashlib.sha256("\n".join([type(exc).__name__, *frames]).encode("utf-8")).hexdigest()
         result = _error(
             "internal-error",
             "The command failed without a safe typed result.",
-            "Run argus doctor --json and report the command plus repository revision; do not include private payloads.",
+            "Report the evidenceId, the TRACE lines printed on stderr and git rev-parse HEAD; do not include private payloads.",
             exit_code=EXIT_INTERNAL,
             evidence_id=evidence_id,
         )

@@ -12,6 +12,7 @@ import shutil
 import stat
 import re
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -481,7 +482,7 @@ def ghcr_online_check(checks: list[dict[str, Any]], auth: str, fetch: Callable[[
 
 
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
-    command = [str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
+    command = [sys.executable, str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
     if os.geteuid() == 0:
         # Host mode needs root for service and ownership checks, while the
         # deterministic boundary audit intentionally refuses root.  Run only

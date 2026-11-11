@@ -48,7 +48,7 @@ Secret-like lines and token-like key/value pairs are redacted.
 Apply endpoints require exact workload ID confirmation:
 
 ```json
-{"confirmation":"hello-nginx"}
+{"confirmation":"nodens-staging"}
 ```
 
 Restart apply also requires:
