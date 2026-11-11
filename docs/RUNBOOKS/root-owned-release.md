@@ -36,7 +36,7 @@ Anything that writes under the release (for example `__pycache__`) now fails or 
 (`config/*.json`) is changed by a reviewed PR and a new release, EXCEPT the runtime-mutable `config/access.json` and
 `config/privacy.json`: the units that write them (`argus-domain-agent@`, `argus-domain-agent-legacy-rootful`, which have
 `ReadWritePaths=/srv/argus/config`) get `ARGUS_ROOT=/srv/argus` in their drop-in while their code still runs from
-`/opt/argus/current`, so `access.apply` keeps writing the live files. Run `argus m1 sync --apply` and
+`/opt/argus/current`, so `access.apply` keeps writing the live files. Run `argus m1 sync --apply --confirm <digest>` and
 `argus-privacy-set` the same way only against `/srv/argus` (not through `/opt/argus/current`, which is sealed).
 
 Residual risks, not closed by this PR: (a) allowlisted root scripts (`argus m1 sync --apply`, `argus-backup-snapshot`)

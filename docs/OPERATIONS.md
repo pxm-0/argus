@@ -13,7 +13,15 @@ historical evidence.
 - `argus` needs Python 3.14; under an older `python3` it exits `2` with
   `unsupported-python` (run it via `mise exec python@3.14 -- argus ...`).
 - Human mode writes result data to stdout and diagnostics to stderr.
-- `--json` emits one schema-versioned envelope on stdout.
+  `argus status`, `workload list|show`, `estate status|coverage`, `alerts`,
+  `smoke status`, `backup freshness` and `operation list|show` print headed
+  tables or key/value lines (non-printable evidence text is escaped); other
+  commands print `KEY value` lines. A failure prints `ERROR <code>: <message>`,
+  `AUTHORITY`/`RETRY_SAFE` and a `NEXT` action on stderr.
+- `--json` emits one schema-versioned envelope on stdout:
+  `{"ok": true, "schemaVersion": 1, "data": {...}}` or
+  `{"ok": false, "schemaVersion": 1, "error": {"code", "message", "nextAction", "authority", "retrySafe"}}`,
+  sometimes with the partial report in `data`. Scripts should read `--json`; the human layout is not a stable interface.
 - Read-only status and preview commands never mutate.
 - A mutation is allowed only at the final typed `apply` or `rollback` boundary
   (or an `api-session` create) after preview, fresh preconditions, and exact
@@ -24,6 +32,16 @@ historical evidence.
 Exit classes are stable: `0` success, `1` internal/check failure, `2` invalid
 invocation, `3` safe refusal/precondition, `4` unavailable/transient, and `5`
 indeterminate/recovery required.
+
+Health reads (`argus status`, `smoke status`, `backup freshness`, `alerts`)
+use the same classes: `3` means the evidence was read and reports degraded
+health, `4` means the evidence is missing or unreadable, and `0` means healthy.
+The full report is still printed (and in `data` with `--json`) on `3`, so a
+script can tell "broken" from "cannot see" by exit code alone. `argus doctor`
+exits `3` (`doctor-audit-failed`, failed checks in `data.failedChecks`) when a
+deterministic security check fails or the core boundary policy is invalid, `4`
+when the audit or policy cannot be read, and `0` otherwise; on `0`, read its
+`compatibility` and `nextAction`.
 
 ## Dashboard
 
@@ -167,9 +185,11 @@ under `config/` and `workloads/<id>/`, records the ID in
 `config/argus/retired-workloads.json`, generates `docs/RETIRED_<ID>.md` from
 `docs/RETIRED_TEMPLATE.md`, runs `argus check`, and opens a PR with a numbered
 server teardown runbook as a comment. Remaining text references (docs, tests,
-scripts) are listed for manual review. After merge and teardown, run
-`scripts/argus-m1-reconcile-retired-workloads` (preview), then the same with
-`--apply --acknowledge-retired-workload-reconciliation`, on the server.
+scripts) are listed for manual review. After merge and teardown, on the server run `sudo argus m1 sync` (preview),
+then `sudo argus m1 sync --apply --confirm <plan-digest>`, then
+`argus m1 verify`. The legacy `scripts/argus-m1-reconcile-retired-workloads`
+remains the fallback when `m1 sync` refuses with `m1-plan-needs-legacy-path`
+(rows both missing and drifted).
 
 ## Workload moves
 
@@ -189,7 +209,12 @@ eligible-target list, and exact status/recovery commands. The current CLI
 recomputes the bounded preview against fresh configured-source coverage. `apply`
 and `rollback` require exact confirmation but create only a 15-minute inert
 dashboard handoff draft; they have no mutation authority and cannot bypass the
-private operator session.
+private operator session. The draft is written under
+`runtime/argus/migration-drafts/` of the checkout that ran the command, so run
+`apply` and `rollback` in the server checkout (`/srv/argus`) for the dashboard
+to see it; a draft made on a laptop stays on the laptop. Preview, preflight and
+status compute the same read-only view and never write; run them on the server,
+where the durable migration ledger lives, for a current answer.
 
 The private dashboard recomputes the same preview, requires step-up and the
 exact migration phrase, then creates and approves one durable parent. The
@@ -228,12 +253,20 @@ Do not run an old migration script instead of this workflow.
 
 These use the private dashboard API (URL from `argus dashboard url`, or
 `--base-url`) with the same tailnet identity, session, CSRF, Origin and
-bootstrap-token step-up as the dashboard. The token is read only from
-`/dev/tty`; with no terminal the command exits 2. `create` previews, then
+bootstrap-token plus authenticator-code step-up as the dashboard. Secrets are
+read only from `/dev/tty`; with no terminal the command exits 2. Each
+authentication asks for the bootstrap token, then `Authenticator code or
+recovery code` (blank if TOTP is not enrolled): once to open the session and
+again at step-up, so a `create` can ask for two or three token-and-code pairs.
+A code is accepted only once; on a repeat prompt wait for the next 30 s code.
+See `docs/RUNBOOKS/operator-session-diagnosis.md`. `create` previews, then
 requires the typed workload ID (or `--yes-digest <digest>` matching the
 previewed digest; it skips only that typed confirmation, the token and
 authenticator prompts are still required), then steps up, creates, approves and watches to a terminal
-state. Exit: succeeded 0; denied/expired 3; failed/rolled-back 4;
+state. `create`, `watch` and the workload shortcuts wait at most `--timeout
+SECONDS` (default 600) for a terminal state; past it, or after repeated poll
+failures, they exit 5 because the outcome is unobserved, not failed. Exit:
+succeeded 0; denied/expired 3; failed/rolled-back 4;
 indeterminate or unobservable 5. The server binds approval and cancel to the
 originating session, so there are no standalone `approve`/`cancel` verbs.
 `--base-url` is accepted only for a `*.ts.net` https URL or loopback http.
