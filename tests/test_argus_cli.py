@@ -19,6 +19,8 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_cli import run  # noqa: E402
 from argus_common import APPROVED_OPERATOR_LINKS  # noqa: E402
+from argus_cli import OPERATIONS_SCHEMA_VERSION  # noqa: E402
+from argus_observations import REPOSITORY_VERSION  # noqa: E402
 from argus_operations import OperationLedger, digest  # noqa: E402
 
 
@@ -747,6 +749,41 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(data["discoveryRepositorySchema"]["supported"], data["discoveryRepositorySchema"]["deployed"])
         self.assertEqual({"runId": "refresh-" + "0" * 36, "state": "completed", "finishedAt": "2026-11-10T00:00:00Z"}, data["lastCompletedCollection"])
         self.assertEqual("compatible", data["compatibility"])
+
+    def _doctor_with_schemas(self, ledger_version: int, discovery_version: int) -> dict:
+        from argus_observations import ObservationRepository
+
+        def runner(command, _repo):
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "a" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        runtime = self.root / "runtime" / "argus"
+        (runtime / "m5").mkdir(parents=True)
+        OperationLedger(runtime / "m5" / "operations.sqlite3")
+        ObservationRepository(runtime / "observations.sqlite3").close()
+        connection = sqlite3.connect(runtime / "m5" / "operations.sqlite3")
+        connection.execute(f"PRAGMA user_version={int(ledger_version)}")
+        connection.close()
+        connection = sqlite3.connect(runtime / "observations.sqlite3")
+        with connection:
+            connection.execute("UPDATE metadata SET value=? WHERE key='repository_version'", (str(discovery_version),))
+        connection.close()
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(0, code)
+        return json.loads(output)["data"]
+
+    def test_doctor_reports_incompatible_discovery_schema(self) -> None:
+        data = self._doctor_with_schemas(OPERATIONS_SCHEMA_VERSION, REPOSITORY_VERSION + 1)
+        self.assertEqual(REPOSITORY_VERSION + 1, data["discoveryRepositorySchema"]["deployed"])
+        self.assertEqual("incompatible", data["compatibility"])
+        self.assertIn("Reconcile the deployed and repository revisions", data["nextAction"])
+
+    def test_doctor_reports_incompatible_ledger_schema(self) -> None:
+        data = self._doctor_with_schemas(OPERATIONS_SCHEMA_VERSION + 1, REPOSITORY_VERSION)
+        self.assertEqual(OPERATIONS_SCHEMA_VERSION + 1, data["operationLedgerSchema"]["deployed"])
+        self.assertEqual("incompatible", data["compatibility"])
+        self.assertIn("Reconcile the deployed and repository revisions", data["nextAction"])
 
     def test_doctor_audit_failure_names_the_failing_checks(self) -> None:
         checks = [

@@ -910,9 +910,13 @@ def deployed_discovery_version(repo: Path) -> int | str:
     if not path.is_file():
         return "unavailable"
     try:
-        with ObservationRepository(path, read_only=True) as repository:
-            return repository.version
-    except (ObservationError, OSError, sqlite3.Error):
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+        try:
+            row = connection.execute("SELECT value FROM metadata WHERE key='repository_version'").fetchone()
+        finally:
+            connection.close()
+        return int(row[0])
+    except (sqlite3.Error, OSError, TypeError, ValueError):
         return "unavailable"
 
 
