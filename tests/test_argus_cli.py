@@ -696,49 +696,71 @@ class StableCliContractTests(unittest.TestCase):
             self.assertIn(f"`{legacy}` → `{replacement}`", operations)
 
     def test_every_public_leaf_help_has_complete_contract(self) -> None:
-        commands = (
-            ["dashboard", "url"],
-            ["estate", "status"],
-            ["estate", "refresh"],
-            ["estate", "coverage"],
-            ["workload", "list"],
-            ["workload", "show"],
-            ["workload", "move", "preview"],
-            ["workload", "move", "preflight"],
-            ["workload", "move", "apply"],
-            ["workload", "move", "status"],
-            ["workload", "move", "rollback"],
-            ["operation", "show"],
-            ["op", "preview"],
-            ["op", "create"],
-            ["op", "show"],
-            ["op", "watch"],
-            ["workload", "deploy"],
-            ["workload", "start"],
-            ["workload", "stop"],
-            ["workload", "restart"],
-            ["doctor"],
-            ["check"],
-        )
-        for command in commands:
+        import argparse
+        import shlex
+
+        from argus_cli import build_parser
+
+        def leaves(parser: argparse.ArgumentParser, path: tuple[str, ...]):
+            actions = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+            if not actions:
+                yield path, parser
+                return
+            listed = {choice.dest for choice in actions[0]._choices_actions}
+            for name, child in actions[0].choices.items():
+                if name in listed:
+                    yield from leaves(child, (*path, name))
+
+        registry = {item["id"] for item in json.loads((ROOT / "config" / "workloads.json").read_text())["workloads"]}
+        found = dict(leaves(build_parser(), ()))
+        self.assertGreaterEqual(len(found), 33)
+        for expected in (("workload", "retire"), ("keys", "totp-enroll"), ("release", "pin"), ("promote",), ("m1", "verify"), ("smoke", "status"), ("backup", "freshness"), ("alerts",)):
+            self.assertIn(expected, found)
+        for command, parser in found.items():
             with self.subTest(command=command):
-                result = subprocess.run(
-                    [str(ROOT / "scripts" / "argus"), *command, "--help"],
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(0, result.returncode, result.stderr)
-                for marker in (
-                    "Privilege:",
-                    "Prerequisites:",
-                    "Side effects:",
-                    "Source:",
-                    "Output:",
-                    "Example:",
-                    "Recovery:",
-                ):
-                    self.assertIn(marker, result.stdout)
+                text = parser.format_help()
+                for marker in ("Privilege:", "Prerequisites:", "Side effects:", "Source:", "Output:", "Example:", "Recovery:"):
+                    self.assertIn(marker, text)
+                example = text.split("Example: ", 1)[1].split("\n", 1)[0]
+                for invocation in example.split(", then "):
+                    argv = shlex.split(invocation.removeprefix("sudo "))
+                    self.assertEqual("argus", argv[0])
+                    parsed = build_parser().parse_args(argv[1:])
+                    for key in ("workload_id", "staging_id", "production_id"):
+                        if hasattr(parsed, key):
+                            self.assertIn(getattr(parsed, key), registry)
+
+    def test_top_level_help_hides_aliases_and_documents_exit_classes(self) -> None:
+        result = subprocess.run([str(ROOT / "scripts" / "argus"), "--help"], text=True, capture_output=True, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("SUPPRESS", result.stdout)
+        for alias in ("workloads", "health", "migration-plan"):
+            self.assertNotRegex(result.stdout, rf"(?m)^\s+{alias}\b")
+        flat = " ".join(result.stdout.split())
+        for text in ("Exit classes: 0 success", "2 invalid invocation", "3 safe refusal", "degraded health report", "4 unavailable", "5 indeterminate"):
+            self.assertIn(text, flat)
+
+    def test_help_contracts_state_true_privilege_and_source(self) -> None:
+        from argus_cli import build_parser
+
+        def help_for(*argv: str) -> str:
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout), self.assertRaises(SystemExit):
+                build_parser().parse_args([*argv, "--help"])
+            return " ".join(stdout.getvalue().split())
+
+        for action in ("apply", "rollback"):
+            text = help_for("workload", "move", action, "x")
+            self.assertNotIn("server mutation", text)
+            self.assertIn("local draft", text)
+        for action in ("preflight", "status"):
+            self.assertIn("Privilege: server read-only", help_for("workload", "move", action, "x"))
+        self.assertNotIn("local evidence only", help_for("op", "show", "x"))
+        self.assertNotIn("local evidence only", help_for("release", "pin", "x", "--image", "y"))
+        create = help_for("op", "create", "x", "y")
+        self.assertIn("token", create.split("--yes-digest", 1)[1])
+        self.assertNotIn("non-interactive", create)
+        self.assertIn("argus operation show", help_for("op", "watch", "x"))
 
 
 class OperatorLinkTransitionTests(unittest.TestCase):

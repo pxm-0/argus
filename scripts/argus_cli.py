@@ -888,10 +888,11 @@ def description(
     output: str,
     example: str,
     recovery: str,
+    source: str = "reviewed Argus configuration and local evidence only",
 ) -> str:
     return (
         f"{purpose}\n\nPrivilege: {privilege}.\nPrerequisites: {prerequisites}.\n"
-        f"Side effects: {side_effects}.\nSource: reviewed Argus configuration and local evidence only.\n"
+        f"Side effects: {side_effects}.\nSource: {source}.\n"
         f"Output: {output}.\nExample: {example}\nRecovery: {recovery}."
     )
 
@@ -908,9 +909,17 @@ def leaf(parent: argparse._SubParsersAction[Any], name: str, *, help_text: str, 
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = ArgusArgumentParser(prog="argus", description="Private deterministic Argus operator commands.")
+    parser = ArgusArgumentParser(
+        prog="argus",
+        description="Private deterministic Argus operator commands.",
+        epilog=(
+            "Exit classes: 0 success; 1 internal or check failure; 2 invalid invocation; "
+            "3 safe refusal, failed precondition, or degraded health report; "
+            "4 unavailable or transient (evidence missing or unreadable); 5 indeterminate, recovery required."
+        ),
+    )
     parser.add_argument("--json", action="store_true", help="emit canonical JSON")
-    commands = parser.add_subparsers(dest="command", required=True, parser_class=ArgusArgumentParser)
+    commands = parser.add_subparsers(dest="command", required=True, metavar="<command>", parser_class=ArgusArgumentParser)
 
     dashboard = commands.add_parser("dashboard", help="private dashboard information")
     dashboard_sub = dashboard.add_subparsers(dest="dashboard_command", required=True, parser_class=ArgusArgumentParser)
@@ -960,14 +969,14 @@ def build_parser() -> argparse.ArgumentParser:
         workload_sub,
         "show",
         help_text="show one canonical workload",
-        contract=description("Show one canonical workload.", "unprivileged, read-only", "exact workload ID", "none", "sanitized identity and capability summary", "argus workload show nodens --json", "run argus workload list"),
+        contract=description("Show one canonical workload.", "unprivileged, read-only", "exact workload ID", "none", "sanitized identity and capability summary", "argus workload show nodens-staging --json", "run argus workload list"),
     )
     show.add_argument("workload_id")
     retire_parser = leaf(
         workload_sub,
         "retire",
         help_text="generate a reviewed PR that retires a workload",
-        contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire hello-nginx --dry-run --json", "inspect the printed plan; fix and rerun"),
+        contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire nodens-staging --dry-run --json", "inspect the printed plan; fix and rerun", "reviewed Argus configuration and tracked files in this checkout"),
     )
     retire_parser.add_argument("workload_id")
     retire_parser.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
@@ -975,7 +984,12 @@ def build_parser() -> argparse.ArgumentParser:
     move = workload_sub.add_parser("move", help="preview and control reviewed workload moves")
     move_sub = move.add_subparsers(dest="move_command", required=True, parser_class=ArgusArgumentParser)
     for action in ("preview", "preflight", "status", "apply", "rollback"):
-        privilege = "server mutation with exact confirmation" if action in {"apply", "rollback"} else "unprivileged, read-only"
+        drafts = action in {"apply", "rollback"}
+        privilege = (
+            "local draft write only with exact confirmation; authority is granted only in the private dashboard"
+            if drafts
+            else "unprivileged, read-only" if action == "preview" else "server read-only"
+        )
         item = leaf(
             move_sub,
             action,
@@ -984,12 +998,13 @@ def build_parser() -> argparse.ArgumentParser:
                 f"{action.title()} a typed workload move; unavailable kernels fail closed.",
                 privilege,
                 "exact workload ID, fresh coverage, and approved migration kernel",
-                "none until the final reviewed apply or rollback boundary",
+                "writes an inert local handoff draft for the private dashboard; no server change" if drafts else "none",
                 "authority, phase, blockers, retry safety, and recovery",
-                f"argus workload move {action} nodens"
-                + (" --confirm nodens" if action in {"apply", "rollback"} else "")
+                f"argus workload move {action} nodens-staging"
+                + (" --confirm nodens-staging" if drafts else "")
                 + " --json",
                 "run the matching status and preview commands; never use milestone scripts as a substitute",
+                "reviewed configuration, local evidence, and the durable migration ledger (read-only)",
             ),
         )
         item.add_argument("workload_id")
@@ -1011,6 +1026,7 @@ def build_parser() -> argparse.ArgumentParser:
                 "state, authority, retry safety, and typed recovery",
                 f"argus operation {action} 00000000-0000-0000-0000-000000000000 --json",
                 "inspect operation state and follow only its typed runbook",
+                "the durable operation ledger, opened read-only",
             ),
         )
         item.add_argument("operation_id")
@@ -1022,7 +1038,7 @@ def build_parser() -> argparse.ArgumentParser:
         keys_sub,
         "totp-enroll",
         help_text="enrol an operator authenticator (TOTP) and recovery codes",
-        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies"),
+        contract=description("Enrol or rotate one operator's TOTP second factor.", "root on the server, interactive terminal only", "enabled owner in /etc/argus/operators.json and an authenticator app on a device other than the one holding the bootstrap token", "writes /etc/argus/operator-totp.json (0600) after one valid code; shows the otpauth URI and 10 single-use recovery codes once on the terminal", "operator login and enrolled flag; secrets are never printed to stdout", "sudo argus keys totp-enroll --operator owner@example.com", "rerun with --rotate to replace a lost secret; nothing is written unless a code verifies", "operator records under /etc/argus on the server"),
     )
     enroll_parser.add_argument("--operator", default="", help="tailnet login; optional when exactly one owner is enabled")
     enroll_parser.add_argument("--rotate", action="store_true", help="replace an existing enrolment")
@@ -1043,11 +1059,12 @@ def build_parser() -> argparse.ArgumentParser:
     argus_cli_m1.register(commands, leaf, description, ArgusArgumentParser)
     argus_cli_alerts.register(commands, leaf, description, ArgusArgumentParser)
 
-    legacy_workloads = commands.add_parser("workloads", help=argparse.SUPPRESS)
+    # Deprecated aliases: added without help= so they stay out of the help listing.
+    legacy_workloads = commands.add_parser("workloads")
     legacy_workloads.add_argument("--json", action="store_true", dest="command_json")
-    legacy_health = commands.add_parser("health", help=argparse.SUPPRESS)
+    legacy_health = commands.add_parser("health")
     legacy_health.add_argument("--json", action="store_true", dest="command_json")
-    legacy_plan = commands.add_parser("migration-plan", help=argparse.SUPPRESS)
+    legacy_plan = commands.add_parser("migration-plan")
     legacy_plan.add_argument("workload_id")
     legacy_plan.add_argument("--json", action="store_true", dest="command_json")
     return parser

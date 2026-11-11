@@ -93,13 +93,22 @@ class _Flow:
             response = send()
         except ApiUnavailable as exc:
             code = self.cli.EXIT_INDETERMINATE if indeterminate else self.cli.EXIT_UNAVAILABLE
-            raise self.stop(f"op-{stage}-unavailable", _clean(exc), "Check tailnet connectivity, then run argus op show on any created operation.", code) from None
+            hint = (
+                "Check tailnet connectivity, then find the operation with argus operation show on the server before retrying."
+                if stage in {"create", "approve"}
+                else "Check tailnet connectivity and retry; nothing was created."
+            )
+            raise self.stop(f"op-{stage}-unavailable", _clean(exc), hint, code) from None
         if response.status in ok:
             return response.body
         server = _clean(response.body.get("error", "")) if isinstance(response.body.get("error", ""), str) else ""
         transient = response.status >= 500
         code = (self.cli.EXIT_INDETERMINATE if indeterminate else self.cli.EXIT_UNAVAILABLE) if transient else self.cli.EXIT_REFUSAL
-        raise self.stop(f"op-{stage}-refused", f"The {stage} step was refused (HTTP {response.status}){': ' + server if server else ''}.", "Resolve the named condition and retry from a fresh preview.", code, data={"httpStatus": response.status, "stage": stage})
+        if stage == "show":
+            hint = "Check the operation ID." if response.status == 404 else "Resolve the named condition and retry."
+        else:
+            hint = "Resolve the named condition and retry from a fresh preview."
+        raise self.stop(f"op-{stage}-refused", f"The {stage} step was refused (HTTP {response.status}){': ' + server if server else ''}.", hint, code, data={"httpStatus": response.status, "stage": stage})
 
     def secret(self, purpose: str) -> str:
         assert self.tty is not None
@@ -199,7 +208,7 @@ class _Flow:
         try:
             return self.client.approve(operation_id, confirmation)
         except ApiUnavailable as exc:
-            raise self.stop("op-approve-unavailable", _clean(exc), f"Run argus op show {operation_id} before retrying.", self.cli.EXIT_INDETERMINATE) from None
+            raise self.stop("op-approve-unavailable", _clean(exc), f"Run argus op show {operation_id} (or argus operation show {operation_id} on the server) before retrying.", self.cli.EXIT_INDETERMINATE) from None
 
     def watch(self, operation_id: str) -> dict[str, Any]:
         assert self.client is not None and self.tty is not None
@@ -221,7 +230,7 @@ class _Flow:
             else:
                 failures += 1
             if failures >= POLL_FAILURES or time.monotonic() >= deadline:
-                raise self.stop("op-watch-lost", "The operation outcome could not be observed and is indeterminate.", f"Run argus op show {operation_id}.", self.cli.EXIT_INDETERMINATE)
+                raise self.stop("op-watch-lost", "The operation outcome could not be observed and is indeterminate.", f"Run argus op show {operation_id} (or argus operation show {operation_id} on the server).", self.cli.EXIT_INDETERMINATE)
             time.sleep(POLL_SECONDS)
 
     def outcome(self, command: str, operation: dict[str, Any]) -> dict[str, Any]:
@@ -232,7 +241,7 @@ class _Flow:
         if code == 0:
             return self.cli._success(command, **data)
         summary = _clean(operation.get("redacted_summary", "")) or "no summary"
-        return self.cli._error(f"operation-{state or 'unknown'}", f"Operation {operation_id} ended {state or 'in an unknown state'}: {summary}", f"Run argus op show {operation_id}.", exit_code=code, authority="operator-api", data={"command": command, **data})
+        return self.cli._error(f"operation-{state or 'unknown'}", f"Operation {operation_id} ended {state or 'in an unknown state'}: {summary}", f"Run argus op show {operation_id} (or argus operation show {operation_id} on the server).", exit_code=code, authority="operator-api", data={"command": command, **data})
 
     def operation_summary(self, operation_id: str) -> dict[str, Any]:
         assert self.client is not None
@@ -302,13 +311,14 @@ def register(commands: Any, workload_sub: Any, leaf: Callable[..., Any], descrip
             side_effects,
             "operation ID, state, and exit class 0/3/4/5",
             example,
-            "run argus op show <operation-id>; stop on a refusal rather than retrying blindly",
+            "run argus op show <operation-id>, or argus operation show <operation-id> on the server without the token; stop on a refusal rather than retrying blindly",
+            "the private dashboard operation API over the tailnet",
         )
 
     def common(item: Any, *, target: bool, confirm: bool, timeout: bool) -> None:
         item.add_argument("--base-url", default="", help="override the URL from argus dashboard url")
         if confirm:
-            item.add_argument("--yes-digest", default="", help="non-interactive confirmation: the previewed digest")
+            item.add_argument("--yes-digest", default="", help="the previewed digest; skips only the typed workload-ID confirmation (token and authenticator prompts on /dev/tty are still required)")
         if timeout:
             item.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT, help="seconds to wait for a terminal state")
         if target:
@@ -317,7 +327,7 @@ def register(commands: Any, workload_sub: Any, leaf: Callable[..., Any], descrip
     op = commands.add_parser("op", help="preview, create and watch operations through the API")
     sub = op.add_subparsers(dest="op_command", required=True, parser_class=type(op))
     for verb, effects in (("preview", "none"), ("create", "creates and approves one audited operation after confirmation")):
-        item = leaf(sub, verb, help_text=f"{verb} a typed workload operation", contract=contract(f"{verb.title()} a typed workload operation.", effects, f"argus op {verb} nodens workload.deploy --revision sha256:abc"))
+        item = leaf(sub, verb, help_text=f"{verb} a typed workload operation", contract=contract(f"{verb.title()} a typed workload operation.", effects, f"argus op {verb} nodens-staging workload.deploy --revision sha256:abc"))
         item.add_argument("workload_id")
         item.add_argument("operation_type", help="e.g. workload.deploy (or the short form deploy)")
         common(item, target=True, confirm=verb == "create", timeout=verb == "create")
@@ -326,6 +336,6 @@ def register(commands: Any, workload_sub: Any, leaf: Callable[..., Any], descrip
         item.add_argument("operation_id")
         common(item, target=False, confirm=confirm, timeout=timeout)
     for verb in SHORTCUTS:
-        item = leaf(workload_sub, verb, help_text=f"{verb} a workload through the operation API", contract=contract(f"{verb.title()} one workload: preview, confirm, step-up, approve, watch.", "creates and approves one audited operation after confirmation", f"argus workload {verb} nodens" + (" --revision sha256:abc" if verb == "deploy" else "")))
+        item = leaf(workload_sub, verb, help_text=f"{verb} a workload through the operation API", contract=contract(f"{verb.title()} one workload: preview, confirm, step-up, approve, watch.", "creates and approves one audited operation after confirmation", f"argus workload {verb} nodens-staging" + (" --revision sha256:abc" if verb == "deploy" else "")))
         item.add_argument("workload_id")
         common(item, target=verb == "deploy", confirm=True, timeout=True)

@@ -14,7 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import argus_cli_op  # noqa: E402
-from argus_api_client import ApiClient, ApiUnavailable, normalize_base_url  # noqa: E402
+from argus_api_client import ApiClient, ApiResponse, ApiUnavailable, normalize_base_url  # noqa: E402
 from argus_cli import run  # noqa: E402
 
 TOKEN = "BOOTSTRAP-TOKEN-DO-NOT-LEAK-0123456789"
@@ -266,6 +266,23 @@ class OpCommandTests(unittest.TestCase):
         self.assertEqual(3, code)
         self.assertEqual("op-step-up-rejected", json.loads(out)["error"]["code"])
         self.assertNotIn("/api/workloads/demo/operations", self.paths())
+
+    def test_recovery_hints_match_the_failed_stage(self) -> None:
+        with mock.patch.object(ApiClient, "operation", return_value=ApiResponse(404, {"error": "not found"})):
+            code, out, _ = self.invoke(["op", "show", OP_ID], FakeTty())
+        self.assertEqual((3, "op-show-refused"), (code, json.loads(out)["error"]["code"]))
+        self.assertEqual("Check the operation ID.", json.loads(out)["error"]["nextAction"])
+
+        with mock.patch.object(ApiClient, "preview", side_effect=ApiUnavailable("unreachable")):
+            code, out, _ = self.invoke(["op", "preview", "demo", "deploy"], FakeTty())
+        hint = json.loads(out)["error"]["nextAction"]
+        self.assertEqual(4, code)
+        self.assertIn("nothing was created", hint)
+        self.assertNotIn("op show", hint)
+
+        self.server.states = ["running"]
+        code, out, _ = self.invoke(["op", "watch", OP_ID, "--timeout", "0"], FakeTty())
+        self.assertIn(f"argus operation show {OP_ID} on the server", json.loads(out)["error"]["nextAction"])
 
     def test_show(self) -> None:
         code, out, _ = self.invoke(["op", "show", OP_ID], FakeTty())

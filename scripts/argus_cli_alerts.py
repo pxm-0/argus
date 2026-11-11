@@ -35,6 +35,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "latest result, age, staleness against 26h, and the last N history rows with failed check names; exit 3 when the latest run failed or is stale, 4 when no evidence exists",
             "argus smoke status --last 5 --json",
             "run sudo systemctl start argus-smoke.service on the server to create evidence",
+            "runtime/smoke evidence written by argus-smoke",
         ),
     )
     status.add_argument("--last", type=int, default=10, help=f"history rows to show (1-{MAX_LAST}, default 10)")
@@ -57,6 +58,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
                 output,
                 f"argus backup {verb} --json",
                 "see docs/MONITORING.md for where each source is written",
+                "snapshot-last.json, backup-status.json and the snapshot pull directory on the server",
             ),
         )
 
@@ -72,6 +74,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "open alerts with severity, since, detail, ack state, the state file age and stale flag; exit 3 when a page alert is open or the state is stale, 4 when it is missing or unreadable",
             "argus alerts --json",
             "sudo systemctl enable --now argus-alert.timer, then re-run",
+            "runtime/alerts/state.json written by argus-alert",
         ),
     )
 

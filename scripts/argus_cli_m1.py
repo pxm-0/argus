@@ -166,6 +166,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "per-store add/remove/drift ids and the plan digest",
             "argus m1 sync, then argus m1 sync --apply --confirm sha256:<digest>",
             "legacy scripts/argus-m1-reconcile-* scripts remain the fallback",
+            "reviewed configuration and private M1 state on the server",
         ),
     )
     sync.add_argument("--apply", action="store_true", help="apply the plan")
@@ -182,6 +183,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "verification summary without workload details",
             "argus m1 verify --json",
             "run argus m1 sync to see drift",
+            "private M1 state on the server",
         ),
     )
 

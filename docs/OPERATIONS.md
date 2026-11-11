@@ -115,7 +115,7 @@ they do not expose workload source, secrets, or raw runtime observations.
 
 ```bash
 argus workload list
-argus workload show nodens --json
+argus workload show nodens-staging --json
 ```
 
 ### Reviewed onboarding and admission drift
@@ -173,11 +173,11 @@ scripts) are listed for manual review. After merge and teardown, run
 
 `server-read-only` — `argus workload move preflight <id>`
 
-`server-mutation` — `argus workload move apply <id>`
+`local-write` — `argus workload move apply <id>`
 
 `server-read-only` — `argus workload move status <id>`
 
-`server-mutation` — `argus workload move rollback <id>`
+`local-write` — `argus workload move rollback <id>`
 
 Preview and status always name current authority, phase, blockers, and retry
 safety, plus the migration ID (or explicit `null` before creation), derived
@@ -197,9 +197,9 @@ automatically. Generic `production.promote` and historical direct-cutover
 scripts are deliberately refused.
 
 ```bash
-argus workload move preview nodens --json
-argus workload move preflight nodens --json
-argus workload move status nodens --json
+argus workload move preview nodens-staging --json
+argus workload move preflight nodens-staging --json
+argus workload move status nodens-staging --json
 ```
 
 Do not run an old migration script instead of this workflow.
@@ -227,15 +227,19 @@ These use the private dashboard API (URL from `argus dashboard url`, or
 bootstrap-token step-up as the dashboard. The token is read only from
 `/dev/tty`; with no terminal the command exits 2. `create` previews, then
 requires the typed workload ID (or `--yes-digest <digest>` matching the
-previewed digest), then steps up, creates, approves and watches to a terminal
+previewed digest; it skips only that typed confirmation, the token and
+authenticator prompts are still required), then steps up, creates, approves and watches to a terminal
 state. Exit: succeeded 0; denied/expired 3; failed/rolled-back 4;
 indeterminate or unobservable 5. The server binds approval and cancel to the
 originating session, so there are no standalone `approve`/`cancel` verbs.
 `--base-url` is accepted only for a `*.ts.net` https URL or loopback http.
+`op show` and `op watch` also need the token; on the server,
+`argus operation show <operation-id>` reads the same operation from the
+ledger without it.
 
 ```bash
-argus op preview nodens workload.deploy --revision sha256:... --json
-argus workload deploy nodens --revision sha256:...
+argus op preview nodens-staging workload.deploy --revision sha256:... --json
+argus workload deploy nodens-staging --revision sha256:...
 ```
 
 ## M1 state sync
