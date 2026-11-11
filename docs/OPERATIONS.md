@@ -251,12 +251,20 @@ Do not run an old migration script instead of this workflow.
 
 These use the private dashboard API (URL from `argus dashboard url`, or
 `--base-url`) with the same tailnet identity, session, CSRF, Origin and
-bootstrap-token step-up as the dashboard. The token is read only from
-`/dev/tty`; with no terminal the command exits 2. `create` previews, then
+bootstrap-token plus authenticator-code step-up as the dashboard. Secrets are
+read only from `/dev/tty`; with no terminal the command exits 2. Each
+authentication asks for the bootstrap token, then `Authenticator code or
+recovery code` (blank if TOTP is not enrolled): once to open the session and
+again at step-up, so a `create` can ask for two or three token-and-code pairs.
+A code is accepted only once; on a repeat prompt wait for the next 30 s code.
+See `docs/RUNBOOKS/operator-session-diagnosis.md`. `create` previews, then
 requires the typed workload ID (or `--yes-digest <digest>` matching the
 previewed digest; it skips only that typed confirmation, the token and
 authenticator prompts are still required), then steps up, creates, approves and watches to a terminal
-state. Exit: succeeded 0; denied/expired 3; failed/rolled-back 4;
+state. `create`, `watch` and the workload shortcuts wait at most `--timeout
+SECONDS` (default 600) for a terminal state; past it, or after repeated poll
+failures, they exit 5 because the outcome is unobserved, not failed. Exit:
+succeeded 0; denied/expired 3; failed/rolled-back 4;
 indeterminate or unobservable 5. The server binds approval and cancel to the
 originating session, so there are no standalone `approve`/`cancel` verbs.
 `--base-url` is accepted only for a `*.ts.net` https URL or loopback http.
