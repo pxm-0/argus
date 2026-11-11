@@ -1,6 +1,6 @@
 // Stages (staging vs production), global Activity, active-operation banner, Promote/Rollback.
 // Concatenated into app.js by generate_dashboard.py; relies on state, escapeHtml, apiPost, ensureStepUp,
-// pollOperation, pollMigration, showCommandResult, operationStateTone, operationTime, composePinDigest.
+// pollOperation, pollMigration, showCommandResult, operationStateTone, operationTime, composePinDigest, csrfToken.
 const TERMINAL_STATES = ["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"];
 const shortImage = (digest) => (digest ? digest.slice(0, 19) : "none");
 let bannerTimer = null;
@@ -18,14 +18,14 @@ function stageFamilies(workloads) {
   });
 }
 
-function stageCell(item) {
-  if (!item) return '<td colspan="1"><span class="history-empty">Not registered</span></td>';
+function stageCell(item, label) {
+  if (!item) return `<td data-label="${label}"><span class="history-empty">Not registered</span></td>`;
   const runtime = item.runtime || {};
   const pinned = runtime.pinnedImage || composePinDigest(runtime);
   const observed = runtime.observedImage || "";
   const drift = !pinned ? "no pin" : !observed ? "unobserved" : pinned === observed ? "in sync" : "drift";
   const tone = drift === "in sync" ? "good" : drift === "drift" ? "bad" : "warn";
-  return `<td>
+  return `<td data-label="${label}">
     <div>Pinned <code title="${escapeHtml(pinned)}">${escapeHtml(shortImage(pinned))}</code></div>
     <div>Running <code title="${escapeHtml(observed)}">${escapeHtml(shortImage(observed))}</code>
       <span class="history-state ${tone}">${escapeHtml(drift)}</span></div>
@@ -46,16 +46,23 @@ function renderStages() {
     <thead><tr><th scope="col">Workload</th><th scope="col">Staging</th><th scope="col">Production</th><th scope="col">Actions</th></tr></thead>
     <tbody>${families.map(({ name, staging, production }) => {
       const outOfSync = pinOf(staging) !== pinOf(production);
+      const reasonId = `stage-reason-${escapeHtml(name)}`;
+      const blocked = !csrfToken ? "Sign in to promote or roll back."
+        : !pinOf(staging) ? "No pinned image to promote or roll back."
+        : "";
+      const rollbackBlocked = blocked || (!pinOf(production) ? "No pinned production image to roll back." : "");
+      const gate = (reason) => (reason ? `disabled aria-describedby="${reasonId}"` : "");
       return `<tr>
         <th scope="row">${escapeHtml(name)} ${outOfSync ? '<span class="history-state warn">out of sync</span>' : ""}</th>
-        ${stageCell(staging)}${stageCell(production)}
-        <td>
+        ${stageCell(staging, "Staging")}${stageCell(production, "Production")}
+        <td data-label="Actions">
           <label class="sr-only" for="stage-confirm-${escapeHtml(name)}">Confirmation phrase for ${escapeHtml(name)}</label>
-          <input id="stage-confirm-${escapeHtml(name)}" data-stage-confirm="${escapeHtml(name)}" autocomplete="off" placeholder="confirmation phrase">
+          <input id="stage-confirm-${escapeHtml(name)}" data-stage-confirm="${escapeHtml(name)}" autocomplete="off" placeholder="confirmation phrase" ${blocked ? "disabled" : ""}>
           <div class="command-actions">
-            <button type="button" data-stage-action="promote" data-workload="${escapeHtml(staging.id)}" data-stage="${escapeHtml(name)}">Promote</button>
-            ${production ? `<button type="button" data-stage-action="rollback" data-workload="${escapeHtml(production.id)}" data-stage="${escapeHtml(name)}">Rollback</button>` : ""}
+            <button type="button" data-stage-action="promote" data-workload="${escapeHtml(staging.id)}" data-stage="${escapeHtml(name)}" ${gate(blocked)}>Promote</button>
+            ${production ? `<button type="button" data-stage-action="rollback" data-workload="${escapeHtml(production.id)}" data-stage="${escapeHtml(name)}" ${gate(rollbackBlocked)}>Rollback</button>` : ""}
           </div>
+          ${blocked || (production && rollbackBlocked) ? `<p class="operation-blockers" id="${reasonId}">${escapeHtml(blocked || rollbackBlocked)}</p>` : ""}
         </td></tr>`;
     }).join("")}</tbody></table>`;
 }

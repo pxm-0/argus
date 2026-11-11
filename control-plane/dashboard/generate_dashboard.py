@@ -66,7 +66,7 @@ def render_html() -> str:
         <p id="state-age" class="state-age"><span class="state-badge info">Loading</span><span>Loading dashboard state</span></p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
-        <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
+        <input id="admin-token" type="password" autocomplete="off" aria-label="Bootstrap credential" placeholder="bootstrap credential" hidden>
         <input id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" hidden>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
         <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
@@ -101,7 +101,7 @@ def render_html() -> str:
           <div><p class="eyebrow">Evidence gate</p><h2 id="evidence-state-title">Estate completeness</h2></div>
           <span id="evidence-state-label" class="state-badge info">Loading</span>
         </div>
-        <div id="evidence-state-body">Loading estate evidence.</div>
+        <div id="evidence-state-body" class="evidence-state-body">Loading estate evidence.</div>
       </section>
       <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
@@ -338,6 +338,7 @@ function setOperatorSessionState(nextState, { reason = "", session = null } = {}
     operatorIdentity = "";
     setAdmin(false);
   }
+  if (state) renderStages();
 }
 
 function statusClass(value) {
@@ -608,14 +609,15 @@ function setMonitor(open) {
   }
 }
 
+// Actions follow prototypes/states.json; loading has none ("No action yet").
 const EVIDENCE_PRESENTATIONS = Object.freeze({
-  loading: { label: "Loading", tone: "info", headline: "Loading estate evidence", detail: "Waiting for the private evidence summary.", action: "Review coverage" },
-  empty: { label: "Empty", tone: "info", headline: "No estate evidence configured", detail: "The dashboard has no configured observation repository to reconcile.", action: "Review coverage" },
-  error: { label: "Error", tone: "bad", headline: "Estate evidence unavailable", detail: "The private evidence summary could not be loaded. No action is authorized.", action: "Review coverage" },
+  loading: { label: "Loading", tone: "info", headline: "Loading estate evidence", detail: "Waiting for the private evidence summary.", action: null },
+  empty: { label: "Empty", tone: "info", headline: "No estate evidence configured", detail: "The dashboard has no configured observation repository to reconcile.", action: "Open coverage" },
+  error: { label: "Error", tone: "bad", headline: "Estate evidence unavailable", detail: "The private evidence summary could not be loaded. No action is authorized.", action: "Retry failed sources", refresh: true },
   partial: { label: "Partial", tone: "warn", headline: "Estate evidence is incomplete", detail: "Some sources or workload identities still need evidence before review can finish.", action: "Review coverage" },
-  stale: { label: "Stale", tone: "warn", headline: "Estate evidence is stale", detail: "One or more source observations are outside the freshness window.", action: "Review coverage" },
-  conflict: { label: "Conflict", tone: "bad", headline: "Estate identity conflict", detail: "The same workload evidence maps to incompatible trust-domain identities.", action: "Review coverage" },
-  complete: { label: "Complete", tone: "good", headline: "Estate evidence is complete", detail: "All reconciled workload identities are known and the configured sources are fresh.", action: "Review coverage" }
+  stale: { label: "Stale", tone: "warn", headline: "Estate evidence is stale", detail: "One or more source observations are outside the freshness window.", action: "Refresh estate", refresh: true },
+  conflict: { label: "Conflict", tone: "bad", headline: "Estate identity conflict", detail: "The same workload evidence maps to incompatible trust-domain identities.", action: "Inspect evidence" },
+  complete: { label: "Complete", tone: "good", headline: "Estate evidence is complete", detail: "All reconciled workload identities are known and the configured sources are fresh.", action: "Open workload", href: "#workloads-heading" }
 });
 
 function safeEvidenceToken(value) {
@@ -637,7 +639,7 @@ function boundedCount(value) {
 }
 
 function reconciliationState(reconciliation) {
-  if (!reconciliation) return "loading";
+  if (!reconciliation || reconciliation.status === "loading") return "loading";
   if (reconciliation.status === "unavailable") return "error";
   const coverage = reconciliation.coverage || {};
   const workloads = Array.isArray(reconciliation.workloads) ? reconciliation.workloads : [];
@@ -657,6 +659,10 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
   const workloads = Array.isArray(reconciliation?.workloads) ? reconciliation.workloads : [];
   const sources = Array.isArray(coverage.sources) ? coverage.sources : [];
   const blockers = Array.isArray(reconciliation?.blockers) ? reconciliation.blockers : [];
+  const actionMarkup = !presentation.action ? ""
+    : presentation.refresh ? `<button type="button" class="action evidence-action" data-evidence-refresh>${presentation.action}</button>`
+    : presentation.href ? `<a class="action evidence-action" href="${presentation.href}">${presentation.action}</a>`
+    : `<a class="action evidence-action" href="#estate-coverage">${presentation.action}</a>`;
   const sourceMarkup = sources.length
     ? `<ul class="evidence-state-sources">${sources.slice(0, 8).map((source) => `<li><span>${escapeHtml(safeEvidenceToken(source?.sourceId))}</span><strong>${escapeHtml(safeEvidenceToken(source?.state || "unknown"))}</strong></li>`).join("")}</ul>`
     : `<p class="evidence-state-empty">No source rows are available.</p>`;
@@ -667,7 +673,7 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
   evidenceStateLabelEl.className = `state-badge ${presentation.tone}`;
   if (evidenceStateLabelEl.textContent !== presentation.label) evidenceStateLabelEl.textContent = presentation.label;
   setLiveRegionHTML(evidenceStateBodyEl, `
-    <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p><a class="action evidence-action" href="#estate-coverage">${presentation.action}</a></div>
+    <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p>${actionMarkup}</div>
     <dl class="evidence-state-meta"><div><dt>Sources</dt><dd>${boundedCount(coverage.freshSources)} fresh / ${boundedCount(coverage.configuredSources)} configured</dd></div><div><dt>Workloads</dt><dd>${boundedCount(workloads.length)} reconciled</dd></div><div><dt>Mutation authority</dt><dd>None granted</dd></div></dl>
     <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`);
 }
@@ -1079,6 +1085,32 @@ function syncWorkloadRoute() {
 
 window.addEventListener("hashchange", syncWorkloadRoute);
 
+const topbarEl = document.querySelector(".topbar");
+new ResizeObserver(() => document.documentElement.style.setProperty("--topbar-h", `${topbarEl.offsetHeight}px`)).observe(topbarEl);
+
+const navLinks = [...document.querySelectorAll(".nav-rail nav a")];
+// The current section is the lowest nav target scrolled past the sticky chrome; at the page end, the lowest target.
+function syncNavCurrent() {
+  const offset = (parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--topbar-h")) || 72) + 24;
+  const atEnd = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 2;
+  let current = navLinks[0];
+  let currentTop = -Infinity;
+  navLinks.forEach((link) => {
+    const top = document.querySelector(link.getAttribute("href"))?.getBoundingClientRect().top;
+    if (top !== undefined && (atEnd || top <= offset) && top > currentTop) {
+      current = link;
+      currentTop = top;
+    }
+  });
+  navLinks.forEach((link) => (link === current ? link.setAttribute("aria-current", "page") : link.removeAttribute("aria-current")));
+}
+let navFrame = 0;
+window.addEventListener("scroll", () => {
+  cancelAnimationFrame(navFrame);
+  navFrame = requestAnimationFrame(syncNavCurrent);
+}, { passive: true });
+window.addEventListener("hashchange", syncNavCurrent);
+
 let stateLoadFailed = false;
 const STATE_FETCH_TIMEOUT_MS = 15000;
 
@@ -1485,12 +1517,17 @@ function closeCommandPanel() {
 commandClose.addEventListener("click", closeCommandPanel);
 
 document.addEventListener("click", async (event) => {
+  if (event.target.closest("[data-evidence-refresh]")) {
+    workloadDiscoverButton.click();
+    return;
+  }
   const focus = event.target.closest("[data-focus-workload]");
   if (focus) {
     selectedTopologyId = focus.dataset.focusWorkload;
     renderTopology();
     if (focus.dataset.openDetail === "true") {
-      document.querySelector(`[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      location.hash = `#/workloads/${encodeURIComponent(selectedTopologyId)}`;
+      document.querySelector(`.workload[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
     }
     return;
   }
