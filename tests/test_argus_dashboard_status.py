@@ -27,6 +27,15 @@ def run_status(expression: str) -> object:
     return json.loads(subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True).stdout)
 
 
+def js_function(name: str) -> str:
+    start = JS.index(f"function {name}(")
+    return JS[start:JS.index("\n}\n", start) + 3]
+
+
+def run_js(script: str) -> object:
+    return json.loads(subprocess.run(["node", "-e", script], text=True, capture_output=True, check=True).stdout)
+
+
 @unittest.skipUnless(shutil.which("node"), "requires node")
 class StatusPresentationTests(unittest.TestCase):
     def test_exceptions_count_paging_alerts_down_workloads_missing_agents_and_bad_evidence(self) -> None:
@@ -76,6 +85,48 @@ class StatusPresentationTests(unittest.TestCase):
         self.assertEqual([30, 90, 900], run_status("[STATE_POLL_SECONDS, STATE_STALE_SECONDS, HEALTH_STALE_SECONDS]"))
 
 
+@unittest.skipUnless(shutil.which("node"), "requires node")
+class StateRefreshBehaviourTests(unittest.TestCase):
+    def test_focus_or_open_details_inside_main_pauses_refresh(self) -> None:
+        script = """
+let adminEnabled = false;
+const location = { hash: "" };
+const main = {};
+const button = { closest: (selector) => selector === "main" ? main : null };
+const body = { closest: () => null };
+let openDetails = null;
+const document = { activeElement: button, body, querySelectorAll: () => [], querySelector: (selector) => selector === "main details[open]" ? openDetails : null };
+""" + js_function("stateRefreshPaused") + """
+const out = [stateRefreshPaused()];
+document.activeElement = body;
+out.push(stateRefreshPaused());
+openDetails = {};
+out.push(stateRefreshPaused());
+console.log(JSON.stringify(out));
+"""
+        self.assertEqual([True, False, True], run_js(script))
+
+    def test_unchanged_alert_banner_is_not_rewritten(self) -> None:
+        script = """
+let writes = 0;
+let html = "";
+const alertBanner = { dataset: {}, set innerHTML(value) { writes += 1; html = value; }, get innerHTML() { return html; } };
+let state = { alerts: { available: true, alerts: [{ severity: "page", id: "disk", detail: "full" }] } };
+const liveRegionMarkup = new WeakMap();
+""" + js_function("escapeHtml") + js_function("setLiveRegionHTML") + js_function("renderAlertBanner") + """
+renderAlertBanner();
+renderAlertBanner();
+const unchanged = writes;
+state = { alerts: { available: true, alerts: [] } };
+renderAlertBanner();
+console.log(JSON.stringify([unchanged, writes]));
+"""
+        self.assertEqual([1, 2], run_js(script))
+        self.assertNotIn("alertBanner.innerHTML =", JS)
+        self.assertNotIn("evidenceStateBodyEl.innerHTML =", JS)
+        self.assertIn("setLiveRegionHTML(evidenceStateBodyEl,", JS)
+
+
 class GeneratedDashboardStatusTests(unittest.TestCase):
     def test_status_helpers_are_bundled_and_drive_summary_and_rows(self) -> None:
         self.assertIn("function exceptionReasons", JS)
@@ -101,6 +152,12 @@ class GeneratedDashboardStatusTests(unittest.TestCase):
         self.assertIn("STATE_POLL_SECONDS * 1000", JS)
         self.assertIn("Auto-refresh paused", JS)
         self.assertIn("void pollDashboardState();", JS)
+
+    def test_state_age_recomputes_without_a_finished_fetch(self) -> None:
+        load = js_function("loadDashboardState")
+        self.assertEqual(2, load.count("signal: AbortSignal.timeout(STATE_FETCH_TIMEOUT_MS)"))
+        self.assertIn("setInterval(renderStateAge,", JS)
+        self.assertIn('document.addEventListener("visibilitychange"', JS)
 
     def test_failed_state_load_is_explicit_and_retryable(self) -> None:
         html = render_html()

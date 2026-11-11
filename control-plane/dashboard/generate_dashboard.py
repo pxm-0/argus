@@ -247,6 +247,15 @@ function setTheme(theme) {
   themeToggle.setAttribute("aria-pressed", String(light));
 }
 
+const liveRegionMarkup = new WeakMap();
+
+function setLiveRegionHTML(element, html) {
+  // Rewriting unchanged live-region content makes screen readers announce it again on every poll.
+  if (liveRegionMarkup.get(element) === html) return;
+  liveRegionMarkup.set(element, html);
+  element.innerHTML = html;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replaceAll("&", "&amp;")
@@ -656,11 +665,11 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
     : `<p class="evidence-state-empty">No reconciliation blockers reported.</p>`;
   evidenceStateEl.dataset.state = stateId;
   evidenceStateLabelEl.className = `state-badge ${presentation.tone}`;
-  evidenceStateLabelEl.textContent = presentation.label;
-  evidenceStateBodyEl.innerHTML = `
+  if (evidenceStateLabelEl.textContent !== presentation.label) evidenceStateLabelEl.textContent = presentation.label;
+  setLiveRegionHTML(evidenceStateBodyEl, `
     <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p><a class="action evidence-action" href="#estate-coverage">${presentation.action}</a></div>
     <dl class="evidence-state-meta"><div><dt>Sources</dt><dd>${boundedCount(coverage.freshSources)} fresh / ${boundedCount(coverage.configuredSources)} configured</dd></div><div><dt>Workloads</dt><dd>${boundedCount(workloads.length)} reconciled</dd></div><div><dt>Mutation authority</dt><dd>None granted</dd></div></dl>
-    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`;
+    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`);
 }
 
 function renderSummary() {
@@ -689,16 +698,16 @@ function renderAlertBanner() {
   const alerts = state?.alerts;
   if (!alerts || alerts.available === false) {
     alertBanner.dataset.state = "unavailable";
-    alertBanner.innerHTML = "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>";
+    setLiveRegionHTML(alertBanner, "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>");
     return;
   }
   const open = alerts.alerts || [];
   alertBanner.dataset.state = open.length ? "open" : "clear";
   const lines = open.slice(0, 5).map((item) => `${escapeHtml(item.severity)} ${escapeHtml(item.id)}: ${escapeHtml(item.detail)}`);
   const more = open.length > 5 ? ` (+${open.length - 5} more)` : "";
-  alertBanner.innerHTML = open.length
+  setLiveRegionHTML(alertBanner, open.length
     ? `<strong>${open.length} open alert${open.length === 1 ? "" : "s"}</strong><span>${lines.join(" | ")}${more}</span>`
-    : "<strong>Alerts</strong><span>no open alerts</span>";
+    : "<strong>Alerts</strong><span>no open alerts</span>");
 }
 
 function renderTopology() {
@@ -1071,11 +1080,15 @@ function syncWorkloadRoute() {
 window.addEventListener("hashchange", syncWorkloadRoute);
 
 let stateLoadFailed = false;
+const STATE_FETCH_TIMEOUT_MS = 15000;
 
 function stateRefreshPaused() {
-  // Re-rendering would discard typed confirmations, admin controls, and the open workload detail.
+  // Re-rendering would discard typed confirmations, admin controls, the open workload detail,
+  // keyboard focus inside the page, and expanded <details>.
   return adminEnabled
     || location.hash.startsWith("#/workloads/")
+    || Boolean(document.activeElement?.closest?.("main"))
+    || Boolean(document.querySelector("main details[open]"))
     || [...document.querySelectorAll("main input, main textarea")].some((field) => field === document.activeElement || field.value);
 }
 
@@ -1098,7 +1111,7 @@ function renderStateUnavailable() {
   summaryEl.innerHTML = '<div data-tone="bad"><strong>Unavailable</strong><span>Estate summary</span><small>Exceptions cannot be counted without dashboard state</small></div>';
   renderEvidenceState({ status: "unavailable" });
   alertBanner.dataset.state = "unavailable";
-  alertBanner.innerHTML = `<strong>Alerts</strong><span>${unavailable}</span>`;
+  setLiveRegionHTML(alertBanner, `<strong>Alerts</strong><span>${unavailable}</span>`);
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>${unavailable}</span>`;
   ["#access-plan p", "#backup-plan p", "#cloudflare-plan p", "#system-plan p"].forEach((selector) => { document.querySelector(selector).textContent = unavailable; });
   document.getElementById("stages").innerHTML = `<p class="history-empty">${unavailable}</p>`;
@@ -1109,8 +1122,8 @@ function renderStateUnavailable() {
 
 async function loadDashboardState() {
   try {
-    let response = await fetch("/api/dashboard-state", { cache: "no-store" });
-    if (!response.ok) response = await fetch("./dashboard-state.json", { cache: "no-store" });
+    let response = await fetch("/api/dashboard-state", { cache: "no-store", signal: AbortSignal.timeout(STATE_FETCH_TIMEOUT_MS) });
+    if (!response.ok) response = await fetch("./dashboard-state.json", { cache: "no-store", signal: AbortSignal.timeout(STATE_FETCH_TIMEOUT_MS) });
     if (!response.ok) throw new Error(`dashboard state request returned HTTP ${response.status}`);
     state = await response.json();
     stateLoadFailed = false;
@@ -1143,6 +1156,13 @@ async function pollDashboardState() {
 }
 
 stateRetry.addEventListener("click", () => { void loadDashboardState(); });
+// The age badge must turn Stale on time even while a fetch is pending or the poll sleeps in a hidden tab.
+setInterval(renderStateAge, 10000);
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") return;
+  renderStateAge();
+  if (!stateRefreshPaused()) void loadDashboardState();
+});
 
 async function operationStatus(operationId) {
   const response = await fetch(`/api/operations/${encodeURIComponent(operationId)}`, {
