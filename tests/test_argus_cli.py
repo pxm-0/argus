@@ -545,6 +545,38 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual("none", result["authority"])
         self.assertEqual([], ledger.list_migrations_for_workload("demo"))
 
+    def test_operation_list_is_newest_first_bounded_and_read_only(self) -> None:
+        ledger = self.root / "operations.sqlite3"
+        durable = OperationLedger(ledger)
+        created = []
+        for index in range(3):
+            with mock.patch.object(OperationLedger, "_now", return_value=1_800_000_000 + index):
+                operation, _ = durable.create(
+                    workload_id="demo",
+                    trust_domain="personal-sandbox",
+                    operation_type="health.refresh",
+                    requested_by="operator@example.com",
+                    parameters={},
+                    preview_digest="preview",
+                    expected_revision="revision",
+                    policy_version="1",
+                    idempotency_key=f"cli-operation-list-{index}",
+                )
+            created.append(str(operation["operation_id"]))
+        before = ledger.read_bytes()
+        with mock.patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}):
+            code, output, _ = self.invoke(["operation", "list", "--limit", "2", "--json"])
+            self.assertEqual(0, code)
+            data = json.loads(output)["data"]
+            self.assertEqual([created[2], created[1]], [row["operation_id"] for row in data["operations"]])
+            self.assertEqual(2, data["shown"])
+            self.assertNotIn("requested_by", data["operations"][0])
+            code, output, _ = self.invoke(["operation", "list", "--limit", "0", "--json"])
+            self.assertEqual((2, "limit-invalid"), (code, json.loads(output)["error"]["code"]))
+        self.assertEqual(before, ledger.read_bytes())
+        code, output, _ = self.invoke(["operation", "list", "--json"])
+        self.assertEqual((4, "operation-ledger-unavailable"), (code, json.loads(output)["error"]["code"]))
+
     def test_operation_missing_is_unavailable_not_not_found(self) -> None:
         operation_id = "00000000-0000-0000-0000-000000000001"
         code, output, _ = self.invoke(["operation", "show", operation_id, "--json"])

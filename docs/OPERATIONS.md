@@ -286,11 +286,16 @@ still in `data` (and on stdout in human mode). Backup freshness reports `allFres
 
 `server-read-only` — `argus operation show <operation-id>`
 
-Show reads the compatible operation ledger without migration or writes.
+`server-read-only` — `argus operation list`
+
+Show and list read the compatible operation ledger without migration or writes.
+List prints the most recent operations across workloads, newest first
+(`--limit`, 1–200, default 20); pass an ID from it to show.
 There is no generic recovery command; follow the typed recovery runbook named
 by the operation.
 
 ```bash
+argus operation list --limit 5 --json
 argus operation show 00000000-0000-0000-0000-000000000000 --json
 ```
 

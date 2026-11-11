@@ -701,7 +701,17 @@ def move_command(repo: Path, action: str, workload_id: str, confirmation: str = 
     )
 
 
-def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
+OPERATION_COLUMNS = """
+    SELECT operation_id, workload_id, trust_domain, operation_type,
+           state, created_at, started_at, finished_at, error_class,
+           redacted_summary
+    FROM operations
+"""
+MAX_OPERATION_LIMIT = 200
+
+
+def query_operations(repo: Path, where: str, params: tuple[Any, ...]) -> list[dict[str, Any]] | dict[str, Any]:
+    """Rows from the read-only ledger, or a typed error envelope."""
     ledger = operation_ledger_path(repo)
     if not ledger.is_file():
         return _error(
@@ -723,15 +733,7 @@ def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
                     "Run argus doctor --json and reconcile deployed/repository revisions.",
                     exit_code=EXIT_REFUSAL,
                 )
-            row = connection.execute(
-                """
-                SELECT operation_id, workload_id, trust_domain, operation_type,
-                       state, created_at, started_at, finished_at, error_class,
-                       redacted_summary
-                FROM operations WHERE operation_id = ?
-                """,
-                (operation_id,),
-            ).fetchone()
+            rows = connection.execute(OPERATION_COLUMNS + where, params).fetchall()
         finally:
             connection.close()
     except (sqlite3.Error, OSError):
@@ -741,14 +743,30 @@ def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
             "Check the read-only ledger path and run argus doctor --json.",
             exit_code=EXIT_UNAVAILABLE,
         )
-    if row is None:
+    return [{key: row[key] for key in row.keys()} for row in rows]
+
+
+def operation_show(repo: Path, operation_id: str) -> dict[str, Any]:
+    rows = query_operations(repo, "WHERE operation_id = ?", (operation_id,))
+    if isinstance(rows, dict):
+        return rows
+    if not rows:
         return _error(
             "operation-not-found",
             "The requested operation is not present in the durable ledger.",
-            "Verify the operation ID with the initiating workflow.",
+            "Run argus operation list to find recent operation IDs.",
             exit_code=EXIT_REFUSAL,
         )
-    return _success("operation.show", operation={key: row[key] for key in row.keys()})
+    return _success("operation.show", operation=rows[0])
+
+
+def operation_list(repo: Path, limit: int) -> dict[str, Any]:
+    if not 1 <= limit <= MAX_OPERATION_LIMIT:
+        return _error("limit-invalid", f"--limit must be between 1 and {MAX_OPERATION_LIMIT}.", f"Pass --limit between 1 and {MAX_OPERATION_LIMIT}.", exit_code=EXIT_INVOCATION)
+    rows = query_operations(repo, "ORDER BY created_at DESC, operation_id DESC LIMIT ?", (limit,))
+    if isinstance(rows, dict):
+        return rows
+    return _success("operation.list", operations=rows, shown=len(rows))
 
 
 def default_runner(command: list[str], repo: Path) -> subprocess.CompletedProcess[str]:
@@ -1062,23 +1080,38 @@ def build_parser() -> argparse.ArgumentParser:
 
     operation = commands.add_parser("operation", help="durable operation status")
     operation_sub = operation.add_subparsers(dest="operation_command", required=True, parser_class=ArgusArgumentParser)
-    for action in ("show",):
-        item = leaf(
-            operation_sub,
-            action,
-            help_text=f"{action} a durable operation",
-            contract=description(
-                f"{action.title()} a durable operation without guessing current authority.",
-                "server read-only",
-                "exact operation ID and compatible durable ledger",
-                "none",
-                "state, authority, retry safety, and typed recovery",
-                f"argus operation {action} 00000000-0000-0000-0000-000000000000 --json",
-                "inspect operation state and follow only its typed runbook",
-                "the durable operation ledger, opened read-only",
-            ),
-        )
-        item.add_argument("operation_id")
+    item = leaf(
+        operation_sub,
+        "show",
+        help_text="show a durable operation",
+        contract=description(
+            "Show a durable operation without guessing current authority.",
+            "server read-only",
+            "exact operation ID and compatible durable ledger",
+            "none",
+            "state, authority, retry safety, and typed recovery",
+            "argus operation show 00000000-0000-0000-0000-000000000000 --json",
+            "inspect operation state and follow only its typed runbook",
+            "the durable operation ledger, opened read-only",
+        ),
+    )
+    item.add_argument("operation_id")
+    item = leaf(
+        operation_sub,
+        "list",
+        help_text="list recent durable operations, newest first",
+        contract=description(
+            "List the most recent durable operations across workloads, newest first.",
+            "server read-only",
+            "compatible durable ledger",
+            "none",
+            "operation ID, workload, type, state and timestamps per row",
+            "argus operation list --limit 5 --json",
+            "pass an operation ID to argus operation show for its full record",
+            "the durable operation ledger, opened read-only",
+        ),
+    )
+    item.add_argument("--limit", type=int, default=20, help=f"operations to show (1-{MAX_OPERATION_LIMIT}, default 20)")
 
     argus_cli_op.register(commands, workload_sub, leaf, description)
     keys = commands.add_parser("keys", help="operator credential management")
@@ -1153,6 +1186,8 @@ def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict
         result = move_command(repo, args.move_command, args.workload_id, getattr(args, "confirm", "")) if validate_id(args.workload_id) else _error("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", exit_code=EXIT_INVOCATION)
     elif command == "operation" and args.operation_command == "show":
         result = operation_show(repo, args.operation_id) if validate_id(args.operation_id, operation=True) else _error("operation-id-invalid", "The operation ID is invalid.", "Use the exact UUID from the initiating command.", exit_code=EXIT_INVOCATION)
+    elif command == "operation" and args.operation_command == "list":
+        result = operation_list(repo, args.limit)
     elif command == "op" or (command == "workload" and args.workload_command in argus_cli_op.SHORTCUTS):
         result = argus_cli_op.execute(args, repo, sys.modules[__name__])
     elif command == "keys":
