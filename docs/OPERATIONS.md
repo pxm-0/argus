@@ -13,7 +13,15 @@ historical evidence.
 - `argus` needs Python 3.14; under an older `python3` it exits `2` with
   `unsupported-python` (run it via `mise exec python@3.14 -- argus ...`).
 - Human mode writes result data to stdout and diagnostics to stderr.
-- `--json` emits one schema-versioned envelope on stdout.
+  `argus status`, `workload list|show`, `estate status|coverage`, `alerts`,
+  `smoke status`, `backup freshness` and `operation list|show` print headed
+  tables or key/value lines (non-printable evidence text is escaped); other
+  commands print `KEY value` lines. A failure prints `ERROR <code>: <message>`,
+  `AUTHORITY`/`RETRY_SAFE` and a `NEXT` action on stderr.
+- `--json` emits one schema-versioned envelope on stdout:
+  `{"ok": true, "schemaVersion": 1, "data": {...}}` or
+  `{"ok": false, "schemaVersion": 1, "error": {"code", "message", "nextAction", "authority", "retrySafe"}}`,
+  sometimes with the partial report in `data`. Scripts should read `--json`; the human layout is not a stable interface.
 - Read-only status and preview commands never mutate.
 - A mutation is allowed only at the final typed `apply` or `rollback` boundary
   (or an `api-session` create) after preview, fresh preconditions, and exact
@@ -24,6 +32,14 @@ historical evidence.
 Exit classes are stable: `0` success, `1` internal/check failure, `2` invalid
 invocation, `3` safe refusal/precondition, `4` unavailable/transient, and `5`
 indeterminate/recovery required.
+
+Health reads (`argus status`, `smoke status`, `backup freshness`, `alerts`)
+use the same classes: `3` means the evidence was read and reports degraded
+health, `4` means the evidence is missing or unreadable, and `0` means healthy.
+The full report is still printed (and in `data` with `--json`) on `3`, so a
+script can tell "broken" from "cannot see" by exit code alone. `argus doctor`
+is a report and exits `0` unless it cannot run; read its `compatibility` and
+`nextAction`.
 
 ## Dashboard
 
