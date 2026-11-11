@@ -1283,7 +1283,7 @@ async function pollOperation(operationId, workload, { present = true } = {}) {
       updateActiveOperation(operation, workload);
       if (present) showCommandResult(`${workload} operation`, operation);
       await loadOperationHistory(workload);
-      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(operation.state)) return;
+      if (TERMINAL_STATES.includes(operation.state)) return;
       const delay = document.visibilityState === "hidden" ? 10000 : 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -1329,7 +1329,7 @@ async function pollMigration(migrationId, workloadId) {
       migrationCache.set(migrationId, migration);
       showCommandResult(`${workloadId} migration`, migration);
       await loadMigrationHistory(workloadId);
-      if (["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase)) return;
+      if (TERMINAL_STATES.includes(migration.phase)) return;
       const delay = document.visibilityState === "hidden" ? 10000 : 2000;
       await new Promise((resolve) => setTimeout(resolve, delay));
     }
@@ -1357,7 +1357,7 @@ async function loadMigrationHistory(workloadId = "") {
       const payload = await response.json();
       const migrations = payload.migrations || [];
       renderMigrationHistory(item.id, migrations);
-      const active = migrations.find((migration) => !["succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"].includes(migration.phase));
+      const active = migrations.find((migration) => !TERMINAL_STATES.includes(migration.phase));
       if (active) void pollMigration(active.migrationId, item.id);
     } catch {
       target.innerHTML = '<div class="history-head"><strong>Migration parent</strong><span>Unavailable</span></div><p class="history-empty">Migration history temporarily unavailable.</p>';
@@ -1784,9 +1784,15 @@ void pollDashboardState();
 """
 
 
-JS = JS.replace("// @include status.js\n", (Path(__file__).resolve().parent / "assets" / "status.js").read_text())
-JS = JS.replace("// @include operations.js\n", (Path(__file__).resolve().parent / "assets" / "operations.js").read_text())
-JS = JS.replace("// @include stages.js\n", (Path(__file__).resolve().parent / "assets" / "stages.js").read_text())
+def splice_include(js: str, name: str) -> str:
+    marker = f"// @include {name}\n"
+    if js.count(marker) != 1:
+        raise RuntimeError(f"app.js include marker for {name} must appear exactly once")
+    return js.replace(marker, (Path(__file__).resolve().parent / "assets" / name).read_text())
+
+
+for _include in ("status.js", "operations.js", "stages.js"):
+    JS = splice_include(JS, _include)
 
 
 def main() -> int:

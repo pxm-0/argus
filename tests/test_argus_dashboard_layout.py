@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 DASHBOARD = ROOT / "control-plane" / "dashboard"
 sys.path.insert(0, str(DASHBOARD))
 
+import generate_dashboard  # noqa: E402
 from generate_dashboard import JS, render_html  # noqa: E402
 from m5_style import M5_CSS  # noqa: E402
 
@@ -111,6 +112,17 @@ class DashboardLayoutTests(unittest.TestCase):
         self.assertIn("No pinned image", out["nopin"]["html"])
         self.assertFalse(out["ok"]["promote"] or out["ok"]["rollback"])
         self.assertIn("aria-describedby=", out["anon"]["html"])
+
+
+    def test_include_splice_fails_loudly_when_a_marker_is_missing(self) -> None:
+        self.assertNotIn("// @include", JS)
+        with self.assertRaisesRegex(RuntimeError, "operations.js"):
+            generate_dashboard.splice_include("no marker here\n", "operations.js")
+
+    def test_terminal_states_are_declared_once(self) -> None:
+        literal = '"succeeded", "failed", "denied", "expired", "indeterminate", "rolled-back"'
+        self.assertEqual(1, JS.count(literal))
+        self.assertGreaterEqual(JS.count("TERMINAL_STATES.includes("), 4)
 
 
 if __name__ == "__main__":
