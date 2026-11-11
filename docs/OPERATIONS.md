@@ -38,8 +38,10 @@ use the same classes: `3` means the evidence was read and reports degraded
 health, `4` means the evidence is missing or unreadable, and `0` means healthy.
 The full report is still printed (and in `data` with `--json`) on `3`, so a
 script can tell "broken" from "cannot see" by exit code alone. `argus doctor`
-is a report and exits `0` unless it cannot run; read its `compatibility` and
-`nextAction`.
+exits `3` (`doctor-audit-failed`, failed checks in `data.failedChecks`) when a
+deterministic security check fails or the core boundary policy is invalid, `4`
+when the audit or policy cannot be read, and `0` otherwise; on `0`, read its
+`compatibility` and `nextAction`.
 
 ## Dashboard
 
