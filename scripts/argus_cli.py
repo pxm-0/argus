@@ -758,7 +758,7 @@ def repository_revision(repo: Path, runner: Runner) -> str:
 
 
 def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
-    audit = runner([str(repo / "scripts" / "argus-doctor"), "--json"], repo)
+    audit = runner([sys.executable, str(repo / "scripts" / "argus-doctor"), "--json"], repo)
     try:
         audit_payload = json.loads(audit.stdout)
     except (json.JSONDecodeError, TypeError):
@@ -815,7 +815,7 @@ def doctor_command(repo: Path, runner: Runner) -> dict[str, Any]:
 
 
 def check_command(repo: Path, runner: Runner) -> dict[str, Any]:
-    result = runner([str(repo / "scripts" / "argus-check")], repo)
+    result = runner([sys.executable, str(repo / "scripts" / "argus-check")], repo)
     output = result.stdout or ""
     output_digest = "sha256:" + hashlib.sha256(output.encode()).hexdigest()
     if result.returncode in {-2, -15, 130, 143}:

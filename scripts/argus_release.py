@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -243,7 +244,7 @@ def open_pr(repo: Path, runner: Runner, branch: str, path: Path, new_text: str, 
         raise ReleaseError("worktree-dirty", "The working tree has uncommitted changes.", "Commit or stash them, then retry.")
     path.write_text(new_text, encoding="utf-8")
     try:
-        if runner([str(repo / "scripts" / "argus-check")], repo).returncode != 0:
+        if runner([sys.executable, str(repo / "scripts" / "argus-check")], repo).returncode != 0:
             raise ReleaseError("repository-check-failed", "argus check failed after the pin edit; nothing was committed.",
                                "Run ./scripts/argus-check and fix the first named failure.", EXIT_INTERNAL)
         git(repo, runner, "switch", "-c", branch)

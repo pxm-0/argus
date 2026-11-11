@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -185,6 +186,19 @@ class ArgusCliTests(unittest.TestCase):
                 code = run(["--json", "dashboard", "url"], repo=Path(directory), stdout=stdout, stderr=stderr)
                 self.assertEqual(3, code)
                 self.assertEqual("dashboard-funnel-state-unsafe", json.loads(stdout.getvalue())["error"]["code"])
+
+    def test_entrypoint_refuses_unsupported_python_with_a_typed_hint(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "version_info", (3, 9, 6, "final", 0)),
+            mock.patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(str(ROOT / "scripts" / "argus"), run_name="__main__")
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("ERROR unsupported-python", stderr.getvalue())
+        self.assertIn("Python 3.14", stderr.getvalue())
+        self.assertIn("mise", stderr.getvalue())
 
     def test_invalid_json_invocation_uses_versioned_envelope(self) -> None:
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -527,6 +541,26 @@ class StableCliContractTests(unittest.TestCase):
         self.assertNotIn("credential", output.lower())
         self.assertNotIn("topology", output.lower())
         self.assertEqual("", error)
+
+    def test_doctor_and_check_run_helpers_under_the_current_interpreter(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command, _repo):
+            calls.append(command)
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "c" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        self.invoke(["doctor", "--json"], runner=runner)
+        self.invoke(["check", "--json"], runner=runner)
+        helpers = [command for command in calls if command[0] != "git"]
+        self.assertEqual(
+            [
+                [sys.executable, str(self.root / "scripts" / "argus-doctor"), "--json"],
+                [sys.executable, str(self.root / "scripts" / "argus-check")],
+            ],
+            helpers,
+        )
 
     def test_check_pass_failure_and_interruption_have_stable_classes(self) -> None:
         revision = "b" * 40
