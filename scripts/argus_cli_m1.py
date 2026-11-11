@@ -169,8 +169,8 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
             "reviewed configuration and private M1 state on the server",
         ),
     )
-    sync.add_argument("--apply", action="store_true", help="apply the plan")
-    sync.add_argument("--confirm", default="", help="plan digest from the preview")
+    sync.add_argument("--apply", action="store_true", help="apply the previewed plan; requires --confirm")
+    sync.add_argument("--confirm", default="", help="confirm with the plan digest from the preview")
     leaf(
         sub,
         "verify",

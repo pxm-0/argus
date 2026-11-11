@@ -909,6 +909,33 @@ class StableCliContractTests(unittest.TestCase):
                         if hasattr(parsed, key):
                             self.assertIn(getattr(parsed, key), registry)
 
+    def test_confirmation_and_dry_run_flags_share_help_wording(self) -> None:
+        import argparse
+
+        from argus_cli import build_parser
+
+        def walk(parser: argparse.ArgumentParser):
+            for action in parser._actions:
+                if isinstance(action, argparse._SubParsersAction):
+                    for child in action.choices.values():
+                        yield from walk(child)
+                else:
+                    yield parser, action
+
+        seen = {"--dry-run": 0, "--confirm": 0}
+        for parser, action in walk(build_parser()):
+            for flag in seen:
+                if flag in action.option_strings:
+                    seen[flag] += 1
+                    prefix = "preview only:" if flag == "--dry-run" else "confirm with"
+                    self.assertTrue(action.help.startswith(prefix), f"{parser.prog} {flag}: {action.help}")
+        self.assertGreaterEqual(seen["--dry-run"], 3)
+        self.assertGreaterEqual(seen["--confirm"], 3)
+        release = build_parser()._subparsers._group_actions[0].choices["release"]
+        for choice in release._subparsers._group_actions[0]._choices_actions:
+            self.assertEqual(choice.help[0].lower(), choice.help[0], choice.help)
+            self.assertFalse(choice.help.endswith("."), choice.help)
+
     def test_top_level_help_hides_aliases_and_documents_exit_classes(self) -> None:
         result = subprocess.run([str(ROOT / "scripts" / "argus"), "--help"], text=True, capture_output=True, check=False)
         self.assertEqual(0, result.returncode, result.stderr)

@@ -1083,7 +1083,7 @@ def build_parser() -> argparse.ArgumentParser:
         contract=description("Remove a workload from reviewed config and open a PR with a teardown runbook.", "local repository write and GitHub PR", "clean checkout, gh login, exact workload ID", "edits config and opens a PR; never touches the server", "branch, PR URL, remaining references and runbook", "argus workload retire nodens-staging --dry-run --json", "inspect the printed plan; fix and rerun", "reviewed Argus configuration and tracked files in this checkout"),
     )
     retire_parser.add_argument("workload_id")
-    retire_parser.add_argument("--dry-run", action="store_true", help="print the plan and write nothing")
+    retire_parser.add_argument("--dry-run", action="store_true", help="preview only: print the plan; write nothing")
     retire_parser.add_argument("--reason", default="Operator-approved retirement; record the reason and backup evidence before merge.")
     move = workload_sub.add_parser("move", help="preview and control reviewed workload moves")
     move_sub = move.add_subparsers(dest="move_command", required=True, parser_class=ArgusArgumentParser)
@@ -1113,7 +1113,7 @@ def build_parser() -> argparse.ArgumentParser:
         )
         item.add_argument("workload_id")
         if action in {"apply", "rollback"}:
-            item.add_argument("--confirm", default="", help="exact workload ID confirmation")
+            item.add_argument("--confirm", default="", help="confirm with the exact workload ID")
 
     operation = commands.add_parser("operation", help="durable operation status")
     operation_sub = operation.add_subparsers(dest="operation_command", required=True, parser_class=ArgusArgumentParser)
