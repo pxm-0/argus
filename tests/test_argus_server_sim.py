@@ -43,6 +43,19 @@ class TailscaleStubTests(unittest.TestCase):
         self.assertEqual(0, stub("serve", "--yes", "--https=8448", "off").returncode)
 
 
+class CloudInitPackageTests(unittest.TestCase):
+    def test_does_not_request_ubuntu_rootlesskit_next_to_docker_rootless_extras(self) -> None:
+        # docker-ce-rootless-extras ships rootlesskit and Conflicts with Ubuntu's package,
+        # which made the whole cloud-init apt install fail on ubuntu:26.04.
+        packages = [
+            line.strip()[2:].strip()
+            for line in (SIM / "cloud-init.yaml").read_text().splitlines()
+            if line.startswith("  - ") and not line.strip()[2:].startswith("[")
+        ]
+        self.assertIn("docker-ce-rootless-extras", packages)
+        self.assertNotIn("rootlesskit", packages)
+
+
 class ProvisionStepOrderTests(unittest.TestCase):
     def test_phase_b_follows_the_server_provisioning_order(self) -> None:
         result = subprocess.run(

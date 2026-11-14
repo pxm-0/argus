@@ -141,7 +141,7 @@ Sizing defaults to 4 CPUs, 6G memory and a 64G disk; override with
 `up` creates the machine from
 [`infra/server-sim/cloud-init.yaml`](../infra/server-sim/cloud-init.yaml),
 which installs every package (Docker CE with the rootless extras, uidmap,
-slirp4netns, fuse-overlayfs, rootlesskit, nftables, Caddy, age, sqlite3,
+slirp4netns, fuse-overlayfs, nftables, Caddy, age, sqlite3,
 python3, git, curl) and creates the fixed IDs. The Argus scripts themselves
 never download anything.
 

@@ -14,7 +14,7 @@ bootcmd:
 
 users:
   - name: oreo
-    uid: "1000"
+    uid: 1000
     shell: /bin/bash
     lock_passwd: true
 
@@ -39,7 +39,7 @@ packages:
   - uidmap
   - slirp4netns
   - fuse-overlayfs
-  - rootlesskit
+  # rootlesskit comes from docker-ce-rootless-extras, which Conflicts with Ubuntu's rootlesskit package.
   - dbus-user-session
   - nftables
   - iptables
