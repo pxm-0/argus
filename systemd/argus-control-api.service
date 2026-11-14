@@ -12,6 +12,9 @@ Environment=ARGUS_ROOT=/srv/argus
 LoadCredential=control-token:/etc/argus/control-token
 LoadCredential=operators.json:/etc/argus/operators.json
 LoadCredential=operator-proxy-token:/etc/argus/operator-proxy-token
+# Uncomment both lines after `argus keys totp-enroll` has created the file (a missing credential stops the unit).
+#LoadCredential=operator-totp.json:/etc/argus/operator-totp.json
+#Environment=ARGUS_TOTP_FILE=%d/operator-totp.json
 Environment=ARGUS_TOKEN_FILE=%d/control-token
 Environment=ARGUS_OPERATORS_FILE=%d/operators.json
 Environment=ARGUS_PROXY_TOKEN_FILE=%d/operator-proxy-token

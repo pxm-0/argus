@@ -54,7 +54,7 @@ class WorkloadRetireTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.root = Path(self.tmp.name)
         r = self.root
-        write(r, "config/workloads.json", {"workloads": [{"id": "gone", "name": "Gone", "paths": {"root": "/srv/argus/workloads/gone", "legacy": "/home/oreo/gone"}, "runtime": {"composeProject": "gone", "service": "web"}}, {"id": "gone-staging"}, {"id": "keep"}]})
+        write(r, "config/workloads.json", {"workloads": [{"id": "gone", "name": "Gone", "paths": {"root": "/srv/argus/workloads/gone", "legacy": "/home/oreo/gone"}, "runtime": {"composeProject": "gone", "service": "web"}, "migration": {"targetTrustDomain": "personal-sandbox"}}, {"id": "gone-staging"}, {"id": "keep"}]})
         write(r, "config/access.json", {"workloads": {"gone": {"desired": "none"}, "keep": {"desired": "none"}}})
         write(r, "config/routes.json", {"workloadRoutes": {"gone": {"tailnet": {"url": "https://h:8446"}}, "keep": {}}})
         write(r, "config/argus/observation-sources.json", {"sources": [{"workload": "gone", "x": 1}, {"workload": "keep"}]})
@@ -100,7 +100,7 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(before, self.snapshot())
         self.assertEqual([c[0] for c in runner.calls], ["git"])
-        self.assertIn("1. Confirm a verified", result["data"]["runbook"])
+        self.assertIn("1. Take and verify a backup", result["data"]["runbook"])
         self.assertIn("argus-m1-reconcile-retired-workloads` (preview)", result["data"]["runbook"])
         self.assertIn("--apply --acknowledge-retired-workload-reconciliation", result["data"]["runbook"])
         self.assertNotIn("argus m1 sync", result["data"]["runbook"])
@@ -166,6 +166,90 @@ class WorkloadRetireTests(unittest.TestCase):
         write(self.root, "systemd/argus-gonesome.service", "[Service]\n")
         code, result = self.invoke(FakeRunner(self.root), "gone", "--dry-run")
         self.assertEqual(result["data"]["unitFiles"], ["systemd/argus-gone.service"])
+
+    def runbook(self, workload_id: str = "gone") -> str:
+        return self.invoke(FakeRunner(self.root), workload_id, "--dry-run")[1]["data"]["runbook"]
+
+    def test_runbook_step_zero_removes_timer_first(self) -> None:
+        rb = self.runbook()
+        step0 = next(line for line in rb.splitlines() if line.startswith("0. "))
+        self.assertIn("argus-m5-workload-gone.timer", step0)
+        self.assertIn("argus-m5-workload-gone.service", step0)
+        self.assertIn("reconcile retry timer", step0)
+        self.assertNotIn("backup timer", step0)
+        self.assertIn("systemctl list-unit-files 'argus-m5-workload-gone*'` prints nothing", step0)
+        self.assertIn("gone-staging", step0)
+
+    def test_runbook_backup_step_is_a_one_off_dump_not_backup_run(self) -> None:
+        step1 = next(line for line in self.runbook().splitlines() if line.startswith("1. "))
+        self.assertNotIn("argus-backup-run gone", step1)
+        self.assertNotIn("argus-backup-restore --workload", step1)
+        for needle in ("cd /var/backups/argus-retired/gone && sha256sum", "sha256sum -c checksums.sha256", 'tar -tzf "$f"', "/var/backups/argus-retired/gone", "pushing a commit to this PR branch", "BEFORE merging", "-v <volume>:/d:ro", "docker pull alpine"):
+            self.assertIn(needle, step1)
+        self.assertIn("backup is not allowed", step1)
+        self.assertIn("operations.backupAllowed=false", step1)
+
+    def test_runbook_serve_off_and_listener_check(self) -> None:
+        rb = self.runbook()
+        self.assertIn("sudo tailscale serve --https=8446 off", rb)
+        self.assertIn("tailscale serve status", rb)
+        self.assertIn("ss -ltn", rb)
+
+    def test_runbook_directories_and_legacy_clone_wait_for_backup(self) -> None:
+        rb = self.runbook()
+        for path in ("/var/lib/argus/migration-runtime/personal-sandbox/gone", "/var/lib/argus/migration-staging/personal-sandbox/gone", "/var/lib/argus/migration-cutovers/gone", "/var/backups/argus-m5-workload-staging/gone"):
+            self.assertIn(path, rb)
+        self.assertIn("KEEP `/var/lib/argus/migration-cutovers/gone`", rb)
+        self.assertIn("keep it until then", rb)
+        self.assertLess(rb.index("Directories, each only after"), rb.index("legacy source checkout"))
+
+    def test_runbook_nodens_residue_is_per_daemon(self) -> None:
+        write(self.root, "config/workloads.json", {"workloads": [{"id": "nodens", "runtime": {"composeProject": "nodens"}, "migration": {"targetTrustDomain": "personal-sandbox"}}]})
+        write(self.root, "config/routes.json", {"workloadRoutes": {"nodens": {"tailnet": {"url": "https://h:8444"}}}})
+        rb = self.runbook("nodens")
+        dd = "sudo docker --host unix:///var/lib/argus/personal-sandbox/docker.sock"
+        self.assertIn("sudo tailscale serve --https=8444 off", rb)
+        self.assertIn("`nodens-live_postgres-data` (KEEP)", rb)
+        self.assertIn("`nodens-live_caddy-data` (REMOVE)", rb)
+        self.assertIn(f"`{dd} compose -p nodens down`", rb)
+        self.assertIn(f"`{dd} rm -f nodens nodens-argus-ingress-1`", rb)
+        self.assertIn(f"`{dd} image rm sha256:2633eeb26a5f`", rb)
+        self.assertIn(f"`{dd} network rm nodens_default`", rb)
+        self.assertNotIn(f"{dd} network rm nodens-net", rb)
+        self.assertNotIn(f"{dd} volume", rb)
+        for network in ("nodens_default", "nodens-net", "nodens-sprint55-net"):
+            self.assertIn(f"`sudo docker network rm {network}`", rb)
+        self.assertIn("`sudo docker rm nodens`", rb)
+        self.assertIn("`sudo docker image rm sha256:2633eeb26a5f`", rb)
+        self.assertNotIn("`docker ", rb)
+        self.assertLess(rb.index("compose -p nodens down"), rb.index("`sudo docker rm nodens`"))
+
+    def test_runbook_applies_firewall_after_merge_before_reconcile(self) -> None:
+        rb = self.runbook()
+        fw = rb.index("argus-sandbox-firewall --domain personal-sandbox --plan")
+        self.assertLess(rb.index("Merge this PR"), fw)
+        self.assertLess(fw, rb.index("argus-m1-reconcile-retired-workloads"))
+        self.assertIn("argus-m5-egress-verify", rb)
+        self.assertIn("argus-personal-sandbox.nft.pre", rb)
+        self.assertIn("sudo PYTHONDONTWRITEBYTECODE=1 scripts/argus-sandbox-firewall --domain personal-sandbox --plan", rb)
+        self.assertIn("tailnet `https://` URL", rb)
+
+    def test_runbook_warns_when_image_digest_is_shared(self) -> None:
+        shared = "sha256:" + "e8f2abf0300b" + "0" * 52
+        own = "sha256:" + "1" * 64
+        write(self.root, "workloads/gone/source/compose.yml", f"services:\n  a:\n    image: {shared}  # x\n  b:\n    image: {own}\n")
+        write(self.root, "workloads/gone-staging/source/compose.yml", f"services:\n  a:\n    image: {shared}\n")
+        rb = self.runbook()
+        self.assertIn(f"WARNING: `{shared[:19]}` is also pinned by `gone-staging`; do NOT remove it", rb)
+        self.assertIn(f"image rm {own[:19]}`", rb)
+        self.assertNotIn(f"image rm {shared[:19]}", rb)
+
+    def test_real_repo_staging_runbook_warns_about_production_image(self) -> None:
+        out, err = io.StringIO(), io.StringIO()
+        code = run(["workload", "retire", "nodens-staging", "--dry-run", "--json"], repo=ROOT, stdout=out, stderr=err)
+        self.assertEqual(code, 0, out.getvalue())
+        rb = json.loads(out.getvalue())["data"]["runbook"]
+        self.assertIn("`sha256:e8f2abf0300b` is also pinned by `nodens-production`", rb)
 
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)

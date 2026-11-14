@@ -1,0 +1,58 @@
+#!/usr/bin/env python3
+"""Render the reviewed operator sudoers drop-in and the release override units.
+
+  argus-sudoers-render                       print deploy/sudoers/argus-operator content
+  argus-sudoers-render --check               exit 1 unless the committed drop-in matches
+  argus-sudoers-render --overrides-dir DIR [--units-dir /etc/systemd/system]
+                                             write <unit>.service.d/10-argus-release.conf files
+
+Read-only for the host: it never installs anything.  Install steps live in
+docs/RUNBOOKS/sudo-narrowing.md and docs/RUNBOOKS/root-owned-release.md.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+import argus_sudoers  # noqa: E402
+
+REPO = SCRIPT_DIR.parent
+COMMITTED = REPO / "deploy" / "sudoers" / "argus-operator"
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--prefix", default=argus_sudoers.DEFAULT_PREFIX, help="release symlink the rules point at")
+    parser.add_argument("--user", default=argus_sudoers.OPERATOR)
+    parser.add_argument("--log-output", action="store_true", help="add Defaults log_output (classic sudo only; sudo-rs rejects it)")
+    parser.add_argument("--check", action="store_true", help="compare with the committed deploy/sudoers/argus-operator")
+    parser.add_argument("--overrides-dir", type=Path, help="write systemd override drop-ins here instead of printing sudoers")
+    parser.add_argument("--units-dir", type=Path, help="with --overrides-dir: derive drop-ins from installed units (for example /etc/systemd/system) instead of the repository")
+    args = parser.parse_args(argv)
+    if not args.prefix.startswith("/") or args.prefix.endswith("/") or " " in args.prefix:
+        parser.error("--prefix must be an absolute path without trailing slash or spaces")
+    if args.overrides_dir:
+        files = argus_sudoers.render_overrides(REPO, args.prefix, args.units_dir)
+        for relative, text in files.items():
+            target = args.overrides_dir / relative
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(text, encoding="utf-8")
+        print(f"wrote {len(files)} override drop-ins to {args.overrides_dir}")
+        return 0
+    text = argus_sudoers.render_sudoers(argus_sudoers.rootless_domains(REPO), args.prefix, args.user, args.log_output, argus_sudoers.promotable_workloads(REPO))
+    if args.check:
+        if COMMITTED.read_text(encoding="utf-8") != text:
+            print(f"{COMMITTED.relative_to(REPO)} is stale; run: scripts/argus-sudoers-render > {COMMITTED.relative_to(REPO)}", file=sys.stderr)
+            return 1
+        return 0
+    sys.stdout.write(text)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

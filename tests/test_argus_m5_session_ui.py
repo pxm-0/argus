@@ -100,6 +100,14 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.assertIn(".session-control{grid-column:1/-1", self.css)
         self.assertIn(".session-control button{min-height:44px}", self.css)
 
+    def test_authenticator_code_input_is_one_time_code_and_cleared_after_use(self) -> None:
+        self.assertRegex(self.html, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"[^>]*aria-label="Authenticator code"[^>]*hidden>')
+        self.assertIn("function clearCredentialInputs()", self.javascript)
+        self.assertEqual(3, self.javascript.count("clearCredentialInputs();"))
+        for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n    { \"X-Argus-CSRF-Bootstrap\""):
+            self.assertIn(endpoint, self.javascript)
+        self.assertIn("adminTotpInput.hidden = !open;", self.javascript)
+
 
 if __name__ == "__main__":
     unittest.main()

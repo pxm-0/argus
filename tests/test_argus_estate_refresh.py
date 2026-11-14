@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+import os
 from pathlib import Path
 import sys
 import tempfile
@@ -87,6 +89,58 @@ class EstateRefreshCoordinatorTests(unittest.TestCase):
             self.assertEqual(run_id, stored["runId"])
             repository.recover_interrupted.assert_called_once_with(terminal_at="2026-08-28T00:00:00Z")
             repository.prune.assert_called_once_with()
+
+
+class StatusPruneTests(unittest.TestCase):
+    NOW = datetime(2026, 1, 31, 12, 0, tzinfo=UTC).timestamp()
+
+    def make(self, root: Path, run_number: int, mtime: float, *, state: str = "completed") -> str:
+        run_id = f"refresh-{run_number:08x}-0000-4000-8000-000000000000"
+        path = refresh.paths(root)["status"] / f"{run_id}.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{}", encoding="utf-8")
+        os.utime(path, (mtime, mtime))
+        return run_id
+
+    def names(self, root: Path) -> set[str]:
+        return {path.stem for path in refresh.paths(root)["status"].glob("*.json")}
+
+    def test_prune_keeps_recent_720_newest_per_day_for_30_days_and_references(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            recent = [self.make(root, i, self.NOW - i * 60) for i in range(1000)]  # ~16.6 hours
+            day = 86400
+            morning = {d: self.make(root, 10_000 + d, self.NOW - d * day - 6 * 3600) for d in range(2, 9)}
+            evening = {d: self.make(root, 20_000 + d, self.NOW - d * day - 2 * 3600) for d in range(2, 9)}
+            ancient = self.make(root, 30_000, self.NOW - 40 * day)
+            referenced_old = self.make(root, 30_001, self.NOW - 45 * day)
+            queued_old = self.make(root, 30_002, self.NOW - 46 * day)
+            refresh._write_status(root, {"schemaVersion": 1, "runId": referenced_old, "state": "completed"})
+            os.utime(refresh.paths(root)["status"] / f"{referenced_old}.json", (self.NOW - 45 * day,) * 2)
+            (refresh.paths(root)["requests"]).mkdir(parents=True, exist_ok=True)
+            (refresh.paths(root)["requests"] / f"{queued_old}.json").write_text("{}", encoding="utf-8")
+            (refresh.paths(root)["status"] / "notes.txt").write_text("keep", encoding="utf-8")
+
+            removed = refresh.prune_status(root, now=self.NOW)
+
+            kept = self.names(root)
+            # recent[721] is 23:59 the previous UTC day: outside the newest 720 but the newest of its day
+            self.assertEqual(set(recent[:720]) | {recent[721]}, kept & set(recent))
+            self.assertTrue(set(evening.values()) <= kept)
+            self.assertFalse(kept & set(morning.values()))
+            self.assertNotIn(ancient, kept)
+            self.assertIn(referenced_old, kept)
+            self.assertIn(queued_old, kept)
+            self.assertTrue((refresh.paths(root)["status"] / "notes.txt").exists())
+            self.assertTrue(refresh.paths(root)["latest"].is_file())
+            self.assertEqual(279 + len(morning) + 1, removed)
+
+    def test_prune_is_a_no_op_on_a_small_directory_and_tolerates_missing_files(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            run_id = self.make(root, 1, self.NOW)
+            self.assertEqual(0, refresh.prune_status(root, now=self.NOW))
+            self.assertEqual({run_id}, self.names(root))
 
 
 if __name__ == "__main__":

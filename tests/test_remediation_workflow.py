@@ -52,6 +52,8 @@ Acceptance summaries
         self.assertIn("Acceptance summary N/A", workflow)
         self.assertEqual(0, self.run_guard(self.valid_body()).returncode)
         self.assertNotEqual(0, self.run_guard(self.valid_body(), base="argus").returncode)
+        for wave2_base in ("integration/wave2", "fix/installer-bugs-wave2"):
+            self.assertEqual(0, self.run_guard(self.valid_body(), base=wave2_base).returncode, wave2_base)
 
         attached_without_digests = self.valid_body().replace(
             "- [x] Acceptance summary N/A (docs-only or no server evidence required); reason documented in Notes.",

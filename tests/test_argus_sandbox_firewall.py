@@ -81,7 +81,7 @@ class ProbeRunner(module.Runner):
     def run(self, command: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
         pid = command[2]
         program = command[-1]
-        own_address = {"101": "172.18.0.2", "202": "172.19.0.2"}[pid]
+        own_address = {"101": "172.18.0.2", "102": "172.19.0.2", "202": "172.19.0.2"}[pid]
         reachable = own_address in program or self.allow_cross_project
         return subprocess.CompletedProcess(command, 0 if reachable else 1, "", "")
 
@@ -90,10 +90,9 @@ class ProbeRunner(module.Runner):
 SANDBOX = [
     ("hastur", "default", "a", "argus-hastur", "argus-ingress", "172.18.0.2", 101),
     ("kadath-live", "default", "b", "argus-kadath", "argus-ingress", "172.19.0.2", 102),
-    ("nodens", "default", "c", "argus-nodens", "argus-ingress", "172.20.0.2", 103),
 ]
 STAGING = ("nodens-staging", "internal", "d", "argus-ndns-stg", "nodens", "172.21.0.2", 104)
-# /etc/argus/argus-personal-sandbox.nft as installed on oreochiserver before #354.
+# /etc/argus/argus-personal-sandbox.nft as installed on oreochiserver before #354, with retired nodens (:8444) removed.
 INSTALLED_POLICY = """destroy table inet argus_personal_sandbox
 table inet argus_personal_sandbox {
   chain input { type filter hook input priority filter; policy drop; iifname "lo" accept; }
@@ -101,7 +100,6 @@ table inet argus_personal_sandbox {
     type filter hook forward priority filter; policy drop;
     iifname "argus-hastur" oifname "argus-hastur" accept;
     iifname "argus-kadath" oifname "argus-kadath" accept;
-    iifname "argus-nodens" oifname "argus-nodens" accept;
     iifname "argus-hastur" oifname "tap0" ip daddr 10.0.2.3 udp dport 53 ct state new,established accept;
     iifname "argus-hastur" oifname "tap0" ip daddr 10.0.2.3 tcp dport 53 ct state new,established accept;
     iifname "argus-hastur" oifname "tap0" tcp dport 443 ct state new,established accept;
@@ -129,10 +127,11 @@ class RuntimeRunner(module.Runner):
     def text(self, command: list[str]) -> str:
         joined = " ".join(command)
         if "network ls -q" in joined:
-            return "\n".join(item[2] * 64 for item in self.projects)
+            return "\n".join(["0" * 64] + [item[2] * 64 for item in self.projects])
         if "network inspect" in joined:
             return json.dumps(
-                [
+                [{"Name": "bridge", "Driver": "bridge", "Id": "0" * 64}]
+                + [
                     {
                         "Name": f"{project}_{network}",
                         "Driver": "bridge",
@@ -194,7 +193,7 @@ class TypedDeployProjectTests(unittest.TestCase):
             module.typed_projects(ROOT, "personal-sandbox"),
         )
         self.assertEqual(
-            {"hastur": "hastur", "kadath": "kadath-live", "nodens": "nodens"},
+            {"hastur": "hastur", "kadath": "kadath-live"},
             module.configured_projects(ROOT, "personal-sandbox"),
         )
 
@@ -212,7 +211,7 @@ class TypedDeployProjectTests(unittest.TestCase):
 
     def test_typed_project_adds_only_its_bridge_rule_running_or_not(self, _child: mock.Mock) -> None:
         expected = INSTALLED_POLICY.replace(
-            '"argus-nodens" accept;\n', '"argus-nodens" accept;\n' + STAGING_RULE
+            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + STAGING_RULE
         )
         absent = self.plan(SANDBOX)
         running = self.plan([*SANDBOX, STAGING])
@@ -231,9 +230,57 @@ class TypedDeployProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(module.FirewallOperationError, "projects differ"):
             self.plan([*SANDBOX, unknown])
 
-    def test_missing_cutover_project_is_still_refused(self, _child: mock.Mock) -> None:
+    def test_absent_cutover_project_gets_no_rules_and_is_reported(self, _child: mock.Mock) -> None:
+        # The sim rehearsal ran nodens-staging with hastur and kadath-live never deployed.
+        plan = self.plan([STAGING])
+        self.assertEqual({}, plan["configuredProjects"])
+        self.assertEqual({"hastur": "hastur", "kadath": "kadath-live"}, plan["absentProjects"])
+        self.assertEqual({}, plan["egress"])
+        forward = [line for line in plan["rendered"].splitlines() if line.strip().startswith("iifname") and "masquerade" not in line]
+        self.assertEqual([STAGING_RULE.rstrip("\n")], forward)
+        self.assertIn("policy drop;", plan["rendered"])
+        partial = self.plan([SANDBOX[0], STAGING])
+        self.assertEqual({"kadath": "kadath-live"}, partial["absentProjects"])
+        self.assertNotIn("argus-kadath", partial["rendered"])
+        self.assertIn('iifname "argus-hastur" oifname "tap0"', partial["rendered"])
+        self.assertNotEqual(plan["planDigest"], partial["planDigest"])
+
+    def test_probe_ignores_retired_and_absent_specs(self, _child: mock.Mock) -> None:
+        # SPECS still lists the retired legacy nodens; it must not count as configured inventory.
+        specs, _egress = module._sandbox_specs(ROOT)
+        self.assertIn("nodens", specs)
+        staging_only = self.plan([STAGING])
+        self.assertIn(STAGING_RULE, staging_only["rendered"])
+        result = module.probe_connectivity(ROOT, staging_only, ProbeRunner())
+        self.assertEqual(("pass", 0), (result["result"], result["totalChecks"]))
+        # Real-server shape: hastur and kadath-live running alongside staging.
+        full = self.plan([*SANDBOX, STAGING])
+        self.assertIn(STAGING_RULE, full["rendered"])
+        services = {str(spec["project"]): str(spec["endpoint_service"]) for spec in specs.values()}
+        endpoints = [
+            {"project": project, "network": network, "service": services[project], "addresses": [address]}
+            for project, network, _char, _iface, _service, address, _pid in SANDBOX
+        ]
+        result = module.probe_connectivity(ROOT, {**full, "endpoints": endpoints}, ProbeRunner())
+        self.assertEqual(("pass", 4), (result["result"], result["totalChecks"]))
+
+    def test_managed_domain_with_only_a_typed_project_gets_its_bridge_rule(self, _child: mock.Mock) -> None:
+        production = ("nodens-production", "internal", "e", "argus-ndns-prd", "nodens", "172.18.0.2", 105)
+        self.assertEqual({}, module.configured_projects(ROOT, "personal-managed"))
+        for projects in ([production], []):
+            with self.subTest(running=bool(projects)):
+                plan = module.build_plan(ROOT, "personal-managed", RuntimeRunner(projects), now=self.NOW)
+                forward = [line.strip() for line in plan["rendered"].splitlines() if line.strip().startswith("iifname")]
+                self.assertEqual(['iifname "argus-ndns-prd" oifname "argus-ndns-prd" accept;'], forward)
+                self.assertIn("policy drop;", plan["rendered"])
+        rogue = ("rogue", "default", "f", "argus-rogue", "web", "172.22.0.2", 106)
         with self.assertRaisesRegex(module.FirewallOperationError, "projects differ"):
-            self.plan([SANDBOX[0], SANDBOX[1], STAGING])
+            module.build_plan(ROOT, "personal-managed", RuntimeRunner([production, rogue]), now=self.NOW)
+
+    def test_domain_with_no_projects_is_refused(self, _child: mock.Mock) -> None:
+        with mock.patch.object(module, "typed_projects", return_value={}):
+            with self.assertRaisesRegex(module.FirewallOperationError, "no configured projects"):
+                module.build_plan(ROOT, "personal-managed", RuntimeRunner([]), now=self.NOW)
 
     def test_typed_project_on_an_undeclared_bridge_is_refused(self, _child: mock.Mock) -> None:
         unnamed = (*STAGING[:3], "br-dddddddddddd", *STAGING[4:])
@@ -275,7 +322,7 @@ class TypedDeployProjectTests(unittest.TestCase):
     def test_cutover_reports_no_drift_while_staging_runs(self, _child: mock.Mock) -> None:
         cutover = load_cutover()
         expected = INSTALLED_POLICY.replace(
-            '"argus-nodens" accept;\n', '"argus-nodens" accept;\n' + STAGING_RULE
+            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + STAGING_RULE
         )
         with (
             mock.patch.object(cutover, "ROOT", ROOT),
@@ -284,7 +331,7 @@ class TypedDeployProjectTests(unittest.TestCase):
         ):
             rendered, _child_pid, networks = cutover.resolved_firewall_policy("personal-sandbox")
             self.assertEqual(expected, rendered)
-            self.assertEqual(["hastur", "kadath-live", "nodens"], [item["project"] for item in networks])
+            self.assertEqual(["hastur", "kadath-live"], [item["project"] for item in networks])
             self.assertFalse(cutover.egress_policy_drift(cutover.SPECS["hastur"]))
         with (
             mock.patch.object(cutover, "ROOT", ROOT),
@@ -357,6 +404,7 @@ class SandboxFirewallTests(unittest.TestCase):
         observed = {
             "childPid": 123,
             "configuredProjects": {"alpha": "alpha"},
+            "absentProjects": {},
             "typedBridges": {},
             "networks": [
                 {"project": "alpha", "network": "default", "networkId": "a" * 64, "interface": "br-aaaaaaaaaaaa"}

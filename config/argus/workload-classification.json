@@ -17,14 +17,6 @@
       "status": "classified",
       "admission": "allowed"
     },
-    "nodens": {
-      "realm": "personal",
-      "zone": "sandbox",
-      "stage": "none",
-      "trustDomain": "personal-sandbox",
-      "status": "classified",
-      "admission": "allowed"
-    },
     "nodens-staging": {
       "realm": "personal",
       "zone": "sandbox",

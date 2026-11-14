@@ -40,12 +40,10 @@ class WorkloadDispositionTests(unittest.TestCase):
         destinations = {
             "hastur": "personal-sandbox",
             "kadath": "personal-sandbox",
-            "nodens": "personal-sandbox",
         }
         expected_projects = {
             "hastur": "hastur",
             "kadath": "kadath-live",
-            "nodens": "nodens",
         }
         admitted = json.loads(
             (ROOT / "config" / "argus" / "workload-classification.json").read_text()

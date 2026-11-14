@@ -50,7 +50,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(APPLY_ACK, action="store_true")
     parser.add_argument(ROLLBACK_ACK, action="store_true")
     arguments = parser.parse_args(argv)
-    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus")).resolve()
+    root = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
     runner = Runner()
     if arguments.apply:
         if not getattr(arguments, APPLY_ACK[2:].replace("-", "_")) or not arguments.plan_digest:

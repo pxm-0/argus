@@ -66,6 +66,7 @@ def render_html() -> str:
       </div>
       <div class="top-actions" aria-label="Operator tools">
         <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
+        <input id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" hidden>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
         <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
         <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
@@ -84,6 +85,10 @@ def render_html() -> str:
       <section class="alert" id="exposure-alert">
         <strong>Exposure control</strong>
         <span>loading exposure state</span>
+      </section>
+      <section class="alert" id="alert-banner" data-state="loading" role="status" aria-live="polite">
+        <strong>Alerts</strong>
+        <span>loading alert state</span>
       </section>
       <section class="evidence-state" id="evidence-state" aria-labelledby="evidence-state-title" aria-live="polite">
         <div class="section-head">
@@ -186,12 +191,14 @@ const metricsEl = document.getElementById("metrics");
 const adminToggle = document.getElementById("admin-toggle");
 const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
+const adminTotpInput = document.getElementById("admin-totp");
 const sessionControl = document.getElementById("session-control");
 const sessionStatus = document.getElementById("session-status");
 const sessionDetail = document.getElementById("session-detail");
 const routeSummary = document.getElementById("route-summary");
 const summaryEl = document.getElementById("summary");
 const exposureAlert = document.getElementById("exposure-alert");
+const alertBanner = document.getElementById("alert-banner");
 const evidenceStateEl = document.getElementById("evidence-state");
 const evidenceStateLabelEl = document.getElementById("evidence-state-label");
 const evidenceStateBodyEl = document.getElementById("evidence-state-body");
@@ -445,6 +452,16 @@ function tokenFor() {
   return adminTokenInput.value;
 }
 
+function credentialBody(credential) {
+  const totp = adminTotpInput.value.trim();
+  return totp ? { bootstrapToken: credential, totp } : { bootstrapToken: credential };
+}
+
+function clearCredentialInputs() {
+  adminTokenInput.value = "";
+  adminTotpInput.value = "";
+}
+
 function cookieValue(name) {
   const prefix = `${name}=`;
   const item = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith(prefix));
@@ -496,10 +513,10 @@ async function authenticateOperator() {
   if (!credential) throw new Error("Enter the bootstrap credential.");
   const result = await apiPost(
     "/api/session/exchange",
-    { bootstrapToken: credential },
+    credentialBody(credential),
     { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
   );
-  adminTokenInput.value = "";
+  clearCredentialInputs();
   if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
   if (!cookieValue("argus_csrf")) {
     setOperatorSessionState("unavailable", { reason: "csrf-missing" });
@@ -520,11 +537,11 @@ async function ensureStepUp() {
   if (session.stepUpValid) return true;
   const credential = tokenFor();
   if (!credential) {
-    showCommandResult("Step-up required", "Enter the bootstrap credential in the operator field, then retry the mutation.");
+    showCommandResult("Step-up required", "Enter the bootstrap credential and authenticator code in the operator fields, then retry the mutation.");
     return false;
   }
-  const result = await apiPost("/api/session/step-up", { bootstrapToken: credential });
-  adminTokenInput.value = "";
+  const result = await apiPost("/api/session/step-up", credentialBody(credential));
+  clearCredentialInputs();
   if (!result.ok) {
     showCommandResult("Step-up failed", result.payload);
     return false;
@@ -652,7 +669,24 @@ function renderSummary() {
     ["Agents available", Number(topologySummary.domainAgentsAvailable || 0)],
     ["Exposure", privateExposure ? "Private" : "Review"]
   ].map(([label, value]) => `<div><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span></div>`).join("");
+  renderAlertBanner();
   exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
+}
+
+function renderAlertBanner() {
+  const alerts = state?.alerts;
+  if (!alerts || alerts.available === false) {
+    alertBanner.dataset.state = "unavailable";
+    alertBanner.innerHTML = "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>";
+    return;
+  }
+  const open = alerts.alerts || [];
+  alertBanner.dataset.state = open.length ? "open" : "clear";
+  const lines = open.slice(0, 5).map((item) => `${escapeHtml(item.severity)} ${escapeHtml(item.id)}: ${escapeHtml(item.detail)}`);
+  const more = open.length > 5 ? ` (+${open.length - 5} more)` : "";
+  alertBanner.innerHTML = open.length
+    ? `<strong>${open.length} open alert${open.length === 1 ? "" : "s"}</strong><span>${lines.join(" | ")}${more}</span>`
+    : "<strong>Alerts</strong><span>no open alerts</span>";
 }
 
 function renderTopology() {
@@ -830,7 +864,8 @@ function renderWorkload(workload) {
   const desiredAccess = access.desired || "-";
   const effectiveAccess = access.effective || "-";
   const accessDrift = desiredAccess !== effectiveAccess;
-  const healthEvidenceAt = migration.lastHealthCheck || "";
+  const healthEvidenceAt = health.lastObservedAt || migration.lastHealthCheck || "";
+  const healthVerdict = health.ok === true ? "Healthy" : health.ok === false ? "Unhealthy" : (health.enabled ? "Configured" : "Unknown");
   const blockers = operationBlockers({
     agentAvailable,
     logsAllowed,
@@ -854,7 +889,7 @@ function renderWorkload(workload) {
       <div class="workload-overview">
         <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
         <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        <span data-label="Health"><strong>${health.enabled ? "Configured" : "Unknown"}</strong></span>
+        <span data-label="Health"><strong data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthVerdict)}</strong></span>
         <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
         <span data-label="Evidence"><strong data-health-freshness="${escapeHtml(id)}">${escapeHtml(evidenceFreshness(healthEvidenceAt))}</strong></span>
         <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
@@ -901,7 +936,7 @@ function renderWorkload(workload) {
             <h3>Reachability</h3>
             <dl class="facts">
               <div><dt>Health</dt><dd>${escapeHtml(healthLabel)} ${escapeHtml(health.expectedStatus || "")}</dd></div>
-              <div><dt>Last health</dt><dd>${escapeHtml(migration.lastHealthCheck || "-")}</dd></div>
+              <div><dt>Last health</dt><dd>${escapeHtml(healthEvidenceAt || "-")}</dd></div>
               <div><dt>Local URL</dt><dd>${escapeHtml(urls.local || "-")}</dd></div>
               <div><dt>Tailnet URL</dt><dd>${escapeHtml(urls.tailnet || "-")}</dd></div>
             </dl>
@@ -973,7 +1008,7 @@ function renderPlans() {
   const monitoring = state?.monitoring || {};
   const workloads = state?.workloads || [];
   const backupPlans = workloads.filter((item) => item.backup?.status).length;
-  const healthEvidence = workloads.map((item) => item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
+  const healthEvidence = workloads.map((item) => item.health?.lastObservedAt || item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
   routeSummary.textContent = `${workloads.length} workloads · oldest evidence ${evidenceFreshness(healthEvidence[0] || "")}`;
   document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
   document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
@@ -1280,6 +1315,7 @@ function fillAdminControls() {
 function setAdmin(open) {
   adminEnabled = open;
   adminTokenInput.hidden = !open;
+  adminTotpInput.hidden = !open;
   if (open && operatorSessionState === "authenticated") fillAdminControls();
   document.querySelectorAll(".admin-row").forEach((row) => {
     row.hidden = !(open && operatorSessionState === "authenticated");
@@ -1326,7 +1362,7 @@ adminToggle.addEventListener("click", async () => {
       showCommandResult("Logout failed", result.payload);
       return;
     }
-    adminTokenInput.value = "";
+    clearCredentialInputs();
     operationCache.clear();
     activeOperationPolls.clear();
     migrationCache.clear();

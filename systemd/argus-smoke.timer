@@ -1,8 +1,8 @@
 [Unit]
-Description=Run Argus smoke test daily
+Description=Run Argus smoke test every six hours
 
 [Timer]
-OnCalendar=daily
+OnCalendar=*-*-* 00/6:00:00
 Persistent=true
 RandomizedDelaySec=15m
 

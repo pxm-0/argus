@@ -25,7 +25,8 @@ ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
 RestrictAddressFamilies=AF_UNIX
-ReadWritePaths=/var/lib/argus/control
+# audit.log is the operation.finished evidence trail (oreo:argus-control 0664).
+ReadWritePaths=/var/lib/argus/control -/srv/argus/runtime/audit.log
 InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock
 
 [Install]

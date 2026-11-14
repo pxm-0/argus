@@ -128,6 +128,8 @@ class FakeTty:
         return self.lines.pop(0)
 
     def read_secret(self, prompt: str) -> str:
+        if "Authenticator" in prompt:
+            return ""
         self.secrets_asked.append(prompt)
         return TOKEN
 
@@ -259,7 +261,7 @@ class OpCommandTests(unittest.TestCase):
         self.assertEqual(3, len(tty.secrets_asked))
 
     def test_rejected_step_up_is_a_refusal_and_creates_nothing(self) -> None:
-        with mock.patch.object(FakeTty, "read_secret", side_effect=[TOKEN, "wrong"]):
+        with mock.patch.object(FakeTty, "read_secret", side_effect=[TOKEN, "", "wrong", ""]):
             code, out, _ = self.invoke(["op", "create", "demo", "deploy", "--yes-digest", DIGEST], FakeTty())
         self.assertEqual(3, code)
         self.assertEqual("op-step-up-rejected", json.loads(out)["error"]["code"])
@@ -299,7 +301,7 @@ class OpCommandTests(unittest.TestCase):
             (["op", "preview", "demo", "deploy"], FakeTty()),
         ):
             captured += "".join(map(str, self.invoke(argv, tty))) + tty.output
-        with mock.patch.object(FakeTty, "read_secret", return_value=TOKEN + "x"):
+        with mock.patch.object(FakeTty, "read_secret", side_effect=lambda prompt: "" if "Authenticator" in prompt else TOKEN + "x"):
             captured += "".join(map(str, self.invoke(["op", "show", OP_ID], FakeTty())))
         dead = ApiClient("http://127.0.0.1:1")
         try:

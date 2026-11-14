@@ -9,6 +9,7 @@ from pathlib import Path
 import stat
 import time
 
+from argus_alerting import parse_timestamp
 from argus_common import audit, now, root
 
 
@@ -16,6 +17,8 @@ SUMMARY = re.compile(r"Smoke summary: (?P<failures>\d+) failure\(s\), (?P<warnin
 ROOTLESS_PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
 ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
 ROOTLESS_PROBE_MAX_AGE_SECONDS = 900
+HISTORY_RETENTION_SECONDS = 30 * 86400
+HISTORY_FAILED_CHECKS = 10
 
 
 def parse_summary(output: str) -> tuple[int, int]:
@@ -23,6 +26,32 @@ def parse_summary(output: str) -> tuple[int, int]:
     if not match:
         return -1, -1
     return int(match.group("failures")), int(match.group("warnings"))
+
+
+def failed_checks(output: str) -> list[str]:
+    """FAIL/WARN lines of the smoke output, so a transient failure stays diagnosable after latest.log is rewritten."""
+    lines = [line.strip()[:160] for line in output.splitlines() if line.startswith(("FAIL ", "WARN "))]
+    return lines[:HISTORY_FAILED_CHECKS]
+
+
+def append_history(path: Path, row: dict, current: float) -> None:
+    """Append one run to smoke-history.jsonl, dropping rows older than 30 days."""
+    kept = []
+    try:
+        existing = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        existing = []
+    for line in existing:
+        try:
+            stamp = parse_timestamp(json.loads(line).get("timestamp"))
+        except (ValueError, AttributeError):
+            continue
+        if stamp is not None and current - stamp <= HISTORY_RETENTION_SECONDS:
+            kept.append(line)
+    kept.append(json.dumps(row, sort_keys=True))
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text("\n".join(kept) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def rootless_probe_status(directory: Path = ROOTLESS_PROBE_ROOT) -> dict:
@@ -100,6 +129,20 @@ def main() -> int:
         "log": str(args.log_dir / "latest.log"),
     }
     (args.log_dir / "latest.json").write_text(json.dumps(status, indent=2, sort_keys=True) + "\n")
+    if not args.offline:
+        append_history(
+            args.log_dir / "smoke-history.jsonl",
+            {
+                "timestamp": status["timestamp"],
+                "ok": ok,
+                "exitCode": result.returncode,
+                "failures": failures,
+                "warnings": warnings,
+                "rootlessRuntimeProbeOk": rootless_probe["ok"],
+                "failedChecks": failed_checks(result.stdout),
+            },
+            time.time(),
+        )
     audit(
         "smoke.scheduled",
         "platform",

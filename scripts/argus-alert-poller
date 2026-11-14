@@ -1,0 +1,137 @@
+#!/usr/bin/env python3
+"""Mac-side Argus alert poller (stdlib only), run by launchd every 60 seconds.
+
+Reads runtime/alerts/state.json from the server over ssh (BatchMode, no prompts) and raises a macOS
+notification through osascript when an alert is new or changed. It also warns when the newest local
+backup archive is older than seven days. The server state is untrusted text: it is scrubbed and
+bounded before it reaches a notification, and it is passed to osascript as an argument, never
+interpolated into the script.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Callable
+
+from argus_alerting import WARN, iso, scrub
+
+SSH_HOST = os.environ.get("ARGUS_SSH_HOST", "oreochiserver")
+REMOTE_STATE = os.environ.get("ARGUS_REMOTE_ALERT_STATE", "/srv/argus/runtime/alerts/state.json")
+ARCHIVE_DIR = Path(os.environ.get("ARGUS_ARCHIVE_DIR", "~/Archives/argus-snapshots")).expanduser()
+POLLER_STATE = Path(os.environ.get("ARGUS_POLLER_STATE", "~/Library/Application Support/argus-alert-poller/seen.json")).expanduser()
+ARCHIVE_MAX_AGE = 7 * 86400
+UNREACHABLE_AFTER = 5  # consecutive failed polls (about five minutes) before the poller itself alerts
+MAX_STATE_BYTES = 262144
+NOTIFY_SCRIPT = ["on run argv", "display notification (item 1 of argv) with title (item 2 of argv)", "end run"]
+
+Runner = Callable[[list[str]], "subprocess.CompletedProcess[str]"]
+Notifier = Callable[[str, str], None]
+
+
+def run_command(argv: list[str]) -> "subprocess.CompletedProcess[str]":
+    return subprocess.run(argv, capture_output=True, text=True, timeout=30, check=False)
+
+
+def fetch_alerts(run: Runner = run_command) -> list[dict] | None:
+    """Open alerts from the server, or None when the server cannot be read."""
+    command = ["ssh", "-o", "BatchMode=yes", "-o", "ConnectTimeout=10", SSH_HOST, "cat", REMOTE_STATE]
+    try:
+        result = run(command)
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0 or len(result.stdout) > MAX_STATE_BYTES:
+        return None
+    try:
+        rows = json.loads(result.stdout)["alerts"]
+    except (ValueError, KeyError, TypeError):
+        return None
+    return [row for row in rows if isinstance(row, dict) and isinstance(row.get("id"), str)] if isinstance(rows, list) else None
+
+
+def newest_archive_age(directory: Path, now: float) -> float | None:
+    try:
+        stamps = [entry.stat().st_mtime for entry in directory.iterdir() if entry.is_file() and ".tar" in entry.name]
+    except OSError:
+        return None  # no archive directory yet: the pull is not set up, which this poller does not judge
+    return now - max(stamps) if stamps else None
+
+
+def local_alerts(archive_age: float | None, failures: int, now: float) -> list[dict]:
+    """Synthetic alerts for conditions only this Mac can see."""
+    rows = []
+    if archive_age is not None and archive_age > ARCHIVE_MAX_AGE:
+        rows.append({"id": "mac-archive-stale", "severity": WARN, "since": "", "detail": f"newest Mac backup archive is {archive_age / 86400:.1f}d old (limit 7d)"})
+    if failures >= UNREACHABLE_AFTER:
+        rows.append({"id": "poller-unreachable", "severity": WARN, "since": "", "detail": f"server alert state unreadable for {failures} polls"})
+    return rows
+
+
+LOCAL_IDS = {"mac-archive-stale", "poller-unreachable"}
+
+
+def signature(alert: dict) -> str:
+    return f"{alert.get('severity')}|{alert.get('since')}"
+
+
+def to_notify(seen: dict[str, str], current: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    """New or changed alerts notify once; resolved alerts drop out of `seen` so a recurrence notifies again."""
+    fresh = [alert for alert in current if seen.get(alert["id"]) != signature(alert)]
+    return fresh, {alert["id"]: signature(alert) for alert in current}
+
+
+def osascript_notify(message: str, title: str) -> None:
+    subprocess.run(["osascript", *[arg for line in NOTIFY_SCRIPT for arg in ("-e", line)], message, title], capture_output=True, timeout=15, check=False)
+
+
+def load_state(path: Path) -> dict:
+    try:
+        state = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"seen": {}, "failures": 0}
+    return {"seen": state.get("seen", {}), "failures": int(state.get("failures", 0))} if isinstance(state, dict) else {"seen": {}, "failures": 0}
+
+
+def save_state(path: Path, state: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(json.dumps(state, sort_keys=True), encoding="utf-8")
+    temporary.chmod(0o600)
+    os.replace(temporary, path)
+
+
+def poll_once(state_path: Path, archive_dir: Path, now: float, run: Runner = run_command, notify: Notifier = osascript_notify) -> int:
+    """One poll. Returns the number of notifications sent."""
+    state = load_state(state_path)
+    remote = fetch_alerts(run)
+    failures = 0 if remote is not None else state["failures"] + 1
+    local = local_alerts(newest_archive_age(archive_dir, now), failures, now)
+    if remote is None:
+        # An unreadable server keeps its last known alerts as seen, so an outage does not re-notify them on recovery.
+        kept = {key: value for key, value in state["seen"].items() if key not in LOCAL_IDS}
+        fresh, local_seen = to_notify({key: value for key, value in state["seen"].items() if key in LOCAL_IDS}, local)
+        seen = {**kept, **local_seen}
+    else:
+        fresh, seen = to_notify(state["seen"], remote + local)
+    for alert in fresh:
+        notify(scrub(alert.get("detail") or alert["id"]), f"Argus {scrub(alert.get('severity', 'alert'))}: {scrub(alert['id'])}")
+    save_state(state_path, {"seen": seen, "failures": failures, "checkedAt": iso(now)})
+    return len(fresh)
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Poll Argus alert state over ssh and notify on this Mac.")
+    parser.add_argument("--state", type=Path, default=POLLER_STATE)
+    parser.add_argument("--archive-dir", type=Path, default=ARCHIVE_DIR)
+    args = parser.parse_args(argv)
+    sent = poll_once(args.state, args.archive_dir, time.time())
+    print(f"{iso(time.time())} argus-alert-poller notifications={sent}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

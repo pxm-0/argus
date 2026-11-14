@@ -21,12 +21,6 @@
       "updatedAt": "2026-07-10T20:30:00Z",
       "updatedBy": "operator-audit"
     },
-    "nodens": {
-      "privacy": "unclassified",
-      "reason": "Retained workload admitted to the sealed personal sandbox after migration acceptance.",
-      "updatedAt": "2026-07-29T13:51:08Z",
-      "updatedBy": "m5-cutover-acceptance"
-    },
     "nodens-staging": {
       "privacy": "unclassified",
       "reason": "Reviewed onboarding candidate pending privacy review.",
