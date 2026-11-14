@@ -91,6 +91,10 @@ class TypedTargetTests(unittest.TestCase):
                 write(repo / "workloads" / workload_id / "manifest.json", manifest)
             self.assertEqual(["nodens-production", "nodens-staging"], typed.typed_targets(repo))
 
+    def test_checked_in_typed_deploy_workloads_are_targeted(self) -> None:
+        # The fixture above marks them active; the real inventory keeps them discovered (#375).
+        self.assertEqual(["nodens-production", "nodens-staging"], typed.typed_targets(ROOT))
+
     def test_checked_in_estate_never_targets_the_m5_timer_workloads(self) -> None:
         self.assertFalse({"hastur", "kadath", "nodens"} & set(typed.typed_targets(ROOT)))
 
