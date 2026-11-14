@@ -7,10 +7,13 @@ case "$*" in
   "status --json"*)
     printf '%s\n' '{"BackendState":"Running","Self":{"HostName":"oreochiserver-sim","DNSName":"oreochiserver-sim.sim.invalid.","Online":true},"Peer":{}}'
     ;;
+  "serve status --json"* | "funnel status --json"*)
+    printf '{}\n'
+    ;;
   "serve status"* | "funnel status"*)
     printf 'No serve config\n'
     ;;
-  "serve --bg"* | "serve reset"*)
+  "serve --bg"* | "serve --yes"* | "serve reset"*)
     printf 'tailscale stub: "%s" is a no-op on oreochiserver-sim\n' "$*" >&2
     ;;
   version*)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import sys
@@ -32,6 +33,28 @@ class TailscaleStubTests(unittest.TestCase):
         self.assertEqual(1, stub("funnel", "443", "on").returncode)
         self.assertEqual(0, stub("serve", "--bg", "8448", "http://127.0.0.1:8088").returncode)
 
+    def test_json_status_is_an_empty_serve_config(self) -> None:
+        for args in (("serve", "status", "--json"), ("funnel", "status", "--json")):
+            result = stub(*args)
+            self.assertEqual(0, result.returncode)
+            self.assertEqual({}, json.loads(result.stdout))
+
+    def test_serve_off_is_a_no_op(self) -> None:
+        self.assertEqual(0, stub("serve", "--yes", "--https=8448", "off").returncode)
+
+
+class ProvisionStepOrderTests(unittest.TestCase):
+    def test_phase_b_follows_the_server_provisioning_order(self) -> None:
+        result = subprocess.run(
+            ["bash", str(SIM / "provision"), "--help"], text=True, capture_output=True, check=False
+        )
+        self.assertEqual(0, result.returncode)
+        self.assertIn(
+            "sysusers secrets dashboard ledger-worker capability-issuer sandbox caddy "
+            "session-boundary control-plane-reconcile units collectors workloads",
+            result.stdout,
+        )
+
 
 class SimLanExposureTests(unittest.TestCase):
     def run_sim(self, config: str, *args: str) -> subprocess.CompletedProcess[str]:
@@ -61,6 +84,8 @@ class SimLanExposureTests(unittest.TestCase):
         result = self.run_sim("machines.expose_ports_to_lan: false\ndocker.expose_ports_to_lan: false", "up")
         self.assertEqual(2, result.returncode)
         self.assertIn("PLAN  orbctl create --arch amd64 --isolated", result.stdout)
+        # OrbStack's own default user must not take the name oreo, so cloud-init can give oreo UID 1000.
+        self.assertIn("--user simadmin", result.stdout)
 
 
 if __name__ == "__main__":
