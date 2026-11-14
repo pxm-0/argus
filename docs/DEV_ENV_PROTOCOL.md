@@ -154,23 +154,60 @@ inside the sim and refuses on any other hostname.
   and GIDs, group memberships, `/etc/ssl/private` mode, subordinate IDs,
   every required command, rootful Docker, Caddy, the stub and a clean
   checkout. It ends with `PREREQUISITES_PASS` or `PREREQUISITES_FAIL`.
-- **Phase B (control plane):** reuses the repo's installers in the server
-  provisioning order, each with `--preflight` before `--apply` and its
-  acknowledge flag: `sysusers` → `secrets` (sim-only `control-token`,
-  `operator-proxy-token`, `operators.json` with the fake owner
-  `sim-owner@sim.invalid`, and `runtime/argus/m5/agents`) → `dashboard`
-  (generate) → `ledger-worker` → `capability-issuer` → `sandbox`
-  (`argus-m5-sandbox-bootstrap` for personal-sandbox, work-sandbox and
-  personal-managed) → `caddy` (appends the reviewed route to the stock
+- **Phase B (control plane):** reuses the repo's installers, each with
+  `--preflight` before `--apply` and its acknowledge flag, in an order that
+  satisfies every preflight on a fresh machine: `sysusers` → `secrets`
+  (sim-only `control-token`, `operator-proxy-token`, `operators.json` with the
+  fake owner `sim-owner@oreochiserver-sim.test`, and `runtime/argus/m5/agents`)
+  → `dashboard` (generate) → `sandbox` (`argus-m5-sandbox-bootstrap` for
+  personal-sandbox, work-sandbox and personal-managed) → `runtime-seed`
+  (sim only) → `control-plane-seed` (sim only) → `ledger-worker` →
+  `capability-issuer` → `caddy` (appends the reviewed route to the stock
   Caddyfile, sim only) → `session-boundary` → `control-plane-reconcile` →
   `units` (enables the domain agents, privileged-lifecycle agent and
-  migration coordinator) → `collectors` → `workloads`. Two changes from the
-  server order, both forced by a fresh machine: the dashboard is generated
-  before the ledger worker, and `argus-m5-runtime-permissions` is not its own
-  step. That script refuses without the generated dashboard files and the
-  `argus-worker` user, and the ledger-worker and capability-issuer installers
-  already run it. Phase B stops at the first failure and prints the `--from`
-  step to resume with.
+  migration coordinator) → `collectors` → `workloads`. Phase B stops at the
+  first failure and prints the `--from` step to resume with.
+
+Why this differs from the server order. The server reached its control plane
+one milestone at a time, and today's M5 installers are upgrade scripts whose
+preflights expect that earlier state:
+
+- The dashboard is generated before the ledger worker, because
+  `argus-m5-runtime-permissions` (run by both M5 installers) refuses without
+  the generated files. It is not its own step: it also refuses until
+  `argus-worker` exists.
+- `sandbox` runs before both M5 installers, which refuse without the
+  `argus-<domain>` users (`docs/ARGUS_M5_SANDBOX_RUNTIMES.md` also applies the
+  runtimes before the issuer).
+- `runtime-seed` recreates operator state the server has from earlier
+  milestones: the M1 writer's `state.sqlite3`, `audit.sqlite3` and an empty
+  access journal (built through `argus_m1.access_writer()`, as the operator),
+  `runtime/backups` (written by `argus-backup-run`, listed in every
+  domain-agent unit's `ReadWritePaths`), and lingering for `oreo` (the
+  server's `user@1000.service` runs user services, `docs/DISCOVERY.md`; the
+  oreo schedules collector needs `/run/user/1000`).
+- `control-plane-seed` breaks a real cycle. `argus-m5-ledger-worker` requires
+  the work-sandbox `issuer.pub` and an active `argus-domain-agent@work-sandbox`
+  (added in cf847c1, when the server already had both); that agent `Requires=`
+  the issuer and worker units, which only the two installers install. The
+  seed runs the installers' own commands once (the `argus-worker` and
+  `argus-issuer` users, the Ed25519 key generated in place and never printed,
+  its public half for each domain, the reviewed units, runtime permissions)
+  and starts the work-sandbox agent. Both installers then run in full and
+  re-verify every owner, mode, socket, schema and typed agent status.
+
+Sim boundary settings, all sim only:
+
+- The sandbox users get the server's UIDs (personal-sandbox 1002,
+  work-sandbox 1003, personal-managed 1004, from
+  `config/argus/observation-sources.json`). The collector installer refuses a
+  rootless socket owned by any other UID.
+- `/etc/systemd/user.conf.d/argus-sim-rootless.conf` sets
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false`. With Docker 29's default
+  detach-netns mode the RootlessKit child sometimes stays in the host network
+  namespace on the OrbStack kernel, and the bootstrap's firewall helper then
+  correctly refuses to load the sandbox policy there. The classic mode keeps
+  the child in its own namespace, which is what the helper verifies.
 
 The `workloads` step stops with `GHCR_LOGIN_REQUIRED` until root's Docker is
 logged in to `ghcr.io`. Doing that is yours alone:
@@ -185,15 +222,50 @@ After that, import pinned images with `scripts/argus-image-import` and deploy
 through the API. Smoke, alerting, typed health and backups follow
 `docs/P5_SCHEDULED_SMOKE.md`, `docs/MONITORING.md`, `docs/OPERATIONS.md` and
 `docs/BACKUP_AND_RESTORE.md`, with a throwaway age key for snapshots.
-`argus-doctor --host` is expected to fail its PostgreSQL and GHCR-credential
-checks in the sim; never run it with `--online`.
+`ARGUS_EXPECTED_HOST=oreochiserver-sim argus-doctor --host --json` is
+expected to fail in the sim with: no PostgreSQL 18; no tracked-file inventory
+(root's git refuses the oreo-owned checkout); OrbStack's own
+`/etc/sudoers.d/orbstack` (`ALL`); and every Argus unit whose `ExecStart`
+lives in the oreo-owned `/srv/argus` checkout instead of a root-owned release
+(`docs/RUNBOOKS/root-owned-release.md`). The GHCR credential shows as a
+warning until you log in. Never run it with `--online`.
 
-Known gap: on a fresh machine the M5 installers' preflights depend on each
-other (the ledger worker wants the work-sandbox issuer key and agent; the
-capability issuer wants the ledger and an active worker), because the real
-server reached its state incrementally. Phase B will stop at the first such
-preflight and say which one; the fix belongs in the installers, not in the
-sim.
+### Known limits
+
+Two installer bugs on `integration/wave2` stop phase B before `workloads`.
+They are real (the server would hit them on a re-run) and are left for a
+wave2 fix, not worked around in the sim:
+
+- `session-boundary`: `argus-m5-session-boundary` still demands session
+  schema 3, but `scripts/argus_sessions.py` moved to `SCHEMA_VERSION = 4` in
+  ffd83e3 (TOTP). The apply rolls back with "session database schema version
+  is not 3". The check (and its `SESSION_SCHEMA_OK version=3` line and test)
+  needs version 4.
+- `control-plane-reconcile`: it sets `config/access.json` and
+  `config/privacy.json` to `oreo` mode 0600, but the API runs as `argus-api`
+  (group access) since c5b5069, and `argus-m5-runtime-permissions` wants
+  `access.json` at 0664. Its own readiness curl then gets a 500
+  (PermissionError on `privacy.json`), and it has no rollback, so restore both
+  files from `/var/lib/argus/control-plane-backups/<ts>/config/` and rerun
+  `argus-m5-runtime-permissions`.
+
+To rehearse the rest until then: run the session-boundary apply from a copy
+of the script with the version check set to 4, kept outside `/srv/argus`,
+then `infra/server-sim/sim phase-b --from units`. With that, `units` and
+`collectors` pass and phase B stops at `workloads` as intended.
+
+Other known limits:
+
+- `personal-managed` reuses work-sandbox's helper paths
+  (`/usr/local/lib/argus/argus-work-sandbox-{netns,firewall}`;
+  `argus-m4-personal-sandbox-bootstrap` sets one `HELPER_PREFIX` for every
+  domain except personal-sandbox), so bootstrapping it overwrites
+  work-sandbox's helpers. The units stay active until the next restart.
+  Also a wave2 bug.
+- Root's `git -C /srv/argus` prints "dubious ownership" (the checkout is
+  oreo's), so the installers' `commit=` fields are empty. Cosmetic.
+- Rosetta makes phase B slow: each sandbox takes about 100 s and the
+  collector deploy about 5 minutes (a failed one rolls back for 15).
 
 ### Safety rules
 
