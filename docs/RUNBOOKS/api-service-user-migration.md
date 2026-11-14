@@ -1,5 +1,7 @@
 # Runbook: run argus-control-api as the unprivileged `argus-api` user
 
+<!-- sudoers: root-shell-runbook (one-time maintenance-window steps; run from a root shell, not the narrowed operator allowlist) -->
+
 Why: the API ran as `oreo` (NOPASSWD sudo, docker group), so any bug in
 `server.py` was root. The unit now runs as `argus-api:argus-control` with an
 empty capability bounding set, `ProtectSystem=strict`, `ProtectHome`,

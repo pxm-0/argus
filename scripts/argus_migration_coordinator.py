@@ -19,7 +19,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.poll_seconds <= 0 or args.poll_seconds > 30:
         parser.error("--poll-seconds must be greater than zero and at most 30")
-    root = Path(os.environ.get("ARGUS_ROOT", "/srv/argus")).resolve()
+    root = Path(os.environ.get("ARGUS_ROOT", Path(__file__).resolve().parents[1])).resolve()
     operations_db = Path(
         os.environ.get("ARGUS_OPERATIONS_DB", "/var/lib/argus/control/operations.sqlite3")
     )

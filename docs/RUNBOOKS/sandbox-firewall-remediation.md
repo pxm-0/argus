@@ -39,10 +39,10 @@ Run from the reviewed PR branch in the clean `/srv/argus` checkout on
 `oreochiserver`:
 
 ```text
-sudo scripts/argus-sandbox-firewall --domain personal-sandbox --plan
-sudo scripts/argus-sandbox-firewall --domain work-sandbox --plan
-sudo scripts/argus-sandbox-firewall --domain personal-sandbox --probe
-sudo scripts/argus-sandbox-firewall --domain work-sandbox --probe
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --plan
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --plan
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --probe
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --probe
 ```
 
 Repeat each probe three times. Store raw JSON only under a root-owned mode-0700
@@ -56,8 +56,11 @@ apply command. Do not apply when any baseline own-project check fails.
 
 ## Apply
 
+Run from a root maintenance shell; apply and rollback are outside the narrowed operator allowlist.
+
+<!-- sudoers: root-shell -->
 ```text
-sudo scripts/argus-sandbox-firewall \
+sudo /opt/argus/current/scripts/argus-sandbox-firewall \
   --domain personal-sandbox \
   --apply \
   --plan-digest 'sha256:<exact-plan-digest>' \
@@ -77,9 +80,9 @@ Repeat for `work-sandbox` only after `personal-sandbox` passes.
 ## Verify
 
 ```text
-sudo scripts/argus-sandbox-firewall --domain personal-sandbox --verify
-sudo scripts/argus-sandbox-firewall --domain work-sandbox --verify
-sudo scripts/smoke-test
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain personal-sandbox --verify
+sudo /opt/argus/current/scripts/argus-sandbox-firewall --domain work-sandbox --verify
+sudo systemctl start argus-smoke.service
 ```
 
 Verification requires persisted bytes and live rules to equal the deterministic
@@ -102,8 +105,9 @@ to prove persisted/live equality.
 
 Use only the exact backup emitted by the selected domain's apply:
 
+<!-- sudoers: root-shell -->
 ```text
-sudo scripts/argus-sandbox-firewall \
+sudo /opt/argus/current/scripts/argus-sandbox-firewall \
   --domain personal-sandbox \
   --rollback /var/lib/argus/firewall-remediation/personal-sandbox/<timestamp>/argus-personal-sandbox.nft \
   --acknowledge-sandbox-firewall-rollback

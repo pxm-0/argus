@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh Argus typed workload health every five minutes
+
+[Timer]
+OnCalendar=*:0/5
+RandomizedDelaySec=30
+Persistent=true
+Unit=argus-typed-health.service
+
+[Install]
+WantedBy=timers.target

@@ -132,5 +132,31 @@ class ImageImportTests(unittest.TestCase):
         self.assertEqual("image-import-refused", json.loads(stdout.getvalue())["error"]["code"])
 
 
+class RegistryConfigTests(unittest.TestCase):
+    def test_dedicated_docker_config_is_selected_only_when_present(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertNotEqual(tmp, module.registry_env(Path(tmp)).get("DOCKER_CONFIG"))
+            (Path(tmp) / "config.json").write_text("{}")
+            self.assertEqual(tmp, module.registry_env(Path(tmp))["DOCKER_CONFIG"])
+
+    def test_host_pull_uses_registry_env_and_save_load_do_not_need_it(self) -> None:
+        env = {"DOCKER_CONFIG": "/etc/argus/registry/.docker"}
+        calls: list[dict] = []
+
+        def fake_run(command, **kwargs):  # noqa: ANN001
+            calls.append({"command": command, "env": kwargs.get("env")})
+            return subprocess.CompletedProcess(command, 1, "", "denied")
+
+        with patch.object(module, "registry_env", return_value=env), patch.object(module.subprocess, "run", fake_run):
+            with self.assertRaises(module.ImportFailure):
+                module.import_image("personal-managed", NODENS)
+        self.assertEqual(["docker", "pull", NODENS], calls[0]["command"])
+        self.assertEqual(env, calls[0]["env"])
+
+    def test_abbreviated_flags_are_rejected(self) -> None:
+        with patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit):
+            module.main(["--dom", "personal-managed", "--image", NODENS])
+
+
 if __name__ == "__main__":
     unittest.main()

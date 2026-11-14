@@ -25,14 +25,6 @@
       "status": "legacy-unclassified",
       "admission": "denied"
     },
-    "nodens": {
-      "realm": "unclassified",
-      "zone": "legacy",
-      "stage": "none",
-      "trustDomain": "legacy-rootful",
-      "status": "legacy-unclassified",
-      "admission": "denied"
-    },
     "nodens-production": {
       "realm": "unclassified",
       "zone": "legacy",

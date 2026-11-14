@@ -1,0 +1,30 @@
+[Unit]
+Description=Argus typed workload health refresh
+Wants=network-online.target argus-control-api.service
+After=network-online.target argus-control-api.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+User=oreo
+Group=oreo
+WorkingDirectory=/srv/argus
+Environment=ARGUS_ROOT=/srv/argus
+# The observer token is separate from the owner bootstrap token. Create
+# /etc/argus/observer-token (root:argus-control 0640, read by the control API
+# directly) and allowlist the observer identity before enabling the timer.
+LoadCredential=observer-token:/etc/argus/observer-token
+LoadCredential=operator-proxy-token:/etc/argus/operator-proxy-token
+ExecStart=/usr/bin/python3 /srv/argus/scripts/argus-typed-health
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+ReadWritePaths=/srv/argus/runtime
+InaccessiblePaths=-/var/run/docker.sock -/run/docker.sock

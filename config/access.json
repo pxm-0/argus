@@ -31,17 +31,6 @@
       "lastAppliedAt": "2026-07-29T13:07:09Z",
       "lastError": ""
     },
-    "nodens": {
-      "desired": "tailnet",
-      "effective": "tailnet",
-      "urls": {
-        "local": "",
-        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8444",
-        "cloudflare": ""
-      },
-      "lastAppliedAt": "2026-07-29T12:46:43Z",
-      "lastError": ""
-    },
     "nodens-staging": {
       "desired": "none",
       "effective": "none",

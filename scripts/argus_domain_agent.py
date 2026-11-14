@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import socket
 import socketserver
 import subprocess
 import sys
@@ -37,6 +39,31 @@ from argus_operations import (
 )
 
 DOMAIN_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
+def parse_compose_rows(stdout: str) -> list[dict[str, Any]]:
+    stripped = stdout.strip()
+    try:
+        decoded = json.loads(stripped)
+    except json.JSONDecodeError:
+        # compose prints one JSON object per container line, so multi-container projects are NDJSON
+        decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
+    return decoded if isinstance(decoded, list) else [decoded]
+
+
+def probe_ingress(socket_path: Path, timeout: float = 3.0) -> bool:
+    """GET /healthz through the workload's ingress Caddy; a 5xx (e.g. 502) means the app is unreachable."""
+    connection = http.client.HTTPConnection("localhost", timeout=timeout)
+    try:
+        connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.sock.settimeout(timeout)
+        connection.sock.connect(str(socket_path))
+        connection.request("GET", "/healthz")
+        return connection.getresponse().status < 500
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 class IndeterminateOperation(RuntimeError):
@@ -164,19 +191,21 @@ class AgentService:
         manifest = load_manifest(workload_id)
         return str(manifest.get("runtime", {}).get("service") or item.get("runtime", {}).get("service") or "")
 
+    def ingress_socket(self, workload_id: str) -> Path | None:
+        """Typed-deploy workloads (manifest declares a stable bridge) serve through a per-domain ingress socket."""
+        compose = (load_manifest(workload_id).get("runtime") or {}).get("compose")
+        if not isinstance(compose, dict) or not compose.get("bridge"):
+            return None
+        kind = self.domain.split("-", 1)[-1]
+        return Path(f"/var/lib/argus/{kind}-ingress/{workload_id}/upstream.sock")
+
     def domain_health(self, workload_id: str) -> dict[str, Any]:
         command = self.compose_command(workload_id, "ps", "--format", "json")
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8)
         if result.returncode != 0:
             return {"ok": False, "status": "unavailable", "detail": "typed runtime health command failed"}
         try:
-            stripped = result.stdout.strip()
-            try:
-                decoded = json.loads(stripped)
-            except json.JSONDecodeError:
-                # compose prints one JSON object per container line, so multi-container projects are NDJSON
-                decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
-            payload = decoded if isinstance(decoded, list) else [decoded]
+            payload = parse_compose_rows(result.stdout)
         except json.JSONDecodeError:
             return {"ok": False, "status": "invalid", "detail": "typed runtime health output was invalid"}
         service = self.compose_service(workload_id)
@@ -194,11 +223,38 @@ class AgentService:
             and str(row.get("Health", "")).lower() in {"", "healthy"}
             for row in rows
         )
+        detail = f"{len(rows)} approved service(s) observed"
+        ingress = self.ingress_socket(workload_id) if healthy else None
+        if ingress is not None and not probe_ingress(ingress):
+            # Containers can run while the domain firewall drops ingress->app traffic (502 on upstream.sock).
+            return {"ok": False, "status": "degraded", "detail": f"{detail}; ingress /healthz probe failed"}
         return {
             "ok": healthy,
             "status": "healthy" if healthy else "unhealthy",
-            "detail": f"{len(rows)} approved service(s) observed",
+            "detail": detail,
         }
+
+    def image_id(self, workload_id: str) -> str:
+        """Best-effort image ID of the approved service's container; empty when it cannot be read."""
+        try:
+            listed = subprocess.run(
+                self.compose_command(workload_id, "ps", "--format", "json"), text=True,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8,
+            )
+            service = self.compose_service(workload_id)
+            rows = [row for row in parse_compose_rows(listed.stdout) if not service or row.get("Service") == service]
+            container = str(rows[0].get("ID", "")) if rows and listed.returncode == 0 else ""
+            if not re.fullmatch(r"[0-9a-f]{12,64}", container):
+                return ""
+            inspected = subprocess.run(
+                ["docker", "--host", f"unix:///var/lib/argus/{self.domain}/docker.sock",
+                 "inspect", "--format", "{{.Image}}", container],
+                text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8,
+            )
+        except (OSError, ValueError, subprocess.TimeoutExpired):
+            return ""
+        image = inspected.stdout.strip()
+        return image if inspected.returncode == 0 and re.fullmatch(r"sha256:[0-9a-f]{64}", image) else ""
 
     def wait_for_domain_health(self, workload_id: str, timeout: float = 60.0) -> dict[str, Any]:
         # A recreated container reports Health "starting" until its healthcheck passes.
@@ -224,6 +280,12 @@ class AgentService:
                 health = self.wait_for_domain_health(workload_id)
                 if not health["ok"]:
                     raise RuntimeError("post-lifecycle domain health failed")
+            if operation_type == "workload.deploy":
+                return {
+                    "summary": f"{operation_type} completed in the sealed domain.",
+                    "domain_health": health,
+                    "imageId": self.image_id(workload_id),
+                }
             return {"summary": f"{operation_type} completed in the sealed domain."}
         if operation_type == "backup.restore":
             try:

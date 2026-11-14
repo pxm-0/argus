@@ -159,3 +159,83 @@ sudo install -m 0644 templates/systemd/argus-hastur-backup.service \
 sudo systemctl daemon-reload
 sudo systemctl enable --now argus-hastur-backup.timer
 ```
+
+## Nightly encrypted snapshots and the pull directory
+
+`argus-backup-snapshot.timer` runs `scripts/argus-backup-snapshot --reason nightly`
+at 02:10 UTC (`Persistent=true`, `RandomizedDelaySec=5m`), before the 02:35
+workload dumps. Archives are age-encrypted to the public keys in
+`/etc/argus/snapshot-recipients.txt` and stay in `/var/backups/argus-snapshots`
+(root `0700`).
+
+- Retention: only `*-nightly.tar.age` is pruned (newest 14). Reason-named
+  snapshots (`pre-deploy` and similar) are kept 60 days, or until pinned with a
+  `<archive>.pinned` file.
+- After a successful run, encrypted archives are mirrored (never plaintext) to
+  `/var/backups/argus-snapshots-pull` (`oreo:oreo 0750`, files `0640`) so the Mac
+  can pull without root. Create it once:
+  The script creates and chowns it itself; no manual step is needed.
+- `/var/lib/argus/snapshot-last.json` (`{timestamp,size}`, `0644`) and
+  `/var/lib/argus/backup-status.json` record freshness. The status file carries
+  `staged_tar_verified` (the tar was verified before encryption) and
+  `final_verified` (the final bytes were re-read; false for `.age`, because the
+  identity is never on the server). A failing run triggers
+  `argus-backup-snapshot-failure.service`, which writes `status: "failed"`.
+- `--verify <file> [--identity <age identity>]` also compares against the previous
+  snapshot in the same directory (`--previous FILE` to choose, `--no-compare` to
+  skip) and fails if a `db/*` or `etc-argus/*` member disappeared or shrank by
+  more than 50 percent. Run it from the Mac, which holds the identity.
+
+Install:
+
+```bash
+sudo install -m 0644 systemd/argus-backup-snapshot.service \
+  systemd/argus-backup-snapshot-failure.service systemd/argus-backup-snapshot.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now argus-backup-snapshot.timer
+```
+
+### Encrypted dumps
+
+`argus-m5-workload-db-backup` and `argus-m5-hastur-backup` take
+`--age-recipient-file FILE`. The dump or tar is verified in the root-only tree
+first, encrypted in a root-only temp dir, then copied into the pull dir as a
+fresh partial (`O_EXCL|O_NOFOLLOW`, so a symlink planted by oreo is never
+followed) and published with `os.replace`. The snapshot mirror does the same. Kadath keeps the newest 14 copies there. Hastur is frozen, so the
+pull dir holds exactly one encrypted copy each of `data` and `auth`. The kadath
+unit template passes the flag, but the installed kadath unit does not change
+until you reinstall the template (below); without that step kadath stays
+unencrypted. If the recipient file is ever malformed, the dump unit exits
+nonzero after the verified dump is kept. Run hastur once by hand:
+
+```bash
+sudo ./scripts/argus-m5-hastur-backup --workload hastur --age-recipient-file /etc/argus/snapshot-recipients.txt
+```
+
+The age identity is held by the operator (password manager plus paper copy); it
+is never stored on the server or in this repository.
+
+### Root ExecStart from an oreo-owned tree
+
+`argus-backup-snapshot.service`, `argus-backup-snapshot-failure.service` and the
+kadath workload template run scripts from `/srv/argus` as root. That tree and
+`scripts/argus-backup-snapshot` are owned by oreo today, so anything that can
+write as oreo can get code run as root nightly. These three units are on the
+sudo-narrowing repoint list: when releases move to root-owned `/opt/argus/current`,
+change their `ExecStart` and `WorkingDirectory` paths with the other `argus-*`
+units. No ownership precheck is added meanwhile; it would fail the unit on the
+current server and stop backups.
+
+### Rollback
+
+Archives are never touched by a rollback. To undo the whole PR on the server:
+
+```bash
+sudo systemctl disable --now argus-backup-snapshot.timer
+sudo rm /etc/systemd/system/argus-backup-snapshot.{service,timer} /etc/systemd/system/argus-backup-snapshot-failure.service
+# reinstall the previous kadath unit template (without the age recipient flag) from the prior release
+sudo systemctl daemon-reload
+```
+
+Reverting the docs-only commit f3d4214 does not roll anything back. Delete
+the pull-dir copies by hand if wanted.

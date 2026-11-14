@@ -138,7 +138,7 @@ class ArgusCheckTests(unittest.TestCase):
 
     def test_live_smoke_requests_host_health_checks_only_for_production_root(self) -> None:
         source = (ROOT / "scripts" / "smoke-test").read_text(encoding="utf-8")
-        self.assertIn('repo == Path("/srv/argus")', source)
+        self.assertIn('is_server_checkout(repo)', source)
         self.assertIn('command.append("--host")', source)
 
 

@@ -14,6 +14,35 @@ loader.exec_module(module)
 
 
 class HasturBackupTest(unittest.TestCase):
+    def test_publish_never_follows_a_planted_partial_symlink(self) -> None:
+        import os
+        import tempfile
+        import unittest.mock as mock
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            pull, victim = root / "pull", root / "victim"
+            pull.mkdir()
+            victim.write_text("keep")
+            artifact = root / "data-20260101T000000Z.tar.gz"
+            artifact.write_bytes(b"plain")
+            recipients = root / "r.txt"
+            recipients.write_text("age1" + "q" * 58 + "\n")
+            (pull / f".{artifact.name}.age.partial").symlink_to(victim)
+
+            def fake_age(argv, **_kw):
+                Path(argv[argv.index("-o") + 1]).write_bytes(b"cipher")
+                return mock.Mock(returncode=0)
+
+            me = os.getenv("USER") or "root"
+            with mock.patch.object(module, "PULL_OWNER", me), \
+                 mock.patch.object(module.subprocess, "run", fake_age), \
+                 mock.patch.object(module.os, "chown"), mock.patch.object(module.os, "fchown"):
+                module.publish_encrypted(artifact, recipients, pull, "data", 14)
+            self.assertEqual(victim.read_text(), "keep")
+            final = pull / f"{artifact.name}.age"
+            self.assertFalse(final.is_symlink())
+            self.assertEqual(final.read_bytes(), b"cipher")
+
     def test_hastur_backs_up_both_data_and_auth(self) -> None:
         self.assertEqual(
             {"data": Path("/home/oreo/hastur/data"), "auth": Path("/home/oreo/hastur/auth")},

@@ -31,6 +31,26 @@ class ControlPlaneReconcileTests(unittest.TestCase):
         self.assertNotIn("tailscale funnel", text.lower())
         self.assertNotIn("cloudflared tunnel run", text.lower())
 
+    def test_state_file_modes_match_runtime_permissions(self) -> None:
+        # The API runs as argus-api; an oreo-only 0600 config makes it 500.
+        text = SCRIPT.read_text()
+        permissions = (ROOT / "scripts" / "argus-m5-runtime-permissions").read_text()
+        self.assertIn('chmod 0664 "$ACCESS_CONFIG"', permissions)
+        self.assertIn('chmod 0664 "${STATE_FILES[@]}"', text)
+        self.assertNotIn("chmod 0600", text)
+        self.assertIn('chown "$API_USER:$API_GROUP" "${STATE_FILES[@]}"', text)
+        self.assertIn('readonly API_USER="oreo"', permissions)
+        self.assertIn('readonly CONTROL_GROUP="argus-control"', permissions)
+        self.assertIn('readonly API_GROUP="argus-control"', text)
+
+    def test_failed_apply_rolls_back_before_reporting(self) -> None:
+        text = SCRIPT.read_text()
+        self.assertIn("trap rollback_on_exit EXIT", text)
+        self.assertLess(text.index("trap rollback_on_exit EXIT"), text.index('chmod 0664 "${STATE_FILES[@]}"'))
+        self.assertIn('chmod --reference="$ROLLBACK_BACKUP/config/', text)
+        self.assertIn("CONTROL_PLANE_ROLLED_BACK", text)
+        self.assertLess(text.rindex("trap - EXIT"), text.index("printf 'CONTROL_PLANE_RECONCILED"))
+
     def test_caddy_retries_after_late_tailnet_start(self) -> None:
         text = DROPIN.read_text()
         self.assertIn("After=tailscaled.service", text)

@@ -1,5 +1,7 @@
 # Rootless data-root primary-GID recovery
 
+<!-- sudoers: root-shell-runbook (one-time maintenance-window steps; run from a root shell, not the narrowed operator allowlist) -->
+
 Use this runbook when a sandbox rootless Docker daemon is API-active but a
 real local container fails with `EOVERFLOW`, `operation not permitted`, or an
 equivalent unmapped-ownership error after the sandbox account's primary GID

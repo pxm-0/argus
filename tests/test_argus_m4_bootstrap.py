@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 import unittest
 from pathlib import Path
 import sys
@@ -163,6 +165,51 @@ class M4BootstrapTest(unittest.TestCase):
             rollback_body.index('if [[ -n "$CELL_RUNTIME" && -S "$CELL_RUNTIME/bus" ]]'),
             rollback_body.index('if [[ "$failed" == true ]]'),
         )
+
+    def helper_paths(self, domain: str) -> tuple[str, str]:
+        script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
+        prelude = script[: script.index("CELL_RUNTIME=\"\"")]
+        result = subprocess.run(
+            ["bash", "-c", prelude + 'printf "%s\\n%s\\n" "$HELPER" "$FIREWALL_HELPER"'],
+            env={**os.environ, "ARGUS_SANDBOX_DOMAIN": domain},
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        netns, firewall = result.stdout.splitlines()
+        return netns, firewall
+
+    def test_each_domain_owns_its_netns_and_firewall_helpers(self) -> None:
+        domains = ("personal-sandbox", "work-sandbox", "personal-managed", "work-managed")
+        paths = {domain: self.helper_paths(domain) for domain in domains}
+        every_helper = [path for pair in paths.values() for path in pair]
+        self.assertEqual(len(every_helper), len(set(every_helper)))
+        # Existing installs keep their helper names.
+        self.assertEqual(
+            paths["personal-sandbox"],
+            (
+                "/usr/local/lib/argus/argus-m4-personal-sandbox-netns",
+                "/usr/local/lib/argus/argus-m4-personal-sandbox-firewall",
+            ),
+        )
+        self.assertEqual(
+            paths["work-sandbox"],
+            (
+                "/usr/local/lib/argus/argus-work-sandbox-netns",
+                "/usr/local/lib/argus/argus-work-sandbox-firewall",
+            ),
+        )
+        self.assertEqual(
+            paths["personal-managed"][0],
+            "/usr/local/lib/argus/argus-personal-managed-netns",
+        )
+
+    def test_rootless_daemon_never_runs_in_detach_netns_mode(self) -> None:
+        script = (ROOT / "scripts" / "argus-m4-personal-sandbox-bootstrap").read_text()
+        self.assertIn("Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false", script)
+        helper = script[script.index('tee "$FIREWALL_HELPER"'): script.index('chmod 0755 "$FIREWALL_HELPER"')]
+        self.assertIn('grep -F -- "--detach-netns"', helper)
+        self.assertLess(helper.index("--detach-netns"), helper.index("nsenter"))
 
     def test_work_sandbox_uses_an_independent_sealed_contract(self) -> None:
         contract = sandbox_contract(

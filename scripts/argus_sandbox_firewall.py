@@ -136,8 +136,6 @@ def configured_projects(root: Path, domain: str) -> dict[str, str]:
             raise FirewallOperationError("sandbox workload project identity is duplicated")
         projects[workload_id] = project
         seen_projects.add(project)
-    if not projects:
-        raise FirewallOperationError("sandbox domain has no configured projects")
     if len(projects) > MAX_PROJECTS:
         raise FirewallOperationError("sandbox domain exceeds the bounded project limit")
     return dict(sorted(projects.items()))
@@ -232,6 +230,9 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     expected_projects = configured_projects(root, domain)
     typed = typed_projects(root, domain)
     typed_bridges = {item["project"]: item["bridge"] for item in typed.values()}
+    # A domain may hold only typed-deploy projects (personal-managed: nodens-production).
+    if not expected_projects and not typed_bridges:
+        raise FirewallOperationError("sandbox domain has no configured projects")
     child = rootless_child_pid(domain, runner)
     network_ids = runner.text(_docker(domain, "network", "ls", "-q")).splitlines()
     if not network_ids:
@@ -272,11 +273,15 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
             }
         )
     mappings = validate_networks(mappings)
-    configured = set(expected_projects.values())
     observed = {item["project"] for item in mappings}
-    # Every cutover project must run; typed-deploy projects are optional.
-    if not configured <= observed or not observed <= configured | set(typed_bridges):
+    # Unknown projects still refuse. A cutover project with no Compose network
+    # (never deployed or torn down) gets no rules, so it stays denied, and is
+    # reported as absent; a re-created network needs a re-plan anyway.
+    if not observed <= set(expected_projects.values()) | set(typed_bridges):
         raise FirewallOperationError("configured and observed sandbox projects differ")
+    present_projects = {key: value for key, value in expected_projects.items() if value in observed}
+    absent_projects = {key: value for key, value in expected_projects.items() if key not in present_projects}
+    configured = set(present_projects.values())
     if any(
         item["project"] in typed_bridges and item["interface"] != typed_bridges[item["project"]]
         for item in mappings
@@ -301,12 +306,12 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
         raise FirewallOperationError("live sandbox contains an unknown managed bridge")
 
     container_ids = runner.text(_docker(domain, "ps", "-q")).splitlines()
-    if not container_ids:
+    if not container_ids and configured:
         raise FirewallOperationError("sandbox running container inventory is empty")
     raw_containers = _runtime_json(
         runner.text(_docker(domain, "inspect", *container_ids)),
         "Docker container inventory",
-    )
+    ) if container_ids else []
     if not isinstance(raw_containers, list):
         raise FirewallOperationError("Docker container inventory must be a list")
     endpoint_map: dict[tuple[str, str, str], set[str]] = {}
@@ -366,7 +371,8 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     # projects plus their declared bridges, so it is identical whether they run.
     return {
         "childPid": child,
-        "configuredProjects": expected_projects,
+        "configuredProjects": present_projects,
+        "absentProjects": absent_projects,
         "typedBridges": dict(sorted(typed_bridges.items())),
         "networks": [item for item in mappings if item["project"] in configured],
         "endpoints": [item for item in endpoints if item["project"] in configured],
@@ -410,8 +416,16 @@ def _sha256_text(value: str) -> str:
 def build_plan(root: Path, domain: str, runner: Runner, *, now: datetime | None = None) -> dict[str, Any]:
     observed = discover_runtime(root, domain, runner)
     projects = set(observed["configuredProjects"].values())
-    connectivity = active_connectivity(root, projects, now or datetime.now(timezone.utc))
-    egress = declared_egress(root, domain)
+    absent = observed["absentProjects"]
+    # Cross-domain checks see the whole domain; rules only name present projects.
+    connectivity = [
+        policy
+        for policy in active_connectivity(root, projects | set(absent.values()), now or datetime.now(timezone.utc))
+        if policy["sourceProject"] in projects and policy["targetProject"] in projects
+    ]
+    egress = {
+        workload: policy for workload, policy in declared_egress(root, domain).items() if workload not in absent
+    }
     rendered = render_firewall(
         domain,
         observed["networks"],
@@ -424,6 +438,7 @@ def build_plan(root: Path, domain: str, runner: Runner, *, now: datetime | None 
         "schemaVersion": 1,
         "domain": domain,
         "configuredProjects": observed["configuredProjects"],
+        "absentProjects": observed["absentProjects"],
         "networks": observed["networks"],
         "endpoints": observed["endpoints"],
         "connectivity": connectivity,
@@ -447,10 +462,12 @@ def probe_connectivity(root: Path, plan: dict[str, Any], runner: Runner) -> dict
     """Probe every directed project pair concurrently from existing namespaces."""
     specs, _domain_egress = _sandbox_specs(root)
     domain = str(plan["domain"])
+    # Only specs of present configured workloads: SPECS still holds retired
+    # workloads (legacy nodens) and absent ones, which have nothing to probe.
     project_specs = {
         str(spec["project"]): spec
-        for spec in specs.values()
-        if str(spec["domain"]) == domain
+        for workload, spec in specs.items()
+        if str(spec["domain"]) == domain and workload in plan["configuredProjects"]
     }
     configured_projects = set(plan["configuredProjects"].values())
     if set(project_specs) != configured_projects:
@@ -516,7 +533,7 @@ def probe_connectivity(root: Path, plan: dict[str, Any], runner: Runner) -> dict
 
     pairs = [(source, target) for source in sorted(configured_projects) for target in sorted(configured_projects)]
     results: list[dict[str, Any]] = []
-    with ThreadPoolExecutor(max_workers=min(16, len(pairs))) as executor:
+    with ThreadPoolExecutor(max_workers=max(1, min(16, len(pairs)))) as executor:
         futures = {executor.submit(probe, source, target): (source, target) for source, target in pairs}
         for future in as_completed(futures):
             results.append(future.result())

@@ -13,6 +13,7 @@ MIGRATION_STATUSES = {"planned", "migrated", "external", "rolled-back", "skipped
 TARGET_TRUST_DOMAINS = {"personal-sandbox", "personal-managed", "work-sandbox", "work-managed"}
 PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restricted"}
 ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
+BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"}
 SENSITIVE_PRIVACY = {"sensitive", "restricted"}
 
 
@@ -187,6 +188,10 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
             add_error(errors, workload_id, "backup.destination", f"must be under {approved_backup_root}")
     elif backup_allowed:
         add_error(errors, workload_id, "backup.destination", "missing when backupAllowed is true")
+
+    backup_status = manifest.get("backup", {}).get("status")
+    if backup_status is not None and backup_status not in BACKUP_STATUSES:
+        add_error(errors, workload_id, "backup.status", "has invalid enum value")
 
     public_allowed = require_type(manifest, workload_id, "security.publicAllowed", bool, errors)
     notes = require_type(manifest, workload_id, "security.notes", list, errors)

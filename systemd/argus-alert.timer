@@ -1,0 +1,11 @@
+[Unit]
+Description=Evaluate Argus alerts every two minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=2min
+AccuracySec=10s
+Unit=argus-alert.service
+
+[Install]
+WantedBy=timers.target

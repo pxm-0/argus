@@ -368,16 +368,14 @@ audited, checkpointed; see `docs/ARGUS_M1_AUDIT_ANCHOR.md`) before any
 retirement reconcile:
 
 ```bash
-sudo python3 scripts/argus-m1-reconcile-onboarded-workloads
-sudo python3 scripts/argus-m1-reconcile-onboarded-workloads \
-  --apply --acknowledge-onboarded-workload-registration
+sudo argus m1 sync
+sudo argus m1 sync --apply --confirm sha256:<plan-digest>
 ```
 
 M1 entity and projection rows derive from the legacy classification, privacy,
 and access registries, not from `workload-classification.json`, so moving a
 workload between trust domains leaves M1 converged.
-`sudo python3 scripts/argus-m1-reconcile-retired-workloads` must report
-`alreadyApplied: true` with every count `0`.
+`sudo argus m1 sync` must report no changes (every count `0`).
 
 ### Release flow
 
