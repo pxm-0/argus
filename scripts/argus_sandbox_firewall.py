@@ -462,10 +462,12 @@ def probe_connectivity(root: Path, plan: dict[str, Any], runner: Runner) -> dict
     """Probe every directed project pair concurrently from existing namespaces."""
     specs, _domain_egress = _sandbox_specs(root)
     domain = str(plan["domain"])
+    # Only specs of present configured workloads: SPECS still holds retired
+    # workloads (legacy nodens) and absent ones, which have nothing to probe.
     project_specs = {
         str(spec["project"]): spec
         for workload, spec in specs.items()
-        if str(spec["domain"]) == domain and workload not in plan.get("absentProjects", {})
+        if str(spec["domain"]) == domain and workload in plan["configuredProjects"]
     }
     configured_projects = set(plan["configuredProjects"].values())
     if set(project_specs) != configured_projects:

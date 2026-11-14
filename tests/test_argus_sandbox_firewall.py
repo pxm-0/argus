@@ -81,7 +81,7 @@ class ProbeRunner(module.Runner):
     def run(self, command: list[str], *, check: bool = True, input_text: str | None = None) -> subprocess.CompletedProcess[str]:
         pid = command[2]
         program = command[-1]
-        own_address = {"101": "172.18.0.2", "202": "172.19.0.2"}[pid]
+        own_address = {"101": "172.18.0.2", "102": "172.19.0.2", "202": "172.19.0.2"}[pid]
         reachable = own_address in program or self.allow_cross_project
         return subprocess.CompletedProcess(command, 0 if reachable else 1, "", "")
 
@@ -244,6 +244,25 @@ class TypedDeployProjectTests(unittest.TestCase):
         self.assertNotIn("argus-kadath", partial["rendered"])
         self.assertIn('iifname "argus-hastur" oifname "tap0"', partial["rendered"])
         self.assertNotEqual(plan["planDigest"], partial["planDigest"])
+
+    def test_probe_ignores_retired_and_absent_specs(self, _child: mock.Mock) -> None:
+        # SPECS still lists the retired legacy nodens; it must not count as configured inventory.
+        specs, _egress = module._sandbox_specs(ROOT)
+        self.assertIn("nodens", specs)
+        staging_only = self.plan([STAGING])
+        self.assertIn(STAGING_RULE, staging_only["rendered"])
+        result = module.probe_connectivity(ROOT, staging_only, ProbeRunner())
+        self.assertEqual(("pass", 0), (result["result"], result["totalChecks"]))
+        # Real-server shape: hastur and kadath-live running alongside staging.
+        full = self.plan([*SANDBOX, STAGING])
+        self.assertIn(STAGING_RULE, full["rendered"])
+        services = {str(spec["project"]): str(spec["endpoint_service"]) for spec in specs.values()}
+        endpoints = [
+            {"project": project, "network": network, "service": services[project], "addresses": [address]}
+            for project, network, _char, _iface, _service, address, _pid in SANDBOX
+        ]
+        result = module.probe_connectivity(ROOT, {**full, "endpoints": endpoints}, ProbeRunner())
+        self.assertEqual(("pass", 4), (result["result"], result["totalChecks"]))
 
     def test_managed_domain_with_only_a_typed_project_gets_its_bridge_rule(self, _child: mock.Mock) -> None:
         production = ("nodens-production", "internal", "e", "argus-ndns-prd", "nodens", "172.18.0.2", 105)
