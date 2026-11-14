@@ -101,12 +101,38 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.assertIn(".session-control button{min-height:44px}", self.css)
 
     def test_authenticator_code_input_is_one_time_code_and_cleared_after_use(self) -> None:
-        self.assertRegex(self.html, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"[^>]*aria-label="Authenticator code"[^>]*hidden>')
+        self.assertRegex(self.html, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"[^>]*aria-label="Authenticator code"')
         self.assertIn("function clearCredentialInputs()", self.javascript)
-        self.assertEqual(3, self.javascript.count("clearCredentialInputs();"))
+        # exchange, failed step-up, finished or cancelled step-up, logout
+        self.assertEqual(4, self.javascript.count("clearCredentialInputs();"))
         for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n    { \"X-Argus-CSRF-Bootstrap\""):
             self.assertIn(endpoint, self.javascript)
-        self.assertIn("adminTotpInput.hidden = !open;", self.javascript)
+
+    def test_sign_in_is_a_password_manager_form(self) -> None:
+        # A real form with username/current-password/one-time-code lets Passwords save the token and offer the code.
+        form = re.search(r'<form id="signin-form"[^>]*hidden>(.*?)</form>', self.html, re.S)
+        self.assertIsNotNone(form)
+        body = form.group(1)
+        self.assertRegex(body, r'<input id="signin-user"[^>]*autocomplete="username"')
+        self.assertRegex(body, r'<input id="admin-token"[^>]*type="password"[^>]*autocomplete="current-password"')
+        self.assertRegex(body, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"')
+        self.assertRegex(body, r'<button id="signin-submit"[^>]*type="submit"')
+        self.assertNotIn('autocomplete="off"', body)
+        self.assertIn('signinForm.addEventListener("submit"', self.javascript)
+        self.assertIn("event.preventDefault();", self.javascript)
+        # The login field only feeds the password manager; the API keeps using the tailnet identity.
+        self.assertNotIn("signin-user", self.javascript)
+
+    def test_step_up_opens_the_form_and_continues_the_change(self) -> None:
+        self.assertIn("return requestStepUp();", self.javascript)
+        self.assertIn("if (pendingStepUp) {\n      await submitStepUp();", self.javascript)
+        self.assertIn('signinCancel.addEventListener("click", () => finishStepUp(false));', self.javascript)
+        self.assertNotIn("then retry the mutation", self.javascript)
+
+    def test_sign_in_failures_explain_fresh_codes_and_lockout(self) -> None:
+        self.assertIn('response.headers.get("Retry-After")', self.javascript)
+        self.assertIn("each code works once", self.javascript)
+        self.assertIn("Too many attempts. Try again in", self.javascript)
 
 
 if __name__ == "__main__":
