@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# In-VM provisioner for oreochiserver-sim. Run as root inside the sim only.
+#   phase-a: put the pushed git bundle at /srv/argus, install the tailscale stub,
+#            and report PASS/FAIL for every server prerequisite.
+#   phase-b: install the Argus control plane with the repo's own installers
+#            (preflight, then apply with their acknowledge flags).
+# It never downloads anything; packages come from cloud-init.yaml.
+set -euo pipefail
+
+readonly SIM_HOST="oreochiserver-sim"
+readonly ROOT="/srv/argus"
+readonly OPERATOR="oreo"
+readonly STUB_TARGET="/usr/local/bin/tailscale"
+readonly STUB_MARKER="ARGUS_SIM_TAILSCALE_STUB"
+readonly DOMAINS=(personal-sandbox work-sandbox personal-managed)
+readonly STEPS=(sysusers secrets dashboard caddy sandbox ledger-worker capability-issuer
+  session-boundary control-plane-reconcile collectors workloads)
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<EOF
+Usage (as root inside $SIM_HOST):
+  provision phase-a --bundle FILE --rev SHA [--stub FILE]
+  provision phase-b [--from STEP]
+  provision check
+Phase B steps, in order: ${STEPS[*]}
+EOF
+}
+
+# Refuse anywhere but the simulator: these steps create users, secrets and units.
+require_sim() {
+  [[ $EUID -eq 0 ]] || fail "run as root (orbctl run -m $SIM_HOST -u root ...)"
+  [[ "$(hostname -s)" == "$SIM_HOST" ]] || fail "this host is $(hostname -s), not $SIM_HOST; refusing"
+}
+
+as_operator() { runuser -u "$OPERATOR" -- "$@"; }
+
+# --- phase A -----------------------------------------------------------------
+
+checkout_bundle() {
+  local bundle="$1" rev="$2" staged=/var/tmp/argus-sim.bundle
+  [[ -f "$bundle" ]] || fail "bundle not found: $bundle"
+  [[ "$rev" =~ ^[0-9a-f]{40}$ ]] || fail "--rev must be a full commit SHA"
+  install -m 0644 "$bundle" "$staged"
+  install -d -m 0755 -o "$OPERATOR" -g "$OPERATOR" "$ROOT"
+  if [[ ! -d "$ROOT/.git" ]]; then
+    as_operator git -C "$ROOT" init -q
+  elif [[ -n "$(as_operator git -C "$ROOT" status --porcelain)" ]]; then
+    fail "$ROOT has local changes; commit them on the Mac or reset the sim"
+  fi
+  as_operator git -C "$ROOT" fetch -q "$staged" '+refs/*:refs/sim/*'
+  as_operator git -C "$ROOT" checkout -q --detach "$rev"
+  rm -f "$staged"
+  printf 'PASS  %s checked out at %s\n' "$ROOT" "${rev:0:12}"
+}
+
+install_stub() {
+  local source="$1"
+  [[ -f "$source" ]] || source="$ROOT/infra/server-sim/tailscale-stub"
+  if [[ -e "$STUB_TARGET" ]] && ! grep -q "$STUB_MARKER" "$STUB_TARGET"; then
+    fail "$STUB_TARGET exists and is not the sim stub; refusing to replace it"
+  fi
+  install -m 0755 "$source" "$STUB_TARGET"
+  printf 'PASS  tailscale stub installed at %s\n' "$STUB_TARGET"
+}
+
+FAILED=0
+check() {
+  local label="$1"
+  shift
+  if "$@" >/dev/null 2>&1; then
+    printf 'PASS  %s\n' "$label"
+  else
+    printf 'FAIL  %s\n' "$label"
+    FAILED=$((FAILED + 1))
+  fi
+}
+
+gid_is() { [[ "$(getent group "$1" | cut -d: -f3)" == "$2" ]]; }
+in_group() { id -nG "$OPERATOR" | tr ' ' '\n' | grep -Fxq "$1"; }
+system_running() { [[ "$(systemctl is-system-running)" =~ ^(running|degraded)$ ]]; }
+stub_active() { grep -q "$STUB_MARKER" "$(command -v tailscale)"; }
+clean_checkout() { [[ -d "$ROOT/.git" && -z "$(as_operator git -C "$ROOT" status --porcelain)" ]]; }
+
+check_prerequisites() {
+  FAILED=0
+  check "hostname is $SIM_HOST (never oreochiserver)" test "$(hostname -s)" = "$SIM_HOST"
+  check "architecture is x86_64" test "$(uname -m)" = x86_64
+  check "systemd is PID 1" test "$(ps -p 1 -o comm=)" = systemd
+  check "systemd is running (or degraded)" system_running
+  check "cgroup v2 is mounted" test -f /sys/fs/cgroup/cgroup.controllers
+  check "user $OPERATOR has UID 1000" test "$(id -u "$OPERATOR")" = 1000
+  check "group docker has GID 983" gid_is docker 983
+  check "group argus-control has GID 981" gid_is argus-control 981
+  local group
+  for group in docker argus-control adm crontab ssl-cert; do
+    check "$OPERATOR is in group $group" in_group "$group"
+  done
+  check "/etc/ssl/private is root:ssl-cert 0710" test "$(stat -c '%U:%G %a' /etc/ssl/private)" = "root:ssl-cert 710"
+  check "$OPERATOR has subordinate UIDs" grep -q "^$OPERATOR:" /etc/subuid
+  check "$OPERATOR has subordinate GIDs" grep -q "^$OPERATOR:" /etc/subgid
+  local command
+  for command in python3 git curl openssl caddy age sqlite3 nft newuidmap newgidmap slirp4netns \
+    rootlesskit fuse-overlayfs dockerd-rootless.sh docker runuser loginctl nsenter systemd-analyze; do
+    check "command $command is installed" command -v "$command"
+  done
+  check "rootful docker.service is active" systemctl is-active --quiet docker.service
+  check "caddy.service is active" systemctl is-active --quiet caddy.service
+  check "tailscale resolves to the sim stub" stub_active
+  check "$ROOT is a clean Argus checkout" clean_checkout
+  if ((FAILED)); then
+    printf 'PREREQUISITES_FAIL failed=%d\n' "$FAILED"
+    return 1
+  fi
+  printf 'PREREQUISITES_PASS\n'
+}
+
+phase_a() {
+  local bundle="" rev="" stub=""
+  while (($#)); do
+    case "$1" in
+      --bundle) bundle="${2:-}"; shift ;;
+      --rev) rev="${2:-}"; shift ;;
+      --stub) stub="${2:-}"; shift ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  [[ -n "$bundle" && -n "$rev" ]] || { usage >&2; exit 2; }
+  checkout_bundle "$bundle" "$rev"
+  install_stub "$stub"
+  check_prerequisites
+}
+
+# --- phase B -----------------------------------------------------------------
+
+random_secret() { openssl rand -base64 48 | tr '+/' '-_' | tr -d '=\n'; }
+
+# Sim-only values, generated here and never printed. Existing files are kept.
+step_secrets() {
+  (
+    umask 077
+    install -d -m 0755 /etc/argus
+    printf 'Generated inside %s. Never copy these files to or from oreochiserver.\n' "$SIM_HOST" \
+      >/etc/argus/SIM-ONLY
+    if [[ ! -f /etc/argus/control-token ]]; then
+      random_secret >/etc/argus/control-token
+    fi
+    if [[ ! -f /etc/argus/operator-proxy-token ]]; then
+      printf 'ARGUS_OPERATOR_PROXY_TOKEN=%s\n' "$(random_secret)" >/etc/argus/operator-proxy-token
+    fi
+    if [[ ! -f /etc/argus/operators.json ]]; then
+      printf '%s\n' '{"schemaVersion":1,"operators":[{"tailnetLogin":"sim-owner@sim.invalid","role":"owner","enabled":true}]}' \
+        >/etc/argus/operators.json
+    fi
+    chown root:root /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
+    chmod 0600 /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
+  )
+  install -d -m 0770 -o "$OPERATOR" -g argus-control "$ROOT/runtime/argus/m5/agents"
+  printf 'secretsPrinted=false names=control-token,operator-proxy-token,operators.json\n'
+}
+
+step_sysusers() { systemd-sysusers "$ROOT/systemd/sysusers.d/argus-api.conf"; }
+
+step_dashboard() {
+  as_operator python3 "$ROOT/control-plane/dashboard/generate_dashboard.py"
+  as_operator "$ROOT/scripts/argus-caddy-dashboard-plan"
+}
+
+# Sim only: append the reviewed route to the stock Caddyfile once, then validate.
+step_caddy() {
+  local caddyfile=/etc/caddy/Caddyfile route="$ROOT/caddy/dashboard.Caddyfile"
+  [[ -f "$route" ]] || fail "missing $route; run the dashboard step first"
+  if ! python3 -c 'import sys; sys.exit(open(sys.argv[2]).read().strip() not in open(sys.argv[1]).read())' \
+    "$caddyfile" "$route"; then
+    cp "$caddyfile" "$caddyfile.backup.$(date +%Y%m%d-%H%M%S)"
+    { printf '\n'; cat "$route"; } >>"$caddyfile"
+  fi
+  caddy validate --config "$caddyfile" --adapter caddyfile
+  systemctl reload-or-restart caddy.service
+}
+
+installer() {
+  local script="$ROOT/scripts/$1" ack="$2"
+  "$script" --preflight
+  "$script" --apply "$ack"
+}
+
+step_sandbox() {
+  local domain bootstrap="$ROOT/scripts/argus-m5-sandbox-bootstrap"
+  for domain in "${DOMAINS[@]}"; do
+    "$bootstrap" --domain "$domain" --plan
+    "$bootstrap" --domain "$domain" --apply --acknowledge-sandbox-cell
+    "$bootstrap" --domain "$domain" --apply-host-guard --acknowledge-host-egress
+  done
+}
+
+step_ledger_worker() { installer argus-m5-ledger-worker --acknowledge-m5-ledger-worker; }
+step_capability_issuer() { installer argus-m5-capability-issuer --acknowledge-m5-capability-issuer; }
+step_session_boundary() { installer argus-m5-session-boundary --acknowledge-m5-session-boundary; }
+step_control_plane_reconcile() { installer argus-control-plane-reconcile --acknowledge-control-plane-reconcile; }
+step_collectors() { installer argus-collector-deploy --acknowledge-estate-collectors; }
+
+# Workload images come from GHCR. The token is the user's own, read-only, and
+# never handled by this script.
+step_workloads() {
+  if ! grep -qs '"ghcr.io"' /root/.docker/config.json; then
+    cat <<EOF
+GHCR_LOGIN_REQUIRED
+Workload images are pulled from ghcr.io by root's Docker. Do this yourself:
+  1. On GitHub, create a classic token with only the read:packages scope (sim use only).
+  2. Open a root shell in the sim:  orbctl run -m $SIM_HOST -u root bash
+  3. Run:  docker login ghcr.io -u <your-github-user> --password-stdin
+     and paste the token on stdin. Never pass it as an argument or store it in the repo.
+  4. Resume:  infra/server-sim/sim phase-b --from workloads
+EOF
+    return 3
+  fi
+  cat <<EOF
+GHCR login present for root (contents not read).
+Next, by hand: import pinned images with
+  $ROOT/scripts/argus-image-import --domain <trust-domain> --image ghcr.io/pxm-0/<name>@sha256:<digest>
+then deploy through the API. Smoke, alerting and backups: docs/DEV_ENV_PROTOCOL.md.
+EOF
+}
+
+phase_b() {
+  local from="${STEPS[0]}"
+  while (($#)); do
+    case "$1" in
+      --from) from="${2:-}"; shift ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  local started=false name
+  for name in "${STEPS[@]}"; do
+    [[ "$name" == "$from" ]] && started=true
+  done
+  [[ "$started" == true ]] || fail "unknown step: $from (steps: ${STEPS[*]})"
+  started=false
+  # Steps run as plain commands (not under ||) so set -e still stops them at the first failure.
+  trap report_stop EXIT
+  for name in "${STEPS[@]}"; do
+    [[ "$name" == "$from" ]] && started=true
+    [[ "$started" == true ]] || continue
+    printf '\n== phase B step: %s\n' "$name"
+    CURRENT_STEP="$name"
+    "step_${name//-/_}"
+  done
+  CURRENT_STEP=""
+  printf '\nPHASE_B_DONE\n'
+}
+
+CURRENT_STEP=""
+report_stop() {
+  local status=$?
+  if ((status)) && [[ -n "$CURRENT_STEP" ]]; then
+    printf 'PHASE_B_STOPPED step=%s exit=%d\nResume after fixing: infra/server-sim/sim phase-b --from %s\n' \
+      "$CURRENT_STEP" "$status" "$CURRENT_STEP"
+  fi
+}
+
+(($#)) || { usage >&2; exit 2; }
+command="$1"
+shift
+case "$command" in
+  phase-a) require_sim; phase_a "$@" ;;
+  phase-b) require_sim; check_prerequisites || fail "phase A prerequisites are failing"; phase_b "$@" ;;
+  check) require_sim; check_prerequisites ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

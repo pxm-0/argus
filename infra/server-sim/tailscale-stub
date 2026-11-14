@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# ARGUS_SIM_TAILSCALE_STUB: stands in for tailscale on oreochiserver-sim, which never joins a tailnet.
+# Answers only the calls Argus makes; Funnel always reports off and serve changes are no-ops.
+set -euo pipefail
+
+case "$*" in
+  "status --json"*)
+    printf '%s\n' '{"BackendState":"Running","Self":{"HostName":"oreochiserver-sim","DNSName":"oreochiserver-sim.sim.invalid.","Online":true},"Peer":{}}'
+    ;;
+  "serve status"* | "funnel status"*)
+    printf 'No serve config\n'
+    ;;
+  "serve --bg"* | "serve reset"*)
+    printf 'tailscale stub: "%s" is a no-op on oreochiserver-sim\n' "$*" >&2
+    ;;
+  version*)
+    printf '0.0.0-argus-sim-stub\n'
+    ;;
+  *)
+    printf 'tailscale stub: unsupported call: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
