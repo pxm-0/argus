@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import platform
 import re
 import stat
 import subprocess
@@ -14,6 +13,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from argus_common import expected_server_host, on_expected_server_host
 from argus_fixture_adapter import adapt_fixture
 from argus_observations import (
     DEFAULT_DATABASE_CEILING_BYTES,
@@ -89,8 +89,8 @@ def main() -> int:
     try:
         if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
             raise ObservationError("source revision must be a Git hexadecimal revision")
-        if args.target == "oreochiserver" and platform.node().split(".", 1)[0] != "oreochiserver":
-            raise ObservationError("oreochiserver acceptance must run on oreochiserver")
+        if args.target == "oreochiserver" and not on_expected_server_host():
+            raise ObservationError(f"oreochiserver acceptance must run on {expected_server_host()}")
         if args.target == "oreochiserver":
             revision = subprocess.run(
                 ["git", "-C", str(args.root), "rev-parse", "HEAD"],
