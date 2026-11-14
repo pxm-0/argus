@@ -19,6 +19,7 @@ checkout. They are not deployment automation.
 - `caddy/`: private dashboard route example.
 - `cloudflare/`: plan-only Cloudflare examples.
 - `scripts/`: discovery/bootstrap examples.
+- `dev-env/`: devcontainer and compose dev stack starters (see `docs/DEV_ENV_PROTOCOL.md`).
 
 Run from a checkout:
 

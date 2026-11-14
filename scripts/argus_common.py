@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -113,6 +114,15 @@ def save_json(name: str, data: dict[str, Any]) -> None:
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
     temp.replace(path)
+
+
+def expected_server_host() -> str:
+    """Host live acceptance must run on; ARGUS_EXPECTED_HOST names a simulator such as oreochiserver-sim."""
+    return os.environ.get("ARGUS_EXPECTED_HOST") or "oreochiserver"
+
+
+def on_expected_server_host() -> bool:
+    return platform.node().split(".", 1)[0] == expected_server_host()
 
 
 def now() -> str:

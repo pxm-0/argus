@@ -7,7 +7,6 @@ import argparse
 import copy
 import json
 import os
-import platform
 import re
 import subprocess
 import sys
@@ -16,6 +15,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from argus_common import expected_server_host, on_expected_server_host
 from argus_collectors import CollectionResult, CollectorScheduler, PageValidator, collection_request
 from argus_docker_collector import SOURCE_ID, build_pages, collect_docker_records
 from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
@@ -151,8 +151,8 @@ def main() -> int:
         if re.fullmatch(r"[0-9a-f]{7,40}", args.source_revision) is None:
             raise ObservationError("source revision must be hexadecimal")
         if args.target == "oreochiserver":
-            if platform.node().split(".", 1)[0] != "oreochiserver":
-                raise ObservationError("live D2a acceptance must run on oreochiserver")
+            if not on_expected_server_host():
+                raise ObservationError(f"live D2a acceptance must run on {expected_server_host()}")
             if args.baseline_max_ms is None or args.baseline_max_ms <= 0:
                 raise ObservationError("live D2a acceptance requires a positive baseline")
             revision = subprocess.run(
