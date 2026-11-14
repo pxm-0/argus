@@ -201,11 +201,13 @@ installer() {
   "$script" --apply "$ack"
 }
 
-# SIM-ONLY: Docker 29's dockerd-rootless.sh defaults to RootlessKit --detach-netns,
-# which leaves the RootlessKit child in the host network namespace on this OrbStack
-# kernel. The bootstrap's firewall helper then (correctly) refuses to install the
-# sandbox nftables policy there. The classic mode keeps the child in its own
-# namespace, which is what the firewall helper verifies and filters.
+# SIM-ONLY: Docker 29's dockerd-rootless.sh defaults to RootlessKit --detach-netns.
+# Detach mode runs containers in $ROOTLESSKIT_STATE_DIR/netns, not in the RootlessKit
+# child's namespace, which is where the bootstrap's firewall helper loads the policy.
+# Classic mode keeps containers in the filtered namespace. This makes the sim's egress
+# policy hold and says nothing about the server (docs/DEV_ENV_PROTOCOL.md).
+# Manager-wide is fine here: only the sandbox users run rootless dockerd in the sim,
+# and the bootstrap owns and rolls back the user@<uid>.service.d drop-ins.
 readonly ROOTLESS_ENV=/etc/systemd/user.conf.d/argus-sim-rootless.conf
 
 # The server's sandbox UIDs (config/argus/observation-sources.json, docs/ARGUS_D2B_ROOTLESS_DOCKER_COLLECTOR.md).
