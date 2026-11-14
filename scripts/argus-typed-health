@@ -123,10 +123,12 @@ def observe(
             outcome.update(status="denied", detail=f"create-http-{created.status}")
             return outcome
         outcome["operationId"] = operation_id
-        approved = client.approve(operation_id, str(preview.body.get("confirmationPhrase", "")))
-        if approved.status not in (200, 202):
-            outcome.update(status="denied", detail=f"approve-http-{approved.status}")
-            return outcome
+        # No-mutation operations are queued at create; approving those again answers 409.
+        if created.body.get("state") == "awaiting-approval":
+            approved = client.approve(operation_id, str(preview.body.get("confirmationPhrase", "")))
+            if approved.status not in (200, 202):
+                outcome.update(status="denied", detail=f"approve-http-{approved.status}")
+                return outcome
         deadline = clock() + deadline_seconds
         while True:
             operation = client.operation(operation_id).body
