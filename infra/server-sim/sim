@@ -87,8 +87,12 @@ push_and_phase_a() {
 }
 
 run_phase_b() {
-  plan "run phase B as root inside $MACHINE: /srv/argus/infra/server-sim/provision phase-b $*"
-  in_vm bash /srv/argus/infra/server-sim/provision phase-b "$@"
+  local home
+  # The pushed copy, not /srv/argus's: --ref may name a tree without infra/server-sim.
+  # shellcheck disable=SC2016 # $HOME must expand inside the sim, not on the Mac
+  home="$(orbctl run -m "$MACHINE" sh -c 'printf %s "$HOME"')"
+  plan "run phase B as root inside $MACHINE: $home/provision phase-b $*"
+  in_vm bash "$home/provision" phase-b "$@"
 }
 
 cmd_status() {

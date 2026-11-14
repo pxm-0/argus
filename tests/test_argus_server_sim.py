@@ -88,5 +88,33 @@ class SimLanExposureTests(unittest.TestCase):
         self.assertIn("--user simadmin", result.stdout)
 
 
+class SimPhaseBTests(unittest.TestCase):
+    def test_phase_b_runs_the_pushed_provisioner_not_the_checkout_copy(self) -> None:
+        # --ref may name a tree without infra/server-sim (e.g. the wave2 branch), so phase B
+        # must run the provisioner that sim pushed into the machine's home directory.
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "calls"
+            fake = Path(directory) / "orbctl"
+            fake.write_text(
+                "#!/usr/bin/env bash\n"
+                f"echo \"$*\" >> '{log}'\n"
+                'case "$*" in\n'
+                "  'config show') printf 'machines.expose_ports_to_lan: false\\ndocker.expose_ports_to_lan: false\\n' ;;\n"
+                "  'list -q') printf 'oreochiserver-sim\\n' ;;\n"
+                "  *'printf %s \"$HOME\"'*) printf /home/simadmin ;;\n"
+                "esac\n"
+            )
+            fake.chmod(0o755)
+            env = {**os.environ, "PATH": f"{directory}{os.pathsep}{os.environ['PATH']}"}
+            result = subprocess.run(
+                ["bash", str(SIM / "sim"), "phase-b", "--from", "workloads"],
+                text=True, capture_output=True, env=env, check=False,
+            )
+            calls = log.read_text()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertIn("bash /home/simadmin/provision phase-b --from workloads", calls)
+        self.assertNotIn("/srv/argus/infra/server-sim/provision", calls)
+
+
 if __name__ == "__main__":
     unittest.main()
