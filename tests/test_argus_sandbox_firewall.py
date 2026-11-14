@@ -127,10 +127,11 @@ class RuntimeRunner(module.Runner):
     def text(self, command: list[str]) -> str:
         joined = " ".join(command)
         if "network ls -q" in joined:
-            return "\n".join(item[2] * 64 for item in self.projects)
+            return "\n".join(["0" * 64] + [item[2] * 64 for item in self.projects])
         if "network inspect" in joined:
             return json.dumps(
-                [
+                [{"Name": "bridge", "Driver": "bridge", "Id": "0" * 64}]
+                + [
                     {
                         "Name": f"{project}_{network}",
                         "Driver": "bridge",
@@ -229,9 +230,38 @@ class TypedDeployProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(module.FirewallOperationError, "projects differ"):
             self.plan([*SANDBOX, unknown])
 
-    def test_missing_cutover_project_is_still_refused(self, _child: mock.Mock) -> None:
+    def test_absent_cutover_project_gets_no_rules_and_is_reported(self, _child: mock.Mock) -> None:
+        # The sim rehearsal ran nodens-staging with hastur and kadath-live never deployed.
+        plan = self.plan([STAGING])
+        self.assertEqual({}, plan["configuredProjects"])
+        self.assertEqual({"hastur": "hastur", "kadath": "kadath-live"}, plan["absentProjects"])
+        self.assertEqual({}, plan["egress"])
+        forward = [line for line in plan["rendered"].splitlines() if line.strip().startswith("iifname") and "masquerade" not in line]
+        self.assertEqual([STAGING_RULE.rstrip("\n")], forward)
+        self.assertIn("policy drop;", plan["rendered"])
+        partial = self.plan([SANDBOX[0], STAGING])
+        self.assertEqual({"kadath": "kadath-live"}, partial["absentProjects"])
+        self.assertNotIn("argus-kadath", partial["rendered"])
+        self.assertIn('iifname "argus-hastur" oifname "tap0"', partial["rendered"])
+        self.assertNotEqual(plan["planDigest"], partial["planDigest"])
+
+    def test_managed_domain_with_only_a_typed_project_gets_its_bridge_rule(self, _child: mock.Mock) -> None:
+        production = ("nodens-production", "internal", "e", "argus-ndns-prd", "nodens", "172.18.0.2", 105)
+        self.assertEqual({}, module.configured_projects(ROOT, "personal-managed"))
+        for projects in ([production], []):
+            with self.subTest(running=bool(projects)):
+                plan = module.build_plan(ROOT, "personal-managed", RuntimeRunner(projects), now=self.NOW)
+                forward = [line.strip() for line in plan["rendered"].splitlines() if line.strip().startswith("iifname")]
+                self.assertEqual(['iifname "argus-ndns-prd" oifname "argus-ndns-prd" accept;'], forward)
+                self.assertIn("policy drop;", plan["rendered"])
+        rogue = ("rogue", "default", "f", "argus-rogue", "web", "172.22.0.2", 106)
         with self.assertRaisesRegex(module.FirewallOperationError, "projects differ"):
-            self.plan([SANDBOX[0], STAGING])
+            module.build_plan(ROOT, "personal-managed", RuntimeRunner([production, rogue]), now=self.NOW)
+
+    def test_domain_with_no_projects_is_refused(self, _child: mock.Mock) -> None:
+        with mock.patch.object(module, "typed_projects", return_value={}):
+            with self.assertRaisesRegex(module.FirewallOperationError, "no configured projects"):
+                module.build_plan(ROOT, "personal-managed", RuntimeRunner([]), now=self.NOW)
 
     def test_typed_project_on_an_undeclared_bridge_is_refused(self, _child: mock.Mock) -> None:
         unnamed = (*STAGING[:3], "br-dddddddddddd", *STAGING[4:])
@@ -355,6 +385,7 @@ class SandboxFirewallTests(unittest.TestCase):
         observed = {
             "childPid": 123,
             "configuredProjects": {"alpha": "alpha"},
+            "absentProjects": {},
             "typedBridges": {},
             "networks": [
                 {"project": "alpha", "network": "default", "networkId": "a" * 64, "interface": "br-aaaaaaaaaaaa"}
