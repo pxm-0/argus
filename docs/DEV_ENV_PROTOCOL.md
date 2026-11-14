@@ -79,6 +79,8 @@ Conventions for new rows: web apps `3xxx`/`4xxx`, Postgres `554xx`, Redis
 Ubuntu 26.04 on amd64 (Rosetta), user `oreo` UID 1000, `docker` GID 983,
 `argus-control` GID 981, systemd, rootful plus per-trust-domain rootless
 Docker, Caddy, and the Argus checkout at `/srv/argus`.
+OrbStack's own default user is `simadmin`, so it never takes the name
+`oreo`; `sim up` refuses to continue unless `oreo` came out as UID 1000.
 
 What differs on purpose:
 
@@ -152,16 +154,23 @@ inside the sim and refuses on any other hostname.
   and GIDs, group memberships, `/etc/ssl/private` mode, subordinate IDs,
   every required command, rootful Docker, Caddy, the stub and a clean
   checkout. It ends with `PREREQUISITES_PASS` or `PREREQUISITES_FAIL`.
-- **Phase B (control plane):** reuses the repo's installers in order, each
-  with `--preflight` before `--apply` and its acknowledge flag:
-  `sysusers` → `secrets` (sim-only `control-token`, `operator-proxy-token`,
-  `operators.json` with the fake owner `sim-owner@sim.invalid`) →
-  `dashboard` → `caddy` (appends the reviewed route to the stock Caddyfile,
-  sim only) → `sandbox` (`argus-m5-sandbox-bootstrap` for personal-sandbox,
-  work-sandbox and personal-managed) → `ledger-worker` → `capability-issuer`
-  → `session-boundary` → `control-plane-reconcile` → `collectors` →
-  `workloads`. It stops at the first failure and prints the `--from` step to
-  resume with.
+- **Phase B (control plane):** reuses the repo's installers in the server
+  provisioning order, each with `--preflight` before `--apply` and its
+  acknowledge flag: `sysusers` → `secrets` (sim-only `control-token`,
+  `operator-proxy-token`, `operators.json` with the fake owner
+  `sim-owner@sim.invalid`, and `runtime/argus/m5/agents`) → `dashboard`
+  (generate) → `ledger-worker` → `capability-issuer` → `sandbox`
+  (`argus-m5-sandbox-bootstrap` for personal-sandbox, work-sandbox and
+  personal-managed) → `caddy` (appends the reviewed route to the stock
+  Caddyfile, sim only) → `session-boundary` → `control-plane-reconcile` →
+  `units` (enables the domain agents, privileged-lifecycle agent and
+  migration coordinator) → `collectors` → `workloads`. Two changes from the
+  server order, both forced by a fresh machine: the dashboard is generated
+  before the ledger worker, and `argus-m5-runtime-permissions` is not its own
+  step. That script refuses without the generated dashboard files and the
+  `argus-worker` user, and the ledger-worker and capability-issuer installers
+  already run it. Phase B stops at the first failure and prints the `--from`
+  step to resume with.
 
 The `workloads` step stops with `GHCR_LOGIN_REQUIRED` until root's Docker is
 logged in to `ghcr.io`. Doing that is yours alone:

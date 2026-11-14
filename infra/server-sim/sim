@@ -6,6 +6,9 @@ set -euo pipefail
 readonly MACHINE="oreochiserver-sim"
 readonly GOLDEN="oreochiserver-sim-golden"
 readonly IMAGE="ubuntu:26.04"
+# OrbStack names its default user after the macOS user (oreo, UID 501) unless told
+# otherwise; a different name leaves oreo to cloud-init, which gives it UID 1000.
+readonly ORB_USER="simadmin"
 HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
 readonly HERE
 REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
@@ -98,14 +101,16 @@ cmd_up() {
   if exists "$MACHINE"; then
     printf 'SKIP  %s already exists; not creating it\n' "$MACHINE"
   else
-    plan "orbctl create --arch amd64 --isolated --cpus $CPUS --memory $MEMORY --disk $DISK --user-data cloud-init.yaml $IMAGE $MACHINE"
+    plan "orbctl create --arch amd64 --isolated --cpus $CPUS --memory $MEMORY --disk $DISK --user $ORB_USER --user-data cloud-init.yaml $IMAGE $MACHINE"
     need_yes
     orbctl create --arch amd64 --isolated --cpus "$CPUS" --memory "$MEMORY" --disk "$DISK" \
-      --user-data "$HERE/cloud-init.yaml" "$IMAGE" "$MACHINE"
+      --user "$ORB_USER" --user-data "$HERE/cloud-init.yaml" "$IMAGE" "$MACHINE"
   fi
   step "waiting for cloud-init"
   in_vm cloud-init status --wait ||
     fail "cloud-init did not finish cleanly; inspect: orbctl run -m $MACHINE -u root cloud-init status --long"
+  [[ "$(in_vm id -u oreo)" == 1000 ]] ||
+    fail "oreo is not UID 1000 in $MACHINE (OrbStack may have created it); run: infra/server-sim/sim down --yes, then up again"
   push_and_phase_a "$REF"
   run_phase_b
 }

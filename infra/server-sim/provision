@@ -13,8 +13,13 @@ readonly OPERATOR="oreo"
 readonly STUB_TARGET="/usr/local/bin/tailscale"
 readonly STUB_MARKER="ARGUS_SIM_TAILSCALE_STUB"
 readonly DOMAINS=(personal-sandbox work-sandbox personal-managed)
-readonly STEPS=(sysusers secrets dashboard caddy sandbox ledger-worker capability-issuer
-  session-boundary control-plane-reconcile collectors workloads)
+# The server provisioning order (scout section 13), with two fresh-machine adjustments:
+# - dashboard generation moves before ledger-worker: that installer runs
+#   argus-m5-runtime-permissions, which refuses without the generated dashboard files;
+# - there is no standalone runtime-permissions step: it refuses until argus-worker
+#   exists, and the ledger-worker and capability-issuer installers both run it.
+readonly STEPS=(sysusers secrets dashboard ledger-worker capability-issuer sandbox caddy
+  session-boundary control-plane-reconcile units collectors workloads)
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -157,7 +162,8 @@ step_secrets() {
     chown root:root /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
     chmod 0600 /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
   )
-  install -d -m 0770 -o "$OPERATOR" -g argus-control "$ROOT/runtime/argus/m5/agents"
+  # As the operator, so the parent runtime directories are not left root-owned.
+  as_operator install -d -m 0770 -g argus-control "$ROOT/runtime/argus/m5/agents"
   printf 'secretsPrinted=false names=control-token,operator-proxy-token,operators.json\n'
 }
 
@@ -200,6 +206,14 @@ step_ledger_worker() { installer argus-m5-ledger-worker --acknowledge-m5-ledger-
 step_capability_issuer() { installer argus-m5-capability-issuer --acknowledge-m5-capability-issuer; }
 step_session_boundary() { installer argus-m5-session-boundary --acknowledge-m5-session-boundary; }
 step_control_plane_reconcile() { installer argus-control-plane-reconcile --acknowledge-control-plane-reconcile; }
+# Section 13 step 10. The ledger-worker and capability-issuer installers copy these
+# units in; this makes sure every one is enabled and running.
+step_units() {
+  local domain units=(argus-domain-agent-legacy-rootful.service argus-privileged-lifecycle-agent.service
+    argus-migration-coordinator.service)
+  for domain in "${DOMAINS[@]}"; do units+=("argus-domain-agent@$domain.service"); done
+  systemctl enable --now "${units[@]}"
+}
 step_collectors() { installer argus-collector-deploy --acknowledge-estate-collectors; }
 
 # Workload images come from GHCR. The token is the user's own, read-only, and
