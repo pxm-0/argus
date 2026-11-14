@@ -18,6 +18,7 @@ or branch in them is not current guidance unless a current document repeats it.
 ## Contributor
 
 - [`PR_WORKFLOW.md`](PR_WORKFLOW.md) — current `main`-based P0 branch and PR contract.
+- [`DEV_ENV_PROTOCOL.md`](DEV_ENV_PROTOCOL.md) — containerised dev environments, port registry, and the `oreochiserver-sim` server simulation.
 - [`ARGUS_ISSUE_REMEDIATION_PLAN.md`](ARGUS_ISSUE_REMEDIATION_PLAN.md) — approved implementation sequence and critique loop.
 - [`CODEX_TASKS.md`](CODEX_TASKS.md) — task prompts where still linked by a current issue.
 - [`ACCEPTANCE_SUMMARIES.md`](ACCEPTANCE_SUMMARIES.md) — redacted PR evidence contract.
