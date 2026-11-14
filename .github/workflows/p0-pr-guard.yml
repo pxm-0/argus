@@ -48,8 +48,9 @@ jobs:
                   print(f"- {item}")
               sys.exit(1)
 
-          if base != "main":
-              print("P0 remediation PRs must target main.")
+          # Wave2 lands through integration/wave2 and PRs stacked on wave2 branches.
+          if base != "main" and "wave2" not in base:
+              print("P0 remediation PRs must target main or a wave2 integration branch.")
               sys.exit(1)
 
           evidence_choices = (

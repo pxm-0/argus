@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import socket
 import socketserver
 import subprocess
 import sys
@@ -47,6 +49,21 @@ def parse_compose_rows(stdout: str) -> list[dict[str, Any]]:
         # compose prints one JSON object per container line, so multi-container projects are NDJSON
         decoded = [json.loads(line) for line in stripped.splitlines() if line.strip()]
     return decoded if isinstance(decoded, list) else [decoded]
+
+
+def probe_ingress(socket_path: Path, timeout: float = 3.0) -> bool:
+    """GET /healthz through the workload's ingress Caddy; a 5xx (e.g. 502) means the app is unreachable."""
+    connection = http.client.HTTPConnection("localhost", timeout=timeout)
+    try:
+        connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.sock.settimeout(timeout)
+        connection.sock.connect(str(socket_path))
+        connection.request("GET", "/healthz")
+        return connection.getresponse().status < 500
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
 
 
 class IndeterminateOperation(RuntimeError):
@@ -174,6 +191,14 @@ class AgentService:
         manifest = load_manifest(workload_id)
         return str(manifest.get("runtime", {}).get("service") or item.get("runtime", {}).get("service") or "")
 
+    def ingress_socket(self, workload_id: str) -> Path | None:
+        """Typed-deploy workloads (manifest declares a stable bridge) serve through a per-domain ingress socket."""
+        compose = (load_manifest(workload_id).get("runtime") or {}).get("compose")
+        if not isinstance(compose, dict) or not compose.get("bridge"):
+            return None
+        kind = self.domain.split("-", 1)[-1]
+        return Path(f"/var/lib/argus/{kind}-ingress/{workload_id}/upstream.sock")
+
     def domain_health(self, workload_id: str) -> dict[str, Any]:
         command = self.compose_command(workload_id, "ps", "--format", "json")
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8)
@@ -198,10 +223,15 @@ class AgentService:
             and str(row.get("Health", "")).lower() in {"", "healthy"}
             for row in rows
         )
+        detail = f"{len(rows)} approved service(s) observed"
+        ingress = self.ingress_socket(workload_id) if healthy else None
+        if ingress is not None and not probe_ingress(ingress):
+            # Containers can run while the domain firewall drops ingress->app traffic (502 on upstream.sock).
+            return {"ok": False, "status": "degraded", "detail": f"{detail}; ingress /healthz probe failed"}
         return {
             "ok": healthy,
             "status": "healthy" if healthy else "unhealthy",
-            "detail": f"{len(rows)} approved service(s) observed",
+            "detail": detail,
         }
 
     def image_id(self, workload_id: str) -> str:

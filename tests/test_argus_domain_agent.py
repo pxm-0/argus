@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import http.server
 import os
 import shutil
+import socketserver
+import threading
 import subprocess
 import sys
 import tempfile
@@ -13,10 +16,34 @@ from unittest.mock import Mock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_domain_agent import AgentService  # noqa: E402
+from argus_domain_agent import AgentService, probe_ingress  # noqa: E402
 from argus_capabilities import Ed25519Signer, build_envelope  # noqa: E402
 from argus_canonical import canonical_policy_version, canonical_revision  # noqa: E402
 from argus_operations import digest  # noqa: E402
+
+
+class _UnixHTTPServer(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
+    daemon_threads = True
+
+
+def ingress_stub(socket_path: Path, status: int) -> _UnixHTTPServer:
+    """An ingress Caddy stand-in on upstream.sock answering every request with `status`."""
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            self.send_response(status)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+
+        def log_message(self, *_args: object) -> None:
+            pass
+
+        def address_string(self) -> str:
+            return "ingress"
+
+    server = _UnixHTTPServer(str(socket_path), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
 
 class DomainAgentServiceTests(unittest.TestCase):
@@ -285,6 +312,64 @@ class DomainAgentServiceTests(unittest.TestCase):
         self.assertEqual(image, result["imageId"])
         self.assertIn("inspect", run.call_args_list[-1].args[0])
         self.assertIn("completed", result["summary"])
+
+    def test_typed_workloads_resolve_their_domain_ingress_socket(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            self.assertEqual(
+                Path("/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock"),
+                service.ingress_socket("nodens-staging"),
+            )
+            service.domain = "personal-managed"
+            self.assertEqual(
+                Path("/var/lib/argus/managed-ingress/nodens-production/upstream.sock"),
+                service.ingress_socket("nodens-production"),
+            )
+            # Cutover workloads have no typed bridge and keep container-only health.
+            self.assertIsNone(service.ingress_socket("hastur"))
+
+    def test_probe_ingress_fails_on_502_and_missing_socket(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            for status, expected in ((200, True), (404, True), (502, False)):
+                path = Path(directory) / f"{status}.sock"
+                server = ingress_stub(path, status)
+                try:
+                    self.assertEqual(expected, probe_ingress(path), status)
+                finally:
+                    server.shutdown()
+                    server.server_close()
+            self.assertFalse(probe_ingress(Path(directory) / "absent.sock"))
+
+    def test_deploy_with_running_containers_but_broken_ingress_fails(self) -> None:
+        # Sim rehearsal: nodens and its ingress ran, but the domain firewall dropped ingress->app, so upstream.sock 502'd.
+        config = subprocess.CompletedProcess([], 0, stdout="sha256:target\n")
+        up = subprocess.CompletedProcess([], 0, stdout="")
+        ps = subprocess.CompletedProcess([], 0, stdout=(
+            '{"Service":"argus-ingress","State":"running","Health":""}\n'
+            '{"Service":"nodens","State":"running","Health":"healthy"}\n'
+        ))
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            socket_path = Path(directory) / "upstream.sock"
+            server = ingress_stub(socket_path, 502)
+            try:
+                with (
+                    patch.object(service, "run_compose", side_effect=[config, up]),
+                    patch.object(service, "compose_service", return_value="nodens"),
+                    patch.object(service, "ingress_socket", return_value=socket_path),
+                    patch("argus_domain_agent.subprocess.run", return_value=ps),
+                    patch("argus_domain_agent.time.sleep"),
+                    patch("argus_domain_agent.time.monotonic", side_effect=[0.0, 0.0, 61.0]),
+                ):
+                    health = service.domain_health("nodens-staging")
+                    with self.assertRaisesRegex(RuntimeError, "domain health failed"):
+                        service.execute_typed("workload.deploy", "nodens-staging", {"targetRevision": "sha256:target"})
+            finally:
+                server.shutdown()
+                server.server_close()
+        self.assertEqual("degraded", health["status"])
+        self.assertFalse(health["ok"])
+        self.assertIn("ingress", health["detail"])
 
     def test_unreadable_image_id_is_empty_not_fatal(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
