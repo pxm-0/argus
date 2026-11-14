@@ -57,14 +57,16 @@ class CloudInitPackageTests(unittest.TestCase):
 
 
 class ProvisionStepOrderTests(unittest.TestCase):
-    def test_phase_b_follows_the_server_provisioning_order(self) -> None:
+    def test_phase_b_satisfies_fresh_machine_preflights_in_order(self) -> None:
+        # The M5 installers need the sandbox users before the ledger worker, and the two
+        # sim-only seeds (earlier-milestone state) before either installer.
         result = subprocess.run(
             ["bash", str(SIM / "provision"), "--help"], text=True, capture_output=True, check=False
         )
         self.assertEqual(0, result.returncode)
         self.assertIn(
-            "sysusers secrets dashboard ledger-worker capability-issuer sandbox caddy "
-            "session-boundary control-plane-reconcile units collectors workloads",
+            "sysusers secrets dashboard sandbox runtime-seed control-plane-seed ledger-worker "
+            "capability-issuer caddy session-boundary control-plane-reconcile units collectors workloads",
             result.stdout,
         )
 

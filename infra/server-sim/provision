@@ -13,13 +13,21 @@ readonly OPERATOR="oreo"
 readonly STUB_TARGET="/usr/local/bin/tailscale"
 readonly STUB_MARKER="ARGUS_SIM_TAILSCALE_STUB"
 readonly DOMAINS=(personal-sandbox work-sandbox personal-managed)
-# The server provisioning order (scout section 13), with two fresh-machine adjustments:
+# The server provisioning order (scout section 13), adjusted for a fresh machine.
+# The server reached its control plane one milestone at a time; today's installers
+# are upgrade scripts whose preflights expect that earlier state:
 # - dashboard generation moves before ledger-worker: that installer runs
 #   argus-m5-runtime-permissions, which refuses without the generated dashboard files;
+# - sandbox moves before ledger-worker: both M5 installers refuse without the
+#   argus-<domain> runtime users (docs/ARGUS_M5_SANDBOX_RUNTIMES.md applies the
+#   runtimes before the issuer);
+# - two SIM-ONLY seed steps recreate state that earlier milestones left on the
+#   server and that no current installer creates (see step_runtime_seed and
+#   step_control_plane_seed);
 # - there is no standalone runtime-permissions step: it refuses until argus-worker
 #   exists, and the ledger-worker and capability-issuer installers both run it.
-readonly STEPS=(sysusers secrets dashboard ledger-worker capability-issuer sandbox caddy
-  session-boundary control-plane-reconcile units collectors workloads)
+readonly STEPS=(sysusers secrets dashboard sandbox runtime-seed control-plane-seed ledger-worker
+  capability-issuer caddy session-boundary control-plane-reconcile units collectors workloads)
 
 fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
 
@@ -155,10 +163,10 @@ step_secrets() {
     if [[ ! -f /etc/argus/operator-proxy-token ]]; then
       printf 'ARGUS_OPERATOR_PROXY_TOKEN=%s\n' "$(random_secret)" >/etc/argus/operator-proxy-token
     fi
-    if [[ ! -f /etc/argus/operators.json ]]; then
-      printf '%s\n' '{"schemaVersion":1,"operators":[{"tailnetLogin":"sim-owner@sim.invalid","role":"owner","enabled":true}]}' \
-        >/etc/argus/operators.json
-    fi
+    # Not a secret, so always rewritten. The session-boundary installer rejects an
+    # enabled .invalid login; .test is reserved (RFC 2606) and never a real tailnet login.
+    printf '%s\n' '{"schemaVersion":1,"operators":[{"tailnetLogin":"sim-owner@oreochiserver-sim.test","role":"owner","enabled":true}]}' \
+      >/etc/argus/operators.json
     chown root:root /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
     chmod 0600 /etc/argus/control-token /etc/argus/operator-proxy-token /etc/argus/operators.json
   )
@@ -193,13 +201,112 @@ installer() {
   "$script" --apply "$ack"
 }
 
+# SIM-ONLY: Docker 29's dockerd-rootless.sh defaults to RootlessKit --detach-netns,
+# which leaves the RootlessKit child in the host network namespace on this OrbStack
+# kernel. The bootstrap's firewall helper then (correctly) refuses to install the
+# sandbox nftables policy there. The classic mode keeps the child in its own
+# namespace, which is what the firewall helper verifies and filters.
+readonly ROOTLESS_ENV=/etc/systemd/user.conf.d/argus-sim-rootless.conf
+
+# The server's sandbox UIDs (config/argus/observation-sources.json, docs/ARGUS_D2B_ROOTLESS_DOCKER_COLLECTOR.md).
+# The bootstrap's own useradd takes the next free UID, which differs on a fresh machine,
+# and the collector installer refuses a socket owned by any other UID. Pin them like oreo's.
+domain_uid() {
+  case "$1" in personal-sandbox) echo 1002 ;; work-sandbox) echo 1003 ;; personal-managed) echo 1004 ;; esac
+}
+
 step_sandbox() {
   local domain bootstrap="$ROOT/scripts/argus-m5-sandbox-bootstrap"
+  install -d -m 0755 "$(dirname "$ROOTLESS_ENV")"
+  printf '[Manager]\nDefaultEnvironment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false\n' >"$ROOTLESS_ENV"
   for domain in "${DOMAINS[@]}"; do
+    # The bootstrap's useradd flags (argus-m4-personal-sandbox-bootstrap), plus the server's UID.
+    getent passwd "argus-$domain" >/dev/null ||
+      useradd --create-home --shell /usr/sbin/nologin --uid "$(domain_uid "$domain")" "argus-$domain"
+    [[ "$(id -u "argus-$domain")" == "$(domain_uid "$domain")" ]] ||
+      fail "argus-$domain is not UID $(domain_uid "$domain"); reset the sim"
     "$bootstrap" --domain "$domain" --plan
     "$bootstrap" --domain "$domain" --apply --acknowledge-sandbox-cell
     "$bootstrap" --domain "$domain" --apply-host-guard --acknowledge-host-egress
   done
+}
+
+# SIM-ONLY seed: operator runtime state the server has from earlier milestones.
+# - The M1 single writer (scripts/argus_m1.py access_writer) creates
+#   runtime/argus/m1/state.sqlite3 and runtime/argus/audit.sqlite3 when it is built,
+#   and the access journal on its first mutation; the server has all three from M1
+#   use, and argus-m5-capability-issuer refuses without them ("shared writer input
+#   is missing"). Build the writer as the operator and start an empty journal (no
+#   access mutation has happened here, which an empty journal says).
+# - runtime/backups is where the operator's argus-backup-run (P2) writes; every
+#   domain-agent unit lists it in ReadWritePaths, so systemd refuses to start an
+#   agent without it.
+# - oreo keeps a lingering user manager on the server (user@1000.service runs
+#   user services in docs/DISCOVERY.md; docs/BACKUP_AND_RESTORE.md stops oreo's user
+#   timers). argus-user-schedules-collector-oreo.service needs /run/user/1000.
+step_runtime_seed() {
+  local journal="$ROOT/runtime/argus/m1/access-journal.jsonl"
+  as_operator env ARGUS_ROOT="$ROOT" PYTHONPATH="$ROOT/scripts" python3 -c \
+    'from argus_m1 import access_writer; access_writer()'
+  [[ -e "$journal" ]] || as_operator install -m 0660 /dev/null "$journal"
+  as_operator mkdir -p "$ROOT/runtime/backups"
+  loginctl enable-linger "$OPERATOR"
+  for _ in {1..60}; do [[ -d /run/user/1000 ]] && break; sleep 0.5; done
+  [[ -d /run/user/1000 ]] || fail "$OPERATOR's user manager did not start"
+  printf 'RUNTIME_SEEDED accessMutations=0\n'
+}
+
+# SIM-ONLY seed. On the server the ledger worker (Phase 1, 7505f0d) was activated
+# before the issuer, while the domain agents already ran; the work-sandbox runtime
+# and issuer key came later (cf847c1), and that commit made the ledger-worker
+# preflight require them. With today's units the two installers need each other:
+# argus-m5-ledger-worker wants the work-sandbox issuer.pub and an active
+# argus-domain-agent@work-sandbox, and that agent Requires the issuer and worker
+# units that the installers install. This seed recreates the post-cf847c1 server
+# state with the installers' own commands (users, key, units) and nothing more;
+# both installers then run in full and re-verify every owner, mode, socket and
+# service they care about.
+step_control_plane_seed() {
+  local key=/etc/argus/capability-issuer/ed25519.key unit domain public
+  # argus-m5-ledger-worker ensure_worker_user and argus-m5-capability-issuer ensure_issuer_user.
+  for unit in argus-worker argus-issuer; do
+    getent passwd "$unit" >/dev/null ||
+      useradd --system --gid argus-control --home-dir /nonexistent --shell /usr/sbin/nologin "$unit"
+  done
+  install -d -o "$OPERATOR" -g argus-control -m 0770 /var/lib/argus/control
+  # argus-m5-capability-issuer install_key_material: the key is generated here, never printed,
+  # and the issuer installer keeps it and re-distributes the public half.
+  install -d -o argus-issuer -g root -m 0700 "$(dirname "$key")"
+  if [[ ! -f "$key" ]]; then
+    (umask 077 && openssl genpkey -algorithm ED25519 -out "$key")
+  fi
+  chown argus-issuer:root "$key"
+  chmod 0600 "$key"
+  public="$(mktemp)"
+  openssl pkey -in "$key" -pubout -out "$public"
+  for domain in legacy-rootful "${DOMAINS[@]}"; do
+    install -d -o root -g root -m 0755 "/etc/argus/domains/$domain"
+    install -o root -g root -m 0444 "$public" "/etc/argus/domains/$domain/issuer.pub"
+  done
+  rm -f -- "$public"
+  # The unit set both installers copy from the reviewed checkout.
+  for unit in argus-operation-worker.service argus-capability-issuer.service argus-control-api.service \
+    argus-domain-agent-legacy-rootful.service argus-domain-agent@.service \
+    argus-privileged-lifecycle-agent.service argus-migration-coordinator.service; do
+    install -o root -g root -m 0644 "$ROOT/systemd/$unit" "/etc/systemd/system/$unit"
+  done
+  "$ROOT/scripts/argus-m5-runtime-permissions"
+  systemctl daemon-reload
+  # Requires= pulls in the worker (which creates the ledger) and the issuer. The agent
+  # refuses until the ledger exists and restarts every 3s, so wait for its socket.
+  systemctl start argus-domain-agent@work-sandbox.service
+  for _ in {1..60}; do
+    [[ -S /run/argus/domains/work-sandbox/agent.sock ]] &&
+      systemctl is-active --quiet argus-domain-agent@work-sandbox.service && break
+    sleep 0.5
+  done
+  [[ -S /run/argus/domains/work-sandbox/agent.sock ]] || fail "work-sandbox domain agent did not start"
+  printf 'CONTROL_PLANE_SEEDED secretsPrinted=false\n'
 }
 
 step_ledger_worker() { installer argus-m5-ledger-worker --acknowledge-m5-ledger-worker; }
