@@ -31,6 +31,8 @@ REQUIRED_TEMPLATES = [
     "templates/config/privacy.example.json",
     "templates/config/routes.example.json",
     "templates/config/workloads.example.json",
+    "templates/dev-env/compose.dev.yml",
+    "templates/dev-env/devcontainer.jsonc",
     "templates/scripts/bootstrap-layout.sh.example",
     "templates/scripts/discovery.sh.example",
     "templates/systemd/argus-control-api.service",

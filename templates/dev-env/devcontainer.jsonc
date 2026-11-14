@@ -1,0 +1,22 @@
+// Devcontainer template (Argus docs/DEV_ENV_PROTOCOL.md).
+// Copy to <repo>/.devcontainer/devcontainer.json (the file accepts these comments).
+// The toolchain runs in the compose.dev.yml "workspace" service, so the editor,
+// the dev stack and CI all use the same image and the same Linux node_modules.
+{
+  "name": "myapp",
+  "dockerComposeFile": ["../compose.dev.yml"],
+  "service": "workspace",
+  // Start the toolchain and its dependencies; add "app" to also run the dev server.
+  "runServices": ["workspace", "postgres"],
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "stopCompose",
+  // Same install command as CI, run inside Linux. Never reuse the host's node_modules.
+  "postCreateCommand": "npm ci",
+  // compose.dev.yml already publishes ports on 127.0.0.1; do not add forwardPorts that bind wider.
+  "remoteUser": "node",
+  "customizations": {
+    "vscode": {
+      "extensions": []
+    }
+  }
+}
