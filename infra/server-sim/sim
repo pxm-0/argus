@@ -139,6 +139,9 @@ cmd_reset() {
   if exists "$MACHINE"; then orbctl delete -f "$MACHINE"; fi
   orbctl clone "$GOLDEN" "$MACHINE"
   orbctl start "$MACHINE"
+  # Phase A checks docker.service right away; let boot finish first ("degraded" is fine).
+  step "waiting for systemd to finish booting"
+  in_vm systemctl is-system-running --wait >/dev/null || true
 }
 
 cmd_down() {
