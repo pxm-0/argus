@@ -65,10 +65,10 @@ def render_html() -> str:
         <p id="route-summary">Loading estate evidence</p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
-        <form id="signin-form" class="signin-form" hidden>
+        <form id="signin-form" class="signin-form" method="post" hidden>
           <input id="signin-user" name="username" type="text" autocomplete="username" aria-label="Operator login" placeholder="Operator login" spellcheck="false" autocapitalize="off">
-          <input id="admin-token" name="password" type="password" autocomplete="current-password" aria-label="Bootstrap token" placeholder="Bootstrap token">
-          <input id="admin-totp" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16">
+          <input id="admin-token" name="password" type="password" autocomplete="current-password" aria-label="Bootstrap token" placeholder="Bootstrap token" aria-describedby="signin-message">
+          <input id="admin-totp" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" aria-describedby="signin-message">
           <button id="signin-submit" type="submit">Sign in</button>
           <button id="signin-cancel" type="button" hidden>Cancel</button>
           <p id="signin-message" class="signin-message" role="status" aria-live="polite"></p>
@@ -228,6 +228,8 @@ const commandClose = document.getElementById("command-close");
 const commandAnnouncer = document.getElementById("command-announcer");
 let monitorTimer = null;
 let adminEnabled = false;
+let pendingStepUp = null;
+let stepUpReturnFocus = null;
 let csrfToken = "";
 let operatorIdentity = "";
 let operatorSessionState = "checking";
@@ -327,6 +329,8 @@ function setOperatorSessionState(nextState, { reason = "", session = null } = {}
   } else {
     csrfToken = "";
     operatorIdentity = "";
+    // Logout, expiry or a lost CSRF cookie: the change cannot proceed, and the next submit must be a sign-in.
+    if (pendingStepUp && operatorSessionState !== "checking") finishStepUp(false);
     setAdmin(false);
   }
 }
@@ -536,12 +540,16 @@ function signinFailureMessage(result) {
 async function authenticateOperator() {
   const credential = tokenFor();
   if (!credential) throw new Error("Enter the bootstrap token.");
-  const result = await apiPost(
-    "/api/session/exchange",
-    credentialBody(credential),
-    { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
-  );
-  clearCredentialInputs();
+  let result;
+  try {
+    result = await apiPost(
+      "/api/session/exchange",
+      credentialBody(credential),
+      { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
+    );
+  } finally {
+    clearCredentialInputs();
+  }
   if (!result.ok) throw new Error(signinFailureMessage(result));
   if (!cookieValue("argus_csrf")) {
     setOperatorSessionState("unavailable", { reason: "csrf-missing" });
@@ -564,26 +572,31 @@ async function ensureStepUp() {
 }
 
 // Resolves true once the operator confirms with a fresh code, false on Cancel; the change then continues or stops.
-let pendingStepUp = null;
 function requestStepUp() {
   if (pendingStepUp) pendingStepUp(false);
   return new Promise((resolve) => {
     pendingStepUp = resolve;
+    stepUpReturnFocus = document.activeElement;
     setAdmin(true);
     signinSubmit.textContent = "Confirm";
     signinCancel.hidden = false;
     setSigninMessage("Confirm this change with your bootstrap token and a fresh authenticator code.");
-    (adminTokenInput.value ? adminTotpInput : adminTokenInput).focus({ preventScroll: true });
+    signinForm.scrollIntoView({ block: "nearest" });
+    adminTokenInput.focus();
   });
 }
 
 function finishStepUp(confirmed) {
   const resolve = pendingStepUp;
+  const returnFocus = stepUpReturnFocus;
   pendingStepUp = null;
+  stepUpReturnFocus = null;
   signinSubmit.textContent = "Sign in";
   signinCancel.hidden = true;
+  setSigninMessage("");
   clearCredentialInputs();
   setAdmin(adminEnabled);
+  if (returnFocus instanceof HTMLElement && document.contains(returnFocus)) returnFocus.focus({ preventScroll: true });
   if (resolve) resolve(confirmed);
 }
 
@@ -593,9 +606,21 @@ async function submitStepUp() {
     setSigninMessage("Enter the bootstrap token.", "bad");
     return;
   }
-  const result = await apiPost("/api/session/step-up", credentialBody(credential));
-  if (!result.ok) {
+  let result;
+  try {
+    result = await apiPost("/api/session/step-up", credentialBody(credential));
+  } finally {
     clearCredentialInputs();
+  }
+  if (!result.ok) {
+    const check = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" }).catch(() => null);
+    const current = check?.ok ? await check.json().catch(() => ({})) : {};
+    if (current.authenticated !== true) {
+      await restoreOperatorSession();
+      setAdmin(true);
+      setSigninMessage("Your session ended, so the change was not made. Sign in again.", "bad");
+      return;
+    }
     setSigninMessage(signinFailureMessage(result), "bad");
     return;
   }
@@ -1426,16 +1451,18 @@ adminToggle.addEventListener("click", async () => {
     return;
   }
   if (signinForm.hidden) {
+    setSigninMessage("");
     setAdmin(true);
     adminTokenInput.focus({ preventScroll: true });
     return;
   }
-  signinForm.requestSubmit();
+  if (!signinSubmit.disabled) signinForm.requestSubmit();
 });
 
 // A real form submit lets password managers save and fill the token and offer the code; Enter submits.
 signinForm.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (signinSubmit.disabled) return;
   signinSubmit.disabled = true;
   try {
     if (pendingStepUp) {
@@ -1450,11 +1477,15 @@ signinForm.addEventListener("submit", async (event) => {
     await loadActivity();
   } catch (error) {
     setSigninMessage(error.message, "bad");
+    if (signinForm.hidden) showCommandResult("Sign-in failed", error.message);
   } finally {
     signinSubmit.disabled = false;
   }
 });
 signinCancel.addEventListener("click", () => finishStepUp(false));
+signinForm.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && pendingStepUp) finishStepUp(false);
+});
 
 function closeCommandPanel() {
   commandPanel.hidden = true;

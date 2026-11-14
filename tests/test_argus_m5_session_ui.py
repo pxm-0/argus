@@ -105,7 +105,7 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.assertIn("function clearCredentialInputs()", self.javascript)
         # exchange, failed step-up, finished or cancelled step-up, logout
         self.assertEqual(4, self.javascript.count("clearCredentialInputs();"))
-        for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n    { \"X-Argus-CSRF-Bootstrap\""):
+        for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n      { \"X-Argus-CSRF-Bootstrap\""):
             self.assertIn(endpoint, self.javascript)
 
     def test_sign_in_is_a_password_manager_form(self) -> None:
@@ -128,6 +128,20 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.assertIn("if (pendingStepUp) {\n      await submitStepUp();", self.javascript)
         self.assertIn('signinCancel.addEventListener("click", () => finishStepUp(false));', self.javascript)
         self.assertNotIn("then retry the mutation", self.javascript)
+
+    def test_pending_step_up_is_settled_when_the_session_ends(self) -> None:
+        # Review finding: logout or expiry left the form in Confirm mode and sent the next sign-in to step-up.
+        self.assertIn('if (pendingStepUp && operatorSessionState !== "checking") finishStepUp(false);', self.javascript)
+        self.assertLess(self.javascript.index("let pendingStepUp = null;"), self.javascript.index("function setOperatorSessionState"))
+        self.assertIn("Your session ended, so the change was not made. Sign in again.", self.javascript)
+
+    def test_credentials_are_cleared_even_when_the_request_throws(self) -> None:
+        self.assertEqual(2, self.javascript.count("  } finally {\n    clearCredentialInputs();\n  }"))
+
+    def test_sign_in_cannot_double_submit_or_submit_natively_with_get(self) -> None:
+        self.assertIn("if (signinSubmit.disabled) return;", self.javascript)
+        self.assertIn("if (!signinSubmit.disabled) signinForm.requestSubmit();", self.javascript)
+        self.assertRegex(self.html, r'<form id="signin-form"[^>]*method="post"')
 
     def test_sign_in_failures_explain_fresh_codes_and_lockout(self) -> None:
         self.assertIn('response.headers.get("Retry-After")', self.javascript)
