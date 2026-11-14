@@ -186,10 +186,11 @@ step_dashboard() {
 step_caddy() {
   local caddyfile=/etc/caddy/Caddyfile route="$ROOT/caddy/dashboard.Caddyfile"
   [[ -f "$route" ]] || fail "missing $route; run the dashboard step first"
-  if ! python3 -c 'import sys; sys.exit(open(sys.argv[2]).read().strip() not in open(sys.argv[1]).read())' \
-    "$caddyfile" "$route"; then
+  # The reviewed route is the whole file: Ubuntu's stock ":80" site would listen on
+  # every interface. Installers only check that the route is present, never write here.
+  if ! cmp -s "$route" "$caddyfile"; then
     cp "$caddyfile" "$caddyfile.backup.$(date +%Y%m%d-%H%M%S)"
-    { printf '\n'; cat "$route"; } >>"$caddyfile"
+    install -m 0644 "$route" "$caddyfile"
   fi
   caddy validate --config "$caddyfile" --adapter caddyfile
   systemctl reload-or-restart caddy.service

@@ -71,6 +71,15 @@ class ProvisionStepOrderTests(unittest.TestCase):
         )
 
 
+class ProvisionCaddyTests(unittest.TestCase):
+    def test_caddy_step_replaces_the_stock_site_instead_of_appending(self) -> None:
+        # Appending kept Ubuntu's stock ":80" site, so host Caddy listened on every interface.
+        source = (SIM / "provision").read_text()
+        body = source.split("step_caddy() {", 1)[1].split("\n}\n", 1)[0]
+        self.assertNotIn('>>"$caddyfile"', body)
+        self.assertIn('install -m 0644 "$route" "$caddyfile"', body)
+
+
 class SimLanExposureTests(unittest.TestCase):
     def run_sim(self, config: str, *args: str) -> subprocess.CompletedProcess[str]:
         with tempfile.TemporaryDirectory() as directory:
