@@ -203,11 +203,35 @@ Sim boundary settings, all sim only:
   `config/argus/observation-sources.json`). The collector installer refuses a
   rootless socket owned by any other UID.
 - `/etc/systemd/user.conf.d/argus-sim-rootless.conf` sets
-  `DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false`. With Docker 29's default
-  detach-netns mode the RootlessKit child sometimes stays in the host network
-  namespace on the OrbStack kernel, and the bootstrap's firewall helper then
-  correctly refuses to load the sandbox policy there. The classic mode keeps
-  the child in its own namespace, which is what the helper verifies.
+  `DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false` for every user manager in
+  the VM. Only the three sandbox users run rootless dockerd there, so the
+  setting changes nothing for oreo's manager. It is not scoped to
+  `user@<uid>.service.d`, because the bootstrap owns those drop-in directories
+  and rolls them back. Docker 29's `dockerd-rootless.sh` defaults to detach
+  mode. That mode is a security gap, not only a flaky check. In detach mode,
+  dockerd and the RootlessKit child stay in the child's network namespace, but
+  containers run in a separate one at `$ROOTLESSKIT_STATE_DIR/netns`. The
+  bootstrap's firewall helper loads the nftables policy with
+  `nsenter -t <child>`. When its host-namespace check passes, the policy
+  lands in a namespace the containers do not use, and the containers get no
+  egress filtering. The sim's classic mode makes the sim's egress policy hold.
+  It proves nothing about the server, whose Docker 29.5.3 mode is unknown.
+
+Read-only check for the server (run it there yourself; the sim tooling never
+connects to it). It prints `detach` for any sandbox RootlessKit started in
+detach mode:
+
+```sh
+for p in $(pgrep -x rootlesskit); do
+  printf '%s ' "$(stat -c %U /proc/$p)"
+  tr '\0' ' ' </proc/$p/cmdline | grep -q -- --detach-netns && echo detach || echo classic
+done
+```
+
+If the server prints `detach`, fix it in the bootstrap. Either pin
+`DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false` in the daemon unit it writes,
+or make the firewall helper refuse a child started with `--detach-netns`. The
+sim prints `classic` for all six processes.
 
 The `workloads` step stops with `GHCR_LOGIN_REQUIRED` until root's Docker is
 logged in to `ghcr.io`. Doing that is yours alone:
@@ -256,12 +280,21 @@ then `infra/server-sim/sim phase-b --from units`. With that, `units` and
 
 Other known limits:
 
-- `personal-managed` reuses work-sandbox's helper paths
-  (`/usr/local/lib/argus/argus-work-sandbox-{netns,firewall}`;
-  `argus-m4-personal-sandbox-bootstrap` sets one `HELPER_PREFIX` for every
-  domain except personal-sandbox), so bootstrapping it overwrites
-  work-sandbox's helpers. The units stay active until the next restart.
-  Also a wave2 bug.
+- `personal-managed` takes over work-sandbox's helpers. Wave2's
+  `argus-m4-personal-sandbox-bootstrap` sets one `HELPER_PREFIX`
+  (`argus-work-sandbox`) for every domain except personal-sandbox. After
+  phase B, `/usr/local/lib/argus/argus-work-sandbox-{netns,firewall}`
+  hard-code personal-managed: its user, its netns, its nft files and its
+  host-guard table. The namespace and firewall units of both domains run
+  those same files. Restarting `argus-work-sandbox-namespace.service` runs
+  `remove` against personal-managed, which deletes its netns and host-guard
+  table. Restarting `argus-work-sandbox-firewall.service` firewalls
+  personal-managed's dockerd and exits 0. Work-sandbox's own policy is never
+  re-applied or checked, but the unit still reports success. This fails open
+  and does not show up as a failed unit. **In the sim, do not restart either
+  work-sandbox sandbox unit, and do not reboot the VM.** The fix belongs in
+  integration/wave2's bootstrap, not in the sim: give each domain its own
+  `HELPER_PREFIX`, for example `argus-${CELL_DOMAIN}`.
 - Root's `git -C /srv/argus` prints "dubious ownership" (the checkout is
   oreo's), so the installers' `commit=` fields are empty. Cosmetic.
 - Rosetta makes phase B slow: each sandbox takes about 100 s and the
