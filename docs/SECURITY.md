@@ -78,8 +78,8 @@ Rules:
   `SameSite=Strict` cookie
 - require the readable `argus_csrf` cookie to exactly match the
   `X-Argus-CSRF` header for state-changing requests
-- expire server-side sessions after 30 minutes of inactivity and eight hours
-  absolute, with logout, revocation, and five-minute step-up reauthentication
+- expire server-side sessions after eight hours (idle and absolute), with
+  logout, revocation, and 15-minute step-up reauthentication
 
 Operator identity is accepted only from `X-Argus-Tailnet-Login` on the
 loopback-only API when `X-Argus-Proxy-Token` matches the root-owned Caddy marker.
