@@ -302,6 +302,18 @@ class SessionBoundaryTests(unittest.TestCase):
         self.assertIn('cookieValue("argus_csrf")', dashboard)
         self.assertIn('"X-Argus-CSRF-Bootstrap": bootstrapNonce()', dashboard)
 
+    def test_session_store_validation_tracks_session_schema_version(self) -> None:
+        import re
+
+        sessions = (ROOT / "scripts" / "argus_sessions.py").read_text()
+        version = re.search(r"^SCHEMA_VERSION = (\d+)$", sessions, re.MULTILINE).group(1)
+        script = (ROOT / "scripts" / "argus-m5-session-boundary").read_text()
+        self.assertIn(f'fetchone()[0] != {version}:', script)
+        self.assertIn(f"SESSION_SCHEMA_OK version={version}", script)
+        self.assertNotIn("schema version is not 3", script)
+        self.assertIn('"totp_state"', script)
+        self.assertIn('"totp_recovery_used"', script)
+
     def test_activation_is_acknowledged_backed_up_and_validates_before_reload(self) -> None:
         script_path = ROOT / "scripts" / "argus-m5-session-boundary"
         script = script_path.read_text()
@@ -320,7 +332,7 @@ class SessionBoundaryTests(unittest.TestCase):
         self.assertIn("trap rollback_on_exit EXIT", script)
         self.assertIn("restore_session_db", script)
         self.assertIn("validate_session_store", script)
-        self.assertIn("SESSION_SCHEMA_OK version=3", script)
+        self.assertIn("SESSION_SCHEMA_OK version=4", script)
         self.assertIn("operation_session_bindings", script)
         self.assertIn("operation_session_reservations", script)
         self.assertIn("SESSION_BOUNDARY_ROLLED_BACK", script)
