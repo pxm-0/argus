@@ -12,8 +12,10 @@ from typing import Any
 from argus_admission import evaluate_current
 from argus_cloudflare_allowlist import (
     CATCH_ALL_SERVICE,
+    ROLLED_BACK,
     AllowlistError,
     cloudflare_provider,
+    effective_blockers,
     has_stage_evidence,
     load_evidence,
     parse_ingress,
@@ -29,7 +31,6 @@ SAFE_PRIVACY = {"protected": {"unclassified", "personal", "internal"}, "public":
 BLOCKED_KINDS = {"admin-tool", "database"}
 BLOCKED_MARKERS = ("postgres", "docker.sock", "docker-socket", "/.ssh", "host-ssh", "control-api")
 DEFAULT_CONFIG_PATH = "/etc/cloudflared/argus.yml"
-ROLLBACK_EFFECTIVE = "tailnet"
 
 
 def evidence_dir() -> Path:
@@ -102,6 +103,11 @@ def config_with_hostnames(existing: str, workload_hosts: tuple[str, ...], hostna
     preamble, rules = split_config(existing)
     others = [rule for rule in rules if rule.get("hostname") not in workload_hosts]
     return render_config(preamble, [*others, *({"hostname": host, "service": service} for host in hostnames)])
+
+
+def catch_all_config(existing: str) -> str:
+    """The existing tunnel settings with every hostname rule dropped: serves nothing but 404."""
+    return render_config(split_config(existing)[0], [])
 
 
 def activation_plan(workload_id: str, mode: str) -> dict[str, Any]:
@@ -213,8 +219,16 @@ def validate_ingress(config_path: Path) -> dict[str, Any]:
 
 
 def reload_cloudflared() -> dict[str, Any]:
+    return _systemctl("reload-or-restart")
+
+
+def stop_cloudflared() -> dict[str, Any]:
+    return _systemctl("stop")
+
+
+def _systemctl(action: str) -> dict[str, Any]:
     result = subprocess.run(
-        ["systemctl", "reload-or-restart", "cloudflared"],
+        ["systemctl", action, "cloudflared"],
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -246,23 +260,46 @@ def write_evidence(payload: dict[str, Any]) -> Path:
     return path
 
 
-def set_effective(workload_id: str, state: str, actor: str) -> dict[str, Any]:
-    """Apply `state` through the policy gate; refuses unless policy now says it is effective."""
+def preflight_refusal(workload_id: str, state: str) -> str:
+    """Why the effective state could not be applied even after a good probe; empty when it could."""
     admission = evaluate_current(root(), workload_id, "access.cloudflare-protected.apply")
     if not admission.allowed:
-        raise PermissionError(admission.decision_code)
+        return str(admission.decision_code)
     decision = policy_decision(workload_id, state)
-    if not decision["allowed"] or decision.get("plannedOnly") or decision.get("effective") != state:
-        raise PermissionError(str(decision.get("reason", "policy did not make the state effective")))
+    return "" if decision.get("allowed") else str(decision.get("reason", "policy denied"))
+
+
+def set_effective(workload_id: str, state: str, actor: str, pending: dict[str, Any]) -> dict[str, Any]:
+    """Make `state` effective. Policy only plans Cloudflare states; this is the one path that
+    promotes one, and only when the allowlist, provider and evidence (including `pending`) agree."""
+    refusal = preflight_refusal(workload_id, state)
+    if refusal:
+        raise PermissionError(refusal)
+    hostname = str(_route(workload_id).get("hostname", ""))
+    blockers = effective_blockers(load_json("exposure.json"), workload_id, hostname, state, [*load_evidence(evidence_dir()), pending])
+    if blockers:
+        raise PermissionError("; ".join(blockers))
+    decision = {**policy_decision(workload_id, state), "effective": state, "plannedOnly": False, "reason": "verified Cloudflare activation (D027)"}
     return access_writer().apply(workload_id=workload_id, desired=state, decision=decision, actor=actor, timestamp=now())
+
+
+def rollback_target(workload_id: str) -> str:
+    tailnet = load_json("routes.json").get("workloadRoutes", {}).get(workload_id, {}).get("tailnet", {})
+    return "tailnet" if tailnet.get("enabled") is True else "local"
 
 
 def lower_effective(workload_id: str, actor: str) -> dict[str, Any]:
     admission = evaluate_current(root(), workload_id, "access.cloudflare-protected.rollback")
     if not admission.allowed:
         raise PermissionError(admission.decision_code)
-    decision = {"allowed": True, "effective": ROLLBACK_EFFECTIVE, "plannedOnly": False, "reason": "Cloudflare activation rolled back"}
-    return access_writer().apply(workload_id=workload_id, desired=ROLLBACK_EFFECTIVE, decision=decision, actor=actor, timestamp=now())
+    target = rollback_target(workload_id)
+    decision = {"allowed": True, "effective": target, "plannedOnly": False, "reason": "Cloudflare activation rolled back"}
+    return access_writer().apply(workload_id=workload_id, desired=target, decision=decision, actor=actor, timestamp=now())
+
+
+def write_rollback_record(workload_id: str, hostnames: tuple[str, ...]) -> Path:
+    """Supersede every earlier activation evidence record for the workload."""
+    return write_evidence({"ok": True, "workloadId": workload_id, "mode": ROLLED_BACK, "hostnames": list(hostnames), "recordedAt": now()})
 
 
 def print_preview(plan: dict[str, Any]) -> None:

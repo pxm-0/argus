@@ -28,21 +28,29 @@ cloudflare-protected   behind Cloudflare Access, limited to the operator
 cloudflare-public      reachable without authentication
 ```
 
-Either state can be requested (desired) and planned for any workload policy
-allows. It becomes effective only when all of these hold:
+Either state can be requested (desired) and planned only for an allowlisted
+workload and hostname; policy denies it for anything else. Policy never makes
+a Cloudflare state effective: only `argus-cloudflare-activate` does, and only
+when all of these hold:
 
 1. the workload and its route hostname are in `cloudflare.publicAllowlist`;
 2. the provider is `enabled`, `provisioned` and `allowNamedTunnels`, with Quick
    Tunnels off;
 3. activation evidence is recorded under `runtime/cloudflare-activation/`: a
-   protected-stage probe answering 401/403 without an Access session, and for
-   `cloudflare-public` also a later public-stage probe answering 200.
+   protected-stage probe of every hostname refused by Cloudflare Access itself
+   (a redirect to its login host, or a 401/403 carrying a `cf-access` header)
+   plus the operator's confirmation that an Access session gets 200, and for
+   `cloudflare-public` also a later public-stage probe answering 200. Evidence
+   older than the workload's latest rollback does not count.
 
 Policy, `argus-doctor`, `argus-access-reconcile` and `smoke-test` all apply this
 rule, so a workload or hostname outside the allowlist fails closed. Smoke also
 fails if the provider is enabled with an empty allowlist, or if `cloudflared` is
-running while the provider is disabled or with ingress hostnames outside the
-allowlist.
+running while the provider is disabled, with ingress hostnames outside the
+allowlist, or from a unit that does not run the activation config (another
+`--config`, or a remotely managed `--token` tunnel). Ingress that is not flat
+`hostname`/`service`/`path` rules (for example nested `originRequest` blocks)
+fails closed.
 
 ## Allowlist
 
@@ -82,13 +90,16 @@ Activation refuses any workload or hostname outside the allowlist. It rewrites
 only that workload's rules in the cloudflared config (keeping the tunnel
 settings and the catch-all), validates the candidate with
 `cloudflared tunnel ingress validate` before installing it, reloads the
-connector and probes the hostname without credentials. Protected mode needs a
-401/403 answer. If the probe or reload fails, the previous ingress is restored.
-On success it writes evidence, sets the effective state through the policy gate
-and records an audit event.
+connector and probes every hostname without credentials, without following
+redirects. Protected mode needs Cloudflare Access to refuse each probe, then
+asks the operator to confirm an Access session gets 200. If the reload, a probe,
+the confirmation or applying the effective state fails, the previous ingress is
+restored; if that fails, a catch-all-only config is installed; if that fails,
+the connector is stopped, and the output says so when traffic could not be cut.
+On success it sets the effective state, then writes evidence and an audit event.
 
 `--mode public` additionally requires recorded protected-stage evidence for the
-same workload and hostname, a route with `mode: public` and
+same workload and hostname (newer than any rollback), a route with `mode: public` and
 `requiresAuth: false`, a manifest with `security.publicAllowed: true`, and the
 policy phrase `publish publicly`. Its probe must answer 200.
 
@@ -101,8 +112,10 @@ scripts/argus-cloudflare-rollback <workload> --apply --confirm-workload <workloa
 
 The first command previews. `--apply` removes the workload's hostnames from the
 ingress (leaving the catch-all), validates, reloads the connector and lowers the
-effective access to `tailnet`. Evidence is kept. Stopping the connector service
-also cuts all Cloudflare traffic at once.
+effective access to `tailnet` (or `local` when the tailnet route is disabled).
+It writes a rollback record that supersedes the workload's earlier evidence, so
+re-activation starts again from the protected stage. Stopping the connector
+service also cuts all Cloudflare traffic at once.
 
 ## Policy Requirements
 

@@ -8,13 +8,14 @@ from typing import Any
 
 from argus_cloudflare_activation import (
     DEFAULT_CONFIG_PATH,
-    ROLLBACK_EFFECTIVE,
     config_with_hostnames,
     install_config,
     lower_effective,
     reload_cloudflared,
+    rollback_target,
+    write_rollback_record,
 )
-from argus_cloudflare_allowlist import cloudflare_provider, safe_allowlist
+from argus_cloudflare_allowlist import IngressError, cloudflare_provider, safe_allowlist
 from argus_common import audit, load_json, regenerate_dashboard
 from argus_state import StateError
 
@@ -37,8 +38,8 @@ def main() -> int:
         "workloadId": args.workload_id,
         "hostnames": list(hostnames),
         "wouldRemoveIngressFrom": str(config_path),
-        "wouldLowerEffectiveTo": ROLLBACK_EFFECTIVE,
-        "wouldPreserveEvidence": True,
+        "wouldLowerEffectiveTo": rollback_target(args.workload_id),
+        "wouldSupersedeEvidence": True,
         "apply": bool(args.apply),
     }
     if not args.apply:
@@ -53,7 +54,11 @@ def main() -> int:
             previous = config_path.read_text(encoding="utf-8")
         except OSError as exc:
             return blocked(payload, f"cloudflared config is unreadable: {exc.__class__.__name__}")
-        validation = install_config(config_path, config_with_hostnames(previous, hostnames, (), ""))
+        try:
+            rolled_back = config_with_hostnames(previous, hostnames, (), "")
+        except IngressError as exc:
+            return blocked(payload, f"cloudflared ingress is not flat Argus ingress ({exc}); stop the cloudflared service to cut traffic")
+        validation = install_config(config_path, rolled_back)
         payload["validation"] = validation
         if not validation["ok"]:
             return blocked(payload, "ingress validation failed; stop the cloudflared service to cut traffic")
@@ -61,6 +66,11 @@ def main() -> int:
     else:
         payload["reload"] = {"ok": True, "skipped": True, "reason": "no cloudflared config"}
 
+    try:
+        # Old evidence must never again unlock a stage or vouch for an effective state.
+        payload["rollbackRecord"] = str(write_rollback_record(args.workload_id, hostnames))
+    except OSError as exc:
+        return blocked(payload, f"rollback record not written: {exc.__class__.__name__}")
     try:
         lower_effective(args.workload_id, "argus-cloudflare-rollback")
     except (PermissionError, StateError) as exc:

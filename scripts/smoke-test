@@ -421,14 +421,37 @@ def check_cloudflared(repo: Path, smoke: Smoke, offline: bool) -> None:
         return
     exposure = load_json_file(repo / "config" / "exposure.json")
     problems = cloudflared_problems(exposure, read_cloudflared_config(exposure))
+    if not problems:
+        exec_start = run(["systemctl", "show", "-p", "ExecStart", "cloudflared"], repo).stdout
+        problems = cloudflared_unit_problems(exposure, exec_start)
     if problems:
         smoke.fail("no unexpected cloudflared active: " + "; ".join(problems))
     else:
         smoke.pass_("no unexpected cloudflared active")
 
 
+def activation_config_path(exposure: dict[str, Any]) -> str:
+    return str(cloudflare_provider(exposure).get("activationConfigPath") or "/etc/cloudflared/argus.yml")
+
+
+def cloudflared_unit_problems(exposure: dict[str, Any], exec_start: str) -> list[str]:
+    """The running unit must serve the checked config: no remote-managed token, no other --config."""
+    tokens = exec_start.replace(";", " ").split()
+    path = activation_config_path(exposure)
+    problems: list[str] = []
+    if any(token == "--token" or token.startswith("--token=") for token in tokens):
+        problems.append("cloudflared unit runs a token (remotely managed) tunnel")
+    uses_config = any(
+        token == f"--config={path}" or (token == "--config" and index + 1 < len(tokens) and tokens[index + 1] == path)
+        for index, token in enumerate(tokens)
+    )
+    if not uses_config:
+        problems.append(f"cloudflared unit does not run --config {path}")
+    return problems
+
+
 def read_cloudflared_config(exposure: dict[str, Any]) -> str | None:
-    path = Path(str(cloudflare_provider(exposure).get("activationConfigPath") or "/etc/cloudflared/argus.yml"))
+    path = Path(activation_config_path(exposure))
     try:
         return path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError):

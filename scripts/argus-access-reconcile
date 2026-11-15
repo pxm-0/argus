@@ -62,9 +62,13 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
 
         if effective.startswith("cloudflare"):
             mode = ROUTE_MODES.get(effective, "")
+            accepted_modes = {mode}
+            # D027 step 2: the route is switched to public while still effective protected, before --mode public runs.
+            if effective == "cloudflare-protected" and desired == "cloudflare-public" and is_allowlisted(exposure, workload_id, hostname):
+                accepted_modes.add("public")
             if not bool(cloudflare.get("enabled")):
                 add(findings, "fail", workload_id, f"effective {effective} but route is disabled")
-            if cloudflare.get("mode") != mode:
+            if cloudflare.get("mode") not in accepted_modes:
                 add(findings, "fail", workload_id, f"effective {effective} but route mode is not {mode or 'known'}")
             if hostname.endswith(".invalid") or not hostname:
                 add(findings, "fail", workload_id, f"effective {effective} without a real hostname")
