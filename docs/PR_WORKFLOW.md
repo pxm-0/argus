@@ -57,13 +57,18 @@ For server-required tasks, verification must come from `oreochiserver` unless th
 P0 PRs must not:
 
 - enable Tailscale Funnel
-- start or enable Cloudflare tunnels
-- create DNS records
+- start or enable Cloudflare tunnels, or create DNS records, other than for the D027 route
 - open router ports
 - expose the dashboard, control API, Docker socket, PostgreSQL, or workload internals publicly
 - restart services unless the task explicitly allows it and the PR documents the command
 
-Cloudflare work in P0 is plan-only. Caddy changes must be backed up and validated before reload.
+Cloudflare work is plan-only except for the route authorized by D027 (`docs/ARGUS_V1_DECISIONS.md`, `docs/NODENS_PUBLIC_ROUTE.md`). A PR that changes that route replaces the three exposure confirmations (tunnel, DNS, public route) with this exact line, which the PR guard checks; Funnel and router-port confirmations stay mandatory:
+
+```text
+- [x] Approved public route under D027: nodens-production at nodens.dev and www.nodens.dev through a named Cloudflare tunnel; no other workload, hostname or tunnel.
+```
+
+Caddy changes must be backed up and validated before reload.
 
 ## Merge Rule
 
