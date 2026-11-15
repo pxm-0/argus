@@ -55,12 +55,15 @@ MUTATING_OPERATIONS = {
     "migration.source-verify",
     "production.promote",
     "production.rollback",
+    "access.cloudflare-protected.apply",
+    "access.cloudflare-protected.rollback",
 }
 
 OBSERVATION_OPERATIONS = {
     "health.refresh",
     "logs.preview",
     "migration.preflight",
+    "access.cloudflare-protected.plan",
 }
 
 CAPABILITY_KEYS = {
@@ -86,6 +89,9 @@ CAPABILITY_KEYS = {
     "migration.source-verify": "migrationRollback",
     "production.promote": "productionPromote",
     "production.rollback": "productionRollback",
+    "access.cloudflare-protected.plan": "cloudflareProtectedPlan",
+    "access.cloudflare-protected.apply": "cloudflareProtectedApply",
+    "access.cloudflare-protected.rollback": "cloudflareProtectedRollback",
 }
 
 COMPATIBILITY_CAPABILITY_KEYS = {

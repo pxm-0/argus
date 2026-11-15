@@ -264,7 +264,8 @@ reason, but does not masquerade as observed coverage.
 
 - Keep the dashboard and control API private behind Tailscale Serve.
 - Do not enable Funnel, Cloudflare tunnels, DNS, router ports, or public
-  listeners.
+  listeners. The one later exception is the D027 route
+  (`docs/NODENS_PUBLIC_ROUTE.md`), which this program does not implement.
 - Do not expose PostgreSQL, Docker sockets, credentials, runtime files, source,
   backups, or private topology.
 - Preserve Compose project names and workload identity during relocation.

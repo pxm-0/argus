@@ -103,6 +103,14 @@ class SessionStoreTests(unittest.TestCase):
                 )
             )
 
+    def test_session_lifetimes_are_the_operator_policy(self) -> None:
+        # Operator decision 2026-11-15: one sign-in per working day, one code per batch of changes.
+        import argus_sessions
+
+        self.assertEqual(8 * 60 * 60, argus_sessions.SESSION_IDLE_TTL_SECONDS)
+        self.assertEqual(8 * 60 * 60, argus_sessions.SESSION_ABSOLUTE_TTL_SECONDS)
+        self.assertEqual(15 * 60, argus_sessions.STEP_UP_TTL_SECONDS)
+
     def test_expiry_logout_revocation_and_step_up(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             expired_store = SessionStore(Path(directory) / "expired.sqlite3", ttl_seconds=-1)

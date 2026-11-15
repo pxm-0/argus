@@ -136,10 +136,13 @@ def verify(domain: str, workloads: list[str] | None = None) -> dict:
     if os.geteuid() != 0:
         raise VerifyError("run with sudo")
     module = cutover_module()
+    # SPECS keeps retired workloads for history; they have no container to probe.
+    retired = set(json.loads((ROOT / "config" / "argus" / "retired-workloads.json").read_text())["workloads"])
     selected = sorted(
         name
         for name, spec in module.SPECS.items()
         if str(spec["domain"]) == domain
+        and name not in retired
         and (not workloads or name in workloads)
     )
     if not selected:
