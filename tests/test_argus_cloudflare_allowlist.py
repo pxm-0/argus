@@ -72,11 +72,10 @@ INGRESS_OK = f'ingress:\n  - hostname: "{HOST}"\n    service: "http://127.0.0.1:
 
 
 class AllowlistShapeTests(unittest.TestCase):
-    def test_shipped_exposure_config_has_an_empty_allowlist_and_provider_off(self) -> None:
+    def test_shipped_exposure_config_allowlists_only_the_d027_route_and_provider_is_off(self) -> None:
         config = json.loads((ROOT / "config" / "exposure.json").read_text())
         cloudflare = config["providers"]["cloudflare"]
-        self.assertEqual([], cloudflare["publicAllowlist"])
-        self.assertEqual({}, public_allowlist(config))
+        self.assertEqual({"nodens-production": ("nodens.dev", "www.nodens.dev")}, public_allowlist(config))
         self.assertFalse(cloudflare["enabled"] or cloudflare["provisioned"] or cloudflare["allowNamedTunnels"] or cloudflare["allowQuickTunnels"])
 
     def test_malformed_entries_are_rejected_and_allow_nothing(self) -> None:
@@ -398,6 +397,14 @@ class DoctorAndReconcileTests(unittest.TestCase):
     def test_reconcile_flags_an_enabled_public_route_without_cloudflare_effective(self) -> None:
         files = config_files(exposure(), desired="cloudflare-public", effective="tailnet", mode="public")
         self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(files, []))
+
+    def test_reconcile_accepts_only_an_allowlisted_protected_route_staged_before_activation(self) -> None:
+        staged = config_files(exposure(), desired="cloudflare-protected", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertEqual([], self.reconcile(staged, []))
+        unlisted = config_files(exposure(allowlist=[]), desired="cloudflare-protected", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(unlisted, []))
+        not_desired = config_files(exposure(), desired="tailnet", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(not_desired, []))
 
     def test_apply_lowering_lowers_drifted_public_state_to_local(self) -> None:
         module = load_script("argus-access-reconcile")

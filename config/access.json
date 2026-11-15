@@ -43,7 +43,7 @@
       "lastError": ""
     },
     "nodens-production": {
-      "desired": "none",
+      "desired": "cloudflare-protected",
       "effective": "none",
       "urls": {
         "local": "",

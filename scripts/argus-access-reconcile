@@ -77,7 +77,9 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
             for blocker in effective_blockers(exposure, workload_id, hostname, effective, evidence):
                 add(findings, "fail", workload_id, f"effective {effective}: {blocker}")
 
-        if effective in {"local", "tailnet", "none"} and bool(cloudflare.get("enabled")) and cloudflare.get("mode") in set(ROUTE_MODES.values()):
+        # D027 step 1: an allowlisted route is staged protected before activation makes it effective.
+        staged = desired == "cloudflare-protected" and cloudflare.get("mode") == "protected" and is_allowlisted(exposure, workload_id, hostname)
+        if effective in {"local", "tailnet", "none"} and bool(cloudflare.get("enabled")) and cloudflare.get("mode") in set(ROUTE_MODES.values()) and not staged:
             add(findings, "fail", workload_id, "Cloudflare route enabled while effective access is not Cloudflare")
 
         if effective == "tailnet" and not bool(tailnet.get("enabled")):
