@@ -258,11 +258,16 @@ Example:
       "allowQuickTunnels": false,
       "allowNamedTunnels": false,
       "requireAccessPolicy": true,
-      "configPath": "/srv/argus/cloudflare/planned-ingress.yml"
+      "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
+      "publicAllowlist": []
     }
   }
 }
 ```
+
+`publicAllowlist` lists `{"workloadId": "...", "hostnames": ["..."]}` entries: the
+only routes that may ever become `cloudflare-protected` or `cloudflare-public`
+effective (D027). It ships empty; any malformed entry allows nothing.
 
 ## `monitoring.json`
 
