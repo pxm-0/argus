@@ -6,6 +6,7 @@ Every helper fails closed: a malformed allowlist, ingress or evidence file allow
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any
@@ -171,6 +172,25 @@ def load_evidence(evidence_dir: Path) -> list[dict[str, Any]]:
         if isinstance(payload, dict):
             payloads.append(payload)
     return payloads
+
+
+def unreadable_evidence(evidence_dir: Path) -> list[str]:
+    """Evidence file names load_evidence would skip: unreadable, not JSON, or not an object."""
+    try:
+        os.listdir(evidence_dir)
+    except FileNotFoundError:
+        return []
+    except OSError:  # glob reads an unlistable directory (or a non-directory) as empty: fail closed instead
+        return [f"{evidence_dir.name}/"]
+    names: list[str] = []
+    for path in sorted(evidence_dir.glob("*.json")):
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+            payload = None
+        if not isinstance(payload, dict):
+            names.append(path.name)
+    return names
 
 
 def probe_passes(mode: str, probe: Any) -> bool:

@@ -27,7 +27,7 @@ from argus_capabilities import (
     ReplayStore,
     validate_envelope,
 )
-from argus_common import by_id, load_manifest, now, policy_decision, regenerate_dashboard
+from argus_common import by_id, load_manifest, now, desired_change_refusal, policy_decision, regenerate_dashboard
 from argus_ipc import receive_frame, request as ipc_request, send_frame
 from argus_m1 import access_writer
 from argus_operations import (
@@ -151,6 +151,9 @@ class AgentService:
             desired = str(parameters.get("desired", ""))
             if desired not in {"none", "local", "tailnet"}:
                 return False, "Phase 1 access state must be none, local, or tailnet"
+            refusal = desired_change_refusal(workload_id, desired)
+            if refusal:
+                return False, refusal
             if desired == "tailnet":
                 _, route_reason = route_contract(self.root, item, workload_id)
                 if route_reason:
@@ -334,6 +337,9 @@ class AgentService:
             return backup_apply(workload_id, confirmation=workload_id)
         if operation_type == "access.apply":
             desired = str(parameters["desired"])
+            refusal = desired_change_refusal(workload_id, desired)
+            if refusal:
+                raise ValueError(refusal)
             decision = policy_decision(workload_id, desired)
             workload = by_id()[workload_id]
             route_result = apply_tailscale_access(self.root, workload, workload_id, desired)

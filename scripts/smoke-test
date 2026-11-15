@@ -19,6 +19,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import load_access
 from argus_actions import sanitize_log_text
 from argus_cloudflare_allowlist import allowlisted_hostnames, cloudflare_provider, ingress_problems
 from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS, is_server_checkout
@@ -880,7 +881,7 @@ def check_logs_sanitization(smoke: Smoke) -> None:
 
 def check_policy_effective_access(repo: Path, smoke: Smoke) -> None:
     ok = True
-    access = load_json_file(repo / "config" / "access.json")
+    access = load_access(repo / "config")
     routes = load_json_file(repo / "config" / "routes.json")
     workloads = workload_map(repo)
     for workload_id, item in access.get("workloads", {}).items():

@@ -252,11 +252,22 @@ def install_config(config_path: Path, text: str) -> dict[str, Any]:
 
 
 def write_evidence(payload: dict[str, Any]) -> Path:
+    """Write atomically and world-readable (0644), so a root umask never hides evidence from the oreo-run gates."""
     directory = evidence_dir()
-    directory.mkdir(parents=True, exist_ok=True)
+    directory.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chmod(directory, 0o755)  # mkdir's mode is narrowed by the umask
     stamp = now().replace(":", "").replace("-", "")
     path = directory / f"{stamp}-{payload['workloadId']}-{payload['mode']}.json"
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    temp = path.with_name(f".{path.name}.tmp")
+    try:
+        with temp.open("w", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.chmod(temp, 0o644)
+        os.replace(temp, path)
+    finally:
+        temp.unlink(missing_ok=True)
     return path
 
 
@@ -294,7 +305,9 @@ def lower_effective(workload_id: str, actor: str) -> dict[str, Any]:
         raise PermissionError(admission.decision_code)
     target = rollback_target(workload_id)
     decision = {"allowed": True, "effective": target, "plannedOnly": False, "reason": "Cloudflare activation rolled back"}
-    return access_writer().apply(workload_id=workload_id, desired=target, decision=decision, actor=actor, timestamp=now())
+    # D028: only the server effective is lowered; the reviewed desired changes through a pull request.
+    desired = str(_access_item(workload_id).get("desired", ""))
+    return access_writer().apply(workload_id=workload_id, desired=desired, decision=decision, actor=actor, timestamp=now())
 
 
 def write_rollback_record(workload_id: str, hostnames: tuple[str, ...]) -> Path:

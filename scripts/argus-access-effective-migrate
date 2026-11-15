@@ -1,0 +1,149 @@
+#!/usr/bin/env python3
+"""One-time D028 split: move server-applied effective fields out of a dirty config/access.json.
+
+Dry run by default. --apply backs up the working-tree file, writes config/access.effective.json with the
+entries that differ from HEAD, then restores the reviewed HEAD bytes. The merged view never changes.
+Run it as the access.json owner with the writers stopped (docs/RUNBOOKS/access-effective-split.md).
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import shutil
+import stat
+import subprocess
+import tempfile
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from argus_access_state import EFFECTIVE_FIELDS, OVERLAY_NAME, OVERLAY_VERSION, AccessStateError, load_access, read_overlay, validate_overlay
+from argus_common import print_json, root
+from argus_state import _atomic_json_replace
+
+
+class MigrationRefused(ValueError):
+    """The working tree is not the exact dirty state this migration knows how to split."""
+
+
+def _git(repo: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(["git", "--no-optional-locks", "-C", str(repo), *args], capture_output=True, check=False)
+
+
+def _without(entry: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in entry.items() if key not in EFFECTIVE_FIELDS}
+
+
+def plan(repo: Path) -> dict[str, Any]:
+    """Return the overlay to write; raise MigrationRefused unless only effective fields differ."""
+    shown = _git(repo, "show", "HEAD:config/access.json")
+    if shown.returncode != 0:
+        raise MigrationRefused("HEAD has no config/access.json")
+    head_bytes = shown.stdout
+    working_bytes = (repo / "config" / "access.json").read_bytes()
+    try:
+        head, working = json.loads(head_bytes), json.loads(working_bytes)
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise MigrationRefused("config/access.json is not valid JSON at HEAD or in the working tree") from exc
+    if not isinstance(head, dict) or not isinstance(working, dict):
+        raise MigrationRefused("config/access.json must be an object")
+    if {k: v for k, v in head.items() if k != "workloads"} != {k: v for k, v in working.items() if k != "workloads"}:
+        raise MigrationRefused("config/access.json differs from HEAD outside workloads (states, version or defaults)")
+    head_workloads, working_workloads = head.get("workloads"), working.get("workloads")
+    if not isinstance(head_workloads, dict) or not isinstance(working_workloads, dict) or set(head_workloads) != set(working_workloads):
+        raise MigrationRefused("config/access.json workload set differs from HEAD")
+    entries: dict[str, dict[str, Any]] = {}
+    for workload_id, entry in working_workloads.items():
+        if entry == head_workloads[workload_id]:
+            continue
+        if not isinstance(entry, dict) or not isinstance(head_workloads[workload_id], dict) or _without(entry) != _without(head_workloads[workload_id]):
+            raise MigrationRefused(f"{workload_id} differs from HEAD in desired, urls or another reviewed field")
+        entries[workload_id] = {field: entry.get(field, "") for field in EFFECTIVE_FIELDS}
+    try:
+        overlay = validate_overlay({"version": OVERLAY_VERSION, "workloads": entries})
+    except AccessStateError as exc:
+        raise MigrationRefused(str(exc)) from exc
+    return {"overlay": overlay, "headBytes": head_bytes, "working": working, "clean": head_bytes == working_bytes}
+
+
+def dangling_prepared(journal: Path) -> list[str]:
+    if not journal.exists():
+        return []
+    phases: dict[str, set[str]] = {}
+    for line in journal.read_text(encoding="utf-8").splitlines():
+        try:
+            record = json.loads(line)
+            phases.setdefault(str(record["transactionId"]), set()).add(str(record.get("phase", "")))
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise MigrationRefused("access writer journal is malformed") from exc
+    return sorted(tid for tid, seen in phases.items() if "PREPARED" in seen and not seen & {"COMMITTED", "ABORTED"})
+
+
+def replace_bytes(path: Path, content: bytes) -> None:
+    """Atomically replace `path` with `content`, keeping its mode and group."""
+    existing = path.stat()
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        os.fchown(descriptor, -1, existing.st_gid)
+        os.fchmod(descriptor, stat.S_IMODE(existing.st_mode))
+        with os.fdopen(descriptor, "wb") as handle:
+            handle.write(content)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def migrate(repo: Path, *, apply: bool) -> dict[str, Any]:
+    config = repo / "config"
+    result = plan(repo)
+    overlay, working = result["overlay"], result["working"]
+    existing = read_overlay(config) if (config / OVERLAY_NAME).exists() else None
+    summary: dict[str, Any] = {"ok": True, "apply": apply, "workloads": sorted(overlay["workloads"]), "fields": list(EFFECTIVE_FIELDS)}
+    if result["clean"]:
+        load_access(config)  # an existing overlay must still be valid
+        return {**summary, "alreadyMigrated": True, "overlayPresent": existing is not None}
+    if existing is not None and existing != overlay:
+        raise MigrationRefused(f"{OVERLAY_NAME} already exists and does not match the working-tree effective state")
+    dangling = dangling_prepared(repo / "runtime" / "argus" / "m1" / "access-journal.jsonl")
+    if dangling:
+        raise MigrationRefused("access writer journal has a PREPARED record without COMMITTED or ABORTED; run the writer recovery first")
+    if not apply:
+        return {**summary, "alreadyMigrated": False, "overlay": overlay}
+    backups = repo / "runtime" / "migration-backups"
+    backups.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    backup = backups / f"{stamp}-access.json"
+    shutil.copy2(config / "access.json", backup)
+    if existing is None:
+        _atomic_json_replace(config / OVERLAY_NAME, overlay)
+    if load_access(config) != working:
+        raise MigrationRefused("merged view after writing the overlay differs from the working tree; nothing else was changed")
+    replace_bytes(config / "access.json", result["headBytes"])
+    if _git(repo, "diff", "--quiet", "--", "config/access.json").returncode != 0:
+        raise MigrationRefused(f"config/access.json still differs from HEAD; restore it from {backup}")
+    if load_access(config) != working:
+        raise MigrationRefused(f"merged view changed during the split; restore config/access.json from {backup} and remove {OVERLAY_NAME}")
+    return {**summary, "alreadyMigrated": False, "backup": str(backup)}
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Split server-applied effective access out of a dirty config/access.json (D028).")
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true", help="Print the plan and change nothing (the default).")
+    mode.add_argument("--apply", action="store_true", help="Back up, write the overlay and restore the reviewed file.")
+    args = parser.parse_args()
+    try:
+        payload = migrate(root(), apply=args.apply)
+    except (MigrationRefused, AccessStateError, OSError) as exc:
+        print_json({"ok": False, "reason": str(exc)})
+        return 2
+    print_json(payload)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

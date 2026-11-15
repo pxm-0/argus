@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_cloudflare_allowlist import effective_blockers, is_allowlisted, load_evidence
-from argus_common import audit, http_status, load_json, now, print_json, regenerate_dashboard, root, save_json
+from argus_common import http_status, load_json, print_json, root
 
 
 SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
@@ -109,25 +109,16 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
     }
 
 
-def apply_lowering(result: dict[str, Any]) -> dict[str, Any]:
+def rollback_commands(result: dict[str, Any]) -> list[str]:
+    """D028: reconcile never relabels state. A failing Cloudflare effective is cut by the rollback script."""
     access = load_json("access.json")
-    changed: list[str] = []
-    for finding in result["findings"]:
-        workload_id = str(finding["workloadId"])
-        if finding["level"] != "fail" or workload_id not in access.get("workloads", {}):
-            continue
-        item = access["workloads"][workload_id]
-        if str(item.get("effective", "")).startswith("cloudflare"):
-            item["effective"] = "local"
-            item["lastAppliedAt"] = now()
-            item["lastError"] = "Lowered by access reconcile after Cloudflare drift."
-            changed.append(workload_id)
-    if changed:
-        save_json("access.json", access)
-        regenerate_dashboard(quiet=True)
-    for workload_id in changed:
-        audit("access.reconcile", workload_id, "lowered", effective="local")
-    return {"changed": changed}
+    failing = sorted({
+        str(finding["workloadId"])
+        for finding in result["findings"]
+        if finding["level"] == "fail"
+        and str(access.get("workloads", {}).get(str(finding["workloadId"]), {}).get("effective", "")).startswith("cloudflare")
+    })
+    return [f"sudo scripts/argus-cloudflare-rollback {workload_id} --apply --confirm-workload {workload_id}" for workload_id in failing]
 
 
 def print_text(result: dict[str, Any]) -> None:
@@ -139,18 +130,20 @@ def print_text(result: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Detect desired/effective access drift.")
-    parser.add_argument("--apply", action="store_true", help="Only lower Cloudflare effective access after drift.")
+    parser.add_argument("--apply", action="store_true", help="Print the rollback command for each drifted Cloudflare workload; changes nothing.")
     parser.add_argument("--offline", action="store_true", help="Skip live HTTP probes.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     result = reconcile(offline=args.offline)
     if args.apply:
-        result["apply"] = apply_lowering(result)
+        result["rollbackCommands"] = rollback_commands(result)
     if args.json:
         print_json(result)
     else:
         print_text(result)
+        for command in result.get("rollbackCommands", []):
+            print(f"Run: {command}")
     return 0 if result["ok"] else 2
 
 

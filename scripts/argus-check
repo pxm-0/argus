@@ -22,6 +22,7 @@ DYNAMIC_IMPORTS = {"ctypes", "importlib"}
 GENERATED_PATHS = (
     "caddy/dashboard.Caddyfile",
     "cloudflare/planned-ingress.yml",
+    "config/access.effective.json",  # D028 server overlay: ignored, never tracked
     "control-plane/dashboard/public/app.js",
     "control-plane/dashboard/public/index.html",
     "control-plane/dashboard/public/metrics.json",

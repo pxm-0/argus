@@ -18,6 +18,7 @@ from urllib.parse import urlparse
 import argus_cli_alerts
 import argus_cli_op
 import argus_cli_m1
+from argus_access_state import merge_access, read_overlay
 from argus_common import is_server_checkout
 from argus_estate_refresh import EstateRefreshError, create_request, status_summary
 from argus_migrations import MigrationError, create_draft, migration_preview
@@ -265,7 +266,7 @@ def workload_records(repo: Path) -> tuple[list[dict[str, Any]], dict[str, Any], 
     try:
         workload_config = load_json(repo, "config/workloads.json")
         privacy = load_json(repo, "config/privacy.json")
-        access = load_json(repo, "config/access.json")
+        access = merge_access(load_json(repo, "config/access.json"), read_overlay(repo / "config"))
         classification = load_json(repo, "config/argus/workload-classification.json")
     except (FileNotFoundError, PermissionError, UnicodeError, OSError, DuplicateJsonKey, json.JSONDecodeError, RecursionError, ValueError) as exc:
         return config_error("workload-registry", exc)

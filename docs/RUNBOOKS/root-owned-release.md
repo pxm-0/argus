@@ -33,8 +33,9 @@ operator-writable), the commit object is re-hashed and must equal the typed sha,
 those verified bytes and compared with a re-hash of the extracted files.
 
 Anything that writes under the release (for example `__pycache__`) now fails or is skipped. Policy config
-(`config/*.json`) is changed by a reviewed PR and a new release, EXCEPT the runtime-mutable `config/access.json` and
-`config/privacy.json`: the units that write them (`argus-domain-agent@`, `argus-domain-agent-legacy-rootful`, which have
+(`config/*.json`) is changed by a reviewed PR and a new release, EXCEPT the runtime-mutable
+`config/access.effective.json` (the server-applied access overlay, D028; `config/access.json` itself is now reviewed
+config only) and `config/privacy.json`: the units that write them (`argus-domain-agent@`, `argus-domain-agent-legacy-rootful`, which have
 `ReadWritePaths=/srv/argus/config`) get `ARGUS_ROOT=/srv/argus` in their drop-in while their code still runs from
 `/opt/argus/current`, so `access.apply` keeps writing the live files. Run `argus m1 sync --apply` and
 `argus-privacy-set` the same way only against `/srv/argus` (not through `/opt/argus/current`, which is sealed).
