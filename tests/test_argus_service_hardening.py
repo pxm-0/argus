@@ -48,6 +48,23 @@ class ApiUnitHardeningTests(unittest.TestCase):
         self.assertIn("m argus-api argus-control", text)
         self.assertNotIn("sudo", text.replace("no sudo", ""))
 
+    def test_cloudflared_unit_is_unprivileged_and_runs_only_the_checked_config(self) -> None:
+        keys = unit_keys("cloudflared.service")
+        self.assertEqual(["cloudflared"], keys["User"])
+        self.assertEqual([""], keys["CapabilityBoundingSet"])
+        self.assertEqual(["strict"], keys["ProtectSystem"])
+        self.assertEqual(["/var/lib/argus/managed-ingress/nodens-production"], keys["BindReadOnlyPaths"])
+        self.assertEqual(["/var/lib/argus:ro"], keys["TemporaryFileSystem"])
+        hidden = keys["InaccessiblePaths"][0].split()
+        for path in ("-/srv", "-/etc/argus", "-/run/docker.sock", "-/var/run/docker.sock"):
+            self.assertIn(path, hidden)
+        smoke = runpy.run_path(str(ROOT / "scripts" / "smoke-test"))
+        exposure = {"providers": {"cloudflare": {}}}
+        self.assertEqual([], smoke["cloudflared_unit_problems"](exposure, keys["ExecStart"][0]))
+        sysusers = (ROOT / "systemd" / "sysusers.d" / "argus-cloudflared.conf").read_text()
+        self.assertIn("u cloudflared", sysusers)
+        self.assertNotIn("docker", sysusers.replace("not in docker", ""))
+
     def test_metrics_unit_is_bounded(self) -> None:
         keys = unit_keys("argus-metrics.service")
         self.assertEqual(["60"], keys["TimeoutStartSec"])
