@@ -14,7 +14,8 @@
       "allowQuickTunnels": false,
       "allowNamedTunnels": false,
       "requireAccessPolicy": true,
-      "configPath": "/srv/argus/cloudflare/planned-ingress.yml"
+      "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
+      "publicAllowlist": []
     }
   }
 }

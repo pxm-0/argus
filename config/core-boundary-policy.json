@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:b216622f35c2bc3a0038321542d800932c35d2eb1753eab243e0d662b0020a74"
+    "expectedSbomDigest": "sha256:9741d6c4cdc704db51893d05b60dfc24b93d5cf401869b113caa8c6d25b0922c"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -64,7 +64,7 @@
   },
   "networkPolicy": {
     "default": "deny-undeclared-importer",
-    "expectedEndpointDigest": "sha256:f0809eaf291d0ed4f284f9790ce96fced50a43f50c949d361100eca65ea52b9c",
+    "expectedEndpointDigest": "sha256:e8e8a03168dda7235e131ff4ae0a1a4a94c00d49e93d7407758c8957c8cd21b2",
     "declaredEntrypoints": [
       {
         "path": "control-plane/api/server.py",
@@ -81,6 +81,10 @@
       {
         "path": "scripts/argus-alert",
         "authority": "configured-workload-health-read-only"
+      },
+      {
+        "path": "scripts/argus-cloudflare-activate",
+        "authority": "allowlisted-cloudflare-route-https-probe"
       },
       {
         "path": "scripts/argus-doctor",

@@ -202,6 +202,28 @@ work-managed
 
 **Verification:** Inject crashes at every write, flush, rename, marker, snapshot, replay, cutover, and rollback boundary.
 
+### D027: Allow one public route, for the nodens website, through a named tunnel
+
+**Status:** Accepted 2026-11-15 by the operator. Partly supersedes the P0 hard rules in `CLAUDE.md` and `docs/PR_WORKFLOW.md` ("no Cloudflare tunnels, no DNS records, no public exposure"), for this route only.
+
+**Decision:** `nodens-production` (a static website with no accounts, forms or secrets) may be published at `nodens.dev`, with `www.nodens.dev` redirecting to it, through a Cloudflare named tunnel. Nothing else becomes public. In detail:
+
+- The route is enforced as an explicit allowlist (workload and hostname) in the exposure config and checked by policy, doctor, reconcile and smoke. Any workload or hostname not on it still fails closed.
+- It goes live in two stages: first behind Cloudflare Access limited to the operator (`cloudflare-protected`), and only after that is verified, `cloudflare-public`.
+- `nodens-staging`, the dashboard, the control API and every other workload stay tailnet-only.
+- Tailscale Funnel, Cloudflare Quick Tunnels, router port forwards and inbound listeners stay banned. The tunnel is outbound-only, and its ingress ends in a 404 catch-all.
+- Tunnel credentials stay on the server, outside Git.
+
+**Reason:** The site is meant to be public, and its canonical URL is already `https://nodens.dev`. A named tunnel publishes it without opening inbound ports and keeps origin access behind the existing per-workload ingress. A per-route allowlist keeps the default deny for everything else instead of weakening the gates globally.
+
+**Threat model and rollback:** `docs/NODENS_PUBLIC_ROUTE.md`.
+
+**Verification:**
+- `cloudflared tunnel ingress validate`, plus `ingress rule` checks showing that only the allowlisted hostnames match and everything else hits the catch-all.
+- A protected-stage probe answers 401/403 without an Access session and 200 with one. A public-stage probe answers 200.
+- doctor, reconcile and online smoke are green with the provider enabled.
+- Rollback is rehearsed by removing the ingress rule and confirming the hostname stops resolving to the site.
+
 ## Viability Evidence
 
 Evidence was collected read-only from the primary host on 2026-07-14. Detailed output remains in the private task transcript and must be recollected under the server-required issue before it is used as acceptance evidence.

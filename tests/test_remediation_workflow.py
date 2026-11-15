@@ -72,6 +72,32 @@ Acceptance summaries
         attached = attached_without_digests.replace("Acceptance summaries", "Acceptance summaries\n" + valid_row)
         self.assertEqual(0, self.run_guard(attached).returncode)
 
+    APPROVED_ROUTE = (
+        "- [x] Approved public route under D027: nodens-production at nodens.dev and www.nodens.dev "
+        "through a named Cloudflare tunnel; no other workload, hostname or tunnel."
+    )
+    EXPOSURE_BOXES = (
+        "- [x] No Cloudflare tunnel was started or enabled.\n",
+        "- [x] No DNS records were created.\n",
+        "- [x] No public route was exposed.\n",
+    )
+
+    def without_exposure_boxes(self) -> str:
+        body = self.valid_body()
+        for box in self.EXPOSURE_BOXES:
+            body = body.replace(box, "")
+        return body
+
+    def test_guard_accepts_only_the_d027_route_in_place_of_the_exposure_boxes(self) -> None:
+        # D027 authorizes exactly one public route; Funnel and router ports stay banned for every PR.
+        self.assertNotEqual(0, self.run_guard(self.without_exposure_boxes()).returncode)
+        approved = self.without_exposure_boxes().replace("- [x] No router ports", self.APPROVED_ROUTE + "\n- [x] No router ports")
+        self.assertEqual(0, self.run_guard(approved).returncode, self.run_guard(approved).stdout)
+        widened = approved.replace("nodens.dev and www.nodens.dev", "nodens.dev, www.nodens.dev and staging.nodens.dev")
+        self.assertNotEqual(0, self.run_guard(widened).returncode)
+        for still_required in ("- [x] No Tailscale Funnel was enabled.\n", "- [x] No router ports were opened.\n"):
+            self.assertNotEqual(0, self.run_guard(approved.replace(still_required, "")).returncode, still_required)
+
     def test_current_documentation_has_distinct_paths(self) -> None:
         index = (ROOT / "docs" / "README.md").read_text()
         for heading in ("## Operator", "## Contributor", "## Architecture", "## Historical Record"):

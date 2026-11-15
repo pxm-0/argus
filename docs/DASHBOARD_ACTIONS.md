@@ -25,8 +25,13 @@ Origin == configured private operator origin
 The bootstrap credential is submitted in the JSON body only for session
 exchange and step-up reauthentication, together with the operator's
 authenticator code in `totp` (the "Authenticator code" input,
-`autocomplete="one-time-code"`; a recovery code also works once). Both inputs
-are cleared immediately after use and are never stored in browser storage. After
+`autocomplete="one-time-code"`; a recovery code also works once). The sign-in
+form is a real `<form>` (login `autocomplete="username"`, token
+`autocomplete="current-password"`), so a password manager can save the token and
+offer the code; the login field is only for the password manager and is never
+sent. When a change needs step-up, the same form opens in confirm mode and the
+change continues after a fresh code. Token and code are cleared immediately after
+each attempt and are never stored in browser storage. After
 5 failures in 5 minutes the API answers 429 with `Retry-After` for 15 minutes;
 see `docs/RUNBOOKS/operator-session-diagnosis.md`.
 

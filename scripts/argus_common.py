@@ -17,6 +17,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from argus_cloudflare_allowlist import is_allowlisted
 from argus_m5_topology import build_topology
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_reconciliation import reconcile
@@ -74,6 +75,9 @@ OPERATION_SCRIPTS = [
     "argus-workload-onboard",
     "argus-admission-doctor",
     "argus-access-reconcile",
+    "argus-cloudflare-activate-preview",
+    "argus-cloudflare-activate",
+    "argus-cloudflare-rollback",
     "argus-smoke-scheduled",
     "argus-template-check",
     "smoke-test",
@@ -481,6 +485,22 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
             "changes": changes,
         }
 
+    def not_allowlisted() -> dict[str, Any] | None:
+        # D027: Cloudflare is planned only for allowlisted routes. Policy never makes it effective;
+        # only argus-cloudflare-activate does, after a verified probe.
+        hostname = str(changes["routes"].get("cloudflare", {}).get("hostname", ""))
+        if is_allowlisted(load_json("exposure.json"), workload_id, hostname):
+            return None
+        return {
+            "allowed": False,
+            "reason": "workload and hostname are not in cloudflare.publicAllowlist",
+            "effective": None,
+            "plannedOnly": False,
+            "confirmationRequired": False,
+            "confirmationPhrase": "",
+            "changes": changes,
+        }
+
     if desired == "tailnet" and rules.get("allowTailnetForAll", False):
         return allowed("tailnet allowed", "tailnet")
     if desired in {"none", "local"}:
@@ -509,7 +529,7 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
         phrase = phrases.get("cloudflare-public", "") if rules.get("requireConfirmationForCloudflarePublic", False) else ""
         if privacy_state == "restricted" and rules.get("requireSecondConfirmationForRestrictedPublic", False):
             phrase = phrases.get("restricted-cloudflare-public", phrase)
-        return allowed("public exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
+        return not_allowlisted() or allowed("public exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
     if desired == "cloudflare-protected":
         if privacy_state == "restricted" and not rules.get("allowRestrictedToCloudflareProtected", False):
             return {
@@ -532,7 +552,7 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
                 "changes": changes,
             }
         phrase = "plan protected cloudflare" if rules.get("requireConfirmationForCloudflareProtected", False) else ""
-        return allowed("Cloudflare exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
+        return not_allowlisted() or allowed("Cloudflare exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
     return {
         "allowed": False,
         "reason": "policy denied",

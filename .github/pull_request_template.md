@@ -41,6 +41,7 @@ Acceptance summaries (use `argus-acceptance-summary`; never paste raw server evi
 - [ ] No DNS records were created.
 - [ ] No router ports were opened.
 - [ ] No public route was exposed.
+<!-- Only for the D027 route (docs/PR_WORKFLOW.md): replace the tunnel, DNS and public-route lines above with the exact "Approved public route under D027" line. -->
 - [ ] Server-required evidence came from `oreochiserver`, or this PR only changes docs/templates.
 
 ## Notes
