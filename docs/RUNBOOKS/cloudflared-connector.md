@@ -5,7 +5,8 @@
 Installs the named-tunnel connector for the only allowlisted Cloudflare route
 ([D027](../ARGUS_V1_DECISIONS.md), threat model in
 [NODENS_PUBLIC_ROUTE.md](../NODENS_PUBLIC_ROUTE.md)). Activation itself is in
-[CLOUDFLARE.md](../CLOUDFLARE.md).
+[CLOUDFLARE.md](../CLOUDFLARE.md). The `sudo` steps and activation run from a root
+shell once operator sudo is narrowed.
 
 The connector must not run while `providers.cloudflare.enabled` is `false`:
 smoke fails on an active `cloudflared` with the provider off. Steps 1-4 leave it
@@ -26,7 +27,9 @@ sudo systemctl daemon-reload   # do not enable or start yet
 
 `cloudflared` has no login shell, no sudo and no docker group. Its only filesystem
 grant is traverse (`--x`) on that one ingress directory; the unit also hides the
-rest of the Argus state, `/srv`, `/etc/argus` and the Docker socket.
+rest of the Argus state, `/srv`, `/etc/argus` and the Docker socket, allows network
+egress only to public addresses (plus the local DNS stub), and pins its metrics
+listener to loopback.
 
 ## 2. Tunnel (operator only)
 
@@ -41,14 +44,15 @@ cloudflared tunnel create argus-nodens
 Then move the tunnel credentials to the connector and remove your copy:
 
 ```bash
-sudo install -d -m 0750 -o root -g cloudflared /etc/cloudflared
+sudo install -d -m 0751 -o root -g cloudflared /etc/cloudflared
 sudo install -m 0640 -o root -g cloudflared ~/.cloudflared/<tunnel-id>.json /etc/cloudflared/
 shred -u ~/.cloudflared/<tunnel-id>.json
 ```
 
 ## 3. Catch-all-only config
 
-`/etc/cloudflared/argus.yml`, mode `0644` (smoke reads it, it holds no secret):
+Write this as a file, then install it world-readable (smoke reads it as the
+operator; it holds no secret, and activation keeps its mode when it rewrites it):
 
 ```yaml
 tunnel: <tunnel-id>
@@ -57,17 +61,22 @@ ingress:
   - service: http_status:404
 ```
 
-Check it with `cloudflared tunnel --config /etc/cloudflared/argus.yml ingress validate`.
+```bash
+sudo install -m 0644 -o root -g root argus.yml /etc/cloudflared/argus.yml
+sudo cloudflared tunnel --config /etc/cloudflared/argus.yml ingress validate
+```
 
 ## 4. DNS (operator)
 
 ```bash
 cloudflared tunnel route dns argus-nodens nodens.dev
 cloudflared tunnel route dns argus-nodens www.nodens.dev
-rm ~/.cloudflared/cert.pem        # the account certificate is not needed to run
+shred -u ~/.cloudflared/cert.pem  # the account certificate is not needed to run
 ```
 
-Until activation adds their rules, both names answer 404 from the catch-all.
+Until step 5 starts the connector, both names return Cloudflare's tunnel error
+(1033); after that they answer 404 from the catch-all until activation adds their
+rules.
 
 ## 5. Provider on, connector on
 

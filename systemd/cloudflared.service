@@ -11,7 +11,7 @@ User=cloudflared
 Group=cloudflared
 # Locally managed named tunnel only: the checked config, never a --token tunnel.
 # Activation (argus-cloudflare-activate) rewrites the ingress and restarts this unit.
-ExecStart=/usr/bin/cloudflared --no-autoupdate --config /etc/cloudflared/argus.yml tunnel run
+ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics 127.0.0.1:20241 --config /etc/cloudflared/argus.yml tunnel run
 Restart=on-failure
 RestartSec=5s
 UMask=0077
@@ -30,6 +30,7 @@ ProtectKernelLogs=true
 ProtectControlGroups=true
 ProtectClock=true
 ProtectHostname=true
+ProtectProc=invisible
 RestrictNamespaces=true
 RestrictRealtime=true
 RestrictSUIDSGID=true
@@ -38,6 +39,10 @@ MemoryDenyWriteExecute=true
 SystemCallArchitectures=native
 SystemCallFilter=@system-service
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Egress only to the Cloudflare edge: no loopback services, LAN, Docker bridges or tailnet
+# (the origin is a unix socket, so a 127.0.0.1 ingress service would not work here).
+IPAddressDeny=127.0.0.0/8 ::1/128 169.254.0.0/16 fe80::/10 224.0.0.0/4 ff00::/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7
+IPAddressAllow=127.0.0.53/32
 CapabilityBoundingSet=
 AmbientCapabilities=
 

@@ -58,6 +58,12 @@ class ApiUnitHardeningTests(unittest.TestCase):
         hidden = keys["InaccessiblePaths"][0].split()
         for path in ("-/srv", "-/etc/argus", "-/run/docker.sock", "-/var/run/docker.sock"):
             self.assertIn(path, hidden)
+        denied = keys["IPAddressDeny"][0].split()
+        for prefix in ("127.0.0.0/8", "::1/128", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10", "fc00::/7"):
+            self.assertIn(prefix, denied)
+        self.assertEqual(["127.0.0.53/32"], keys["IPAddressAllow"])
+        self.assertEqual(["invisible"], keys["ProtectProc"])
+        self.assertIn("--metrics 127.0.0.1:", keys["ExecStart"][0])
         smoke = runpy.run_path(str(ROOT / "scripts" / "smoke-test"))
         exposure = {"providers": {"cloudflare": {}}}
         self.assertEqual([], smoke["cloudflared_unit_problems"](exposure, keys["ExecStart"][0]))
