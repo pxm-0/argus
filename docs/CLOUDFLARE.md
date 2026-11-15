@@ -81,7 +81,10 @@ the catch-all is missing.
 
 ## Activation
 
-Run on the server, one stage at a time:
+Install the connector first with
+[RUNBOOKS/cloudflared-connector.md](RUNBOOKS/cloudflared-connector.md). Then run
+on the server from a root shell (activation writes `/etc/cloudflared` and restarts
+the connector), one stage at a time:
 
 ```bash
 scripts/argus-cloudflare-activate-preview <workload> --mode protected
@@ -108,6 +111,8 @@ same workload and hostname (newer than any rollback), a route with `mode: public
 policy phrase `publish publicly`. Its probe must answer 200.
 
 ## Rollback
+
+Run from a root shell on the server:
 
 ```bash
 scripts/argus-cloudflare-rollback <workload>
