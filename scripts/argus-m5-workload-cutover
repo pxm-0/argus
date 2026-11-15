@@ -100,6 +100,11 @@ SPECS = {
                 "CRAWL_SCHEDULE_MECHANISM": "internal",
             }
         },
+        # Headless Chrome children were never reaped by the node PID 1:
+        # 1,155 zombies under one parent by 2026-11-15 (about 13 a day).
+        # init: true puts docker-init at PID 1 to reap them; pids_limit caps
+        # any future leak before it exhausts the sandbox's process table.
+        "process_limits": {"hastur": {"init": True, "pids_limit": 1024}},
         # Exact reviewed replacement for the pre-scheduler accepted image.
         # The image is a flat-rootfs import because this rootless storage stack
         # cannot unpack the legacy layered image (EOVERFLOW). Refresh validates
@@ -922,9 +927,10 @@ def build_runtime(
 
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
-    unknown = (set(credentials) | set(extra_environment)).difference(
-        compose["services"]
-    )
+    process_limits = declared_process_limits(spec)
+    unknown = (
+        set(credentials) | set(extra_environment) | set(process_limits)
+    ).difference(compose["services"])
     if unknown:
         raise CutoverError(
             f"credential or environment overlay names unknown services: {sorted(unknown)}"
@@ -941,6 +947,7 @@ def build_runtime(
             **extra_environment.get(service, {}),
         }
         definition["restart"] = "no"
+        definition.update(process_limits.get(service, {}))
         if service in credentials:
             definition.setdefault("volumes", []).append(
                 {
@@ -1956,9 +1963,10 @@ def refresh_overlay(
     credentials = dict(spec.get("credentials") or {})
     extra_environment = dict(spec.get("extra_environment") or {})
     image_refresh = declared_image_refresh(spec)
-    unknown = (set(credentials) | set(extra_environment) | set(image_refresh)).difference(
-        services
-    )
+    process_limits = declared_process_limits(spec)
+    unknown = (
+        set(credentials) | set(extra_environment) | set(image_refresh) | set(process_limits)
+    ).difference(services)
     if unknown:
         raise CutoverError(
             f"runtime overlay names unknown services: {sorted(unknown)}"
@@ -1996,6 +2004,7 @@ def refresh_overlay(
             **extra_environment.get(service, {}),
         }
         definition["restart"] = "no"
+        definition.update(process_limits.get(service, {}))
         target = credentials.get(service)
         if target is None:
             continue
@@ -2017,6 +2026,26 @@ def refresh_overlay(
         )
         definition["volumes"] = volumes
     return updated
+
+
+def declared_process_limits(spec: dict) -> dict[str, dict[str, object]]:
+    """Return the closed per-service init/pids_limit declaration."""
+    raw = spec.get("process_limits") or {}
+    if not isinstance(raw, dict):
+        raise CutoverError("process limits declaration must be an object")
+    result: dict[str, dict[str, object]] = {}
+    for service, declaration in raw.items():
+        if (
+            not isinstance(service, str)
+            or not isinstance(declaration, dict)
+            or set(declaration) != {"init", "pids_limit"}
+            or declaration["init"] is not True
+            or type(declaration["pids_limit"]) is not int
+            or not 64 <= declaration["pids_limit"] <= 32768
+        ):
+            raise CutoverError(f"process limits declaration is invalid: {service}")
+        result[service] = {"init": True, "pids_limit": declaration["pids_limit"]}
+    return result
 
 
 def declared_image_refresh(spec: dict) -> dict[str, dict[str, object]]:

@@ -669,6 +669,40 @@ class RuntimeRefreshTest(unittest.TestCase):
                 self.ACCEPTED, "hastur", spec, self.CREDENTIAL_DIR
             )
 
+    def test_hastur_runtime_reaps_children_and_caps_pids(self) -> None:
+        # 1,155 unreaped headless Chrome zombies accumulated under hastur's
+        # node PID 1 before the 2026-11-15 reboot.
+        updated = module.refresh_overlay(
+            self.ACCEPTED, "hastur", self.granted_spec(), self.CREDENTIAL_DIR
+        )
+        service = updated["services"]["hastur"]
+        self.assertIs(True, service["init"])
+        self.assertEqual(1024, service["pids_limit"])
+        self.assertNotIn("init", updated["services"]["argus-ingress"])
+        self.assertNotIn("pids_limit", updated["services"]["argus-ingress"])
+        # An accepted runtime lacking the limits is drift, so --refresh applies it.
+        self.assertNotEqual(self.ACCEPTED, updated)
+
+    def test_process_limits_declaration_is_closed(self) -> None:
+        for bad in (
+            {"hastur": {"init": True}},
+            {"hastur": {"init": False, "pids_limit": 1024}},
+            {"hastur": {"init": True, "pids_limit": "1024"}},
+            {"hastur": {"init": True, "pids_limit": True}},
+            {"hastur": {"init": True, "pids_limit": 0}},
+            {"hastur": {"init": True, "pids_limit": 1024, "privileged": True}},
+        ):
+            with self.subTest(bad=bad), self.assertRaises(module.CutoverError):
+                module.declared_process_limits({"process_limits": bad})
+        spec = {
+            **module.SPECS["hastur"],
+            "process_limits": {"absent": {"init": True, "pids_limit": 1024}},
+        }
+        with self.assertRaises(module.CutoverError):
+            module.refresh_overlay(
+                self.ACCEPTED, "hastur", spec, self.CREDENTIAL_DIR
+            )
+
     def test_image_refresh_declaration_is_closed_and_immutable(self) -> None:
         declaration = module.declared_image_refresh(module.SPECS["hastur"])
         self.assertEqual(["hastur"], sorted(declaration))
