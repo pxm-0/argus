@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_actions import sanitize_log_text
+from argus_cloudflare_allowlist import allowlisted_hostnames, cloudflare_provider, ingress_problems
 from argus_common import APPROVED_OPERATOR_LINKS, OPERATION_SCRIPTS, is_server_checkout
 
 
@@ -383,7 +384,11 @@ def check_cloudflare_plan(repo: Path, smoke: Smoke) -> None:
         return
     path = repo / "cloudflare" / "planned-ingress.yml"
     smoke.check(path.exists() and "http_status:404" in path.read_text(), "Cloudflare plan generated")
-    smoke.check(plan.get("providerEnabled") is False, "Cloudflare disabled by default")
+    exposure = load_json_file(repo / "config" / "exposure.json")
+    smoke.check(
+        plan.get("providerEnabled") is False or bool(allowlisted_hostnames(exposure)),
+        "Cloudflare provider enabled only with a non-empty public allowlist",
+    )
 
 
 def check_funnel(repo: Path, smoke: Smoke, offline: bool) -> None:
@@ -411,7 +416,32 @@ def check_cloudflared(repo: Path, smoke: Smoke, offline: bool) -> None:
         smoke.warn("systemctl unavailable; cloudflared check skipped")
         return
     result = run(["systemctl", "is-active", "cloudflared"], repo)
-    smoke.check(result.stdout.strip() != "active", "no unexpected cloudflared active")
+    if result.stdout.strip() != "active":
+        smoke.pass_("no unexpected cloudflared active")
+        return
+    exposure = load_json_file(repo / "config" / "exposure.json")
+    problems = cloudflared_problems(exposure, read_cloudflared_config(exposure))
+    if problems:
+        smoke.fail("no unexpected cloudflared active: " + "; ".join(problems))
+    else:
+        smoke.pass_("no unexpected cloudflared active")
+
+
+def read_cloudflared_config(exposure: dict[str, Any]) -> str | None:
+    path = Path(str(cloudflare_provider(exposure).get("activationConfigPath") or "/etc/cloudflared/argus.yml"))
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def cloudflared_problems(exposure: dict[str, Any], config_text: str | None) -> list[str]:
+    """An active cloudflared is expected only for an enabled provider serving allowlisted hostnames."""
+    if cloudflare_provider(exposure).get("enabled") is not True:
+        return ["cloudflared is active while the Cloudflare provider is disabled"]
+    if config_text is None:
+        return ["active cloudflared config is unreadable"]
+    return ingress_problems(config_text, exposure)
 
 
 def check_tracked_secrets(repo: Path, smoke: Smoke) -> None:

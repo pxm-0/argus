@@ -1,0 +1,83 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+from typing import Any
+
+from argus_cloudflare_activation import (
+    DEFAULT_CONFIG_PATH,
+    ROLLBACK_EFFECTIVE,
+    config_with_hostnames,
+    install_config,
+    lower_effective,
+    reload_cloudflared,
+)
+from argus_cloudflare_allowlist import cloudflare_provider, safe_allowlist
+from argus_common import audit, load_json, regenerate_dashboard
+from argus_state import StateError
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Roll back an allowlisted Cloudflare route: drop its ingress rules, then lower access.")
+    parser.add_argument("workload_id")
+    parser.add_argument("--apply", action="store_true", help="Remove the workload's ingress rules, reload cloudflared and lower effective access.")
+    parser.add_argument("--confirm-workload", default="")
+    parser.add_argument("--no-reload", action="store_true")
+    args = parser.parse_args()
+
+    exposure = load_json("exposure.json")
+    config_path = Path(str(cloudflare_provider(exposure).get("activationConfigPath") or DEFAULT_CONFIG_PATH))
+    # Drop the route hostname too, so a hostname removed from the allowlist is still cut off.
+    route_host = str(load_json("routes.json").get("workloadRoutes", {}).get(args.workload_id, {}).get("cloudflare", {}).get("hostname", ""))
+    hostnames = tuple(sorted({*safe_allowlist(exposure).get(args.workload_id, ()), *([route_host] if route_host else [])}))
+    payload: dict[str, Any] = {
+        "ok": True,
+        "workloadId": args.workload_id,
+        "hostnames": list(hostnames),
+        "wouldRemoveIngressFrom": str(config_path),
+        "wouldLowerEffectiveTo": ROLLBACK_EFFECTIVE,
+        "wouldPreserveEvidence": True,
+        "apply": bool(args.apply),
+    }
+    if not args.apply:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+        audit("cloudflare.rollback.preview", args.workload_id, "ok", hostnames=list(hostnames))
+        return 0
+    if args.confirm_workload != args.workload_id:
+        return blocked(payload, "workload confirmation did not match")
+
+    if config_path.exists():
+        try:
+            previous = config_path.read_text(encoding="utf-8")
+        except OSError as exc:
+            return blocked(payload, f"cloudflared config is unreadable: {exc.__class__.__name__}")
+        validation = install_config(config_path, config_with_hostnames(previous, hostnames, (), ""))
+        payload["validation"] = validation
+        if not validation["ok"]:
+            return blocked(payload, "ingress validation failed; stop the cloudflared service to cut traffic")
+        payload["reload"] = {"ok": True, "skipped": True} if args.no_reload else reload_cloudflared()
+    else:
+        payload["reload"] = {"ok": True, "skipped": True, "reason": "no cloudflared config"}
+
+    try:
+        lower_effective(args.workload_id, "argus-cloudflare-rollback")
+    except (PermissionError, StateError) as exc:
+        return blocked(payload, f"effective access not lowered: {exc}")
+    regenerate_dashboard(quiet=True)
+    reload_ok = bool(payload["reload"]["ok"])
+    audit("cloudflare.rollback", args.workload_id, "ok" if reload_ok else "warning", reload=payload["reload"])
+    print(json.dumps(payload, indent=2, sort_keys=True))
+    return 0 if reload_ok else 2
+
+
+def blocked(payload: dict[str, Any], reason: str) -> int:
+    result = {**payload, "ok": False, "reason": reason}
+    print(json.dumps(result, indent=2, sort_keys=True))
+    audit("cloudflare.rollback", str(payload["workloadId"]), "blocked", reason=reason)
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

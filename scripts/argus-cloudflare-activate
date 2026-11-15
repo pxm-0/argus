@@ -1,0 +1,128 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import urllib.error
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from argus_admission import evaluate_current
+from argus_cloudflare_activation import (
+    MODES,
+    activation_plan,
+    config_with_hostnames,
+    confirmation_phrase,
+    install_config,
+    reload_cloudflared,
+    set_effective,
+    write_evidence,
+)
+from argus_cloudflare_allowlist import ingress_problems
+from argus_common import audit, load_json, regenerate_dashboard, root
+from argus_state import StateError
+
+
+def external_probe(url: str) -> dict[str, Any]:
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "argus-cloudflare-activation"})
+    try:
+        with urllib.request.urlopen(request, timeout=8) as response:
+            text = response.read(4096).decode(errors="replace")
+            return {"status": response.status, "blocked": response.status in {401, 403}, "sample": text[:160]}
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, "blocked": exc.code in {401, 403}, "sample": exc.read(512).decode(errors="replace")[:160]}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"status": "fail", "blocked": False, "error": exc.__class__.__name__}
+
+
+def probe_passes(mode: str, probe: dict[str, Any]) -> bool:
+    if mode == "protected":
+        return probe.get("blocked") is True
+    return probe.get("status") == 200
+
+
+def refuse(workload_id: str, reason: str, **detail: Any) -> int:
+    audit("cloudflare.activate", workload_id, "blocked", reason=reason, **detail)
+    print(json.dumps({"ok": False, "reason": reason, **detail}, indent=2, sort_keys=True))
+    return 2
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Activate an allowlisted Cloudflare named-tunnel route (D027).")
+    parser.add_argument("workload_id")
+    parser.add_argument("--mode", required=True, choices=sorted(MODES), help="protected first; public only after protected evidence.")
+    parser.add_argument("--confirm-workload", required=True)
+    parser.add_argument("--confirm-hostname", required=True)
+    parser.add_argument("--confirm-phrase", required=True, help="protected: the Access phrase; public: the policy publish phrase.")
+    parser.add_argument("--no-reload", action="store_true", help="Write and validate config without restarting cloudflared.")
+    args = parser.parse_args()
+
+    plan = activation_plan(args.workload_id, args.mode)
+    blockers = list(plan["blockers"])
+    admission = evaluate_current(root(), args.workload_id, "access.cloudflare-protected.apply")
+    if not admission.allowed:
+        blockers.append(admission.decision_code)
+    if args.confirm_workload != args.workload_id:
+        blockers.append("workload confirmation did not match")
+    if args.confirm_hostname != plan.get("hostname"):
+        blockers.append("hostname confirmation did not match")
+    phrase = confirmation_phrase(args.mode)
+    if not phrase or args.confirm_phrase != phrase:
+        blockers.append(f"{args.mode} confirmation phrase did not match")
+    if blockers:
+        return refuse(args.workload_id, "activation blocked", blockers=blockers, mode=args.mode, hostname=plan.get("hostname", ""))
+
+    config_path = Path(str(plan["configPath"]))
+    try:
+        previous = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    except OSError as exc:
+        return refuse(args.workload_id, "existing cloudflared config is unreadable", error=exc.__class__.__name__)
+    hostnames = tuple(plan["hostnames"])
+    config_text = config_with_hostnames(previous, hostnames, hostnames, str(plan["service"]))
+    problems = ingress_problems(config_text, load_json("exposure.json"))
+    if problems:
+        return refuse(args.workload_id, "ingress would exceed the allowlist", problems=problems)
+    validation = install_config(config_path, config_text)
+    if not validation["ok"]:
+        return refuse(args.workload_id, "ingress validation failed", validation=validation)
+
+    reload_result = {"ok": True, "skipped": True} if args.no_reload else reload_cloudflared()
+    probe = external_probe(f"https://{plan['hostname']}") if reload_result["ok"] else {"status": "skipped"}
+    if not reload_result["ok"] or not probe_passes(args.mode, probe):
+        # Put the previous ingress back so a failed stage never stays live.
+        restored = install_config(config_path, previous or config_with_hostnames("", hostnames, (), ""))
+        restore_reload = reload_cloudflared() if restored["ok"] and not args.no_reload else {"ok": False, "skipped": True}
+        return refuse(
+            args.workload_id,
+            "cloudflared reload failed" if not reload_result["ok"] else f"unauthenticated probe did not match {args.mode} mode",
+            reload=reload_result,
+            probe=probe,
+            restored=restored,
+            restoreReload=restore_reload,
+        )
+
+    evidence = {
+        "ok": True,
+        "workloadId": args.workload_id,
+        "mode": args.mode,
+        "hostname": plan["hostname"],
+        "hostnames": list(hostnames),
+        "configPath": str(config_path),
+        "validation": validation,
+        "reload": reload_result,
+        "unauthenticatedProbe": probe,
+    }
+    evidence_path = write_evidence(evidence)
+    try:
+        set_effective(args.workload_id, str(plan["targetState"]), "argus-cloudflare-activate")
+    except (PermissionError, StateError) as exc:
+        return refuse(args.workload_id, "effective state not applied", error=str(exc), evidence=str(evidence_path))
+    regenerate_dashboard(quiet=True)
+    audit("cloudflare.activate", args.workload_id, "ok", mode=args.mode, hostname=plan["hostname"], evidence=str(evidence_path))
+    print(json.dumps({**evidence, "evidencePath": str(evidence_path)}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
