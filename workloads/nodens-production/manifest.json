@@ -5,8 +5,8 @@
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/nodens-production",
   "sourcePath": "/srv/argus/workloads/nodens-production/source",
-  "privacyCompatibility": "unclassified",
-  "accessCompatibility": "tailnet",
+  "privacyCompatibility": "personal",
+  "accessCompatibility": "cloudflare-protected",
   "runtime": {
     "type": "docker-compose",
     "compose": {
@@ -63,7 +63,7 @@
       "allowed": false
     },
     "access": {
-      "allowed": false
+      "allowed": true
     },
     "migrationPreflight": {
       "allowed": false
@@ -81,13 +81,13 @@
       "allowed": false
     },
     "cloudflareProtectedPlan": {
-      "allowed": false
+      "allowed": true
     },
     "cloudflareProtectedApply": {
-      "allowed": false
+      "allowed": true
     },
     "cloudflareProtectedRollback": {
-      "allowed": false
+      "allowed": true
     }
   },
   "backup": {
@@ -121,12 +121,12 @@
     "classification": "unclassified",
     "publicExposureAllowed": false,
     "forbiddenTargets": [
-      "legacy-rootful",
-      "public"
+      "legacy-rootful"
     ],
     "notes": [
       "Public exposure and runtime mutation are denied by default.",
-      "Only source/compose.yml is tracked: it pins domain-local image IDs and declares no published ports."
+      "Only source/compose.yml is tracked: it pins domain-local image IDs and declares no published ports.",
+      "D027: the only Cloudflare route is nodens.dev and www.nodens.dev, protected stage first; publicAllowed stays false until the protected stage is verified."
     ]
   }
 }

@@ -22,7 +22,15 @@
       "requireAccessPolicy": true,
       "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
       "observedCloudflared": "not-installed",
-      "publicAllowlist": []
+      "publicAllowlist": [
+        {
+          "workloadId": "nodens-production",
+          "hostnames": [
+            "nodens.dev",
+            "www.nodens.dev"
+          ]
+        }
+      ]
     }
   }
 }

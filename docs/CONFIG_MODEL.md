@@ -267,7 +267,7 @@ Example:
 
 `publicAllowlist` lists `{"workloadId": "...", "hostnames": ["..."]}` entries: the
 only routes that may ever become `cloudflare-protected` or `cloudflare-public`
-effective (D027). It ships empty; any malformed entry allows nothing.
+effective (D027). Its only entry is `nodens-production` (`nodens.dev`, `www.nodens.dev`); any malformed entry allows nothing.
 
 ## `monitoring.json`
 

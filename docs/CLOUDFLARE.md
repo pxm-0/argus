@@ -61,8 +61,12 @@ fails closed.
 ```
 
 Hostnames are exact lowercase DNS names (no wildcards, no `.invalid`). Any
-malformed entry allows nothing. The allowlist ships empty; adding an entry needs
-its own reviewed decision and pull request.
+malformed entry allows nothing. Its only entry is `nodens-production` for
+`nodens.dev` and `www.nodens.dev` (D027); adding another entry needs its own
+reviewed decision and pull request. Before activation, reconcile accepts an
+allowlisted route that is enabled in `protected` mode with desired
+`cloudflare-protected`; any other enabled route without Cloudflare effective
+access fails.
 
 ## Planned Ingress Generator
 
