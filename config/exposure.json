@@ -14,14 +14,14 @@
       }
     },
     "cloudflare": {
-      "enabled": false,
-      "provisioned": false,
+      "enabled": true,
+      "provisioned": true,
       "default": false,
       "allowQuickTunnels": false,
-      "allowNamedTunnels": false,
+      "allowNamedTunnels": true,
       "requireAccessPolicy": true,
       "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
-      "observedCloudflared": "not-installed",
+      "observedCloudflared": "installed",
       "publicAllowlist": [
         {
           "workloadId": "nodens-production",

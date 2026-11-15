@@ -72,11 +72,14 @@ INGRESS_OK = f'ingress:\n  - hostname: "{HOST}"\n    service: "http://127.0.0.1:
 
 
 class AllowlistShapeTests(unittest.TestCase):
-    def test_shipped_exposure_config_allowlists_only_the_d027_route_and_provider_is_off(self) -> None:
+    def test_shipped_exposure_config_allowlists_only_the_d027_route_over_named_tunnels(self) -> None:
         config = json.loads((ROOT / "config" / "exposure.json").read_text())
         cloudflare = config["providers"]["cloudflare"]
         self.assertEqual({"nodens-production": ("nodens.dev", "www.nodens.dev")}, public_allowlist(config))
-        self.assertFalse(cloudflare["enabled"] or cloudflare["provisioned"] or cloudflare["allowNamedTunnels"] or cloudflare["allowQuickTunnels"])
+        self.assertTrue(provider_ready(config))
+        self.assertIs(False, cloudflare["allowQuickTunnels"])
+        self.assertIs(False, cloudflare["default"])
+        self.assertIs(True, cloudflare["requireAccessPolicy"])
 
     def test_malformed_entries_are_rejected_and_allow_nothing(self) -> None:
         bad_lists = [
@@ -454,6 +457,16 @@ class SmokeGateTests(unittest.TestCase):
         self.assertEqual(["ingress hostname is not allowlisted: other.example.com"], problems(exposure(), INGRESS_OK.replace(HOST, "other.example.com")))
         self.assertEqual(sorted({HOST, "www." + HOST}), sorted(allowlisted_hostnames(exposure())))
 
+
+    def test_shipped_exposure_accepts_the_catch_all_connector_but_no_other_hostname(self) -> None:
+        # D027: the connector starts with only the catch-all; activation adds the allowlisted rules later.
+        config = json.loads((ROOT / "config" / "exposure.json").read_text())
+        problems = self.smoke_module.cloudflared_problems
+        catch_all = "tunnel: t\ncredentials-file: /etc/cloudflared/t.json\ningress:\n  - service: http_status:404\n"
+        self.assertEqual([], problems(config, catch_all))
+        rules = 'ingress:\n  - hostname: "{}"\n    service: "unix:/x.sock"\n  - service: http_status:404\n'
+        self.assertEqual([], problems(config, rules.format("nodens.dev")))
+        self.assertEqual(["ingress hostname is not allowlisted: argus.nodens.dev"], problems(config, rules.format("argus.nodens.dev")))
 
     def test_cloudflared_unit_must_run_the_checked_config_without_a_token(self) -> None:
         problems = self.smoke_module.cloudflared_unit_problems
