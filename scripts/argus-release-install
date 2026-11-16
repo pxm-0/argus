@@ -15,7 +15,7 @@ The commit must exist in the /srv/argus checkout and be reachable from origin/ma
 The commit's blobs are written into /opt/argus/releases/<sha>, its git tree hash is recomputed and
 compared with the commit's tree, the tree is chowned root:root with group and
 other write removed, and /opt/argus/current is flipped with an atomic rename.
-Gitignored state paths (runtime/, dashboard public/) become symlinks into the
+Gitignored state paths (runtime/, dashboard public/, the access overlay) become symlinks into the
 live checkout so services keep their state; the release itself stays read-only.
 
 git runs with an empty environment, no system/global config, and fsmonitor, hooks and
@@ -39,7 +39,8 @@ from pathlib import Path
 SOURCE = Path("/srv/argus")
 PREFIX = Path("/opt/argus")
 REF = "origin/main"
-STATE_LINKS = ("runtime", "control-plane/dashboard/public")
+# config/access.effective.json is the D028 server-applied access overlay (same trust as runtime/).
+STATE_LINKS = ("runtime", "control-plane/dashboard/public", "config/access.effective.json")
 STAMP = "ARGUS_RELEASE"
 SHA = re.compile(r"[0-9a-f]{40}")
 

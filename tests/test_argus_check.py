@@ -131,6 +131,27 @@ class ArgusCheckTests(unittest.TestCase):
         self.assertIn("non-root", message)
         self.assertIn("./scripts/argus-check", message)
 
+    def test_tracked_access_overlay_fails_the_generated_check(self) -> None:
+        import contextlib
+        import io
+        import shutil
+        import subprocess
+
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            git = ["git", "-C", directory, "-c", "user.name=t", "-c", "user.email=t@example.invalid"]
+            subprocess.run([*git, "init", "-q"], check=True)
+            shutil.copy(ROOT / ".gitignore", repo / ".gitignore")
+            (repo / "config").mkdir()
+            (repo / "config" / "access.effective.json").write_text("{}")
+            subprocess.run([*git, "add", ".gitignore"], check=True)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertTrue(module.generated_check(repo))
+            subprocess.run([*git, "add", "-f", "config/access.effective.json"], check=True)
+            with contextlib.redirect_stdout(io.StringIO()) as out:
+                self.assertFalse(module.generated_check(repo))
+            self.assertIn("config/access.effective.json", out.getvalue())
+
     def test_unit_suite_treats_resource_warnings_as_failures(self) -> None:
         source = SCRIPT.read_text(encoding="utf-8")
         self.assertIn("error::ResourceWarning", source)

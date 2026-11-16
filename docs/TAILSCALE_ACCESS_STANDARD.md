@@ -74,7 +74,9 @@ Run per workload; attach output to the PR:
    `curl -sS -o /dev/null -w '%{http_code}' https://oreochiserver.tail0a3a58.ts.net:<PORT>`
    returns the workload's expected status.
 5. `scripts/argus-access-reconcile` clean and `scripts/argus-doctor` ok.
-6. Set `access.json` `effective: "tailnet"`, `lastAppliedAt`, clear `lastError`.
+6. In a reviewed PR, set the tracked `access.json` baseline `effective: "tailnet"`, `lastAppliedAt`,
+   clear `lastError`. The baseline may only be `none`, `local` or `tailnet`; a Cloudflare effective is
+   never allowed there (D028: it lives only in the server's ignored `config/access.effective.json`).
 
 ### Per-workload plan
 

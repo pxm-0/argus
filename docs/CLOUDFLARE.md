@@ -28,10 +28,11 @@ cloudflare-protected   behind Cloudflare Access, limited to the operator
 cloudflare-public      reachable without authentication
 ```
 
-Either state can be requested (desired) and planned only for an allowlisted
-workload and hostname; policy denies it for anything else. Policy never makes
-a Cloudflare state effective: only `argus-cloudflare-activate` does, and only
-when all of these hold:
+Either state can be requested (desired, through a reviewed PR to
+`config/access.json`; D028) and planned only for an allowlisted workload and
+hostname; policy denies it for anything else. Policy never makes a Cloudflare
+state effective: only `argus-cloudflare-activate` does, it only applies the
+reviewed desired state, and only when all of these hold:
 
 1. the workload and its route hostname are in `cloudflare.publicAllowlist`;
 2. the provider is `enabled`, `provisioned` and `allowNamedTunnels`, with Quick
@@ -61,8 +62,12 @@ fails closed.
 ```
 
 Hostnames are exact lowercase DNS names (no wildcards, no `.invalid`). Any
-malformed entry allows nothing. The allowlist ships empty; adding an entry needs
-its own reviewed decision and pull request.
+malformed entry allows nothing. Its only entry is `nodens-production` for
+`nodens.dev` and `www.nodens.dev` (D027); adding another entry needs its own
+reviewed decision and pull request. Before activation, reconcile accepts an
+allowlisted route that is enabled in `protected` mode with desired
+`cloudflare-protected`; any other enabled route without Cloudflare effective
+access fails.
 
 ## Planned Ingress Generator
 
@@ -77,7 +82,10 @@ the catch-all is missing.
 
 ## Activation
 
-Run on the server, one stage at a time:
+Install the connector first with
+[RUNBOOKS/cloudflared-connector.md](RUNBOOKS/cloudflared-connector.md). Then run
+on the server from a root shell (activation writes `/etc/cloudflared` and restarts
+the connector), one stage at a time:
 
 ```bash
 scripts/argus-cloudflare-activate-preview <workload> --mode protected
@@ -96,14 +104,20 @@ asks the operator to confirm an Access session gets 200. If the reload, a probe,
 the confirmation or applying the effective state fails, the previous ingress is
 restored; if that fails, a catch-all-only config is installed; if that fails,
 the connector is stopped, and the output says so when traffic could not be cut.
-On success it sets the effective state, then writes evidence and an audit event.
+On success it sets the effective state, then writes evidence (atomically, mode
+0644) and an audit event. The effective state goes into the server's ignored
+`config/access.effective.json`, never into the tracked `config/access.json`
+(D028), so the deploy checkout stays clean.
 
-`--mode public` additionally requires recorded protected-stage evidence for the
+`--mode public` first needs a reviewed PR that raises the workload's desired
+access to `cloudflare-public`. It additionally requires recorded protected-stage evidence for the
 same workload and hostname (newer than any rollback), a route with `mode: public` and
 `requiresAuth: false`, a manifest with `security.publicAllowed: true`, and the
 policy phrase `publish publicly`. Its probe must answer 200.
 
 ## Rollback
+
+Run from a root shell on the server:
 
 ```bash
 scripts/argus-cloudflare-rollback <workload>
@@ -113,9 +127,12 @@ scripts/argus-cloudflare-rollback <workload> --apply --confirm-workload <workloa
 The first command previews. `--apply` removes the workload's hostnames from the
 ingress (leaving the catch-all), validates, reloads the connector and lowers the
 effective access to `tailnet` (or `local` when the tailnet route is disabled).
+Only the server effective is lowered; the reviewed desired state is unchanged
+until a follow-up PR lowers it and disables the route (D028).
 It writes a rollback record that supersedes the workload's earlier evidence, so
 re-activation starts again from the protected stage. Stopping the connector
-service also cuts all Cloudflare traffic at once.
+service also cuts all Cloudflare traffic at once. End every activation or
+rollback with `scripts/argus-m5-runtime-permissions` from the same root shell.
 
 ## Policy Requirements
 

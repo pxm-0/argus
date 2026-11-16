@@ -14,15 +14,23 @@
       }
     },
     "cloudflare": {
-      "enabled": false,
-      "provisioned": false,
+      "enabled": true,
+      "provisioned": true,
       "default": false,
       "allowQuickTunnels": false,
-      "allowNamedTunnels": false,
+      "allowNamedTunnels": true,
       "requireAccessPolicy": true,
       "configPath": "/srv/argus/cloudflare/planned-ingress.yml",
-      "observedCloudflared": "not-installed",
-      "publicAllowlist": []
+      "observedCloudflared": "installed",
+      "publicAllowlist": [
+        {
+          "workloadId": "nodens-production",
+          "hostnames": [
+            "nodens.dev",
+            "www.nodens.dev"
+          ]
+        }
+      ]
     }
   }
 }

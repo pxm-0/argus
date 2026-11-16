@@ -19,11 +19,11 @@ through the writer or explicitly denied during the rollback window:
 | Surface | Current mutation | Required M1 disposition |
 | --- | --- | --- |
 | `argus-privacy-set` | `privacy.json` | Writer-backed privacy transform (implemented) |
-| `argus-access-apply` | `access.json` | Writer-backed access transform (implemented) |
+| `argus-access-apply` | `access.effective.json` (D028; never `access.json`) | Writer-backed access transform (implemented); re-applies only the reviewed desired |
 | Control API privacy endpoint | `privacy.json` | Calls the same writer (implemented) |
-| Control API access endpoint | `access.json` | Calls the same writer (implemented) |
+| Control API access endpoint | `access.effective.json` | Calls the same writer (implemented); re-applies only the reviewed desired |
 | `argus-workload-add` / register endpoint | workload, privacy, and access registries | Deny until a complete dual-schema registration transform exists |
-| Cloudflare effective-state helpers | `access.json` | Deny until an explicit dual-schema transform exists |
+| Cloudflare effective-state helpers | `access.effective.json` | Call the same writer (D027/D028); the reviewed desired is never changed |
 
 Generated dashboard files, private evidence, monitoring output, and backup
 artifacts are not entity mutations and remain outside this writer.

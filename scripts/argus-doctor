@@ -17,7 +17,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from argus_cloudflare_allowlist import AllowlistError, effective_blockers, has_stage_evidence, ingress_problems, is_allowlisted, load_evidence, public_allowlist
+from argus_access_state import AccessStateError, merge_access, orphans, read_overlay, read_tracked
+from argus_cloudflare_allowlist import (
+    AllowlistError,
+    effective_blockers,
+    has_stage_evidence,
+    ingress_problems,
+    is_allowlisted,
+    load_evidence,
+    public_allowlist,
+    unreadable_evidence,
+)
 from argus_common import load_json, print_json, root
 from argus_sudoers import findings as sudoers_findings, parse_entries as parse_sudoers
 
@@ -138,6 +148,40 @@ def tracked_file_checks(checks: list[dict[str, Any]]) -> None:
 
 def cloudflare_evidence() -> list[dict[str, Any]]:
     return load_evidence(root() / "runtime" / "cloudflare-activation")
+
+
+def access_state_checks(checks: list[dict[str, Any]]) -> bool:
+    """D028: the reviewed baseline, the server overlay and the activation evidence must agree.
+
+    Returns False when the overlay cannot be trusted; every later access check would then exit instead.
+    """
+    config = root() / "config"
+    try:
+        tracked = read_tracked(config)
+        overlay = read_overlay(config)
+        merged = merge_access(tracked, overlay)
+    except AccessStateError as exc:
+        add(checks, False, "access baseline and effective overlay are valid", reason=str(exc))
+        return False
+    add(checks, True, "access baseline and effective overlay are valid")
+    tracked_cloudflare = sorted(
+        workload_id for workload_id, item in tracked["workloads"].items() if str(item.get("effective", "")).startswith("cloudflare")
+    )
+    add(checks, not tracked_cloudflare, "tracked access baseline never holds a Cloudflare effective state", workloads=tracked_cloudflare)
+    orphaned = orphans(tracked, overlay)
+    if orphaned:
+        add(checks, True, "WARN: access effective overlay names workloads that are not tracked", warn=True, workloads=orphaned)
+    evidence_dir = root() / "runtime" / "cloudflare-activation"
+    unreadable = unreadable_evidence(evidence_dir)
+    add(checks, not unreadable, "Cloudflare activation evidence is readable", files=unreadable)
+    evidence = load_evidence(evidence_dir)
+    lost = sorted(
+        workload_id
+        for workload_id, item in merged["workloads"].items()
+        if has_stage_evidence(evidence, workload_id, "protected") and not str(item.get("effective", "")).startswith("cloudflare")
+    )
+    add(checks, not lost, "active Cloudflare evidence matches a Cloudflare effective state", workloads=lost)
+    return True
 
 
 def exposure_checks(checks: list[dict[str, Any]]) -> None:
@@ -527,9 +571,10 @@ def audit(*, include_host: bool = False, online: bool = False) -> dict[str, Any]
     config_valid(checks)
     argus_quarantine_checks(checks)
     tracked_file_checks(checks)
-    exposure_checks(checks)
-    cloudflare_ingress_checks(checks)
-    reconcile_check(checks)
+    if access_state_checks(checks):
+        exposure_checks(checks)
+        cloudflare_ingress_checks(checks)
+        reconcile_check(checks)
     if include_host:
         host_health_checks(checks)
         api_service_user_checks(checks)

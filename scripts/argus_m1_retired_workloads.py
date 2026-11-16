@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import AccessStateError, load_access
 from argus_sqlite import ClosingConnection
 from argus_state import AuditLedger, legacy_workload_snapshot
 
@@ -117,7 +118,10 @@ def _expected(root: Path) -> tuple[dict[str, dict[str, Any]], dict[str, Any], di
     legacy = _load_object(config / "argus" / "legacy-classification.json", "legacy classification registry")
     classified = _load_object(config / "argus" / "workload-classification.json", "workload classification registry")
     privacy = _load_object(config / "privacy.json", "privacy registry")
-    access = _load_object(config / "access.json", "access registry")
+    try:
+        access = load_access(config)
+    except AccessStateError as exc:
+        raise RetirementReconcileError("access registry is unavailable or malformed") from exc
     retired_data = _load_object(config / "argus" / "retired-workloads.json", "retired workload registry")
     if retired_data.get("schemaVersion") != SCHEMA_VERSION:
         raise RetirementReconcileError("retired workload registry has an unsupported schema")

@@ -7,7 +7,8 @@ P0 separates workload identity from privacy and access policy.
 ```text
 config/workloads.json   # app/runtime identity
 config/privacy.json     # current privacy classification
-config/access.json      # desired/effective access state
+config/access.json      # reviewed desired access and a non-Cloudflare effective baseline
+config/access.effective.json  # server-applied effective access (ignored; D028)
 config/policy.json      # guardrails and transition rules
 config/routes.json      # current route definitions
 config/exposure.json    # provider capabilities and Cloudflare planning
@@ -127,7 +128,23 @@ Example:
 
 ## `access.json`
 
-Purpose: desired and effective access state.
+Purpose: reviewed desired access, URLs and an effective baseline (D028).
+
+- `desired` and `urls` live only here and change only through a reviewed PR. `access.apply` from the
+  dashboard, API or CLI may only re-apply the reviewed desired state.
+- `effective`, `lastAppliedAt` and `lastError` here are a reviewed baseline. The baseline effective is
+  `none`, `local` or `tailnet`, never a Cloudflare state (doctor and a unit test enforce it).
+- The server never writes this file. The M1 access writer writes those three fields into the ignored
+  `config/access.effective.json`:
+
+  ```json
+  {"version": 1, "workloads": {"<id>": {"effective": "<state>", "lastAppliedAt": "<iso>", "lastError": "<text>"}}}
+  ```
+
+  Exactly those keys, all strings, and the state must be in `states`. Every reader (policy, dashboard,
+  admission, doctor, reconcile, `m1 verify`) sees the baseline merged with the overlay. A missing overlay
+  gives the baseline; a malformed one makes every loader exit non-zero. Overlay entries for workloads
+  that are not tracked are ignored and doctor warns about them.
 
 Allowed states:
 
@@ -267,7 +284,7 @@ Example:
 
 `publicAllowlist` lists `{"workloadId": "...", "hostnames": ["..."]}` entries: the
 only routes that may ever become `cloudflare-protected` or `cloudflare-public`
-effective (D027). It ships empty; any malformed entry allows nothing.
+effective (D027). Its only entry is `nodens-production` (`nodens.dev`, `www.nodens.dev`); any malformed entry allows nothing.
 
 ## `monitoring.json`
 

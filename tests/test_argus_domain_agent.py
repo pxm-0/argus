@@ -207,6 +207,27 @@ class DomainAgentServiceTests(unittest.TestCase):
             self.assertFalse(allowed)
             self.assertEqual("operation-not-capable", reason)
 
+    def test_access_apply_refuses_a_desired_change_before_any_tailscale_side_effect(self) -> None:
+        allowed = Mock(allowed=True, decision_code="allowed")
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            with (
+                patch("argus_domain_agent.evaluate_current", return_value=allowed),
+                patch("argus_domain_agent.route_contract") as route_contract,
+                patch("argus_domain_agent.apply_tailscale_access") as apply_tailscale_access,
+                patch("argus_domain_agent.policy_decision", return_value={"allowed": True, "reason": "ok"}) as policy_decision,
+            ):
+                self.assertEqual(
+                    (False, "desired access changes land through a reviewed pull request"),
+                    service.policy_check("nodens-production", "access.apply", {"desired": "tailnet"}),
+                )
+                with self.assertRaisesRegex(ValueError, "reviewed pull request"):
+                    service.execute_typed("access.apply", "nodens-production", {"desired": "tailnet"})
+                route_contract.assert_not_called()
+                apply_tailscale_access.assert_not_called()
+                policy_decision.assert_not_called()
+                self.assertEqual((True, "ok"), service.policy_check("nodens-staging", "access.apply", {"desired": "none"}))
+
     def test_agent_shares_dependency_unavailable_denial(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             base = Path(directory)
