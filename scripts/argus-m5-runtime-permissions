@@ -8,6 +8,8 @@ readonly M1_RUNTIME="$ROOT/runtime/argus/m1"
 readonly CONTROL_STATE="/var/lib/argus/control"
 readonly CONFIG_DIR="$ROOT/config"
 readonly ACCESS_CONFIG="$CONFIG_DIR/access.json"
+readonly ACCESS_OVERLAY="$CONFIG_DIR/access.effective.json"
+readonly CLOUDFLARE_EVIDENCE="$ROOT/runtime/cloudflare-activation"
 readonly AUDIT_DATABASE="$ROOT/runtime/argus/audit.sqlite3"
 readonly AUDIT_LOG="$ROOT/runtime/audit.log"
 readonly DISCOVERY_DIR="$ROOT/runtime/discovery"
@@ -41,6 +43,23 @@ reconciled=0
 chown "$API_USER:$CONTROL_GROUP" "$ACCESS_CONFIG"
 chmod 0664 "$ACCESS_CONFIG"
 reconciled=$((reconciled + 1))
+
+# D028: the server-applied effective overlay shares the access.json contract.
+if [[ -e "$ACCESS_OVERLAY" ]]; then
+  chown "$API_USER:$CONTROL_GROUP" "$ACCESS_OVERLAY"
+  chmod 0664 "$ACCESS_OVERLAY"
+  reconciled=$((reconciled + 1))
+fi
+
+# Activation evidence is written by root; the oreo-run gates must still read it.
+if [[ -d "$CLOUDFLARE_EVIDENCE" ]]; then
+  chmod 0755 "$CLOUDFLARE_EVIDENCE"
+  for path in "$CLOUDFLARE_EVIDENCE"/*.json; do
+    [[ -e "$path" ]] || continue
+    chmod 0644 "$path"
+    reconciled=$((reconciled + 1))
+  done
+fi
 
 # argus-api appends to audit.log and rewrites latest.json in place via the group;
 # runtime/ is not group-writable, so the file must be (re)created here, as root.

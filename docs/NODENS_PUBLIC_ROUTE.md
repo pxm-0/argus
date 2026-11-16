@@ -46,14 +46,14 @@ Residual risks:
 
 1. **Prepared:** the gates know the allowlist, the provider is still off and no tunnel exists. All checks are green.
 2. **Protected:** the tunnel is live and `nodens.dev` sits behind Cloudflare Access limited to the operator. The probes and checks are recorded as activation evidence.
-3. **Public:** the Access application is removed, and the probe answers 200 without authentication. The effective state becomes `cloudflare-public`.
+3. **Public:** a reviewed PR first raises the workload's desired access to `cloudflare-public` (D028: the server never changes desired). Then the Access application is removed, and the probe answers 200 without authentication. The effective state becomes `cloudflare-public`.
 
 ## Rollback
 
 From any stage, in order. Each step alone stops public traffic:
 
 1. Remove the `nodens.dev` and `www.nodens.dev` ingress rules (leaving only the catch-all), validate, and reload the connector. Or stop the connector service entirely.
-2. Set the workload's effective access back to `tailnet` and record an audit event.
+2. `argus-cloudflare-rollback` lowers the server's effective access to `tailnet` (in the ignored `config/access.effective.json`) and records an audit event. The reviewed desired state changes only through a pull request (D028), which step 4 covers.
 3. Optionally remove the proxied DNS records and delete the tunnel at Cloudflare.
 4. Disable the provider in the exposure config, and revert the allowlist and route changes through a pull request.
 
