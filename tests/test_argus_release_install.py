@@ -86,6 +86,8 @@ class InstallTests(ReleaseFixture):
         self.assertEqual("a.json", os.readlink(release / "config" / "link.json"))
         self.assertEqual(self.source / "runtime", Path(os.readlink(release / "runtime")))
         self.assertEqual(self.source / "control-plane/dashboard/public", Path(os.readlink(release / "control-plane/dashboard/public")))
+        # D028: the API reads the live access overlay through the release; it may not exist yet (missing = baseline).
+        self.assertEqual(self.source / "config/access.effective.json", Path(os.readlink(release / "config/access.effective.json")))
         self.assertFalse((release / "empty-dir").exists())
 
     def test_no_group_or_other_write_anywhere_and_staging_is_gone(self) -> None:

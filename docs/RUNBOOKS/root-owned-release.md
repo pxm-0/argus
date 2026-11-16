@@ -17,8 +17,8 @@ allowlist because it would turn the allowlist into root):
 2. Writes the commit's blobs (`git ls-tree` plus `git cat-file`, not `git archive`, which runs smudge filters) into a
    private staging directory, recomputes the git tree hash of the written files, and refuses unless it equals the
    commit's tree.
-3. Replaces `runtime/` and `control-plane/dashboard/public/` with symlinks to the live checkout (both are gitignored
-   state that services write) and writes `ARGUS_RELEASE` with the sha.
+3. Replaces `runtime/`, `control-plane/dashboard/public/` and `config/access.effective.json` (the D028 access overlay)
+   with symlinks to the live checkout (all gitignored state that services write) and writes `ARGUS_RELEASE` with the sha.
 4. Runs `chown -R root:root`, strips group and other write everywhere, then renames the directory into place.
 5. Atomically repoints `/opt/argus/current` (temporary symlink, then `rename`). Existing releases are never modified;
    installing the same sha twice is refused.
