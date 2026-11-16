@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import AccessStateError, load_access
 from argus_state import AuditLedger
 from argus_sqlite import ClosingConnection
 
@@ -45,6 +46,13 @@ def _load_workloads(path: Path) -> dict[str, Any]:
     return workloads
 
 
+def _load_access_workloads(config: Path) -> dict[str, Any]:
+    try:
+        return load_access(config)["workloads"]
+    except AccessStateError as exc:
+        raise IdentityReconcileError("identity compatibility input is unavailable") from exc
+
+
 def _projection(connection: sqlite3.Connection, table: str) -> dict[str, Any]:
     try:
         rows = connection.execute(f"SELECT workload_id, entry_json FROM {table}").fetchall()
@@ -62,7 +70,7 @@ def reconcile_identity(root: Path, *, apply: bool) -> dict[str, Any]:
         raise IdentityReconcileError("M1 private state is unavailable or not tamper-evident")
     expected = {
         "privacy_projection": _load_workloads(root / "config" / "privacy.json"),
-        "access_projection": _load_workloads(root / "config" / "access.json"),
+        "access_projection": _load_access_workloads(root / "config"),
     }
     with sqlite3.connect(state_path, factory=ClosingConnection) as connection:
         actual = {table: _projection(connection, table) for table in expected}

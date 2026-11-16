@@ -201,7 +201,7 @@
         "service": "nodens"
       },
       "network": {
-        "localUrl": "",
+        "localUrl": "unix:/var/lib/argus/managed-ingress/nodens-production/upstream.sock",
         "internalPort": 0,
         "observedBindings": []
       },

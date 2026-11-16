@@ -5,6 +5,7 @@ import importlib.machinery
 import importlib.util
 import io
 import json
+import os
 import runpy
 import sys
 import tempfile
@@ -20,6 +21,7 @@ sys.path.insert(0, str(ROOT / "scripts"))
 
 import argus_cloudflare_activation as activation  # noqa: E402
 import argus_common  # noqa: E402
+from argus_state import StateError  # noqa: E402
 from argus_cloudflare_allowlist import (  # noqa: E402
     AllowlistError,
     IngressError,
@@ -72,12 +74,14 @@ INGRESS_OK = f'ingress:\n  - hostname: "{HOST}"\n    service: "http://127.0.0.1:
 
 
 class AllowlistShapeTests(unittest.TestCase):
-    def test_shipped_exposure_config_has_an_empty_allowlist_and_provider_off(self) -> None:
+    def test_shipped_exposure_config_allowlists_only_the_d027_route_over_named_tunnels(self) -> None:
         config = json.loads((ROOT / "config" / "exposure.json").read_text())
         cloudflare = config["providers"]["cloudflare"]
-        self.assertEqual([], cloudflare["publicAllowlist"])
-        self.assertEqual({}, public_allowlist(config))
-        self.assertFalse(cloudflare["enabled"] or cloudflare["provisioned"] or cloudflare["allowNamedTunnels"] or cloudflare["allowQuickTunnels"])
+        self.assertEqual({"nodens-production": ("nodens.dev", "www.nodens.dev")}, public_allowlist(config))
+        self.assertTrue(provider_ready(config))
+        self.assertIs(False, cloudflare["allowQuickTunnels"])
+        self.assertIs(False, cloudflare["default"])
+        self.assertIs(True, cloudflare["requireAccessPolicy"])
 
     def test_malformed_entries_are_rejected_and_allow_nothing(self) -> None:
         bad_lists = [
@@ -399,21 +403,187 @@ class DoctorAndReconcileTests(unittest.TestCase):
         files = config_files(exposure(), desired="cloudflare-public", effective="tailnet", mode="public")
         self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(files, []))
 
-    def test_apply_lowering_lowers_drifted_public_state_to_local(self) -> None:
+    def test_reconcile_accepts_only_an_allowlisted_protected_route_staged_before_activation(self) -> None:
+        staged = config_files(exposure(), desired="cloudflare-protected", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertEqual([], self.reconcile(staged, []))
+        unlisted = config_files(exposure(allowlist=[]), desired="cloudflare-protected", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(unlisted, []))
+        not_desired = config_files(exposure(), desired="tailnet", effective="tailnet", mode="protected", requires_auth=True)
+        self.assertIn("Cloudflare route enabled while effective access is not Cloudflare", self.reconcile(not_desired, []))
+
+    def test_apply_prints_the_rollback_command_exits_2_and_writes_nothing(self) -> None:
         module = load_script("argus-access-reconcile")
         files = config_files(exposure(enabled=False), desired="cloudflare-public", effective="cloudflare-public")
-        saved: dict = {}
-        with tempfile.TemporaryDirectory() as directory, (
-            patch.object(module, "load_json", lambda name: copy.deepcopy(files[name]))
-        ), patch.object(module, "root", lambda: Path(directory)), patch.object(module, "save_json", lambda name, data: saved.update({name: data})), (
-            patch.object(module, "regenerate_dashboard", lambda quiet=False: None)
-        ), patch.object(module, "audit", lambda *args, **kwargs: None):
-            result = module.reconcile(offline=True)
-            self.assertFalse(result["ok"])
-            self.assertEqual({"changed": [WORKLOAD]}, module.apply_lowering(result))
-        item = saved["access.json"]["workloads"][WORKLOAD]
-        self.assertEqual("local", item["effective"])
-        self.assertTrue(item["lastError"])
+        self.assertFalse(hasattr(module, "apply_lowering"))
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.object(module, "load_json", lambda name: copy.deepcopy(files[name])),
+            patch.object(module, "root", lambda: Path(directory)),
+            patch.object(sys, "argv", ["argus-access-reconcile", "--offline", "--apply", "--json"]),
+            redirect_stdout(io.StringIO()) as out,
+        ):
+            code = module.main()
+            written = sorted(str(path.relative_to(directory)) for path in Path(directory).rglob("*"))
+        self.assertEqual((2, []), (code, written))
+        self.assertEqual([f"sudo scripts/argus-cloudflare-rollback {WORKLOAD} --apply --confirm-workload {WORKLOAD}"], json.loads(out.getvalue())["rollbackCommands"])
+
+
+class OverlayFixture:
+    """A real config/ and runtime/ on disk, read through the D028 merged view (ARGUS_ROOT)."""
+
+    def write_root(self, directory: Path, *, desired: str = "cloudflare-protected", tracked_effective: str = "tailnet", overlay: str | None = None, proof: list[dict] = ()) -> bytes:
+        files = config_files(exposure(), desired=desired, effective=tracked_effective, mode="protected", requires_auth=True)
+        files["access.json"] = {
+            "states": ["none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"],
+            "workloads": {WORKLOAD: {"desired": desired, "effective": tracked_effective, "urls": {}, "lastAppliedAt": "", "lastError": ""}},
+        }
+        config = directory / "config"
+        config.mkdir()
+        for name, value in files.items():
+            (config / name).write_text(json.dumps(value, indent=2) + "\n")
+        if overlay is not None:
+            entry = {"effective": overlay, "lastAppliedAt": "2026-11-01T00:00:00Z", "lastError": ""}
+            (config / "access.effective.json").write_text(json.dumps({"version": 1, "workloads": {WORKLOAD: entry}}))
+        evidence_dir = directory / "runtime" / "cloudflare-activation"
+        evidence_dir.mkdir(parents=True)
+        for index, payload in enumerate(proof):
+            (evidence_dir / f"{index}.json").write_text(json.dumps(payload))
+        return (config / "access.json").read_bytes()
+
+
+class OverlayDoctorTests(OverlayFixture, unittest.TestCase):
+    def doctor(self, directory: Path) -> tuple[bool, dict[str, bool]]:
+        globals_ = runpy.run_path(str(ROOT / "scripts" / "argus-doctor"))["access_state_checks"].__globals__
+        checks: list[dict] = []
+        with patch.dict("os.environ", {"ARGUS_ROOT": str(directory)}):
+            trusted = globals_["access_state_checks"](checks)
+            if trusted:
+                globals_["exposure_checks"](checks)
+        return trusted, {check["message"]: check["ok"] for check in checks}
+
+    def run_case(self, **kwargs) -> tuple[bool, dict[str, bool]]:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory), **kwargs)
+            return self.doctor(Path(directory))
+
+    def test_overlay_cloudflare_with_evidence_passes(self) -> None:
+        trusted, checks = self.run_case(overlay="cloudflare-protected", proof=[evidence("protected")])
+        self.assertTrue(trusted)
+        self.assertTrue(all(checks.values()), checks)
+
+    def test_overlay_cloudflare_without_evidence_fails(self) -> None:
+        _, checks = self.run_case(overlay="cloudflare-protected")
+        self.assertFalse(checks["Cloudflare effective access is allowlisted, provider-ready and evidenced"])
+
+    def test_evidence_without_a_cloudflare_overlay_fails_as_a_lost_overlay(self) -> None:
+        _, checks = self.run_case(proof=[evidence("protected")])
+        self.assertFalse(checks["active Cloudflare evidence matches a Cloudflare effective state"])
+        _, checks = self.run_case(proof=[evidence("protected"), rolled_back("2026-11-05T00:00:00Z")])
+        self.assertTrue(checks["active Cloudflare evidence matches a Cloudflare effective state"])
+
+    def test_malformed_overlay_fails_and_stops_the_access_checks(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory))
+            (Path(directory) / "config" / "access.effective.json").write_text("{")
+            trusted, checks = self.doctor(Path(directory))
+            self.assertFalse(trusted)
+            self.assertEqual({"access baseline and effective overlay are valid": False}, checks)
+            with patch.dict("os.environ", {"ARGUS_ROOT": directory}), self.assertRaises(SystemExit) as raised:
+                argus_common.load_json("access.json")
+            self.assertTrue(raised.exception.code)
+
+    def test_unreadable_evidence_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory), overlay="cloudflare-protected", proof=[evidence("protected")])
+            (Path(directory) / "runtime" / "cloudflare-activation" / "broken.json").write_text("{")
+            _, checks = self.doctor(Path(directory))
+        self.assertFalse(checks["Cloudflare activation evidence is readable"])
+
+    @unittest.skipIf(os.geteuid() == 0, "root reads a 000 directory")
+    def test_unlistable_evidence_directory_fails_instead_of_reading_as_no_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory), proof=[evidence("protected")])
+            evidence_path = Path(directory) / "runtime" / "cloudflare-activation"
+            evidence_path.chmod(0o000)
+            try:
+                _, checks = self.doctor(Path(directory))
+            finally:
+                evidence_path.chmod(0o755)
+        self.assertFalse(checks["Cloudflare activation evidence is readable"])
+
+    def test_evidence_path_that_is_not_a_directory_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory))
+            evidence_path = Path(directory) / "runtime" / "cloudflare-activation"
+            evidence_path.rmdir()
+            evidence_path.write_text("")
+            _, checks = self.doctor(Path(directory))
+        self.assertFalse(checks["Cloudflare activation evidence is readable"])
+
+    def test_write_evidence_directory_is_listable_under_a_restrictive_umask(self) -> None:
+        with tempfile.TemporaryDirectory() as directory, patch.dict("os.environ", {"ARGUS_ROOT": directory}):
+            previous = os.umask(0o077)
+            try:
+                path = activation.write_evidence(evidence("protected"))
+            finally:
+                os.umask(previous)
+            self.assertEqual(0o755, path.parent.stat().st_mode & 0o777)
+            self.assertEqual(0o644, path.stat().st_mode & 0o777)
+
+    def test_tracked_cloudflare_effective_fails(self) -> None:
+        _, checks = self.run_case(tracked_effective="cloudflare-protected", proof=[evidence("protected")])
+        self.assertFalse(checks["tracked access baseline never holds a Cloudflare effective state"])
+
+    def test_orphan_overlay_entry_only_warns(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            self.write_root(Path(directory))
+            orphan = {"effective": "none", "lastAppliedAt": "", "lastError": ""}
+            (Path(directory) / "config" / "access.effective.json").write_text(json.dumps({"version": 1, "workloads": {"gone": orphan}}))
+            trusted, checks = self.doctor(Path(directory))
+        self.assertTrue(trusted)
+        self.assertTrue(checks["WARN: access effective overlay names workloads that are not tracked"])
+
+
+class OverlayWriterTests(OverlayFixture, unittest.TestCase):
+    """set_effective and lower_effective through the real M1 writer: only the overlay changes."""
+
+    def run_in(self, directory: Path, call):
+        planned = {"allowed": True, "plannedOnly": True, "effective": "tailnet", "reason": "Cloudflare exposure planned only in P0"}
+        with patch.dict("os.environ", {"ARGUS_ROOT": str(directory)}), patch.object(activation, "evaluate_current", return_value=ALLOWED), (
+            patch.object(activation, "policy_decision", return_value=planned)
+        ):
+            return call()
+
+    def overlay(self, directory: Path) -> dict:
+        return json.loads((directory / "config" / "access.effective.json").read_text())["workloads"][WORKLOAD]
+
+    def test_set_effective_writes_the_overlay_and_keeps_the_reviewed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            reviewed = self.write_root(repo)
+            self.run_in(repo, lambda: activation.set_effective(WORKLOAD, "cloudflare-protected", "test", evidence("protected")))
+            self.assertEqual(reviewed, (repo / "config" / "access.json").read_bytes())
+            self.assertEqual("cloudflare-protected", self.overlay(repo)["effective"])
+
+    def test_set_effective_refuses_a_state_other_than_the_reviewed_desired(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            reviewed = self.write_root(repo, desired="cloudflare-protected", proof=[evidence("protected")])
+            # Allowlist, provider and evidence all pass; only the reviewed desired (protected) refuses public.
+            with self.assertRaisesRegex(StateError, "reviewed pull request"):
+                self.run_in(repo, lambda: activation.set_effective(WORKLOAD, "cloudflare-public", "test", evidence("public")))
+            self.assertEqual(reviewed, (repo / "config" / "access.json").read_bytes())
+            self.assertFalse((repo / "config" / "access.effective.json").exists())
+
+    def test_rollback_and_evidence_failure_lower_only_the_overlay_and_keep_desired(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            repo = Path(directory)
+            reviewed = self.write_root(repo, overlay="cloudflare-protected", proof=[evidence("protected")])
+            self.run_in(repo, lambda: activation.lower_effective(WORKLOAD, "argus-cloudflare-rollback"))
+            self.assertEqual(reviewed, (repo / "config" / "access.json").read_bytes())
+            self.assertEqual("tailnet", self.overlay(repo)["effective"])
+            with patch.dict("os.environ", {"ARGUS_ROOT": directory}):
+                self.assertEqual("cloudflare-protected", argus_common.load_json("access.json")["workloads"][WORKLOAD]["desired"])
 
 
 class SmokeGateTests(unittest.TestCase):
@@ -447,6 +617,16 @@ class SmokeGateTests(unittest.TestCase):
         self.assertEqual(["ingress hostname is not allowlisted: other.example.com"], problems(exposure(), INGRESS_OK.replace(HOST, "other.example.com")))
         self.assertEqual(sorted({HOST, "www." + HOST}), sorted(allowlisted_hostnames(exposure())))
 
+
+    def test_shipped_exposure_accepts_the_catch_all_connector_but_no_other_hostname(self) -> None:
+        # D027: the connector starts with only the catch-all; activation adds the allowlisted rules later.
+        config = json.loads((ROOT / "config" / "exposure.json").read_text())
+        problems = self.smoke_module.cloudflared_problems
+        catch_all = "tunnel: t\ncredentials-file: /etc/cloudflared/t.json\ningress:\n  - service: http_status:404\n"
+        self.assertEqual([], problems(config, catch_all))
+        rules = 'ingress:\n  - hostname: "{}"\n    service: "unix:/x.sock"\n  - service: http_status:404\n'
+        self.assertEqual([], problems(config, rules.format("nodens.dev")))
+        self.assertEqual(["ingress hostname is not allowlisted: argus.nodens.dev"], problems(config, rules.format("argus.nodens.dev")))
 
     def test_cloudflared_unit_must_run_the_checked_config_without_a_token(self) -> None:
         problems = self.smoke_module.cloudflared_unit_problems
@@ -602,12 +782,16 @@ class AccessStateTests(unittest.TestCase):
             with self.subTest(enabled=enabled):
                 writes: list[dict] = []
                 writer = SimpleNamespace(apply=lambda **kwargs: writes.append(kwargs))
-                routes = {"workloadRoutes": {WORKLOAD: {"tailnet": {"enabled": enabled}}}}
+                data = {
+                    "routes.json": {"workloadRoutes": {WORKLOAD: {"tailnet": {"enabled": enabled}}}},
+                    "access.json": {"workloads": {WORKLOAD: {"desired": "cloudflare-protected"}}},
+                }
                 with patch.object(activation, "evaluate_current", return_value=ALLOWED), patch.object(activation, "access_writer", return_value=writer), (
-                    patch.object(activation, "load_json", return_value=routes)
+                    patch.object(activation, "load_json", side_effect=lambda name: copy.deepcopy(data[name]))
                 ):
                     activation.lower_effective(WORKLOAD, "test")
-                self.assertEqual((target, target), (writes[0]["desired"], writes[0]["decision"]["effective"]))
+                # D028: the reviewed desired is re-applied; only the effective state is lowered.
+                self.assertEqual(("cloudflare-protected", target), (writes[0]["desired"], writes[0]["decision"]["effective"]))
 
     def test_rollback_record_supersedes_written_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory, patch.object(activation, "root", return_value=Path(directory)):

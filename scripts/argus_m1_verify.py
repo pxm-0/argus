@@ -8,6 +8,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import AccessStateError, load_access
 from argus_state import AuditLedger, SQLiteRepository, legacy_workload_snapshot
 from argus_sqlite import ClosingConnection
 
@@ -52,7 +53,10 @@ def verify_m1_state(root: Path) -> dict[str, Any]:
     workloads = _load(config / "workloads.json").get("workloads")
     classifications = _load(config / "argus" / "legacy-classification.json").get("workloads")
     privacy = _load(config / "privacy.json").get("workloads")
-    access = _load(config / "access.json").get("workloads")
+    try:
+        access = load_access(config).get("workloads")
+    except AccessStateError as exc:
+        raise VerificationError("required private M1 input is unavailable") from exc
     if not isinstance(workloads, list) or not all(isinstance(value, dict) for value in workloads):
         raise VerificationError("workload registry is malformed")
     if not isinstance(classifications, dict) or not isinstance(privacy, dict) or not isinstance(access, dict):

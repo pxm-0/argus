@@ -9,7 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -337,6 +337,26 @@ class OperationApiTests(unittest.TestCase):
             (False, "operation-not-capable"),
             health_policy,
         )
+
+    def test_access_apply_only_reapplies_the_reviewed_desired_state(self) -> None:
+        allowed = Mock(allowed=True, decision_code="allowed")
+        with (
+            patch.object(self.server, "agent_available", return_value=True),
+            patch.object(self.server, "route_contract") as route_contract,
+            patch.object(self.server, "policy_decision", return_value={"allowed": True, "reason": "ok"}) as policy_decision,
+        ):
+            for desired in ("tailnet", "none"):
+                with self.subTest(desired=desired):
+                    self.assertEqual(
+                        (False, "desired access changes land through a reviewed pull request"),
+                        self.server.operation_policy("nodens-production", "access.apply", {"desired": desired}, _admission=allowed),
+                    )
+            route_contract.assert_not_called()
+            policy_decision.assert_not_called()
+            self.assertEqual(
+                (True, "ok"),
+                self.server.operation_policy("nodens-staging", "access.apply", {"desired": "none"}, _admission=allowed),
+            )
 
     def test_approval_expires_old_preview_and_releases_mutation_lock(self) -> None:
         operation = self.create_operation()

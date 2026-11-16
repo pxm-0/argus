@@ -38,8 +38,11 @@ class RenderedFileTests(unittest.TestCase):
         variants = {
             "default": RENDERED,
             "alt-prefix": sudoers.render_sudoers(DOMAINS, "/opt/x/current", promotable=PROMOTABLE),
-            "log-output": sudoers.render_sudoers(DOMAINS, log_output=True, promotable=PROMOTABLE),
         }
+        # --log-output is for classic sudo only; sudo-rs (the server's, and Ubuntu 26.04 runners') rejects it.
+        version = subprocess.run(["visudo", "--version"], capture_output=True, text=True, check=False).stdout
+        if "visudo-rs" not in version:
+            variants["log-output"] = sudoers.render_sudoers(DOMAINS, log_output=True, promotable=PROMOTABLE)
         with tempfile.TemporaryDirectory() as tmp:
             for name, text in variants.items():
                 path = Path(tmp, name)

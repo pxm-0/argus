@@ -224,6 +224,25 @@ work-managed
 - doctor, reconcile and online smoke are green with the provider enabled.
 - Rollback is rehearsed by removing the ingress rule and confirming the hostname stops resolving to the site.
 
+### D028: Keep server-applied access state out of the reviewed access config
+
+**Status:** Accepted 2026-11-16 by the operator (PR-only desired access).
+
+**Decision:** `config/access.json` is reviewed config only. It is the sole home of `desired` and `urls`; its `effective`, `lastAppliedAt` and `lastError` are a reviewed baseline that is never a Cloudflare state. The server writes those three fields only into the ignored `config/access.effective.json`, through the M1 access writer, and every reader sees the baseline merged with that overlay. In detail:
+
+- The writer never writes `access.json` and never writes `desired`. The dashboard, API, CLI, domain agents and `argus-access-apply` may only re-apply the reviewed desired state; any other desired is refused with "desired access changes land through a reviewed pull request". There is no lower-only valve: lowering Cloudflare stays with `argus-cloudflare-rollback`, which lowers only the server effective.
+- A Cloudflare effective still needs allowlist, provider and evidence. A missing overlay gives the baseline; a malformed overlay makes every loader exit non-zero.
+- Doctor fails on a malformed overlay, a Cloudflare effective in the tracked baseline, unreadable activation evidence, and active protected-stage evidence without a Cloudflare effective (a lost overlay). It warns on overlay entries for untracked workloads.
+- `argus-access-reconcile --apply` no longer relabels state; it prints the rollback command.
+- The M1 journal checksums cover the overlay; the projection holds the merged view, so `m1 verify` parity is unchanged by the split.
+- The overlay and activation evidence are backed up; `argus-m5-runtime-permissions` sets the overlay to the `access.json` contract and evidence to 0644.
+
+**Reason:** The writer rewrote the tracked file on the server, so every activation or rollback left the deploy checkout dirty and a rollback silently rewrote the reviewed desired state. Keeping server state in an ignored overlay ends the dirty checkout, and refusing desired changes keeps Git the only source of desired access.
+
+**Consequences:** The public stage needs a PR that raises desired to `cloudflare-public` first. After a rollback, Git still says the old desired until a follow-up PR lowers it and disables the route. The one-time split of an existing dirty file is `docs/RUNBOOKS/access-effective-split.md`.
+
+**Verification:** `tests/test_argus_access_state.py`, `tests/test_argus_access_effective_migrate.py`, the writer crash-boundary tests in `tests/test_argus_state.py`, and the doctor, reconcile and activation overlay tests in `tests/test_argus_cloudflare_allowlist.py`.
+
 ## Viability Evidence
 
 Evidence was collected read-only from the primary host on 2026-07-14. Detailed output remains in the private task transcript and must be recollected under the server-required issue before it is used as acceptance evidence.

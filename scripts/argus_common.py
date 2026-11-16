@@ -18,6 +18,7 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import TRACKED_NAME, AccessStateError, merge_access, read_overlay
 from argus_cloudflare_allowlist import is_allowlisted
 from argus_m5_topology import build_topology
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
@@ -112,14 +113,23 @@ def root() -> Path:
 def load_json(name: str) -> dict[str, Any]:
     path = root() / "config" / name
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except FileNotFoundError:
         raise SystemExit(f"missing {path}") from None
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid JSON in {path}: {exc}") from None
+    if name != TRACKED_NAME:
+        return data
+    # D028: every reader sees the reviewed baseline merged with the server-applied overlay.
+    try:
+        return merge_access(data, read_overlay(path.parent))
+    except AccessStateError as exc:
+        raise SystemExit(f"invalid access state in {path.parent}: {exc}") from None
 
 
 def save_json(name: str, data: dict[str, Any]) -> None:
+    if name == TRACKED_NAME:
+        raise SystemExit("config/access.json is reviewed config; effective access is written only by the M1 access writer")
     path = root() / "config" / name
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
@@ -400,6 +410,14 @@ def runtime_config(workload_id: str) -> dict[str, Any]:
     runtime = dict(workload.get("runtime", {}))
     runtime.update(manifest.get("runtime", {}) if manifest else {})
     return runtime
+
+
+def desired_change_refusal(workload_id: str, desired: str) -> str:
+    """D028: the server may only re-apply the reviewed desired state; empty when `desired` is that state."""
+    tracked = load_json(TRACKED_NAME).get("workloads", {}).get(workload_id)
+    if not isinstance(tracked, dict) or tracked.get("desired") != desired:
+        return "desired access changes land through a reviewed pull request"
+    return ""
 
 
 def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:

@@ -27,6 +27,11 @@ class RuntimePermissionContractTests(unittest.TestCase):
             script,
         )
         self.assertIn('chmod 0664 "$ACCESS_CONFIG"', script)
+        self.assertIn('ACCESS_OVERLAY="$CONFIG_DIR/access.effective.json"', script)
+        self.assertIn('chown "$API_USER:$CONTROL_GROUP" "$ACCESS_OVERLAY"', script)
+        self.assertIn('chmod 0664 "$ACCESS_OVERLAY"', script)
+        self.assertIn('CLOUDFLARE_EVIDENCE="$ROOT/runtime/cloudflare-activation"', script)
+        self.assertIn('chmod 0644 "$path"', script)
         self.assertIn("chmod 0660", script)
         self.assertIn("chmod 0664", script)
         self.assertIn("chmod 0600", script)

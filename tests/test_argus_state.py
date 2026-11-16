@@ -14,7 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
-from argus_state import AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
+from argus_state import _atomic_json_replace, AccessMutationWriter, AtomicJsonStore, AuditLedger, Classification, EntityState, PrivacyMutationWriter, SQLiteRepository, StateError, StoreCutover, authorize_mutation, authorize_relationship, legacy_workload_snapshot, verify_audit_checkpoint  # noqa: E402
 from argus_m1_verify import VerificationError, verify_m1_state  # noqa: E402
 from argus_m1_reconcile import ReconcileError, reconcile  # noqa: E402
 from argus_sqlite import ClosingConnection  # noqa: E402
@@ -265,6 +265,9 @@ class ArgusStateTest(unittest.TestCase):
                 },
             }))
             path.chmod(0o664)
+            overlay = root / "access.effective.json"
+            overlay.write_text(json.dumps({"version": 1, "workloads": {}}))
+            overlay.chmod(0o664)
             writer = AccessMutationWriter(
                 path,
                 root / "state.sqlite3",
@@ -274,7 +277,7 @@ class ArgusStateTest(unittest.TestCase):
 
             writer.apply(
                 workload_id="project-a",
-                desired="none",
+                desired="local",
                 decision={
                     "allowed": True,
                     "plannedOnly": False,
@@ -286,6 +289,73 @@ class ArgusStateTest(unittest.TestCase):
             )
 
             self.assertEqual(0o664, stat.S_IMODE(path.stat().st_mode))
+            self.assertEqual(0o664, stat.S_IMODE(overlay.stat().st_mode))
+
+    def access_fixture(self, root: Path, *, desired: str = "cloudflare-protected", effective: str = "local") -> tuple[Path, bytes]:
+        path = root / "access.json"
+        path.write_text(json.dumps({"states": ["none", "local", "cloudflare-protected"], "workloads": {
+            "project-a": {"desired": desired, "effective": effective, "urls": {"local": ""}, "lastError": "", "lastAppliedAt": ""},
+            "project-b": {"desired": "none", "effective": "none", "urls": {}, "lastError": "", "lastAppliedAt": ""},
+        }}, indent=2))
+        return path, path.read_bytes()
+
+    def test_access_writer_writes_only_the_overlay_and_never_the_reviewed_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, reviewed = self.access_fixture(root)
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            decision = {"allowed": True, "plannedOnly": False, "reason": "verified", "effective": "cloudflare-protected"}
+            result = writer.apply(workload_id="project-a", desired="cloudflare-protected", decision=decision, actor="operator", timestamp="2026-11-16T00:00:00Z")
+            self.assertEqual(reviewed, path.read_bytes())
+            overlay = json.loads((root / "access.effective.json").read_text())
+            self.assertEqual({"version": 1, "workloads": {"project-a": {"effective": "cloudflare-protected", "lastAppliedAt": "2026-11-16T00:00:00Z", "lastError": ""}}}, overlay)
+            merged = writer._read_access()
+            self.assertEqual(("cloudflare-protected", "cloudflare-protected"), (merged["workloads"]["project-a"]["desired"], merged["workloads"]["project-a"]["effective"]))
+            self.assertEqual("cloudflare-protected", result["effective"])
+            self.assertTrue(writer._parity(merged))
+            self.assertFalse(writer._parity(json.loads(reviewed)))
+            self.assertTrue(writer.ledger.verify())
+
+    def test_access_writer_refuses_a_desired_change_and_writes_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, reviewed = self.access_fixture(root, desired="local")
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            for desired in ("none", "cloudflare-protected"):
+                with self.subTest(desired=desired), self.assertRaisesRegex(StateError, "reviewed pull request"):
+                    writer.apply(workload_id="project-a", desired=desired, decision={"allowed": True, "plannedOnly": False, "effective": desired}, actor="operator", timestamp="t")
+            self.assertEqual(reviewed, path.read_bytes())
+            self.assertFalse((root / "access.effective.json").exists())
+
+    def test_access_writer_prunes_orphans_and_refuses_a_malformed_overlay(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            path, _ = self.access_fixture(root, desired="local")
+            overlay = root / "access.effective.json"
+            orphan = {"effective": "none", "lastAppliedAt": "", "lastError": ""}
+            overlay.write_text(json.dumps({"version": 1, "workloads": {"gone": orphan}}))
+            writer = AccessMutationWriter(path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
+            writer.apply(workload_id="project-a", desired="local", decision={"allowed": True, "plannedOnly": False, "effective": "none"}, actor="operator", timestamp="t")
+            self.assertEqual(["project-a"], list(json.loads(overlay.read_text())["workloads"]))
+            overlay.write_text("{")
+            with self.assertRaisesRegex(StateError, "overlay is malformed"):
+                writer.apply(workload_id="project-a", desired="local", decision={"allowed": True, "plannedOnly": False, "effective": "local"}, actor="operator", timestamp="t")
+
+    def test_atomic_replace_creates_shared_writer_mode_and_keeps_owner_under_root(self) -> None:
+        from unittest.mock import patch
+
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            created = root / "new.json"
+            _atomic_json_replace(created, {"a": 1})
+            self.assertEqual(0o664, stat.S_IMODE(created.stat().st_mode))
+            self.assertEqual(root.stat().st_gid, created.stat().st_gid)
+            calls: list[tuple[int, int]] = []
+            real_fchown = os.fchown
+            with patch("argus_state.os.geteuid", return_value=0), patch("argus_state.os.fchown", side_effect=lambda fd, uid, gid: calls.append((uid, gid)) or real_fchown(fd, -1, gid)):
+                _atomic_json_replace(created, {"a": 2})
+                _atomic_json_replace(root / "other.json", {"b": 1})
+            self.assertEqual([(created.stat().st_uid, created.stat().st_gid), (root.stat().st_uid, root.stat().st_gid)], calls)
 
     def test_access_writer_rejects_unreviewed_deployment_or_projection(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -349,11 +419,17 @@ class ArgusStateTest(unittest.TestCase):
                 self.assertLessEqual(sum(event.get("outcome") == "accepted" for event in events), 1)
 
     def test_access_writer_recovers_prepared_or_applied_write(self) -> None:
-        for boundary, expected in {"access-after-prepared": "local", "access-after-json": "cloudflare-protected", "access-after-outcome": "cloudflare-protected"}.items():
+        boundaries = {
+            "access-after-prepared": "local",
+            "access-after-json": "cloudflare-protected",
+            "access-after-projection": "cloudflare-protected",
+            "access-after-outcome": "cloudflare-protected",
+            "access-after-committed": "cloudflare-protected",
+        }
+        for boundary, expected in boundaries.items():
             with self.subTest(boundary=boundary), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
-                access_path = root / "access.json"
-                access_path.write_text(json.dumps({"states": ["local", "cloudflare-protected"], "workloads": {"project-a": {"desired": "local", "effective": "local", "lastError": "", "lastAppliedAt": ""}}}))
+                access_path, reviewed = self.access_fixture(root)
 
                 def crash(point: str) -> None:
                     if point == boundary:
@@ -361,26 +437,32 @@ class ArgusStateTest(unittest.TestCase):
 
                 writer = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl", fault_hook=crash)
                 with self.assertRaisesRegex(RuntimeError, boundary):
-                    writer.apply(workload_id="project-a", desired="cloudflare-protected", decision={"allowed": True, "plannedOnly": True, "reason": "planned", "effective": "local"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
+                    writer.apply(workload_id="project-a", desired="cloudflare-protected", decision={"allowed": True, "plannedOnly": False, "reason": "verified", "effective": "cloudflare-protected"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
                 recovered = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
                 recovered.recover()
-                self.assertEqual(expected, recovered._read_access()["workloads"]["project-a"]["desired"])
+                merged = recovered._read_access()
+                self.assertEqual(expected, merged["workloads"]["project-a"]["effective"])
+                self.assertEqual("cloudflare-protected", merged["workloads"]["project-a"]["desired"])
+                self.assertEqual(reviewed, access_path.read_bytes())
+                if boundary != "access-after-prepared":
+                    self.assertTrue(recovered._parity(merged))
                 self.assertTrue(recovered.ledger.verify())
+                events = recovered.ledger._events()
+                self.assertLessEqual(sum(event.get("outcome") == "accepted" for event in events), 1)
 
     def test_access_writer_requires_policy_and_preserves_planned_only_effective_state(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            access_path = root / "access.json"
-            access_path.write_text(json.dumps({"states": ["local", "cloudflare-protected"], "workloads": {"project-a": {"desired": "local", "effective": "local", "lastError": "", "lastAppliedAt": ""}}}))
+            access_path, reviewed = self.access_fixture(root)
             writer = AccessMutationWriter(access_path, root / "state.sqlite3", root / "audit.sqlite3", root / "journal.jsonl")
             denied = {"allowed": False}
             with self.assertRaises(StateError):
-                writer.apply(workload_id="project-a", desired="local", decision=denied, actor="operator", timestamp="2026-07-18T00:00:00Z")
+                writer.apply(workload_id="project-a", desired="cloudflare-protected", decision=denied, actor="operator", timestamp="2026-07-18T00:00:00Z")
             result = writer.apply(workload_id="project-a", desired="cloudflare-protected", decision={"allowed": True, "plannedOnly": True, "reason": "planned only", "effective": "local"}, actor="operator", timestamp="2026-07-18T00:00:00Z")
-            stored = json.loads(access_path.read_text())["workloads"]["project-a"]
+            stored = writer._read_access()["workloads"]["project-a"]
             self.assertTrue(result["plannedOnly"])
-            self.assertEqual("cloudflare-protected", stored["desired"])
-            self.assertEqual("local", stored["effective"])
+            self.assertEqual(reviewed, access_path.read_bytes())
+            self.assertEqual(("cloudflare-protected", "local", "planned only", ""), (stored["desired"], stored["effective"], stored["lastError"], stored["lastAppliedAt"]))
             self.assertTrue(writer._parity(writer._read_access()))
             self.assertTrue(writer.ledger.verify())
 
@@ -403,7 +485,8 @@ class ArgusStateTest(unittest.TestCase):
             privacy_writer = PrivacyMutationWriter(config / "privacy.json", runtime / "m1" / "state.sqlite3", runtime / "audit.sqlite3", runtime / "m1" / "privacy.jsonl")
             privacy_writer.set_privacy(workload_id="project-a", privacy_value="internal", reason="verified", actor="operator", timestamp="2026-07-19T00:00:00Z")
             access_writer = AccessMutationWriter(config / "access.json", runtime / "m1" / "state.sqlite3", runtime / "audit.sqlite3", runtime / "m1" / "access.jsonl")
-            access_writer.apply(workload_id="project-a", desired="local", decision={"allowed": True, "plannedOnly": False, "reason": "safe", "effective": "local"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
+            access_writer.apply(workload_id="project-a", desired="none", decision={"allowed": True, "plannedOnly": False, "reason": "safe", "effective": "local"}, actor="operator", timestamp="2026-07-19T00:00:00Z")
+            self.assertTrue((config / "access.effective.json").is_file())
             summary = verify_m1_state(root)
             self.assertTrue(summary["verified"])
             self.assertEqual(1, summary["entityCount"])

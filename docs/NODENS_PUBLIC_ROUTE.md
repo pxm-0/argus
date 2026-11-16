@@ -30,7 +30,7 @@ ingress for this workload.
 | --- | --- |
 | Over-exposure: another host or workload becomes reachable through the tunnel | The tunnel ingress names exactly the allowlisted hostnames and ends in an `http_status:404` catch-all. It is validated before every reload. doctor and smoke fail if the ingress names a hostname outside the allowlist or if the connector runs while the provider is disabled. |
 | Gate weakening spreads to other workloads | Policy, doctor, reconcile and smoke allow `cloudflare-public` only for allowlist entries (workload and hostname), with tests for both the allowed and the denied branch. Onboarding defaults stay deny-by-default. |
-| Tunnel credential theft lets someone else serve as the tunnel | Credentials are kept on the server only, root- or connector-owned with mode 0600, never in Git or chat. If exposure is suspected: delete the tunnel at Cloudflare, create a new one and update the DNS route. |
+| Tunnel credential theft lets someone else serve as the tunnel | Credentials are kept on the server only, owned by root and readable only by the connector's group (mode 0640), never in Git or chat. If exposure is suspected: delete the tunnel at Cloudflare, create a new one and update the DNS route. |
 | Connector compromise reaches other services | The connector has no shell login, no docker or sudo access, and filesystem traverse rights only to the single production ingress. It cannot reach other workloads' ingresses or the control plane. |
 | Origin attacked directly, bypassing Cloudflare | There is no inbound listener, so the origin is reachable only through the tunnel or the tailnet. |
 | Abuse or volumetric load | The site is static and served through Cloudflare's cache and DDoS protection. The workload has no write endpoints or accounts. |
@@ -46,14 +46,14 @@ Residual risks:
 
 1. **Prepared:** the gates know the allowlist, the provider is still off and no tunnel exists. All checks are green.
 2. **Protected:** the tunnel is live and `nodens.dev` sits behind Cloudflare Access limited to the operator. The probes and checks are recorded as activation evidence.
-3. **Public:** the Access application is removed, and the probe answers 200 without authentication. The effective state becomes `cloudflare-public`.
+3. **Public:** a reviewed PR first raises the workload's desired access to `cloudflare-public` (D028: the server never changes desired). Then the Access application is removed, and the probe answers 200 without authentication. The effective state becomes `cloudflare-public`.
 
 ## Rollback
 
 From any stage, in order. Each step alone stops public traffic:
 
 1. Remove the `nodens.dev` and `www.nodens.dev` ingress rules (leaving only the catch-all), validate, and reload the connector. Or stop the connector service entirely.
-2. Set the workload's effective access back to `tailnet` and record an audit event.
+2. `argus-cloudflare-rollback` lowers the server's effective access to `tailnet` (in the ignored `config/access.effective.json`) and records an audit event. The reviewed desired state changes only through a pull request (D028), which step 4 covers.
 3. Optionally remove the proxied DNS records and delete the tunnel at Cloudflare.
 4. Disable the provider in the exposure config, and revert the allowlist and route changes through a pull request.
 
