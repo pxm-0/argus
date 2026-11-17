@@ -4,7 +4,7 @@ from __future__ import annotations
 import argparse
 
 from argus_m1 import access_writer
-from argus_common import audit, now, policy_decision, print_json, regenerate_dashboard
+from argus_common import audit, desired_change_refusal, now, policy_decision, print_json, regenerate_dashboard
 
 
 def main() -> int:
@@ -14,7 +14,8 @@ def main() -> int:
     parser.add_argument("--confirmation", default="", help="Required phrase for confirmed Cloudflare planning changes.")
     parser.add_argument("--json", action="store_true", help="Print the apply result as JSON.")
     args = parser.parse_args()
-    decision = policy_decision(args.workload_id, args.desired)
+    refusal = desired_change_refusal(args.workload_id, args.desired)
+    decision = {"allowed": False, "reason": refusal} if refusal else policy_decision(args.workload_id, args.desired)
     if not decision["allowed"]:
         audit("access.apply", args.workload_id, "blocked", desired=args.desired, reason=decision["reason"])
         payload = {"ok": False, "workloadId": args.workload_id, "desired": args.desired, **decision}

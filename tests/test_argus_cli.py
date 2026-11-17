@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import os
+import runpy
 import sqlite3
 import subprocess
 import sys
@@ -186,6 +187,19 @@ class ArgusCliTests(unittest.TestCase):
                 self.assertEqual(3, code)
                 self.assertEqual("dashboard-funnel-state-unsafe", json.loads(stdout.getvalue())["error"]["code"])
 
+    def test_entrypoint_refuses_unsupported_python_with_a_typed_hint(self) -> None:
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "version_info", (3, 9, 6, "final", 0)),
+            mock.patch.object(sys, "stderr", stderr),
+            self.assertRaises(SystemExit) as raised,
+        ):
+            runpy.run_path(str(ROOT / "scripts" / "argus"), run_name="__main__")
+        self.assertEqual(2, raised.exception.code)
+        self.assertIn("ERROR unsupported-python", stderr.getvalue())
+        self.assertIn("Python 3.14", stderr.getvalue())
+        self.assertIn("mise", stderr.getvalue())
+
     def test_invalid_json_invocation_uses_versioned_envelope(self) -> None:
         stdout, stderr = io.StringIO(), io.StringIO()
         code = run(["--json", "dashboard", "unknown"], repo=ROOT, stdout=stdout, stderr=stderr)
@@ -193,7 +207,23 @@ class ArgusCliTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertEqual({"error", "ok", "schemaVersion"}, set(payload))
         self.assertEqual("invalid-invocation", payload["error"]["code"])
+        self.assertIn("unknown", payload["error"]["message"])
         self.assertEqual("", stderr.getvalue())
+
+    def test_invalid_invocation_names_the_argparse_reason(self) -> None:
+        for argv, needle in (
+            (["workload", "lst"], "invalid choice: 'lst'"),
+            (["smoke", "status", "--last", "abc"], "invalid int value: 'abc'"),
+            (["doctor", "--host"], "unrecognized arguments: --host"),
+            (["workload", "show"], "the following arguments are required: workload_id"),
+        ):
+            with self.subTest(argv=argv):
+                stdout, stderr = io.StringIO(), io.StringIO()
+                code = run(argv, repo=ROOT, stdout=stdout, stderr=stderr)
+                self.assertEqual(2, code)
+                self.assertEqual("", stdout.getvalue())
+                self.assertIn("ERROR invalid-invocation: ", stderr.getvalue())
+                self.assertIn(needle, stderr.getvalue())
 
 
 class StableCliContractTests(unittest.TestCase):
@@ -364,12 +394,23 @@ class StableCliContractTests(unittest.TestCase):
             patch("argus_cli.OperationLedger", side_effect=sqlite3.OperationalError("permission denied")),
         ):
             code, output, error = self.invoke(["workload", "move", "preview", "demo", "--json"])
-        self.assertEqual(0, code)
+        self.assertEqual(4, code)
         payload = json.loads(output)
-        self.assertEqual("workload.move.preview", payload["data"]["command"])
-        self.assertIn("migration-ledger-unavailable", payload["data"]["blockers"])
+        self.assertEqual("migration-ledger-unreadable", payload["error"]["code"])
         self.assertNotIn("internal-error", output)
         self.assertEqual("", error)
+
+    def test_corrupt_migration_ledger_is_an_error_not_not_started(self) -> None:
+        ledger = self.root / "corrupt-operations.sqlite3"
+        ledger.write_text("junk")
+        with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(ledger)}, clear=False):
+            for action in ("preview", "status"):
+                with self.subTest(action=action):
+                    code, output, _ = self.invoke(["workload", "move", action, "demo", "--json"])
+                    self.assertEqual(4, code)
+                    payload = json.loads(output)
+                    self.assertEqual("migration-ledger-unreadable", payload["error"]["code"])
+                    self.assertNotIn("not-started", output)
 
     def test_operation_show_is_read_only_and_recovery_is_typed(self) -> None:
         ledger = self.root / "operations.sqlite3"
@@ -528,6 +569,47 @@ class StableCliContractTests(unittest.TestCase):
         self.assertNotIn("topology", output.lower())
         self.assertEqual("", error)
 
+    def test_doctor_audit_failure_names_the_failing_checks(self) -> None:
+        checks = [
+            {"ok": True, "message": "tracked secrets absent"},
+            {"ok": False, "message": "deterministic core boundary audit available"},
+            {"ok": False, "message": "sudoers drop-in reviewed", "path": "/etc/sudoers.d/argus"},
+        ]
+
+        def runner(command, _repo):
+            return subprocess.CompletedProcess(command, 1, json.dumps({"ok": False, "checks": checks}), "")
+
+        code, output, _ = self.invoke(["doctor", "--json"], runner=runner)
+        self.assertEqual(3, code)
+        payload = json.loads(output)
+        self.assertEqual("doctor-audit-failed", payload["error"]["code"])
+        self.assertIn("deterministic core boundary audit available", payload["error"]["message"])
+        self.assertEqual(
+            ["deterministic core boundary audit available", "sudoers drop-in reviewed"],
+            payload["data"]["failedChecks"],
+        )
+        self.assertNotIn("/etc/sudoers.d", output)
+
+    def test_doctor_and_check_run_helpers_under_the_current_interpreter(self) -> None:
+        calls: list[list[str]] = []
+
+        def runner(command, _repo):
+            calls.append(command)
+            if command[0] == "git":
+                return subprocess.CompletedProcess(command, 0, "c" * 40 + "\n", "")
+            return subprocess.CompletedProcess(command, 0, '{"ok":true,"checks":[]}', "")
+
+        self.invoke(["doctor", "--json"], runner=runner)
+        self.invoke(["check", "--json"], runner=runner)
+        helpers = [command for command in calls if command[0] != "git"]
+        self.assertEqual(
+            [
+                [sys.executable, str(self.root / "scripts" / "argus-doctor"), "--json"],
+                [sys.executable, str(self.root / "scripts" / "argus-check")],
+            ],
+            helpers,
+        )
+
     def test_check_pass_failure_and_interruption_have_stable_classes(self) -> None:
         revision = "b" * 40
 
@@ -565,8 +647,17 @@ class StableCliContractTests(unittest.TestCase):
         payload = json.loads(output)
         self.assertEqual("internal-error", payload["error"]["code"])
         self.assertRegex(payload["error"]["evidenceId"], r"^sha256:[0-9a-f]{64}$")
-        self.assertNotIn("private-looking", output)
-        self.assertEqual("", error)
+        self.assertNotIn("private-looking", output + error)
+        self.assertNotIn("argus check", payload["error"]["nextAction"])
+        self.assertIn("TRACE RuntimeError", error)
+        self.assertIn("argus_cli.py:", error)
+        self.assertIn("in crashes", error)
+
+        def other_crash(_command, _repo):
+            raise RuntimeError("different site")
+
+        other = json.loads(self.invoke(["check", "--json"], runner=other_crash)[1])
+        self.assertNotEqual(payload["error"]["evidenceId"], other["error"]["evidenceId"])
 
     def test_human_failure_is_stderr_only_and_actionable(self) -> None:
         code, output, error = self.invoke(["estate", "refresh"])
@@ -605,49 +696,71 @@ class StableCliContractTests(unittest.TestCase):
             self.assertIn(f"`{legacy}` → `{replacement}`", operations)
 
     def test_every_public_leaf_help_has_complete_contract(self) -> None:
-        commands = (
-            ["dashboard", "url"],
-            ["estate", "status"],
-            ["estate", "refresh"],
-            ["estate", "coverage"],
-            ["workload", "list"],
-            ["workload", "show"],
-            ["workload", "move", "preview"],
-            ["workload", "move", "preflight"],
-            ["workload", "move", "apply"],
-            ["workload", "move", "status"],
-            ["workload", "move", "rollback"],
-            ["operation", "show"],
-            ["op", "preview"],
-            ["op", "create"],
-            ["op", "show"],
-            ["op", "watch"],
-            ["workload", "deploy"],
-            ["workload", "start"],
-            ["workload", "stop"],
-            ["workload", "restart"],
-            ["doctor"],
-            ["check"],
-        )
-        for command in commands:
+        import argparse
+        import shlex
+
+        from argus_cli import build_parser
+
+        def leaves(parser: argparse.ArgumentParser, path: tuple[str, ...]):
+            actions = [action for action in parser._actions if isinstance(action, argparse._SubParsersAction)]
+            if not actions:
+                yield path, parser
+                return
+            listed = {choice.dest for choice in actions[0]._choices_actions}
+            for name, child in actions[0].choices.items():
+                if name in listed:
+                    yield from leaves(child, (*path, name))
+
+        registry = {item["id"] for item in json.loads((ROOT / "config" / "workloads.json").read_text())["workloads"]}
+        found = dict(leaves(build_parser(), ()))
+        self.assertGreaterEqual(len(found), 33)
+        for expected in (("workload", "retire"), ("keys", "totp-enroll"), ("release", "pin"), ("promote",), ("m1", "verify"), ("smoke", "status"), ("backup", "freshness"), ("alerts",)):
+            self.assertIn(expected, found)
+        for command, parser in found.items():
             with self.subTest(command=command):
-                result = subprocess.run(
-                    [str(ROOT / "scripts" / "argus"), *command, "--help"],
-                    text=True,
-                    capture_output=True,
-                    check=False,
-                )
-                self.assertEqual(0, result.returncode, result.stderr)
-                for marker in (
-                    "Privilege:",
-                    "Prerequisites:",
-                    "Side effects:",
-                    "Source:",
-                    "Output:",
-                    "Example:",
-                    "Recovery:",
-                ):
-                    self.assertIn(marker, result.stdout)
+                text = parser.format_help()
+                for marker in ("Privilege:", "Prerequisites:", "Side effects:", "Source:", "Output:", "Example:", "Recovery:"):
+                    self.assertIn(marker, text)
+                example = text.split("Example: ", 1)[1].split("\n", 1)[0]
+                for invocation in example.split(", then "):
+                    argv = shlex.split(invocation.removeprefix("sudo "))
+                    self.assertEqual("argus", argv[0])
+                    parsed = build_parser().parse_args(argv[1:])
+                    for key in ("workload_id", "staging_id", "production_id"):
+                        if hasattr(parsed, key):
+                            self.assertIn(getattr(parsed, key), registry)
+
+    def test_top_level_help_hides_aliases_and_documents_exit_classes(self) -> None:
+        result = subprocess.run([str(ROOT / "scripts" / "argus"), "--help"], text=True, capture_output=True, check=False)
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertNotIn("SUPPRESS", result.stdout)
+        for alias in ("workloads", "health", "migration-plan"):
+            self.assertNotRegex(result.stdout, rf"(?m)^\s+{alias}\b")
+        flat = " ".join(result.stdout.split())
+        for text in ("Exit classes: 0 success", "2 invalid invocation", "3 safe refusal", "degraded health report", "4 unavailable", "5 indeterminate"):
+            self.assertIn(text, flat)
+
+    def test_help_contracts_state_true_privilege_and_source(self) -> None:
+        from argus_cli import build_parser
+
+        def help_for(*argv: str) -> str:
+            stdout = io.StringIO()
+            with mock.patch("sys.stdout", stdout), self.assertRaises(SystemExit):
+                build_parser().parse_args([*argv, "--help"])
+            return " ".join(stdout.getvalue().split())
+
+        for action in ("apply", "rollback"):
+            text = help_for("workload", "move", action, "x")
+            self.assertNotIn("server mutation", text)
+            self.assertIn("local draft", text)
+        for action in ("preflight", "status"):
+            self.assertIn("Privilege: server read-only", help_for("workload", "move", action, "x"))
+        self.assertNotIn("local evidence only", help_for("op", "show", "x"))
+        self.assertNotIn("local evidence only", help_for("release", "pin", "x", "--image", "y"))
+        create = help_for("op", "create", "x", "y")
+        self.assertIn("token", create.split("--yes-digest", 1)[1])
+        self.assertNotIn("non-interactive", create)
+        self.assertIn("argus operation show", help_for("op", "watch", "x"))
 
 
 class OperatorLinkTransitionTests(unittest.TestCase):

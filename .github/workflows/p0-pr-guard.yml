@@ -35,11 +35,20 @@ jobs:
               "- [x] This PR is phase-scoped",
               "- [x] No secrets",
               "- [x] No Tailscale Funnel was enabled.",
-              "- [x] No Cloudflare tunnel was started or enabled.",
-              "- [x] No DNS records were created.",
               "- [x] No router ports were opened.",
-              "- [x] No public route was exposed.",
           ]
+          # D027 (docs/ARGUS_V1_DECISIONS.md) authorizes exactly one public route; only that exact
+          # declaration may stand in for the three exposure confirmations.
+          approved_route = (
+              "- [x] Approved public route under D027: nodens-production at nodens.dev and www.nodens.dev "
+              "through a named Cloudflare tunnel; no other workload, hostname or tunnel."
+          )
+          if approved_route not in body:
+              required += [
+                  "- [x] No Cloudflare tunnel was started or enabled.",
+                  "- [x] No DNS records were created.",
+                  "- [x] No public route was exposed.",
+              ]
 
           missing = [item for item in required if item not in body]
           if missing:
@@ -48,8 +57,9 @@ jobs:
                   print(f"- {item}")
               sys.exit(1)
 
-          if base != "main":
-              print("P0 remediation PRs must target main.")
+          # Wave2 lands through integration/wave2 and PRs stacked on wave2 branches.
+          if base != "main" and "wave2" not in base:
+              print("P0 remediation PRs must target main or a wave2 integration branch.")
               sys.exit(1)
 
           evidence_choices = (

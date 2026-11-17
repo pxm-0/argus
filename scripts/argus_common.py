@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import platform
 import re
 import subprocess
 import sys
@@ -17,6 +18,8 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import TRACKED_NAME, AccessStateError, merge_access, read_overlay
+from argus_cloudflare_allowlist import is_allowlisted
 from argus_m5_topology import build_topology
 from argus_observations import ObservationError, ObservationRepository, digest, load_registry
 from argus_reconciliation import reconcile
@@ -74,6 +77,9 @@ OPERATION_SCRIPTS = [
     "argus-workload-onboard",
     "argus-admission-doctor",
     "argus-access-reconcile",
+    "argus-cloudflare-activate-preview",
+    "argus-cloudflare-activate",
+    "argus-cloudflare-rollback",
     "argus-smoke-scheduled",
     "argus-template-check",
     "smoke-test",
@@ -107,18 +113,36 @@ def root() -> Path:
 def load_json(name: str) -> dict[str, Any]:
     path = root() / "config" / name
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except FileNotFoundError:
         raise SystemExit(f"missing {path}") from None
     except json.JSONDecodeError as exc:
         raise SystemExit(f"invalid JSON in {path}: {exc}") from None
+    if name != TRACKED_NAME:
+        return data
+    # D028: every reader sees the reviewed baseline merged with the server-applied overlay.
+    try:
+        return merge_access(data, read_overlay(path.parent))
+    except AccessStateError as exc:
+        raise SystemExit(f"invalid access state in {path.parent}: {exc}") from None
 
 
 def save_json(name: str, data: dict[str, Any]) -> None:
+    if name == TRACKED_NAME:
+        raise SystemExit("config/access.json is reviewed config; effective access is written only by the M1 access writer")
     path = root() / "config" / name
     temp = path.with_suffix(path.suffix + ".tmp")
     temp.write_text(json.dumps(data, indent=2, sort_keys=False) + "\n")
     temp.replace(path)
+
+
+def expected_server_host() -> str:
+    """Host live acceptance must run on; ARGUS_EXPECTED_HOST names a simulator such as oreochiserver-sim."""
+    return os.environ.get("ARGUS_EXPECTED_HOST") or "oreochiserver"
+
+
+def on_expected_server_host() -> bool:
+    return platform.node().split(".", 1)[0] == expected_server_host()
 
 
 def now() -> str:
@@ -389,6 +413,14 @@ def runtime_config(workload_id: str) -> dict[str, Any]:
     return runtime
 
 
+def desired_change_refusal(workload_id: str, desired: str) -> str:
+    """D028: the server may only re-apply the reviewed desired state; empty when `desired` is that state."""
+    tracked = load_json(TRACKED_NAME).get("workloads", {}).get(workload_id)
+    if not isinstance(tracked, dict) or tracked.get("desired") != desired:
+        return "desired access changes land through a reviewed pull request"
+    return ""
+
+
 def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
     from argus_admission import evaluate_current
 
@@ -482,6 +514,22 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
             "changes": changes,
         }
 
+    def not_allowlisted() -> dict[str, Any] | None:
+        # D027: Cloudflare is planned only for allowlisted routes. Policy never makes it effective;
+        # only argus-cloudflare-activate does, after a verified probe.
+        hostname = str(changes["routes"].get("cloudflare", {}).get("hostname", ""))
+        if is_allowlisted(load_json("exposure.json"), workload_id, hostname):
+            return None
+        return {
+            "allowed": False,
+            "reason": "workload and hostname are not in cloudflare.publicAllowlist",
+            "effective": None,
+            "plannedOnly": False,
+            "confirmationRequired": False,
+            "confirmationPhrase": "",
+            "changes": changes,
+        }
+
     if desired == "tailnet" and rules.get("allowTailnetForAll", False):
         return allowed("tailnet allowed", "tailnet")
     if desired in {"none", "local"}:
@@ -510,7 +558,7 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
         phrase = phrases.get("cloudflare-public", "") if rules.get("requireConfirmationForCloudflarePublic", False) else ""
         if privacy_state == "restricted" and rules.get("requireSecondConfirmationForRestrictedPublic", False):
             phrase = phrases.get("restricted-cloudflare-public", phrase)
-        return allowed("public exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
+        return not_allowlisted() or allowed("public exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
     if desired == "cloudflare-protected":
         if privacy_state == "restricted" and not rules.get("allowRestrictedToCloudflareProtected", False):
             return {
@@ -533,7 +581,7 @@ def policy_decision(workload_id: str, desired: str) -> dict[str, Any]:
                 "changes": changes,
             }
         phrase = "plan protected cloudflare" if rules.get("requireConfirmationForCloudflareProtected", False) else ""
-        return allowed("Cloudflare exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
+        return not_allowlisted() or allowed("Cloudflare exposure planned only in P0", current_effective, planned_only=True, phrase=phrase)
     return {
         "allowed": False,
         "reason": "policy denied",

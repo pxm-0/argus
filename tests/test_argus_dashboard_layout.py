@@ -61,7 +61,7 @@ class DashboardLayoutTests(unittest.TestCase):
 
     def test_navigation_credential_and_text_size_accessibility(self) -> None:
         html = render_html()
-        self.assertRegex(html, r'<input id="admin-token"[^>]*aria-label="Bootstrap credential"')
+        self.assertRegex(html, r'<input id="admin-token"[^>]*aria-label="Bootstrap token"')
         self.assertIn("function syncNavCurrent()", JS)
         self.assertIn('link.setAttribute("aria-current", "page")', JS)
         self.assertIn('window.addEventListener("scroll", ', JS)

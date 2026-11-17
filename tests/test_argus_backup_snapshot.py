@@ -38,6 +38,10 @@ class SnapshotTests(unittest.TestCase):
         make_db(runtime / "audit.sqlite3")
         (runtime / "m1" / "access-journal.jsonl").write_text("{}\n")
         (runtime / "audit-checkpoint.json").write_text("{}")
+        (self.root / "config").mkdir(exist_ok=True)
+        (self.root / "config" / "access.effective.json").write_text('{"version":1,"workloads":{}}')
+        (self.root / "runtime" / "cloudflare-activation").mkdir(parents=True)
+        (self.root / "runtime" / "cloudflare-activation" / "1-site-protected.json").write_text("{}")
         make_db(self.state / "control" / "operations.sqlite3")
         make_db(self.state / "control" / "session.sqlite3")
         make_db(self.state / "personal-managed" / "capabilities.sqlite3")
@@ -84,6 +88,7 @@ class SnapshotTests(unittest.TestCase):
         for expected in ("db/m1-state.sqlite3", "db/operations.sqlite3", "db/session.sqlite3",
                          "db/capabilities-personal-managed.sqlite3", "etc-argus/control-token",
                          "etc-argus/domain-keys/k.pem", "m1/access-journal.jsonl", "m1/audit-checkpoint.json",
+                         "m1/access.effective.json", "cloudflare-activation/1-site-protected.json",
                          "state/git-head.txt", "state/nft-ruleset.nft", "state/tailscale-serve.json",
                          "state/systemd-argus-units.json", "state/m1-verify.json"):
             self.assertIn(expected, names)

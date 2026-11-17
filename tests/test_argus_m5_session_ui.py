@@ -39,6 +39,11 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.css = (public / "style.css").read_text()
         self.javascript = (public / "app.js").read_text()
 
+    def test_migration_history_only_asks_to_authenticate_on_401(self) -> None:
+        loader = self.javascript[self.javascript.index("async function loadMigrationHistory"):self.javascript.index("async function loadOperationHistory")]
+        self.assertIn("response.status === 401", loader)
+        self.assertIn("Migration history temporarily unavailable.", loader.split("if (!response.ok)", 1)[1].split("return;", 1)[0])
+
     def test_startup_exposes_one_accessible_five_state_session_control(self) -> None:
         self.assertIn('id="session-control" data-state="checking"', self.html)
         self.assertIn('role="status" aria-live="polite" aria-atomic="true"', self.html)
@@ -101,12 +106,52 @@ class OperatorSessionUiTests(unittest.TestCase):
         self.assertIn(".session-control button{min-height:44px}", self.css)
 
     def test_authenticator_code_input_is_one_time_code_and_cleared_after_use(self) -> None:
-        self.assertRegex(self.html, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"[^>]*aria-label="Authenticator code"[^>]*hidden>')
+        self.assertRegex(self.html, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"[^>]*aria-label="Authenticator code"')
         self.assertIn("function clearCredentialInputs()", self.javascript)
-        self.assertEqual(3, self.javascript.count("clearCredentialInputs();"))
-        for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n    { \"X-Argus-CSRF-Bootstrap\""):
+        # exchange, failed step-up, finished or cancelled step-up, logout
+        self.assertEqual(4, self.javascript.count("clearCredentialInputs();"))
+        for endpoint in ('"/api/session/step-up", credentialBody(credential)', "credentialBody(credential),\n      { \"X-Argus-CSRF-Bootstrap\""):
             self.assertIn(endpoint, self.javascript)
-        self.assertIn("adminTotpInput.hidden = !open;", self.javascript)
+
+    def test_sign_in_is_a_password_manager_form(self) -> None:
+        # A real form with username/current-password/one-time-code lets Passwords save the token and offer the code.
+        form = re.search(r'<form id="signin-form"[^>]*hidden>(.*?)</form>', self.html, re.S)
+        self.assertIsNotNone(form)
+        body = form.group(1)
+        self.assertRegex(body, r'<input id="signin-user"[^>]*autocomplete="username"')
+        self.assertRegex(body, r'<input id="admin-token"[^>]*type="password"[^>]*autocomplete="current-password"')
+        self.assertRegex(body, r'<input id="admin-totp"[^>]*autocomplete="one-time-code"')
+        self.assertRegex(body, r'<button id="signin-submit"[^>]*type="submit"')
+        self.assertNotIn('autocomplete="off"', body)
+        self.assertIn('signinForm.addEventListener("submit"', self.javascript)
+        self.assertIn("event.preventDefault();", self.javascript)
+        # The login field only feeds the password manager; the API keeps using the tailnet identity.
+        self.assertNotIn("signin-user", self.javascript)
+
+    def test_step_up_opens_the_form_and_continues_the_change(self) -> None:
+        self.assertIn("return requestStepUp();", self.javascript)
+        self.assertIn("if (pendingStepUp) {\n      await submitStepUp();", self.javascript)
+        self.assertIn('signinCancel.addEventListener("click", () => finishStepUp(false));', self.javascript)
+        self.assertNotIn("then retry the mutation", self.javascript)
+
+    def test_pending_step_up_is_settled_when_the_session_ends(self) -> None:
+        # Review finding: logout or expiry left the form in Confirm mode and sent the next sign-in to step-up.
+        self.assertIn('if (pendingStepUp && operatorSessionState !== "checking") finishStepUp(false);', self.javascript)
+        self.assertLess(self.javascript.index("let pendingStepUp = null;"), self.javascript.index("function setOperatorSessionState"))
+        self.assertIn("Your session ended, so the change was not made. Sign in again.", self.javascript)
+
+    def test_credentials_are_cleared_even_when_the_request_throws(self) -> None:
+        self.assertEqual(2, self.javascript.count("  } finally {\n    clearCredentialInputs();\n  }"))
+
+    def test_sign_in_cannot_double_submit_or_submit_natively_with_get(self) -> None:
+        self.assertIn("if (signinSubmit.disabled) return;", self.javascript)
+        self.assertIn("if (!signinSubmit.disabled) signinForm.requestSubmit();", self.javascript)
+        self.assertRegex(self.html, r'<form id="signin-form"[^>]*method="post"')
+
+    def test_sign_in_failures_explain_fresh_codes_and_lockout(self) -> None:
+        self.assertIn('response.headers.get("Retry-After")', self.javascript)
+        self.assertIn("each code works once", self.javascript)
+        self.assertIn("Too many attempts. Try again in", self.javascript)
 
 
 if __name__ == "__main__":

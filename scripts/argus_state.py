@@ -12,6 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
+from argus_access_state import EFFECTIVE_FIELDS, OVERLAY_NAME, OVERLAY_VERSION, AccessStateError, merge_access, read_overlay
 from argus_sqlite import ClosingConnection
 
 
@@ -103,11 +104,14 @@ def _atomic_json_replace(path: Path, value: dict[str, Any]) -> None:
     """Durably replace a small control record without leaving a partial file."""
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.stat() if path.exists() else None
+    # A new file takes the shared-writer contract (0664, parent's owner and group) instead of mkstemp's 0600,
+    # and a root run keeps the existing owner, so the oreo-run gates can still read and write it.
+    source = existing if existing is not None else path.parent.stat()
+    mode = stat.S_IMODE(existing.st_mode) if existing is not None else 0o664
     descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
     try:
-        if existing is not None:
-            os.fchown(descriptor, -1, existing.st_gid)
-            os.fchmod(descriptor, stat.S_IMODE(existing.st_mode))
+        os.fchown(descriptor, source.st_uid if os.geteuid() == 0 else -1, source.st_gid)
+        os.fchmod(descriptor, mode)
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             json.dump(value, handle, sort_keys=True, separators=(",", ":"))
             handle.write("\n")
@@ -690,10 +694,15 @@ class PrivacyMutationWriter:
 
 
 class AccessMutationWriter:
-    """Dual-schema writer for policy-approved access state transitions."""
+    """Dual-schema writer for policy-approved access state transitions.
+
+    D028: it never writes the reviewed access.json or any desired state. It writes only the effective overlay
+    next to it; the journal checksums cover that overlay and the projection holds the merged view.
+    """
 
     def __init__(self, access_path: Path, state_path: Path, ledger_path: Path, journal_path: Path, *, fault_hook: Callable[[str], None] | None = None):
         self.access_path = access_path
+        self.effective_path = access_path.with_name(OVERLAY_NAME)
         self.state_path = state_path
         self.ledger = AuditLedger(ledger_path)
         self.journal_path = journal_path
@@ -712,7 +721,7 @@ class AccessMutationWriter:
         connection.row_factory = sqlite3.Row
         return connection
 
-    def _read_access(self) -> dict[str, Any]:
+    def _read_tracked(self) -> dict[str, Any]:
         try:
             value = json.loads(self.access_path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
@@ -720,6 +729,22 @@ class AccessMutationWriter:
         if not isinstance(value, dict) or not isinstance(value.get("workloads"), dict):
             raise StateError("access compatibility store has an invalid schema")
         return value
+
+    def _read_overlay(self) -> dict[str, Any]:
+        try:
+            return read_overlay(self.effective_path.parent)
+        except AccessStateError as exc:
+            raise StateError(f"access effective overlay is malformed: {exc}") from exc
+
+    def _merge(self, tracked: dict[str, Any], overlay: dict[str, Any]) -> dict[str, Any]:
+        try:
+            return merge_access(tracked, overlay)
+        except AccessStateError as exc:
+            raise StateError(f"access effective overlay is malformed: {exc}") from exc
+
+    def _read_access(self) -> dict[str, Any]:
+        """The merged view every reader sees."""
+        return self._merge(self._read_tracked(), self._read_overlay())
 
     def _append(self, record: dict[str, Any]) -> None:
         with self.journal_path.open("a", encoding="utf-8") as handle:
@@ -774,12 +799,14 @@ class AccessMutationWriter:
                 committed.add(transaction_id)
             elif record.get("phase") == "ABORTED":
                 aborted.add(transaction_id)
-        current = self._read_access()
+        tracked = self._read_tracked()
+        overlay = self._read_overlay()
+        current = self._merge(tracked, overlay)
         for transaction_id, record in prepared.items():
             if transaction_id in committed or transaction_id in aborted:
                 continue
-            if record.get("accessChecksum") != _canonical_digest(current):
-                if record.get("previousChecksum") != _canonical_digest(current):
+            if record.get("accessChecksum") != _canonical_digest(overlay):
+                if record.get("previousChecksum") != _canonical_digest(overlay):
                     raise StateError("access writer has an unresolved mutation; refusing a divergent write")
                 if not self.ledger.has_correlation_outcome(transaction_id):
                     self.ledger.append({**record["outcome"], "outcome": "error"})
@@ -797,26 +824,31 @@ class AccessMutationWriter:
             raise StateError("access writer requires an allowed policy decision")
         authorize_mutation(policy=True, store=True, authorization=True, freshness=True, observation=True, reconciliation=True, audit=self.ledger.verify())
         self.recover()
-        current = self._read_access()
+        tracked = self._read_tracked()
+        overlay = self._read_overlay()
+        current = self._merge(tracked, overlay)
         if desired not in current.get("states", []) or workload_id not in current["workloads"]:
             raise StateError("invalid access workload or state")
+        if tracked["workloads"][workload_id].get("desired") != desired:
+            raise StateError("desired access changes land through a reviewed pull request")
         before = dict(current["workloads"][workload_id])
-        replacement = json.loads(json.dumps(current))
-        entry = replacement["workloads"][workload_id]
-        entry["desired"] = desired
+        entry = {field: str(before.get(field, "")) for field in EFFECTIVE_FIELDS}
         if decision.get("plannedOnly"):
-            entry["lastError"] = str(decision.get("reason", ""))
+            entry = {**entry, "lastError": str(decision.get("reason", ""))}
         else:
-            entry["effective"] = decision.get("effective")
-            entry["lastError"] = ""
-        entry["lastAppliedAt"] = timestamp
+            if decision.get("effective") not in current.get("states", []):
+                raise StateError("invalid effective access state")
+            entry = {**entry, "effective": str(decision["effective"]), "lastError": "", "lastAppliedAt": timestamp}
+        kept = {key: value for key, value in overlay["workloads"].items() if key in tracked["workloads"]}
+        new_overlay = {"version": OVERLAY_VERSION, "workloads": {**kept, workload_id: entry}}
+        replacement = self._merge(tracked, new_overlay)
         transaction_id = str(uuid.uuid4())
         intent = {"actor": actor, "operation": "access.apply", "outcome": "intent", "target": workload_id, "trustDomain": "legacy-rootful", "correlationId": transaction_id}
-        outcome = {**intent, "outcome": "accepted", "oldDesired": str(before.get("desired", "")), "desired": desired, "oldEffective": str(before.get("effective", "")), "effective": str(entry.get("effective", "")), "plannedOnly": bool(decision.get("plannedOnly"))}
+        outcome = {**intent, "outcome": "accepted", "oldDesired": str(before.get("desired", "")), "desired": desired, "oldEffective": str(before.get("effective", "")), "effective": entry["effective"], "plannedOnly": bool(decision.get("plannedOnly"))}
         self.ledger.append(intent)
-        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(current), "accessChecksum": _canonical_digest(replacement), "outcome": outcome})
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(overlay), "accessChecksum": _canonical_digest(new_overlay), "outcome": outcome})
         self._fault("access-after-prepared")
-        _atomic_json_replace(self.access_path, replacement)
+        _atomic_json_replace(self.effective_path, new_overlay)
         self._fault("access-after-json")
         self._project(replacement)
         self._fault("access-after-projection")
@@ -826,7 +858,7 @@ class AccessMutationWriter:
         self._fault("access-after-outcome")
         self._append({"phase": "COMMITTED", "transactionId": transaction_id})
         self._fault("access-after-committed")
-        return {"oldDesired": before.get("desired"), "oldEffective": before.get("effective"), "effective": entry.get("effective"), "plannedOnly": bool(decision.get("plannedOnly")), "reason": str(decision.get("reason", ""))}
+        return {"oldDesired": before.get("desired"), "oldEffective": before.get("effective"), "effective": entry["effective"], "plannedOnly": bool(decision.get("plannedOnly")), "reason": str(decision.get("reason", ""))}
 
     def reconcile_deployed(self, *, workload_id: str, expected_before: dict[str, Any], expected_after: dict[str, Any], actor: str, trust_domain: str) -> dict[str, Any]:
         """Reconcile one reviewed Git deployment into the private projection."""
@@ -834,7 +866,8 @@ class AccessMutationWriter:
             raise StateError("deployed access reconciliation requires exact before and after state")
         authorize_mutation(policy=True, store=True, authorization=True, freshness=True, observation=True, reconciliation=True, audit=self.ledger.verify())
         self.recover()
-        current = self._read_access()
+        overlay = self._read_overlay()
+        current = self._merge(self._read_tracked(), overlay)
         if current.get("workloads", {}).get(workload_id) != expected_after:
             raise StateError("deployed access state does not match the reviewed transition")
         projected = self._projected_entry(workload_id)
@@ -848,7 +881,7 @@ class AccessMutationWriter:
         intent = {"actor": actor, "operation": "access.reconcile-deployed", "outcome": "intent", "target": workload_id, "trustDomain": trust_domain, "correlationId": transaction_id}
         outcome = {**intent, "outcome": "accepted", "oldEffective": str(expected_before.get("effective", "")), "effective": str(expected_after.get("effective", ""))}
         self.ledger.append(intent)
-        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(current), "accessChecksum": _canonical_digest(current), "outcome": outcome})
+        self._append({"phase": "PREPARED", "transactionId": transaction_id, "previousChecksum": _canonical_digest(overlay), "accessChecksum": _canonical_digest(overlay), "outcome": outcome})
         self._fault("access-reconcile-after-prepared")
         self._project(current)
         self._fault("access-reconcile-after-projection")

@@ -58,14 +58,18 @@ def read_json(path: Path) -> Any:
 
 
 def typed_targets(repo: Path) -> list[str]:
-    """Active workloads in a non-legacy domain whose manifest allows health; the M5-timer trio is excluded."""
+    """Active or typed-deploy workloads in a non-legacy domain whose manifest allows health; the M5-timer trio is excluded."""
     classified = read_json(repo / "config" / "argus" / "workload-classification.json").get("workloads", {})
     targets = []
     for item in read_json(repo / "config" / "workloads.json").get("workloads", []):
         workload_id = str(item.get("id", ""))
-        if not workload_id or workload_id in EXCLUDED_WORKLOADS or item.get("lifecycle") != "active":
+        if not workload_id or workload_id in EXCLUDED_WORKLOADS:
             continue
         manifest = read_json(repo / "workloads" / workload_id / "manifest.json")
+        # Typed-deploy workloads stay lifecycle=discovered (see smoke-test check_active_workload_evidence).
+        typed_deploy = ((manifest.get("operations") or {}).get("deploy") or {}).get("allowed") is True
+        if item.get("lifecycle") != "active" and not typed_deploy:
+            continue
         entry = classified.get(workload_id) if isinstance(classified, dict) else None
         domain = str(entry.get("trustDomain") or LEGACY_DOMAIN) if isinstance(entry, dict) else LEGACY_DOMAIN
         domain = str((manifest.get("migration") or {}).get("runtimeTrustDomain") or domain)
@@ -119,10 +123,12 @@ def observe(
             outcome.update(status="denied", detail=f"create-http-{created.status}")
             return outcome
         outcome["operationId"] = operation_id
-        approved = client.approve(operation_id, str(preview.body.get("confirmationPhrase", "")))
-        if approved.status not in (200, 202):
-            outcome.update(status="denied", detail=f"approve-http-{approved.status}")
-            return outcome
+        # No-mutation operations are queued at create; approving those again answers 409.
+        if created.body.get("state") == "awaiting-approval":
+            approved = client.approve(operation_id, str(preview.body.get("confirmationPhrase", "")))
+            if approved.status not in (200, 202):
+                outcome.update(status="denied", detail=f"approve-http-{approved.status}")
+                return outcome
         deadline = clock() + deadline_seconds
         while True:
             operation = client.operation(operation_id).body

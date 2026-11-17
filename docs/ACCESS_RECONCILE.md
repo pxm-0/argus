@@ -47,8 +47,8 @@ scripts/argus-access-reconcile --offline --json
 
 The command:
 
-- reads `access.json`, `routes.json`, `exposure.json`, `privacy.json`, and
-  `workloads.json`
+- reads `access.json` merged with the server's `access.effective.json` (D028),
+  `routes.json`, `exposure.json`, `privacy.json`, and `workloads.json`
 - detects forbidden `cloudflare-public` effective state
 - fails if Cloudflare effective access lacks route, provider, named tunnel,
   real hostname, or activation evidence
@@ -58,15 +58,17 @@ The command:
 
 ## Apply Mode
 
-Apply mode is intentionally narrow:
+Apply mode changes nothing (D028):
 
 ```bash
 scripts/argus-access-reconcile --apply
 ```
 
-It may only lower `cloudflare-protected` effective access back to `local` when
-drift is detected. It does not enable Tailnet, Cloudflare, DNS, Funnel, router
-ports, or public routes.
+For each workload whose Cloudflare effective access fails a check it prints the
+`argus-cloudflare-rollback` command that actually cuts the traffic, and exits 2.
+It used to relabel such a workload as `local` without touching the ingress,
+which could hide a live tunnel; that path is gone. It never enables Tailnet,
+Cloudflare, DNS, Funnel, router ports, or public routes.
 
 ## P2-08 Result
 

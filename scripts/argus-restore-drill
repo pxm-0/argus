@@ -35,6 +35,7 @@ STAGE = {  # archive member -> path inside the rebuilt root
     "db/operations.sqlite3": "runtime/m5/operations.sqlite3",
     "db/session.sqlite3": "runtime/m5/sessions.sqlite3",
     "m1/audit-checkpoint.json": "runtime/argus/audit-checkpoint.json",
+    "m1/access.effective.json": "config/access.effective.json",
 }
 
 
@@ -100,7 +101,8 @@ def build_root(extracted: Path, root: Path, repo: Path) -> str:
             with tarfile.open(fileobj=io.BytesIO(packed.stdout)) as tar:
                 tar.extractall(root, filter="data") if sys.version_info >= (3, 12) else tar.extractall(root)
             return f"config from commit {head[:12]}"
-    shutil.copytree(repo / "config", root / "config")
+    # the restored overlay (if any) wins over a local one
+    shutil.copytree(repo / "config", root / "config", dirs_exist_ok=True, ignore=shutil.ignore_patterns("access.effective.json"))
     if (repo / "workloads").is_dir():
         shutil.copytree(repo / "workloads", root / "workloads")
     return "config from working tree (snapshot commit unavailable)"

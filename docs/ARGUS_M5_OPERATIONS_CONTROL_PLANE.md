@@ -501,8 +501,9 @@ Requirements:
 - response sets `argus_csrf`, a separate 256-bit random value, as
   `Secure; SameSite=Strict; Path=/`, readable by the browser;
 - only SHA-256 hashes of both values are stored;
-- normal session lifetime is 30 minutes of inactivity and 8 hours absolute;
-- step-up lifetime is 5 minutes;
+- normal session lifetime is 8 hours, both idle and absolute (one sign-in per
+  working day for the single tailnet-only operator; TOTP is required);
+- step-up lifetime is 15 minutes, so one fresh code covers a batch of changes;
 - logout and operator disablement revoke the session immediately.
 
 Every mutating request must present the CSRF value in both the `argus_csrf`
@@ -512,8 +513,8 @@ operator origin.
 
 Step-up reauthentication repeats the bootstrap-token check inside an existing
 session and records `step_up_at`. Restore, deploy, migration cutover, migration
-rollback, and protected-route activation require a step-up age of at most five
-minutes.
+rollback, and protected-route activation require a step-up age of at most 15
+minutes. Signing in counts as a step-up.
 
 ### Session database
 

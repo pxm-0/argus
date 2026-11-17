@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import subprocess
 import sys
 import tempfile
@@ -15,6 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+from argus_common import expected_server_host, on_expected_server_host
 from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
 from argus_reconciliation import reconcile
 
@@ -141,8 +141,8 @@ def main() -> int:
         if not args.source_revision or any(character not in "0123456789abcdef" for character in args.source_revision):
             raise ObservationError("source revision must be hexadecimal")
         if args.target == "oreochiserver":
-            if platform.node().split(".", 1)[0] != "oreochiserver":
-                raise ObservationError("live D5 acceptance must run on oreochiserver")
+            if not on_expected_server_host():
+                raise ObservationError(f"live D5 acceptance must run on {expected_server_host()}")
             revision = subprocess.run(["git", "-C", str(args.root), "rev-parse", "HEAD"], text=True, capture_output=True, check=True).stdout.strip()
             clean = not subprocess.run(["git", "-C", str(args.root), "status", "--porcelain", "--untracked-files=all"], text=True, capture_output=True, check=True).stdout
             if revision != args.source_revision or not clean:

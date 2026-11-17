@@ -1,0 +1,50 @@
+[Unit]
+Description=Cloudflare named tunnel connector for the D027 route
+Documentation=file:/srv/argus/docs/RUNBOOKS/cloudflared-connector.md
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=notify
+TimeoutStartSec=60
+User=cloudflared
+Group=cloudflared
+# Locally managed named tunnel only: the checked config, never a --token tunnel.
+# Activation (argus-cloudflare-activate) rewrites the ingress and restarts this unit.
+ExecStart=/usr/bin/cloudflared --no-autoupdate --metrics 127.0.0.1:20241 --config /etc/cloudflared/argus.yml tunnel run
+Restart=on-failure
+RestartSec=5s
+UMask=0077
+# The connector sees only the one production ingress; the rest of the Argus state is hidden.
+TemporaryFileSystem=/var/lib/argus:ro
+BindReadOnlyPaths=/var/lib/argus/managed-ingress/nodens-production
+InaccessiblePaths=-/srv -/etc/argus -/root -/run/docker.sock -/var/run/docker.sock -/run/user
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+ProtectProc=invisible
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+# Egress only to the Cloudflare edge: no loopback services, LAN, Docker bridges or tailnet
+# (the origin is a unix socket, so a 127.0.0.1 ingress service would not work here).
+IPAddressDeny=127.0.0.0/8 ::1/128 169.254.0.0/16 fe80::/10 224.0.0.0/4 ff00::/8 10.0.0.0/8 172.16.0.0/12 192.168.0.0/16 100.64.0.0/10 fc00::/7
+IPAddressAllow=127.0.0.53/32
+CapabilityBoundingSet=
+AmbientCapabilities=
+
+[Install]
+WantedBy=multi-user.target

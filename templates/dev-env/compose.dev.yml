@@ -1,0 +1,61 @@
+# Dev stack template (Argus docs/DEV_ENV_PROTOCOL.md). Copy to <repo>/compose.dev.yml.
+#
+#   docker compose -f compose.dev.yml up          # app + deps, hot reload, one command
+#   docker compose -f compose.dev.yml down        # stop; named volumes (data, node_modules) survive
+#
+# Rules this file encodes:
+#   - Every published port binds 127.0.0.1 and comes from the Argus PORT REGISTRY.
+#   - Source is bind-mounted; node_modules and build caches live in named volumes,
+#     never on the macOS host (the host has darwin-arm64 native binaries).
+#   - Values here are dev-only placeholders. Real secrets never go in this file.
+# Replace every "myapp" and the example ports, and pin images by digest like CI does.
+
+name: myapp-dev  # fixed project name, so volumes never depend on the directory name
+
+x-node: &node
+  image: node:24-bookworm-slim  # pin the same image@sha256 your Dockerfile and CI use
+  working_dir: /workspace
+  volumes:
+    - .:/workspace
+    - node_modules:/workspace/node_modules
+    # add one named volume per build cache, e.g. - next_cache:/workspace/.next
+  environment:
+    NODE_ENV: development
+    DATABASE_URL: postgres://myapp:dev-only@postgres:5432/myapp  # service name, not localhost
+    # CHOKIDAR_USEPOLLING: "1"  # only if file watching misses changes on the bind mount
+
+services:
+  app:
+    <<: *node
+    # Install inside Linux, then run the dev server bound to 0.0.0.0 inside the container.
+    command: sh -c "npm ci && npm run dev -- --host 0.0.0.0 --port 3000"
+    ports:
+      - "127.0.0.1:3000:3000"  # registry: myapp web
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # Toolchain container for .devcontainer/devcontainer.json. Starts only when named.
+  workspace:
+    <<: *node
+    profiles: [devcontainer]
+    command: sleep infinity
+
+  postgres:
+    image: postgres:17  # pin the digest CI uses
+    environment:
+      POSTGRES_USER: myapp
+      POSTGRES_PASSWORD: dev-only  # local placeholder, never a real credential
+      POSTGRES_DB: myapp
+    ports:
+      - "127.0.0.1:55400:5432"  # registry: myapp postgres (host tools only; containers use postgres:5432)
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U myapp -d myapp"]
+      interval: 5s
+      retries: 10
+
+volumes:
+  node_modules:
+  postgres_data:

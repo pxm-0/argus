@@ -169,16 +169,16 @@ Auth: required.
 
 Behavior:
 
-1. validate transition
+1. validate transition; refuse any desired other than the reviewed `access.json`
+   desired ("desired access changes land through a reviewed pull request", D028)
 2. verify confirmation phrase when required
-3. update `access.json.desired`
-4. apply safe states
-5. update `access.json.effective` only after success
-6. write audit event
-7. regenerate dashboard
-8. optionally Git checkpoint
+3. apply safe states
+4. update the effective state in the server's ignored `access.effective.json`
+   only after success; `access.json` is never written
+5. write audit event
+6. regenerate dashboard
 
-For P0, `cloudflare-protected` and `cloudflare-public` should generally update desired state and generate a plan, but not become effective unless Cloudflare activation has been explicitly implemented and enabled.
+The access toggle cannot change desired access. `cloudflare-protected` and `cloudflare-public` become effective only through `argus-cloudflare-activate` (D027), after a reviewed PR set them as desired.
 
 ### `GET /api/metrics`
 

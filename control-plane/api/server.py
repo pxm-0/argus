@@ -60,7 +60,7 @@ from argus_actions import (  # noqa: E402
 )
 from argus_access_runtime import route_contract  # noqa: E402
 from argus_admission import AdmissionDecision, evaluate_current  # noqa: E402
-from argus_common import audit, by_id, dashboard_state, load_json, policy_decision  # noqa: E402
+from argus_common import audit, by_id, dashboard_state, desired_change_refusal, load_json, policy_decision  # noqa: E402
 from argus_estate_refresh import (  # noqa: E402
     EstateRefreshError,
     create_request as create_estate_refresh_request,
@@ -626,6 +626,9 @@ def operation_policy(
         desired = str(parameters.get("desired", ""))
         if desired not in {"none", "local", "tailnet"}:
             return False, "Phase 1 access state must be none, local, or tailnet"
+        refusal = desired_change_refusal(workload_id, desired)
+        if refusal:
+            return False, refusal
         if desired == "tailnet":
             _, route_reason = route_contract(ROOT, item, workload_id)
             if route_reason:
