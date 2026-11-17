@@ -133,8 +133,9 @@ import sys
 
 connection = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
 try:
-    if connection.execute("PRAGMA user_version").fetchone()[0] != 3:
-        raise SystemExit("session database schema version is not 3")
+    # Must equal argus_sessions.SCHEMA_VERSION (pinned by the test suite).
+    if connection.execute("PRAGMA user_version").fetchone()[0] != 4:
+        raise SystemExit("session database schema version is not 4")
     tables = {
         row[0]
         for row in connection.execute(
@@ -145,6 +146,8 @@ try:
         "sessions",
         "operation_session_bindings",
         "operation_session_reservations",
+        "totp_state",
+        "totp_recovery_used",
     }.issubset(tables):
         raise SystemExit("session database is missing required tables")
     binding_columns = {
@@ -169,7 +172,7 @@ try:
         raise SystemExit("operation session-reservation schema is invalid")
 finally:
     connection.close()
-print("SESSION_SCHEMA_OK version=3 operationBinding=hashed reservation=atomic")
+print("SESSION_SCHEMA_OK version=4 operationBinding=hashed reservation=atomic")
 PY
 }
 

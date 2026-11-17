@@ -66,9 +66,9 @@
         "url": "https://oreochiserver.tail0a3a58.ts.net:8451"
       },
       "cloudflare": {
-        "enabled": false,
-        "hostname": "",
-        "mode": "disabled",
+        "enabled": true,
+        "hostname": "nodens.dev",
+        "mode": "protected",
         "requiresAuth": true
       }
     }

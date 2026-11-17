@@ -1,0 +1,190 @@
+#!/usr/bin/env bash
+# Mac-side lifecycle for the oreochiserver-sim OrbStack machine.
+# Protocol and safety rules: docs/DEV_ENV_PROTOCOL.md ("Server simulation").
+set -euo pipefail
+
+readonly MACHINE="oreochiserver-sim"
+readonly GOLDEN="oreochiserver-sim-golden"
+readonly IMAGE="ubuntu:26.04"
+# OrbStack names its default user after the macOS user (oreo, UID 501) unless told
+# otherwise; a different name leaves oreo to cloud-init, which gives it UID 1000.
+readonly ORB_USER="simadmin"
+HERE="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)"
+readonly HERE
+REPO="$(git -C "$HERE" rev-parse --show-toplevel)"
+readonly REPO
+readonly CPUS="${SIM_CPUS:-4}"
+readonly MEMORY="${SIM_MEMORY:-6G}"
+readonly DISK="${SIM_DISK:-64G}"
+
+usage() {
+  cat <<'EOF'
+Usage:
+  infra/server-sim/sim status
+  infra/server-sim/sim up [--ref REF] [--yes]     create (needs --yes), push code, provision phase A and B
+  infra/server-sim/sim sync [--ref REF]           push a fresh bundle of REF and rerun phase A
+  infra/server-sim/sim phase-b [--from STEP]      rerun the control-plane phase (after GHCR login, say)
+  infra/server-sim/sim snapshot [--yes]           clone oreochiserver-sim to oreochiserver-sim-golden
+  infra/server-sim/sim reset [--yes]              delete oreochiserver-sim and clone it back from the golden copy
+  infra/server-sim/sim down [--yes] [--golden]    delete oreochiserver-sim (and the golden copy with --golden)
+
+REF defaults to the current branch. Only committed history goes into the bundle.
+Environment: SIM_CPUS (4), SIM_MEMORY (6G), SIM_DISK (64G).
+EOF
+}
+
+fail() { printf 'ERROR %s\n' "$*" >&2; exit 1; }
+plan() { printf 'PLAN  %s\n' "$*"; }
+step() { printf '==>   %s\n' "$*"; }
+
+need_yes() {
+  [[ "$YES" == true ]] || { printf 'Nothing changed. Re-run with --yes to do this.\n' >&2; exit 2; }
+}
+
+exists() { orbctl list -q | grep -Fxq "$1"; }
+
+in_vm() { orbctl run -m "$MACHINE" -u root "$@"; }
+
+# OrbStack forwards machine and container ports to the Mac; they must stay off the LAN.
+check_lan_exposure() {
+  local config
+  config="$(orbctl config show)"
+  local key bad=false
+  for key in machines.expose_ports_to_lan docker.expose_ports_to_lan; do
+    if ! grep -Fxq "$key: false" <<<"$config"; then
+      printf 'REFUSE %s is not false\n' "$key" >&2
+      bad=true
+    fi
+  done
+  if [[ "$bad" == true ]]; then
+    cat >&2 <<'EOF'
+OrbStack would expose sim ports to your LAN. Turn that off yourself, then retry:
+  orbctl config set machines.expose_ports_to_lan false
+  orbctl config set docker.expose_ports_to_lan false
+EOF
+    exit 3
+  fi
+  printf 'PASS  OrbStack LAN exposure is off\n'
+}
+
+push_and_phase_a() {
+  local ref="$1" rev home
+  rev="$(git -C "$REPO" rev-parse --verify "$ref^{commit}")" || fail "unknown ref: $ref"
+  if [[ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]]; then
+    printf 'NOTE  uncommitted changes are not in the bundle; only %s (%s) is sent\n' "$ref" "${rev:0:12}"
+  fi
+  plan "bundle $ref (${rev:0:12}) and push it, provision and tailscale-stub into $MACHINE"
+  plan "run phase A as root inside $MACHINE (checkout to /srv/argus at ${rev:0:12})"
+  WORKDIR="$(mktemp -d)"
+  trap 'rm -rf "$WORKDIR"' EXIT
+  git -C "$REPO" bundle create "$WORKDIR/argus-sim.bundle" "$ref" 2>/dev/null
+  cp "$HERE/provision" "$HERE/tailscale-stub" "$WORKDIR/"
+  # shellcheck disable=SC2016 # $HOME must expand inside the sim, not on the Mac
+  home="$(orbctl run -m "$MACHINE" sh -c 'printf %s "$HOME"')"
+  orbctl push -m "$MACHINE" "$WORKDIR/argus-sim.bundle" "$WORKDIR/provision" "$WORKDIR/tailscale-stub" .
+  in_vm bash "$home/provision" phase-a --bundle "$home/argus-sim.bundle" --rev "$rev" \
+    --stub "$home/tailscale-stub"
+}
+
+run_phase_b() {
+  local home
+  # The pushed copy, not /srv/argus's: --ref may name a tree without infra/server-sim.
+  # shellcheck disable=SC2016 # $HOME must expand inside the sim, not on the Mac
+  home="$(orbctl run -m "$MACHINE" sh -c 'printf %s "$HOME"')"
+  plan "run phase B as root inside $MACHINE: $home/provision phase-b $*"
+  in_vm bash "$home/provision" phase-b "$@"
+}
+
+cmd_status() {
+  orbctl list | grep -E "^NAME|^($MACHINE|$GOLDEN)[[:space:]]" || printf 'No %s machines exist.\n' "$MACHINE"
+  check_lan_exposure
+}
+
+cmd_up() {
+  check_lan_exposure
+  if exists "$MACHINE"; then
+    printf 'SKIP  %s already exists; not creating it\n' "$MACHINE"
+  else
+    plan "orbctl create --arch amd64 --isolated --cpus $CPUS --memory $MEMORY --disk $DISK --user $ORB_USER --user-data cloud-init.yaml $IMAGE $MACHINE"
+    need_yes
+    orbctl create --arch amd64 --isolated --cpus "$CPUS" --memory "$MEMORY" --disk "$DISK" \
+      --user "$ORB_USER" --user-data "$HERE/cloud-init.yaml" "$IMAGE" "$MACHINE"
+  fi
+  step "waiting for cloud-init"
+  in_vm cloud-init status --wait ||
+    fail "cloud-init did not finish cleanly; inspect: orbctl run -m $MACHINE -u root cloud-init status --long"
+  [[ "$(in_vm id -u oreo)" == 1000 ]] ||
+    fail "oreo is not UID 1000 in $MACHINE (OrbStack may have created it); run: infra/server-sim/sim down --yes, then up again"
+  push_and_phase_a "$REF"
+  run_phase_b
+}
+
+cmd_snapshot() {
+  exists "$MACHINE" || fail "$MACHINE does not exist"
+  if exists "$GOLDEN"; then
+    plan "delete the existing $GOLDEN"
+  fi
+  plan "orbctl clone $MACHINE $GOLDEN (pauses $MACHINE while cloning)"
+  need_yes
+  if exists "$GOLDEN"; then orbctl delete -f "$GOLDEN"; fi
+  orbctl clone "$MACHINE" "$GOLDEN"
+}
+
+cmd_reset() {
+  exists "$GOLDEN" || fail "$GOLDEN does not exist; run: infra/server-sim/sim snapshot --yes"
+  check_lan_exposure
+  if exists "$MACHINE"; then plan "delete $MACHINE (everything in it is lost)"; fi
+  plan "orbctl clone $GOLDEN $MACHINE, then start it"
+  need_yes
+  if exists "$MACHINE"; then orbctl delete -f "$MACHINE"; fi
+  orbctl clone "$GOLDEN" "$MACHINE"
+  orbctl start "$MACHINE"
+  # Phase A checks docker.service right away; let boot finish first ("degraded" is fine).
+  step "waiting for systemd to finish booting"
+  in_vm systemctl is-system-running --wait >/dev/null || true
+}
+
+cmd_down() {
+  local targets=()
+  if exists "$MACHINE"; then targets+=("$MACHINE"); fi
+  if [[ "$GOLDEN_TOO" == true ]] && exists "$GOLDEN"; then targets+=("$GOLDEN"); fi
+  if ((${#targets[@]} == 0)); then
+    printf 'SKIP  nothing to delete\n'
+    return
+  fi
+  plan "orbctl delete ${targets[*]} (everything in them is lost)"
+  need_yes
+  orbctl delete -f "${targets[@]}"
+}
+
+command -v orbctl >/dev/null || fail "orbctl is not installed (OrbStack)"
+(($#)) || { usage >&2; exit 2; }
+SUBCOMMAND="$1"
+shift
+YES=false
+GOLDEN_TOO=false
+REF="$(git -C "$REPO" rev-parse --abbrev-ref HEAD)"
+PHASE_B_ARGS=()
+while (($#)); do
+  case "$1" in
+    --yes) YES=true ;;
+    --golden) GOLDEN_TOO=true ;;
+    --ref) [[ $# -ge 2 ]] || fail "--ref needs a value"; REF="$2"; shift ;;
+    --from) [[ $# -ge 2 ]] || fail "--from needs a value"; PHASE_B_ARGS+=(--from "$2"); shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+  esac
+  shift
+done
+
+case "$SUBCOMMAND" in
+  status) cmd_status ;;
+  up) cmd_up ;;
+  sync) check_lan_exposure; exists "$MACHINE" || fail "$MACHINE does not exist"; push_and_phase_a "$REF" ;;
+  phase-b) exists "$MACHINE" || fail "$MACHINE does not exist"; run_phase_b ${PHASE_B_ARGS[@]+"${PHASE_B_ARGS[@]}"} ;;
+  snapshot) cmd_snapshot ;;
+  reset) cmd_reset ;;
+  down) cmd_down ;;
+  -h|--help) usage ;;
+  *) usage >&2; exit 2 ;;
+esac

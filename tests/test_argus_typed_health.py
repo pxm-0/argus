@@ -34,8 +34,16 @@ def write(path: Path, value: object) -> None:
 class FakeClient:
     """Stands in for ApiClient: scripted terminal operation, no network."""
 
-    def __init__(self, *, operation: dict | None = None, preview: ApiResponse | None = None, unreachable_at: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        operation: dict | None = None,
+        preview: ApiResponse | None = None,
+        unreachable_at: str = "",
+        created_state: str = "awaiting-approval",
+    ) -> None:
         self.terminal = operation or {}
+        self.created_state = created_state
         self.unreachable_at = unreachable_at
         self.calls: list[str] = []
         self._preview = preview or ApiResponse(200, {"allowed": True, "previewDigest": "d", "confirmationPhrase": "refresh health demo"})
@@ -51,7 +59,7 @@ class FakeClient:
 
     def create(self, workload_id, operation_type, parameters, preview):
         self._maybe_fail("create")
-        return ApiResponse(202, {"operation_id": "op-1", "state": "awaiting-approval"})
+        return ApiResponse(202, {"operation_id": "op-1", "state": self.created_state})
 
     def approve(self, operation_id, confirmation):
         self._maybe_fail("approve")
@@ -91,6 +99,10 @@ class TypedTargetTests(unittest.TestCase):
                 write(repo / "workloads" / workload_id / "manifest.json", manifest)
             self.assertEqual(["nodens-production", "nodens-staging"], typed.typed_targets(repo))
 
+    def test_checked_in_typed_deploy_workloads_are_targeted(self) -> None:
+        # The fixture above marks them active; the real inventory keeps them discovered (#375).
+        self.assertEqual(["nodens-production", "nodens-staging"], typed.typed_targets(ROOT))
+
     def test_checked_in_estate_never_targets_the_m5_timer_workloads(self) -> None:
         self.assertFalse({"hastur", "kadath", "nodens"} & set(typed.typed_targets(ROOT)))
 
@@ -103,6 +115,13 @@ class ObserveTests(unittest.TestCase):
     def test_healthy_terminal_state(self) -> None:
         result = self.observe(FakeClient(operation=terminal("succeeded", True)))
         self.assertEqual(("healthy", "op-1"), (result["status"], result["operationId"]))
+
+    def test_operation_queued_at_create_is_not_approved_again(self) -> None:
+        # The API queues no-mutation health.refresh at create; approving it again answered 409.
+        client = FakeClient(operation=terminal("succeeded", True), created_state="queued")
+        result = self.observe(client)
+        self.assertEqual("healthy", result["status"])
+        self.assertNotIn("approve", client.calls)
 
     def test_unhealthy_runtime_is_reported_even_though_the_operation_succeeded(self) -> None:
         result = self.observe(FakeClient(operation=terminal("succeeded", False)))

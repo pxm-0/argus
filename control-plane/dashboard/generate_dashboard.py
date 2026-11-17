@@ -65,8 +65,14 @@ def render_html() -> str:
         <p id="route-summary">Loading estate evidence</p>
       </div>
       <div class="top-actions" aria-label="Operator tools">
-        <input id="admin-token" type="password" autocomplete="off" placeholder="bootstrap credential" hidden>
-        <input id="admin-totp" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" hidden>
+        <form id="signin-form" class="signin-form" method="post" hidden>
+          <input id="signin-user" name="username" type="text" autocomplete="username" aria-label="Operator login" placeholder="Operator login" spellcheck="false" autocapitalize="off">
+          <input id="admin-token" name="password" type="password" autocomplete="current-password" aria-label="Bootstrap token" placeholder="Bootstrap token" aria-describedby="signin-message">
+          <input id="admin-totp" name="one-time-code" type="text" inputmode="numeric" autocomplete="one-time-code" aria-label="Authenticator code" placeholder="Authenticator code" maxlength="16" aria-describedby="signin-message">
+          <button id="signin-submit" type="submit">Sign in</button>
+          <button id="signin-cancel" type="button" hidden>Cancel</button>
+          <p id="signin-message" class="signin-message" role="status" aria-live="polite"></p>
+        </form>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
         <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
         <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
@@ -192,6 +198,10 @@ const adminToggle = document.getElementById("admin-toggle");
 const themeToggle = document.getElementById("theme-toggle");
 const adminTokenInput = document.getElementById("admin-token");
 const adminTotpInput = document.getElementById("admin-totp");
+const signinForm = document.getElementById("signin-form");
+const signinSubmit = document.getElementById("signin-submit");
+const signinCancel = document.getElementById("signin-cancel");
+const signinMessage = document.getElementById("signin-message");
 const sessionControl = document.getElementById("session-control");
 const sessionStatus = document.getElementById("session-status");
 const sessionDetail = document.getElementById("session-detail");
@@ -218,6 +228,8 @@ const commandClose = document.getElementById("command-close");
 const commandAnnouncer = document.getElementById("command-announcer");
 let monitorTimer = null;
 let adminEnabled = false;
+let pendingStepUp = null;
+let stepUpReturnFocus = null;
 let csrfToken = "";
 let operatorIdentity = "";
 let operatorSessionState = "checking";
@@ -317,6 +329,8 @@ function setOperatorSessionState(nextState, { reason = "", session = null } = {}
   } else {
     csrfToken = "";
     operatorIdentity = "";
+    // Logout, expiry or a lost CSRF cookie: the change cannot proceed, and the next submit must be a sign-in.
+    if (pendingStepUp && operatorSessionState !== "checking") finishStepUp(false);
     setAdmin(false);
   }
 }
@@ -505,19 +519,38 @@ async function apiPost(endpoint, body, extraHeaders = {}) {
   } catch (error) {
     payload = { error: error.message };
   }
-  return { ok: response.ok, status: response.status, payload };
+  return { ok: response.ok, status: response.status, payload, retryAfter: Number(response.headers.get("Retry-After")) || 0 };
+}
+
+function setSigninMessage(text, tone = "") {
+  signinMessage.textContent = text;
+  signinMessage.dataset.tone = tone;
+}
+
+// The API keeps 401 generic (never says which factor failed), so the hint covers both.
+function signinFailureMessage(result) {
+  if (result.status === 429) {
+    const minutes = Math.max(1, Math.ceil(result.retryAfter / 60));
+    return `Too many attempts. Try again in ${minutes} minute${minutes === 1 ? "" : "s"}.`;
+  }
+  if (result.status === 401) return "Not accepted. Check the token and use a fresh code: each code works once, so wait for the next one if you just used it.";
+  return result.payload.error || `Sign-in failed (${result.status}).`;
 }
 
 async function authenticateOperator() {
   const credential = tokenFor();
-  if (!credential) throw new Error("Enter the bootstrap credential.");
-  const result = await apiPost(
-    "/api/session/exchange",
-    credentialBody(credential),
-    { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
-  );
-  clearCredentialInputs();
-  if (!result.ok) throw new Error(result.payload.error || `authentication ${result.status}`);
+  if (!credential) throw new Error("Enter the bootstrap token.");
+  let result;
+  try {
+    result = await apiPost(
+      "/api/session/exchange",
+      credentialBody(credential),
+      { "X-Argus-CSRF-Bootstrap": bootstrapNonce() }
+    );
+  } finally {
+    clearCredentialInputs();
+  }
+  if (!result.ok) throw new Error(signinFailureMessage(result));
   if (!cookieValue("argus_csrf")) {
     setOperatorSessionState("unavailable", { reason: "csrf-missing" });
     throw new Error("Authentication completed without mutation protection. Sign in again.");
@@ -535,18 +568,64 @@ async function ensureStepUp() {
   const session = await response.json();
   csrfToken = cookieValue("argus_csrf");
   if (session.stepUpValid) return true;
+  return requestStepUp();
+}
+
+// Resolves true once the operator confirms with a fresh code, false on Cancel; the change then continues or stops.
+function requestStepUp() {
+  if (pendingStepUp) pendingStepUp(false);
+  return new Promise((resolve) => {
+    pendingStepUp = resolve;
+    stepUpReturnFocus = document.activeElement;
+    setAdmin(true);
+    signinSubmit.textContent = "Confirm";
+    signinCancel.hidden = false;
+    setSigninMessage("Confirm this change with your bootstrap token and a fresh authenticator code.");
+    signinForm.scrollIntoView({ block: "nearest" });
+    adminTokenInput.focus();
+  });
+}
+
+function finishStepUp(confirmed) {
+  const resolve = pendingStepUp;
+  const returnFocus = stepUpReturnFocus;
+  pendingStepUp = null;
+  stepUpReturnFocus = null;
+  signinSubmit.textContent = "Sign in";
+  signinCancel.hidden = true;
+  setSigninMessage("");
+  clearCredentialInputs();
+  setAdmin(adminEnabled);
+  if (returnFocus instanceof HTMLElement && document.contains(returnFocus)) returnFocus.focus({ preventScroll: true });
+  if (resolve) resolve(confirmed);
+}
+
+async function submitStepUp() {
   const credential = tokenFor();
   if (!credential) {
-    showCommandResult("Step-up required", "Enter the bootstrap credential and authenticator code in the operator fields, then retry the mutation.");
-    return false;
+    setSigninMessage("Enter the bootstrap token.", "bad");
+    return;
   }
-  const result = await apiPost("/api/session/step-up", credentialBody(credential));
-  clearCredentialInputs();
+  let result;
+  try {
+    result = await apiPost("/api/session/step-up", credentialBody(credential));
+  } finally {
+    clearCredentialInputs();
+  }
   if (!result.ok) {
-    showCommandResult("Step-up failed", result.payload);
-    return false;
+    const check = await fetch("/api/session", { cache: "no-store", credentials: "same-origin" }).catch(() => null);
+    const current = check?.ok ? await check.json().catch(() => ({})) : {};
+    if (current.authenticated !== true) {
+      await restoreOperatorSession();
+      setAdmin(true);
+      setSigninMessage("Your session ended, so the change was not made. Sign in again.", "bad");
+      return;
+    }
+    setSigninMessage(signinFailureMessage(result), "bad");
+    return;
   }
-  return true;
+  setSigninMessage("");
+  finishStepUp(true);
 }
 
 function renderMetrics(data) {
@@ -1317,8 +1396,7 @@ function fillAdminControls() {
 
 function setAdmin(open) {
   adminEnabled = open;
-  adminTokenInput.hidden = !open;
-  adminTotpInput.hidden = !open;
+  signinForm.hidden = !(open && (operatorSessionState !== "authenticated" || pendingStepUp));
   if (open && operatorSessionState === "authenticated") fillAdminControls();
   document.querySelectorAll(".admin-row").forEach((row) => {
     row.hidden = !(open && operatorSessionState === "authenticated");
@@ -1375,19 +1453,41 @@ adminToggle.addEventListener("click", async () => {
     showCommandResult("Operator session", "Logged out.");
     return;
   }
-  if (!adminEnabled) {
+  if (signinForm.hidden) {
+    setSigninMessage("");
     setAdmin(true);
     adminTokenInput.focus({ preventScroll: true });
     return;
   }
+  if (!signinSubmit.disabled) signinForm.requestSubmit();
+});
+
+// A real form submit lets password managers save and fill the token and offer the code; Enter submits.
+signinForm.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  if (signinSubmit.disabled) return;
+  signinSubmit.disabled = true;
   try {
+    if (pendingStepUp) {
+      await submitStepUp();
+      return;
+    }
+    setSigninMessage("Signing in...");
     const session = await authenticateOperator();
+    setSigninMessage("");
     showCommandResult("Operator authenticated", { identity: session.identity, expiresAt: session.expiresAt });
     await loadOperationHistory();
     await loadActivity();
   } catch (error) {
-    showCommandResult("Authentication failed", error.message);
+    setSigninMessage(error.message, "bad");
+    if (signinForm.hidden) showCommandResult("Sign-in failed", error.message);
+  } finally {
+    signinSubmit.disabled = false;
   }
+});
+signinCancel.addEventListener("click", () => finishStepUp(false));
+signinForm.addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && pendingStepUp) finishStepUp(false);
 });
 
 function closeCommandPanel() {

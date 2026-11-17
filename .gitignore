@@ -11,6 +11,9 @@ runtime/metrics-history/*
 runtime/migration-backups/*
 !runtime/migration-backups/.gitkeep
 
+# Server-applied effective access overlay (D028); config/access.json stays reviewed config
+config/access.effective.json
+
 # Generated monitoring output
 control-plane/dashboard/public/index.html
 control-plane/dashboard/public/style.css

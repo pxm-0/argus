@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import platform
 import subprocess
 import sys
 import tempfile
@@ -14,6 +13,7 @@ import time
 from pathlib import Path
 from typing import Any
 
+from argus_common import expected_server_host, on_expected_server_host
 from argus_collectors import CollectorScheduler, PageValidator, collection_request
 from argus_observations import ObservationError, ObservationRepository, SourceRegistry, digest, load_registry
 from argus_systemd_schedule_collector import build_pages, collect_records
@@ -165,8 +165,8 @@ def main() -> int:
             raise ObservationError("source revision must be hexadecimal")
         registry_path = args.registry or (args.root / "config/argus/observation-sources.json")
         if args.target == "oreochiserver":
-            if platform.node().split(".", 1)[0] != "oreochiserver":
-                raise ObservationError("live D3 acceptance must run on oreochiserver")
+            if not on_expected_server_host():
+                raise ObservationError(f"live D3 acceptance must run on {expected_server_host()}")
             revision = subprocess.run(
                 ["git", "-C", str(args.root), "rev-parse", "HEAD"],
                 text=True,

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import os
 import socketserver
+import uuid
 from pathlib import Path
 from typing import Any
 
 from argus_admission import evaluate_current
-from argus_capabilities import Ed25519Signer, build_envelope
+from argus_capabilities import Ed25519Signer, build_envelope, refusal_reason
 from argus_ipc import receive_frame, send_frame
 from argus_operations import MUTATIONS, OperationLedger, digest
 
@@ -71,8 +72,16 @@ class CapabilityIssuer:
         return signed
 
 
+def loggable_operation_id(value: object) -> str:
+    try:
+        return str(uuid.UUID(str(value)))
+    except ValueError:
+        return "invalid"
+
+
 class IssuerRequestHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
+        request: dict[str, Any] = {}
         try:
             request = receive_frame(self.request)
             if set(request) != {"method", "operationId", "trustDomain"}:
@@ -85,7 +94,19 @@ class IssuerRequestHandler(socketserver.BaseRequestHandler):
             )
             response = {"ok": True, "signedCapability": signed}
         except Exception as exc:  # noqa: BLE001
-            response = {"ok": False, "error": exc.__class__.__name__}
+            reason = refusal_reason(exc) or "unclassified"
+            response = {
+                "ok": False,
+                "error": exc.__class__.__name__,
+                "reason": reason,
+            }
+            print(
+                "CAPABILITY_REFUSED "
+                f"operationId={loggable_operation_id(request.get('operationId'))} "
+                f"error={exc.__class__.__name__} "
+                f"reason={reason!r}",
+                flush=True,
+            )
         send_frame(self.request, response)
 
 
