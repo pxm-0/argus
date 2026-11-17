@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import contextlib
 import http.server
+import io
 import os
 import shutil
 import socketserver
@@ -8,6 +10,7 @@ import threading
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -92,34 +95,138 @@ class DomainAgentServiceTests(unittest.TestCase):
         )
         return service, Ed25519Signer(private_key)
 
+    def claimed_health_operation(self, service: AgentService) -> dict[str, object]:
+        revision = canonical_revision(ROOT, "hastur")
+        policy = canonical_policy_version(ROOT, "hastur")
+        preview = {
+            "workloadId": "hastur",
+            "trustDomain": "personal-sandbox",
+            "operationType": "health.refresh",
+            "parameters": {},
+            "expectedRevision": revision,
+            "policyVersion": policy,
+        }
+        operation, _ = service.ledger.create(
+            workload_id="hastur",
+            trust_domain="personal-sandbox",
+            operation_type="health.refresh",
+            requested_by="operator@example.com",
+            parameters={},
+            preview_digest=digest(preview),
+            expected_revision=revision,
+            policy_version=policy,
+            idempotency_key="health-result",
+        )
+        claimed = service.ledger.claim(str(operation["operation_id"]))
+        self.assertIsNotNone(claimed)
+        return claimed
+
+    def run_issuer_response(self, issued: dict[str, object]) -> dict[str, object]:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            operation_id = str(self.claimed_health_operation(service)["operation_id"])
+            with (
+                patch("argus_domain_agent.ipc_request", return_value=issued),
+                self.assertRaises(ValueError),
+            ):
+                service.run_operation(operation_id)
+            return service.ledger.get(operation_id)
+
+    def test_issuer_refusal_reason_reaches_the_ledger(self) -> None:
+        operation = self.run_issuer_response(
+            {"ok": False, "error": "ValueError", "reason": "admission denied: revision-stale"}
+        )
+        self.assertEqual("failed", operation["state"])
+        self.assertEqual("CapabilityRefused", operation["error_class"])
+        self.assertEqual(
+            "Capability issuer refused the operation: admission denied: revision-stale.",
+            operation["redacted_summary"],
+        )
+
+    def test_unknown_issuer_refusal_reason_is_unclassified(self) -> None:
+        operation = self.run_issuer_response(
+            {"ok": False, "error": "OSError", "reason": "/etc/argus/capability-issuer/ed25519.key"}
+        )
+        self.assertEqual(
+            "Capability issuer refused the operation: unclassified.",
+            operation["redacted_summary"],
+        )
+
+    def test_agent_side_refusal_reason_reaches_the_ledger(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            root = Path(directory)
+            service, _signer = self.service(root)
+            claimed = self.claimed_health_operation(service)
+            other_root = root / "other"
+            other_root.mkdir()
+            _other_service, other_signer = self.service(other_root)
+            forged = other_signer.sign(build_envelope(claimed))
+            with (
+                patch(
+                    "argus_domain_agent.ipc_request",
+                    return_value={"ok": True, "signedCapability": forged},
+                ),
+                self.assertRaises(ValueError),
+            ):
+                service.run_operation(str(claimed["operation_id"]))
+            operation = service.ledger.get(str(claimed["operation_id"]))
+        self.assertEqual("ValueError", operation["error_class"])
+        self.assertEqual(
+            "Domain agent rejected the operation: invalid capability signature.",
+            operation["redacted_summary"],
+        )
+
+    def test_unlisted_failure_keeps_the_generic_summary(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            operation_id = str(self.claimed_health_operation(service)["operation_id"])
+            with (
+                patch(
+                    "argus_domain_agent.ipc_request",
+                    side_effect=FileNotFoundError(2, "No such file", "/run/argus/capability-issuer.sock"),
+                ),
+                self.assertRaises(FileNotFoundError),
+            ):
+                service.run_operation(operation_id)
+            operation = service.ledger.get(operation_id)
+        self.assertEqual("FileNotFoundError", operation["error_class"])
+        self.assertEqual(
+            "Domain agent rejected or failed the operation.",
+            operation["redacted_summary"],
+        )
+
+    def test_worker_thread_logs_why_execution_failed(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as directory:
+            service, _signer = self.service(Path(directory))
+            operation_id = str(self.claimed_health_operation(service)["operation_id"])
+            output = io.StringIO()
+            with (
+                contextlib.redirect_stdout(output),
+                patch.object(
+                    service,
+                    "run_operation",
+                    side_effect=ValueError("operation is not worker-claimed"),
+                ),
+            ):
+                service.accept_operation(operation_id)
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    with service.active_lock:
+                        if operation_id not in service.active_operations:
+                            break
+                    time.sleep(0.01)
+        self.assertIn(
+            f"OPERATION_EXECUTION_FAILED operationId={operation_id} "
+            "error=ValueError message='operation is not worker-claimed'",
+            output.getvalue(),
+        )
+
     def run_health_result(self, result: dict[str, object]) -> dict[str, object]:
         with tempfile.TemporaryDirectory(dir="/tmp") as directory:
             root = Path(directory)
             service, signer = self.service(root)
-            revision = canonical_revision(ROOT, "hastur")
-            policy = canonical_policy_version(ROOT, "hastur")
-            preview = {
-                "workloadId": "hastur",
-                "trustDomain": "personal-sandbox",
-                "operationType": "health.refresh",
-                "parameters": {},
-                "expectedRevision": revision,
-                "policyVersion": policy,
-            }
-            operation, _ = service.ledger.create(
-                workload_id="hastur",
-                trust_domain="personal-sandbox",
-                operation_type="health.refresh",
-                requested_by="operator@example.com",
-                parameters={},
-                preview_digest=digest(preview),
-                expected_revision=revision,
-                policy_version=policy,
-                idempotency_key="health-result",
-            )
-            claimed = service.ledger.claim(str(operation["operation_id"]))
-            self.assertIsNotNone(claimed)
-            signed = signer.sign(build_envelope(claimed))
+            operation = self.claimed_health_operation(service)
+            signed = signer.sign(build_envelope(operation))
             with (
                 patch(
                     "argus_domain_agent.ipc_request",
