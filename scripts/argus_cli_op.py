@@ -1,6 +1,7 @@
 """`argus op` and `argus workload deploy|start|stop|restart`: operator API flows.
 
-The bootstrap token and then the authenticator code are read only through getpass on /dev/tty. Preview and
+The bootstrap token and then the authenticator code are read only through getpass on /dev/tty, except that
+the code is computed from the macOS Keychain item `argus-totp` when it exists. Preview and
 approval stay separate steps: the operator confirms the previewed digest (typed
 workload ID on a TTY, or --yes-digest) before anything is created.
 The server binds approval to the originating session, so `create` carries the
@@ -12,11 +13,15 @@ from any other session.
 from __future__ import annotations
 
 import getpass
+import math
 import re
+import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import Any, Callable
 
+import argus_totp
 from argus_api_client import TERMINAL_STATES, ApiClient, ApiResponse, ApiUnavailable, is_loopback_http
 
 SHORTCUTS = ("deploy", "start", "stop", "restart")
@@ -26,6 +31,42 @@ POLL_SECONDS = 2.0
 POLL_FAILURES = 3
 DEFAULT_TIMEOUT = 600.0
 STEP_UP_REQUIRED = "step-up reauthentication required"
+KEYCHAIN_SERVICE = "argus-totp"
+KEYCHAIN_NOT_FOUND = 44  # security(1) exit status for a missing item
+# Not secret: the last TOTP counter sent, so the next run never resends a code the server already spent.
+COUNTER_FILE = Path.home() / "Library" / "Caches" / "argus" / "totp-last-counter"
+
+
+def read_last_counter() -> int:
+    try:
+        return int(COUNTER_FILE.read_text().strip())
+    except (OSError, ValueError):
+        return -1
+
+
+def write_last_counter(counter: int) -> None:
+    try:
+        COUNTER_FILE.parent.mkdir(parents=True, exist_ok=True)
+        COUNTER_FILE.write_text(f"{counter}\n")
+    except OSError as exc:
+        print(f"argus: could not record the authenticator counter ({type(exc).__name__}); a run in the next 30 s may be rejected.", file=sys.stderr)
+
+
+def keychain_totp_secret() -> str:
+    """The authenticator secret from the macOS login Keychain, or "" when there is none (the prompt is used instead)."""
+    if sys.platform != "darwin":
+        return ""
+    try:
+        # Timeout leaves room for the Keychain "allow access" dialog.
+        result = subprocess.run(["/usr/bin/security", "find-generic-password", "-s", KEYCHAIN_SERVICE, "-w"], capture_output=True, text=True, timeout=120, check=False)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        print(f"argus: Keychain read failed ({type(exc).__name__}); asking for the code instead.", file=sys.stderr)
+        return ""
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if result.returncode != KEYCHAIN_NOT_FOUND:
+        print(f"argus: Keychain read failed (security exit {result.returncode}); asking for the code instead.", file=sys.stderr)
+    return ""
 
 
 class _Tty:
@@ -84,6 +125,8 @@ class _Flow:
         self.client: ApiClient | None = None
         self.tty: _Tty | None = None
         self.prompted_code = False  # a second prompt in one run must not reuse the first 30 s code
+        self.totp_secret: str | None = None  # None until the Keychain is read; "" means type the code
+        self.last_counter = -1
 
     def stop(self, code: str, message: str, next_action: str, exit_code: int, **kwargs: Any) -> _Stop:
         return _Stop(self.cli._error(code, message, next_action, exit_code=exit_code, authority="operator-api", **kwargs))
@@ -108,14 +151,41 @@ class _Flow:
             raise self.stop("op-token-empty", "No bootstrap token was entered.", "Retry and enter the token at the prompt.", self.cli.EXIT_INVOCATION)
         return token
 
+    def keychain_code(self, stage: str) -> str:
+        """Next unused code from the Keychain secret, waiting out the current window if this or an earlier run spent it."""
+        assert self.tty is not None
+        if self.totp_secret is None:
+            self.totp_secret = keychain_totp_secret()
+            if self.totp_secret:
+                self.last_counter = read_last_counter()
+        if not self.totp_secret:
+            return ""
+        counter = argus_totp.counter_at(time.time())
+        if counter + 1 < self.last_counter:
+            self.last_counter = -1  # recorded counter is ahead of this clock; waiting could take hours
+        if counter <= self.last_counter:
+            wait = (self.last_counter + 1) * argus_totp.PERIOD - time.time()
+            self.tty.write(f"Waiting {math.ceil(max(wait, 0))} s for the next authenticator code...\n")
+            time.sleep(max(wait, 0) + 0.5)
+            counter = argus_totp.counter_at(time.time())
+        try:
+            code = argus_totp.hotp(self.totp_secret, counter)
+        except argus_totp.TotpError:
+            raise self.stop(f"op-{stage}-keychain-invalid", f"The Keychain item {KEYCHAIN_SERVICE} is not a base32 authenticator secret.", f"Fix or delete the {KEYCHAIN_SERVICE} Keychain item, then retry.", self.cli.EXIT_INVOCATION) from None
+        self.last_counter = counter
+        write_last_counter(counter)
+        return code
+
     def authenticate(self, stage: str, send: Callable[[ApiClient, str, str], ApiResponse]) -> None:
         assert self.client is not None and self.tty is not None
         token = self.secret(stage)
-        prompt = "Authenticator code or recovery code (blank if not enrolled): "
-        if self.prompted_code:
-            prompt = "Wait for the NEXT 30 s code (a code already used is rejected). " + prompt
-        self.prompted_code = True
-        code = self.tty.read_secret(prompt).strip()
+        code = self.keychain_code(stage)
+        if not code:
+            prompt = "Authenticator code or recovery code (blank if not enrolled): "
+            if self.prompted_code:
+                prompt = "Wait for the NEXT 30 s code (a code already used is rejected). " + prompt
+            self.prompted_code = True
+            code = self.tty.read_secret(prompt).strip()
         try:
             response = send(self.client, token, code)
             if response.status == 429:
