@@ -11,6 +11,7 @@ import uuid
 from pathlib import Path
 from typing import Any, Callable
 
+from argus_admission import DECISION_CODES
 from argus_operations import canonical_json, digest, format_timestamp, parse_timestamp
 from argus_sqlite import ClosingConnection
 
@@ -19,6 +20,49 @@ CAPABILITY_SCHEMA_VERSION = 1
 MAX_CAPABILITY_TTL_SECONDS = 60
 REPLAY_RETENTION_SECONDS = 24 * 60 * 60
 PREVIOUS_KEY_OVERLAP_SECONDS = 10 * 60
+
+# Fixed refusal messages raised by the issuer, signer, verifier and agent.
+# Only these may leave a process or reach the ledger; anything else is
+# reported as "unclassified" so paths, keys or values never leak.
+REFUSAL_REASONS = frozenset(
+    {
+        "unknown operation",
+        "operation is not worker-claimed",
+        "wrong operation domain",
+        "mutation has no persisted approval",
+        "operation has no operator identity",
+        "operation parameter binding is invalid",
+        "operation preview binding is invalid",
+        "only capability.issue is accepted",
+        "Ed25519 private key is unavailable",
+        "Ed25519 private key ownership or mode is unsafe",
+        "Ed25519 signing failed",
+        "capability envelope cannot contain floating-point values",
+        "capability envelope keys must be strings",
+        "capability expiry must be at most 60 seconds",
+        "issuer public key is unavailable",
+        "malformed signed capability",
+        "malformed capability signature",
+        "invalid capability signature",
+        "incomplete capability envelope",
+        "invalid capability identifier",
+        "invalid capability nonce",
+        "expired capability",
+        "capability expiry exceeds 60 seconds",
+        "capability operation mismatch",
+        "wrong capability domain",
+        "capability parameter digest mismatch",
+        "replayed capability",
+        "preview digest mismatch",
+        *(f"admission denied: {code}" for code in DECISION_CODES),
+    }
+)
+
+
+def refusal_reason(value: object) -> str | None:
+    """Return the message when it is an allowlisted refusal reason, else None."""
+    text = str(value)
+    return text if text in REFUSAL_REASONS else None
 
 
 def _base64url_encode(value: bytes) -> str:

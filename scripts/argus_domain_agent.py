@@ -25,6 +25,7 @@ from argus_admission import evaluate_current
 from argus_capabilities import (
     Ed25519Verifier,
     ReplayStore,
+    refusal_reason,
     validate_envelope,
 )
 from argus_common import by_id, load_manifest, now, desired_change_refusal, policy_decision, regenerate_dashboard
@@ -68,6 +69,10 @@ def probe_ingress(socket_path: Path, timeout: float = 3.0) -> bool:
 
 class IndeterminateOperation(RuntimeError):
     """The executor timed out after dispatch and must never be silently retried."""
+
+
+class CapabilityRefused(ValueError):
+    """The issuer refused; the message is an allowlisted reason or "unclassified"."""
 
 
 class AgentService:
@@ -383,7 +388,7 @@ class AgentService:
                 },
             )
             if set(issued) != {"ok", "signedCapability"} or issued["ok"] is not True:
-                raise ValueError("capability issuer rejected operation")
+                raise CapabilityRefused(refusal_reason(issued.get("reason")) or "unclassified")
             envelope = self.verifier.verify(dict(issued["signedCapability"]))
             validate_envelope(
                 envelope,
@@ -459,9 +464,15 @@ class AgentService:
                 error_class="policy-denied", redacted_summary=str(exc)[:1000],
             )
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, CapabilityRefused):
+                summary = f"Capability issuer refused the operation: {exc}."
+            elif reason := refusal_reason(exc):
+                summary = f"Domain agent rejected the operation: {reason}."
+            else:
+                summary = "Domain agent rejected or failed the operation."
             self.ledger.transition(
                 operation_id, {"running"}, "failed", finished_at=int(time.time()),
-                error_class=exc.__class__.__name__, redacted_summary="Domain agent rejected or failed the operation.",
+                error_class=exc.__class__.__name__, redacted_summary=summary,
             )
             raise
         finally:
@@ -484,10 +495,16 @@ class AgentService:
         def execute() -> None:
             try:
                 self.run_operation(operation_id)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
                 # run_operation has already persisted a safe terminal outcome
-                # whenever the ledger still permits one.
-                pass
+                # whenever the ledger still permits one; the journal keeps why.
+                print(
+                    "OPERATION_EXECUTION_FAILED "
+                    f"operationId={operation_id} "
+                    f"error={exc.__class__.__name__} "
+                    f"message={str(exc)[:300]!r}",
+                    flush=True,
+                )
             finally:
                 with self.active_lock:
                     self.active_operations.discard(operation_id)

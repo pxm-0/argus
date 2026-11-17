@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import contextlib
+import io
+import socket
 import subprocess
 import os
 import json
@@ -9,6 +12,8 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -19,9 +24,11 @@ from argus_capabilities import (  # noqa: E402
     Ed25519Verifier,
     ReplayStore,
     build_envelope,
+    refusal_reason,
     validate_envelope,
 )
-from argus_capability_issuer import CapabilityIssuer  # noqa: E402
+from argus_capability_issuer import CapabilityIssuer, IssuerRequestHandler  # noqa: E402
+from argus_ipc import receive_frame, send_frame  # noqa: E402
 from argus_admission import current_request  # noqa: E402
 from argus_operations import OperationLedger, digest  # noqa: E402
 
@@ -294,6 +301,74 @@ class CapabilityTests(unittest.TestCase):
             issuer.issue(str(unapproved["operation_id"]), "personal-sandbox")
         with self.assertRaisesRegex(ValueError, "wrong operation domain"):
             issuer.issue(str(self.operation["operation_id"]), "other")
+
+    def handle_issue_request(
+        self,
+        issuer: object,
+        payload: dict[str, object],
+    ) -> tuple[dict[str, object], str]:
+        client, server_side = socket.socketpair()
+        output = io.StringIO()
+        with client, server_side, contextlib.redirect_stdout(output):
+            send_frame(client, payload)
+            IssuerRequestHandler(server_side, None, SimpleNamespace(issuer=issuer))
+            response = receive_frame(client)
+        return response, output.getvalue()
+
+    def test_issuer_refusal_replies_and_logs_allowlisted_reason(self) -> None:
+        operation_id = str(self.operation["operation_id"])
+        issuer = CapabilityIssuer(
+            self.ledger,
+            Ed25519Signer(self.private_key),
+            root=self.repository,
+        )
+        response, log = self.handle_issue_request(
+            issuer,
+            {
+                "method": "capability.issue",
+                "operationId": operation_id,
+                "trustDomain": "other",
+            },
+        )
+        self.assertEqual(
+            {"ok": False, "error": "ValueError", "reason": "wrong operation domain"},
+            response,
+        )
+        self.assertEqual(
+            f"CAPABILITY_REFUSED operationId={operation_id} "
+            "error=ValueError reason='wrong operation domain'\n",
+            log,
+        )
+
+    def test_issuer_refusal_carries_admission_decision_code(self) -> None:
+        self.assertEqual(
+            "admission denied: revision-stale",
+            refusal_reason(ValueError("admission denied: revision-stale")),
+        )
+        self.assertIsNone(refusal_reason(ValueError("admission denied: /etc/shadow")))
+
+    def test_issuer_refusal_hides_unlisted_messages(self) -> None:
+        secret_path = "/etc/argus/capability-issuer/ed25519.key"
+        issuer = SimpleNamespace(
+            issue=Mock(side_effect=OSError(f"cannot read {secret_path}"))
+        )
+        response, log = self.handle_issue_request(
+            issuer,
+            {
+                "method": "capability.issue",
+                "operationId": "not-a-uuid\nCAPABILITY_ISSUED forged",
+                "trustDomain": "personal-sandbox",
+            },
+        )
+        self.assertEqual(
+            {"ok": False, "error": "OSError", "reason": "unclassified"},
+            response,
+        )
+        self.assertEqual(
+            "CAPABILITY_REFUSED operationId=invalid error=OSError reason='unclassified'\n",
+            log,
+        )
+        self.assertNotIn(secret_path, json.dumps(response) + log)
 
     def test_activation_is_acknowledged_private_and_reversible(self) -> None:
         script_path = ROOT / "scripts" / "argus-m5-capability-issuer"
