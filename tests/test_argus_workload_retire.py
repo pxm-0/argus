@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 from argus_cli import render_human, run  # noqa: E402
-from argus_workload_retire import prune  # noqa: E402
+from argus_workload_retire import IMAGE_ID, prune  # noqa: E402
 
 TEMPLATE = (ROOT / "docs" / "RETIRED_TEMPLATE.md").read_text(encoding="utf-8")
 
@@ -249,7 +249,13 @@ class WorkloadRetireTests(unittest.TestCase):
         code = run(["workload", "retire", "nodens-staging", "--dry-run", "--json"], repo=ROOT, stdout=out, stderr=err)
         self.assertEqual(code, 0, out.getvalue())
         rb = json.loads(out.getvalue())["data"]["runbook"]
-        self.assertIn("`sha256:e8f2abf0300b` is also pinned by `nodens-production`", rb)
+        # Derive the shared pins so a staging-only release pin does not break this test.
+        def pins(workload: str) -> set[str]:
+            return set(IMAGE_ID.findall((ROOT / "workloads" / workload / "source" / "compose.yml").read_text(encoding="utf-8")))
+        shared = pins("nodens-staging") & pins("nodens-production")
+        self.assertTrue(shared, "staging and production share no image, so there is no warning to check")
+        for digest in shared:
+            self.assertIn(f"`{digest[:19]}` is also pinned by `nodens-production`", rb)
 
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)
