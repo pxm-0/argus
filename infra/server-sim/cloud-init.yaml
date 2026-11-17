@@ -1,0 +1,55 @@
+#cloud-config
+# User data for the oreochiserver-sim OrbStack machine (infra/server-sim/sim up).
+# Mirrors the base of oreochiserver: Ubuntu 26.04 amd64, user oreo UID 1000,
+# docker GID 983, argus-control GID 981. All package installs live here so the
+# Argus shell scripts never download anything themselves.
+hostname: oreochiserver-sim
+preserve_hostname: false
+manage_etc_hosts: true
+
+# Fixed GIDs must exist before docker-ce's postinst would create a dynamic docker group.
+bootcmd:
+  - [sh, -c, "getent group docker >/dev/null || groupadd --system --gid 983 docker"]
+  - [sh, -c, "getent group argus-control >/dev/null || groupadd --system --gid 981 argus-control"]
+
+users:
+  - name: oreo
+    uid: 1000
+    shell: /bin/bash
+    lock_passwd: true
+
+apt:
+  sources:
+    docker.list:
+      source: "deb [arch=amd64 signed-by=$KEY_FILE] https://download.docker.com/linux/ubuntu $RELEASE stable"
+      keyid: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88
+
+package_update: true
+packages:
+  - python3
+  - git
+  - curl            # required by the Argus M5 installers' preflight checks
+  - openssl
+  - ca-certificates
+  - docker-ce
+  - docker-ce-cli
+  - containerd.io
+  - docker-ce-rootless-extras
+  - docker-compose-plugin
+  - uidmap
+  - slirp4netns
+  - fuse-overlayfs
+  # rootlesskit comes from docker-ce-rootless-extras, which Conflicts with Ubuntu's rootlesskit package.
+  - dbus-user-session
+  - nftables
+  - iptables
+  - caddy
+  - age
+  - sqlite3
+  - ssl-cert
+  - cron
+
+# Group membership is applied after packages so ssl-cert and crontab exist.
+runcmd:
+  - [usermod, -aG, "sudo,adm,docker,argus-control,crontab,ssl-cert", oreo]
+  - [systemctl, enable, --now, docker.service]

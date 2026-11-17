@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from argus_common import audit, http_status, load_json, now, print_json, regenerate_dashboard, root, save_json
+from argus_cloudflare_allowlist import effective_blockers, is_allowlisted, load_evidence
+from argus_common import http_status, load_json, print_json, root
 
 
 SAFE_CLOUDFLARE_PRIVACY = {"unclassified", "personal", "internal"}
@@ -25,9 +26,7 @@ def add(findings: list[dict[str, Any]], level: str, workload_id: str, message: s
     findings.append({"level": level, "workloadId": workload_id, "message": message, **extra})
 
 
-def cloudflare_evidence_exists() -> bool:
-    evidence_dir = root() / "runtime" / "cloudflare-activation"
-    return evidence_dir.exists() and any(path.suffix == ".json" for path in evidence_dir.iterdir())
+ROUTE_MODES = {"cloudflare-protected": "protected", "cloudflare-public": "public"}
 
 
 def reconcile(*, offline: bool = False) -> dict[str, Any]:
@@ -35,7 +34,7 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
     routes = load_json("routes.json")
     exposure = load_json("exposure.json")
     workloads = workload_map()
-    provider = exposure.get("providers", {}).get("cloudflare", {})
+    evidence = load_evidence(root() / "runtime" / "cloudflare-activation")
     findings: list[dict[str, Any]] = []
 
     observed_funnel = bool(routes.get("observed", {}).get("funnel", {}).get("enabled")) or bool(
@@ -53,29 +52,34 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
         workload = workloads.get(workload_id, {})
         privacy = privacy_for(workload_id)
 
-        if effective == "cloudflare-public":
-            add(findings, "fail", workload_id, "cloudflare-public effective access is forbidden in P2")
+        hostname = str(cloudflare.get("hostname", ""))
+        if "cloudflare-public" in {desired, effective} and not is_allowlisted(exposure, workload_id, hostname):
+            add(findings, "fail", workload_id, "cloudflare-public is allowed only for allowlisted routes")
         if workload.get("kind") == "admin-tool" and effective.startswith("cloudflare"):
             add(findings, "fail", workload_id, "admin tool cannot have Cloudflare effective access")
         if privacy not in SAFE_CLOUDFLARE_PRIVACY and effective.startswith("cloudflare"):
             add(findings, "fail", workload_id, f"{privacy} workload cannot have Cloudflare effective access")
 
-        if effective == "cloudflare-protected":
-            hostname = str(cloudflare.get("hostname", ""))
+        if effective.startswith("cloudflare"):
+            mode = ROUTE_MODES.get(effective, "")
+            accepted_modes = {mode}
+            # D027 step 2: the route is switched to public while still effective protected, before --mode public runs.
+            if effective == "cloudflare-protected" and desired == "cloudflare-public" and is_allowlisted(exposure, workload_id, hostname):
+                accepted_modes.add("public")
             if not bool(cloudflare.get("enabled")):
-                add(findings, "fail", workload_id, "effective cloudflare-protected but route is disabled")
-            if cloudflare.get("mode") != "protected":
-                add(findings, "fail", workload_id, "effective cloudflare-protected but route mode is not protected")
+                add(findings, "fail", workload_id, f"effective {effective} but route is disabled")
+            if cloudflare.get("mode") not in accepted_modes:
+                add(findings, "fail", workload_id, f"effective {effective} but route mode is not {mode or 'known'}")
             if hostname.endswith(".invalid") or not hostname:
-                add(findings, "fail", workload_id, "effective cloudflare-protected without a real hostname")
-            if not bool(provider.get("enabled")) or not bool(provider.get("provisioned")):
-                add(findings, "fail", workload_id, "effective cloudflare-protected but provider is not active")
-            if not bool(provider.get("allowNamedTunnels")):
-                add(findings, "fail", workload_id, "effective cloudflare-protected but named tunnels are not allowed")
-            if not cloudflare_evidence_exists():
-                add(findings, "fail", workload_id, "effective cloudflare-protected without activation evidence")
+                add(findings, "fail", workload_id, f"effective {effective} without a real hostname")
+            if effective == "cloudflare-public" and cloudflare.get("requiresAuth") is not False:
+                add(findings, "fail", workload_id, "effective cloudflare-public but route still requires auth")
+            for blocker in effective_blockers(exposure, workload_id, hostname, effective, evidence):
+                add(findings, "fail", workload_id, f"effective {effective}: {blocker}")
 
-        if effective in {"local", "tailnet", "none"} and bool(cloudflare.get("enabled")) and cloudflare.get("mode") == "protected":
+        # D027 step 1: an allowlisted route is staged protected before activation makes it effective.
+        staged = desired == "cloudflare-protected" and cloudflare.get("mode") == "protected" and is_allowlisted(exposure, workload_id, hostname)
+        if effective in {"local", "tailnet", "none"} and bool(cloudflare.get("enabled")) and cloudflare.get("mode") in set(ROUTE_MODES.values()) and not staged:
             add(findings, "fail", workload_id, "Cloudflare route enabled while effective access is not Cloudflare")
 
         if effective == "tailnet" and not bool(tailnet.get("enabled")):
@@ -92,8 +96,8 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
                 else:
                     add(findings, "ok", workload_id, "local probe completed", url=local_url, status=status)
 
-        if desired == "cloudflare-protected" and effective != "cloudflare-protected":
-            add(findings, "ok", workload_id, "desired Cloudflare protected remains planned until verified activation")
+        if desired in ROUTE_MODES and effective != desired:
+            add(findings, "ok", workload_id, f"desired {desired} remains planned until verified activation")
 
     failures = [item for item in findings if item["level"] == "fail"]
     return {
@@ -105,25 +109,16 @@ def reconcile(*, offline: bool = False) -> dict[str, Any]:
     }
 
 
-def apply_lowering(result: dict[str, Any]) -> dict[str, Any]:
+def rollback_commands(result: dict[str, Any]) -> list[str]:
+    """D028: reconcile never relabels state. A failing Cloudflare effective is cut by the rollback script."""
     access = load_json("access.json")
-    changed: list[str] = []
-    for finding in result["findings"]:
-        workload_id = str(finding["workloadId"])
-        if finding["level"] != "fail" or workload_id not in access.get("workloads", {}):
-            continue
-        item = access["workloads"][workload_id]
-        if item.get("effective") == "cloudflare-protected":
-            item["effective"] = "local"
-            item["lastAppliedAt"] = now()
-            item["lastError"] = "Lowered by access reconcile after Cloudflare drift."
-            changed.append(workload_id)
-    if changed:
-        save_json("access.json", access)
-        regenerate_dashboard(quiet=True)
-    for workload_id in changed:
-        audit("access.reconcile", workload_id, "lowered", effective="local")
-    return {"changed": changed}
+    failing = sorted({
+        str(finding["workloadId"])
+        for finding in result["findings"]
+        if finding["level"] == "fail"
+        and str(access.get("workloads", {}).get(str(finding["workloadId"]), {}).get("effective", "")).startswith("cloudflare")
+    })
+    return [f"sudo scripts/argus-cloudflare-rollback {workload_id} --apply --confirm-workload {workload_id}" for workload_id in failing]
 
 
 def print_text(result: dict[str, Any]) -> None:
@@ -135,18 +130,20 @@ def print_text(result: dict[str, Any]) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Detect desired/effective access drift.")
-    parser.add_argument("--apply", action="store_true", help="Only lower Cloudflare effective access after drift.")
+    parser.add_argument("--apply", action="store_true", help="Print the rollback command for each drifted Cloudflare workload; changes nothing.")
     parser.add_argument("--offline", action="store_true", help="Skip live HTTP probes.")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
     result = reconcile(offline=args.offline)
     if args.apply:
-        result["apply"] = apply_lowering(result)
+        result["rollbackCommands"] = rollback_commands(result)
     if args.json:
         print_json(result)
     else:
         print_text(result)
+        for command in result.get("rollbackCommands", []):
+            print(f"Run: {command}")
     return 0 if result["ok"] else 2
 
 

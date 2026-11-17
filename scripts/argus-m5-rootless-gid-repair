@@ -35,6 +35,7 @@ PROBE_LOCK_WAIT_SECONDS = 60.0
 LOCK_RETRY_SECONDS = 0.5
 PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
 MIGRATION_RUNTIME_ROOT = Path("/var/lib/argus/migration-runtime")
+INGRESS_PARENT = Path("/var/lib/argus")
 APPLY_ACK = "--acknowledge-rootless-gid-repair"
 RECOVERY_ACK = "--acknowledge-rootless-gid-recovery"
 ROLLBACK_ACK = "--acknowledge-rootless-gid-rollback"
@@ -699,13 +700,46 @@ def restore_firewall(domain: str) -> None:
     raise RepairError("sandbox firewall did not recover")
 
 
+def ingress_layout(
+    domain: str, source: Path, identity
+) -> tuple[Path, tuple[str, ...], set[tuple[int, int, int]]]:
+    """Return the root-owned chain and accepted (uid, gid, mode) of an ingress bind.
+
+    Cutover runtimes keep the leaf root-locked; typed-deploy ingress roots
+    (argus_domain_agent.ingress_socket) keep it owned by the domain identity,
+    as created in docs/ARGUS_M5_WORKLOAD_CUTOVER.md, so Compose can restart it.
+    """
+    runtime_root = MIGRATION_RUNTIME_ROOT / domain
+    domain_ingress_root = INGRESS_PARENT / f"{domain.split('-', 1)[-1]}-ingress"
+    for root in (runtime_root, domain_ingress_root):
+        try:
+            relative = source.relative_to(root)
+        except ValueError:
+            continue
+        break
+    else:
+        raise RepairError("container ingress source escapes its domain")
+    if root == runtime_root:
+        accepted_path = len(relative.parts) == 3 and relative.parts[-1] == "ingress"
+        chain = (MIGRATION_RUNTIME_ROOT, (domain, *relative.parts))
+        states = {(0, 0, 0o711)}
+    else:
+        # sandbox-ingress is shared by both sandbox domains: the leaf owner check
+        # below is what keeps one domain off the other's directory.
+        accepted_path = len(relative.parts) == 1
+        chain = (domain_ingress_root, relative.parts)
+        states = {(identity.pw_uid, identity.pw_gid, mode) for mode in (0o700, 0o710)}
+    if not accepted_path or ".." in relative.parts:
+        raise RepairError("container ingress source is not an accepted path")
+    return (*chain, states)
+
+
 def verified_ingress_directories(
     domain: str, containers: Iterable[str]
-) -> list[Path]:
-    """Return exact accepted ingress binds that need restart preparation."""
+) -> dict[Path, tuple[int, int, int]]:
+    """Return exact accepted ingress binds and their original (uid, gid, mode)."""
     identity = pwd.getpwnam(sandbox_user(domain))
-    domain_root = MIGRATION_RUNTIME_ROOT / domain
-    directories = set()
+    directories = {}
     for container in sorted(containers):
         try:
             mounts = json.loads(
@@ -740,14 +774,11 @@ def verified_ingress_directories(
         if not isinstance(source_value, str) or not source_value.startswith("/"):
             raise RepairError("container ingress source is unsafe")
         source = Path(source_value)
-        try:
-            relative = source.relative_to(domain_root)
-        except ValueError as error:
-            raise RepairError("container ingress source escapes its domain") from error
-        if len(relative.parts) != 3 or relative.parts[-1] != "ingress":
-            raise RepairError("container ingress source is not an accepted path")
-        current = MIGRATION_RUNTIME_ROOT
-        for part in (domain, *relative.parts):
+        chain_root, chain_parts, accepted_states = ingress_layout(
+            domain, source, identity
+        )
+        current = chain_root
+        for part in chain_parts:
             metadata = os.lstat(current)
             if (
                 metadata.st_uid != 0
@@ -757,14 +788,17 @@ def verified_ingress_directories(
                 raise RepairError("container ingress path boundary is unsafe")
             current /= part
         metadata = os.lstat(source)
+        original = (
+            metadata.st_uid,
+            metadata.st_gid,
+            stat.S_IMODE(metadata.st_mode),
+        )
         if (
-            metadata.st_uid != 0
-            or metadata.st_gid != 0
-            or stat.S_ISLNK(metadata.st_mode)
+            stat.S_ISLNK(metadata.st_mode)
             or not stat.S_ISDIR(metadata.st_mode)
-            or stat.S_IMODE(metadata.st_mode) != 0o711
+            or original not in accepted_states
         ):
-            raise RepairError("locked ingress directory is unsafe")
+            raise RepairError("ingress directory owner or mode is unsafe")
         socket_path = source / "upstream.sock"
         try:
             socket_metadata = os.lstat(socket_path)
@@ -777,8 +811,8 @@ def verified_ingress_directories(
                 or socket_metadata.st_gid != identity.pw_gid
             ):
                 raise RepairError("stale ingress endpoint is unsafe")
-        directories.add(source)
-    return sorted(directories)
+        directories[source] = original
+    return directories
 
 
 def prepare_ingress_directories(domain: str, directories: Iterable[Path]) -> None:
@@ -798,10 +832,14 @@ def prepare_ingress_directories(domain: str, directories: Iterable[Path]) -> Non
 
 
 def lock_ingress_directories(
-    domain: str, directories: Iterable[Path], *, require_socket: bool
+    domain: str,
+    directories: dict[Path, tuple[int, int, int]],
+    *,
+    require_socket: bool,
 ) -> None:
+    """Wait for replacement sockets, then restore each directory's original owner and mode."""
     identity = pwd.getpwnam(sandbox_user(domain))
-    selected = list(directories)
+    selected = sorted(directories)
     ready = not require_socket
     deadline = time.monotonic() + DAEMON_TIMEOUT_SECONDS
     while require_socket and time.monotonic() < deadline:
@@ -823,8 +861,9 @@ def lock_ingress_directories(
             break
         time.sleep(1)
     for directory in selected:
-        os.chown(directory, 0, 0)
-        os.chmod(directory, 0o711)
+        uid, gid, mode = directories[directory]
+        os.chown(directory, uid, gid)
+        os.chmod(directory, mode)
     if not ready:
         raise RepairError("sandbox ingress endpoint did not recover")
 
@@ -942,7 +981,7 @@ def start_missing_in_dependency_order(
     domain: str,
     expected: set[str],
     missing: Iterable[str],
-    prepared_ingress: set[Path],
+    prepared_ingress: dict[Path, tuple[int, int, int]],
 ) -> None:
     contracts = container_start_contracts(domain, expected)
     pending = set(missing)
@@ -958,8 +997,11 @@ def start_missing_in_dependency_order(
                 ready.append(container)
         for container in ready:
             directories = verified_ingress_directories(domain, [container])
+            # Record originals before mutating so a failed prepare is still restored;
+            # keep the first record if a directory is seen twice.
+            for directory, original in directories.items():
+                prepared_ingress.setdefault(directory, original)
             prepare_ingress_directories(domain, directories)
-            prepared_ingress.update(directories)
             run(
                 target_command(domain, "start", container),
                 stdout=subprocess.DEVNULL,
@@ -987,7 +1029,7 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
             stderr=subprocess.DEVNULL,
             timeout=DAEMON_TIMEOUT_SECONDS,
         )
-    ingress_directories: set[Path] = set()
+    ingress_directories: dict[Path, tuple[int, int, int]] = {}
     try:
         if missing:
             start_missing_in_dependency_order(
@@ -1001,7 +1043,7 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
                     stable_since = time.monotonic()
                 elif time.monotonic() - stable_since >= RUNNING_STABILITY_SECONDS:
                     lock_ingress_directories(
-                        domain, sorted(ingress_directories), require_socket=True
+                        domain, ingress_directories, require_socket=True
                     )
                     return
             else:
@@ -1010,7 +1052,7 @@ def restore_running_set(domain: str, expected: set[str]) -> None:
         raise RepairError("sandbox pre-running container set was not restored")
     except BaseException:
         lock_ingress_directories(
-            domain, sorted(ingress_directories), require_socket=False
+            domain, ingress_directories, require_socket=False
         )
         raise
 

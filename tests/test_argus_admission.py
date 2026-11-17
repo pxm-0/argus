@@ -192,6 +192,16 @@ class AdmissionDecisionTests(unittest.TestCase):
         self.save("config/routes.json", routes)
         self.assertEqual("revision-stale", evaluate(self.root, request).decision_code)
 
+    def test_revision_follows_the_server_applied_effective_overlay(self) -> None:
+        request = current_request(self.root, WORKLOAD_ID, "workload.restart")
+        overlay_path = self.root / "config" / "access.effective.json"
+        entry = {"effective": "none", "lastAppliedAt": "2026-11-16T00:00:00Z", "lastError": ""}
+        overlay_path.write_text(json.dumps({"version": 1, "workloads": {WORKLOAD_ID: entry}}), encoding="utf-8")
+        self.assertNotEqual(request.expected_revision, canonical_revision(self.root, WORKLOAD_ID))
+        self.assertEqual("revision-stale", evaluate(self.root, request).decision_code)
+        overlay_path.write_text("{", encoding="utf-8")
+        self.assertEqual("dependency-unavailable", evaluate(self.root, request).decision_code)
+
     def test_missing_and_unavailable_dependencies_are_distinct(self) -> None:
         access = self.load("config/access.json")
         del access["workloads"][WORKLOAD_ID]

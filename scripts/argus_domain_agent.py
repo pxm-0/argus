@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import re
+import socket
 import socketserver
 import subprocess
 import sys
@@ -23,9 +25,10 @@ from argus_admission import evaluate_current
 from argus_capabilities import (
     Ed25519Verifier,
     ReplayStore,
+    refusal_reason,
     validate_envelope,
 )
-from argus_common import by_id, load_manifest, now, policy_decision, regenerate_dashboard
+from argus_common import by_id, load_manifest, now, desired_change_refusal, policy_decision, regenerate_dashboard
 from argus_ipc import receive_frame, request as ipc_request, send_frame
 from argus_m1 import access_writer
 from argus_operations import (
@@ -49,8 +52,27 @@ def parse_compose_rows(stdout: str) -> list[dict[str, Any]]:
     return decoded if isinstance(decoded, list) else [decoded]
 
 
+def probe_ingress(socket_path: Path, timeout: float = 3.0) -> bool:
+    """GET /healthz through the workload's ingress Caddy; a 5xx (e.g. 502) means the app is unreachable."""
+    connection = http.client.HTTPConnection("localhost", timeout=timeout)
+    try:
+        connection.sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.sock.settimeout(timeout)
+        connection.sock.connect(str(socket_path))
+        connection.request("GET", "/healthz")
+        return connection.getresponse().status < 500
+    except (OSError, http.client.HTTPException):
+        return False
+    finally:
+        connection.close()
+
+
 class IndeterminateOperation(RuntimeError):
     """The executor timed out after dispatch and must never be silently retried."""
+
+
+class CapabilityRefused(ValueError):
+    """The issuer refused; the message is an allowlisted reason or "unclassified"."""
 
 
 class AgentService:
@@ -134,6 +156,9 @@ class AgentService:
             desired = str(parameters.get("desired", ""))
             if desired not in {"none", "local", "tailnet"}:
                 return False, "Phase 1 access state must be none, local, or tailnet"
+            refusal = desired_change_refusal(workload_id, desired)
+            if refusal:
+                return False, refusal
             if desired == "tailnet":
                 _, route_reason = route_contract(self.root, item, workload_id)
                 if route_reason:
@@ -174,6 +199,14 @@ class AgentService:
         manifest = load_manifest(workload_id)
         return str(manifest.get("runtime", {}).get("service") or item.get("runtime", {}).get("service") or "")
 
+    def ingress_socket(self, workload_id: str) -> Path | None:
+        """Typed-deploy workloads (manifest declares a stable bridge) serve through a per-domain ingress socket."""
+        compose = (load_manifest(workload_id).get("runtime") or {}).get("compose")
+        if not isinstance(compose, dict) or not compose.get("bridge"):
+            return None
+        kind = self.domain.split("-", 1)[-1]
+        return Path(f"/var/lib/argus/{kind}-ingress/{workload_id}/upstream.sock")
+
     def domain_health(self, workload_id: str) -> dict[str, Any]:
         command = self.compose_command(workload_id, "ps", "--format", "json")
         result = subprocess.run(command, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False, timeout=8)
@@ -198,10 +231,15 @@ class AgentService:
             and str(row.get("Health", "")).lower() in {"", "healthy"}
             for row in rows
         )
+        detail = f"{len(rows)} approved service(s) observed"
+        ingress = self.ingress_socket(workload_id) if healthy else None
+        if ingress is not None and not probe_ingress(ingress):
+            # Containers can run while the domain firewall drops ingress->app traffic (502 on upstream.sock).
+            return {"ok": False, "status": "degraded", "detail": f"{detail}; ingress /healthz probe failed"}
         return {
             "ok": healthy,
             "status": "healthy" if healthy else "unhealthy",
-            "detail": f"{len(rows)} approved service(s) observed",
+            "detail": detail,
         }
 
     def image_id(self, workload_id: str) -> str:
@@ -304,6 +342,9 @@ class AgentService:
             return backup_apply(workload_id, confirmation=workload_id)
         if operation_type == "access.apply":
             desired = str(parameters["desired"])
+            refusal = desired_change_refusal(workload_id, desired)
+            if refusal:
+                raise ValueError(refusal)
             decision = policy_decision(workload_id, desired)
             workload = by_id()[workload_id]
             route_result = apply_tailscale_access(self.root, workload, workload_id, desired)
@@ -347,7 +388,7 @@ class AgentService:
                 },
             )
             if set(issued) != {"ok", "signedCapability"} or issued["ok"] is not True:
-                raise ValueError("capability issuer rejected operation")
+                raise CapabilityRefused(refusal_reason(issued.get("reason")) or "unclassified")
             envelope = self.verifier.verify(dict(issued["signedCapability"]))
             validate_envelope(
                 envelope,
@@ -423,9 +464,15 @@ class AgentService:
                 error_class="policy-denied", redacted_summary=str(exc)[:1000],
             )
         except Exception as exc:  # noqa: BLE001
+            if isinstance(exc, CapabilityRefused):
+                summary = f"Capability issuer refused the operation: {exc}."
+            elif reason := refusal_reason(exc):
+                summary = f"Domain agent rejected the operation: {reason}."
+            else:
+                summary = "Domain agent rejected or failed the operation."
             self.ledger.transition(
                 operation_id, {"running"}, "failed", finished_at=int(time.time()),
-                error_class=exc.__class__.__name__, redacted_summary="Domain agent rejected or failed the operation.",
+                error_class=exc.__class__.__name__, redacted_summary=summary,
             )
             raise
         finally:
@@ -448,10 +495,16 @@ class AgentService:
         def execute() -> None:
             try:
                 self.run_operation(operation_id)
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
                 # run_operation has already persisted a safe terminal outcome
-                # whenever the ledger still permits one.
-                pass
+                # whenever the ledger still permits one; the journal keeps why.
+                print(
+                    "OPERATION_EXECUTION_FAILED "
+                    f"operationId={operation_id} "
+                    f"error={exc.__class__.__name__} "
+                    f"message={str(exc)[:300]!r}",
+                    flush=True,
+                )
             finally:
                 with self.active_lock:
                     self.active_operations.discard(operation_id)

@@ -43,6 +43,30 @@ preflight() {
   printf 'publicExposureChanged=false routesChanged=false workloadsChanged=false\n'
 }
 
+ROLLBACK_BACKUP=""
+
+# Restores file metadata (not content, which the API may have changed) and the
+# Caddy drop-in from the backup taken before apply, then restarts both units.
+rollback_on_exit() {
+  local status=$? path
+  trap - EXIT
+  [[ $status -ne 0 && -n "$ROLLBACK_BACKUP" ]] || exit "$status"
+  for path in "${STATE_FILES[@]}"; do
+    chown --reference="$ROLLBACK_BACKUP/config/$(basename "$path")" "$path" || true
+    chmod --reference="$ROLLBACK_BACKUP/config/$(basename "$path")" "$path" || true
+  done
+  if [[ -f "$ROLLBACK_BACKUP/systemd/$(basename "$CADDY_DROPIN")" ]]; then
+    cp --preserve=mode,ownership,timestamps "$ROLLBACK_BACKUP/systemd/$(basename "$CADDY_DROPIN")" "$CADDY_DROPIN" || true
+  else
+    rm -f "$CADDY_DROPIN" || true
+  fi
+  systemctl daemon-reload || true
+  systemctl restart argus-control-api.service || true
+  systemctl restart caddy.service || true
+  printf 'CONTROL_PLANE_ROLLED_BACK backup=%s publicExposureChanged=false\n' "$ROLLBACK_BACKUP" >&2
+  exit "$status"
+}
+
 apply_reconcile() {
   local backup_dir path
   preflight
@@ -53,8 +77,12 @@ apply_reconcile() {
   done
   [[ ! -f "$CADDY_DROPIN" ]] || cp --preserve=mode,ownership,timestamps "$CADDY_DROPIN" "$backup_dir/systemd/"
 
+  ROLLBACK_BACKUP="$backup_dir"
+  trap rollback_on_exit EXIT
+  # Same owner and mode as argus-m5-runtime-permissions: the API runs as
+  # argus-api and reaches these files through the argus-control group.
   chown "$API_USER:$API_GROUP" "${STATE_FILES[@]}"
-  chmod 0600 "${STATE_FILES[@]}"
+  chmod 0664 "${STATE_FILES[@]}"
 
   install -d -o root -g root -m 0755 "$CADDY_DROPIN_DIR"
   install -o root -g root -m 0644 "$ROOT/systemd/caddy.service.d/argus-tailnet-readiness.conf" "$CADDY_DROPIN"
@@ -67,6 +95,7 @@ apply_reconcile() {
   systemctl is-active --quiet argus-control-api.service || fail "control API is not active"
   systemctl is-active --quiet caddy.service || fail "Caddy is not active"
   curl --fail --silent --show-error http://127.0.0.1:8099/api/dashboard-state >/dev/null
+  trap - EXIT
   printf 'CONTROL_PLANE_RECONCILED backup=%s publicExposureChanged=false routesChanged=false workloadsChanged=false\n' "$backup_dir"
 }
 

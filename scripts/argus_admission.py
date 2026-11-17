@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from argus_access_state import AccessStateError, load_access
 from argus_state import Classification, StateError
 
 
@@ -55,12 +56,15 @@ MUTATING_OPERATIONS = {
     "migration.source-verify",
     "production.promote",
     "production.rollback",
+    "access.cloudflare-protected.apply",
+    "access.cloudflare-protected.rollback",
 }
 
 OBSERVATION_OPERATIONS = {
     "health.refresh",
     "logs.preview",
     "migration.preflight",
+    "access.cloudflare-protected.plan",
 }
 
 CAPABILITY_KEYS = {
@@ -86,6 +90,9 @@ CAPABILITY_KEYS = {
     "migration.source-verify": "migrationRollback",
     "production.promote": "productionPromote",
     "production.rollback": "productionRollback",
+    "access.cloudflare-protected.plan": "cloudflareProtectedPlan",
+    "access.cloudflare-protected.apply": "cloudflareProtectedApply",
+    "access.cloudflare-protected.rollback": "cloudflareProtectedRollback",
 }
 
 COMPATIBILITY_CAPABILITY_KEYS = {
@@ -169,6 +176,16 @@ def _load(path: Path) -> Any:
         raise AdmissionDataError(f"canonical dependency is invalid: {path.name}") from exc
 
 
+def _load_access(config: Path) -> Any:
+    """The merged D028 view, so the revision changes when the server-applied effective changes."""
+    if not (config / "access.json").is_file():
+        return None
+    try:
+        return load_access(config)
+    except AccessStateError as exc:
+        raise AdmissionDataError("canonical dependency is invalid: access.json") from exc
+
+
 def _list_record(items: Any, workload_id: str) -> dict[str, Any] | None:
     if not isinstance(items, list):
         return None
@@ -186,7 +203,7 @@ def canonical_records(root: Path, workload_id: str) -> dict[str, Any]:
     config = root / "config"
     workloads = _load(config / "workloads.json")
     policy = _load(config / "policy.json")
-    access = _load(config / "access.json")
+    access = _load_access(config)
     privacy = _load(config / "privacy.json")
     classification = _load(config / "argus" / "workload-classification.json")
     routes = _load(config / "routes.json")

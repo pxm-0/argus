@@ -7,8 +7,10 @@ import os
 from pathlib import Path
 import stat
 from types import SimpleNamespace
+import socket
 import tempfile
 import unittest
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -484,7 +486,7 @@ class RootlessGidRepairTest(unittest.TestCase):
             lambda _domain, _expected, missing, prepared: events.append(
                 ("start", set(missing))
             )
-            or prepared.add(ingress)
+            or prepared.update({ingress: (0, 0, 0o711)})
         )
         module.lock_ingress_directories = (
             lambda _domain, paths, *, require_socket: events.append(
@@ -551,9 +553,9 @@ class RootlessGidRepairTest(unittest.TestCase):
 
         module.container_state = state
         module.verified_ingress_directories = (
-            lambda _domain, containers: [ingress]
+            lambda _domain, containers: {ingress: (0, 0, 0o711)}
             if list(containers) == [ingress_container]
-            else []
+            else {}
         )
         module.prepare_ingress_directories = (
             lambda _domain, paths: events.append(("prepare", list(paths)))
@@ -567,7 +569,7 @@ class RootlessGidRepairTest(unittest.TestCase):
 
         module.run = start
         module.time.sleep = lambda _seconds: events.append(("wait",))
-        prepared = set()
+        prepared = {}
         try:
             module.start_missing_in_dependency_order(
                 "work-sandbox", expected, expected, prepared
@@ -588,7 +590,7 @@ class RootlessGidRepairTest(unittest.TestCase):
             events.index(("prepare", [ingress])),
             events.index(("start", ingress_container)),
         )
-        self.assertEqual({ingress}, prepared)
+        self.assertEqual({ingress: (0, 0, 0o711)}, prepared)
 
     def test_forward_recovery_revalidates_manifest_and_inventory(self) -> None:
         summary_path = Path("/state/repair-summary.json")
@@ -668,6 +670,131 @@ class RootlessGidRepairTest(unittest.TestCase):
         finally:
             module.text = original_text
             module.pwd.getpwnam = original_getpwnam
+
+    def verify_domain_ingress(self, domain: str, source: str, entries: dict):
+        """Run ingress verification against a synthetic lstat tree; domain uid/gid is 1004."""
+
+        def lstat(path):
+            if str(path) not in entries:
+                raise FileNotFoundError(path)
+            kind, uid, gid, mode = entries[str(path)]
+            return SimpleNamespace(st_uid=uid, st_gid=gid, st_mode=kind | mode)
+
+        mounts = [
+            {
+                "Type": "bind",
+                "Source": source,
+                "Destination": "/run/argus-ingress",
+                "RW": True,
+            }
+        ]
+        with mock.patch.object(
+            module, "text", lambda *_args, **_kwargs: json.dumps(mounts)
+        ), mock.patch.object(
+            module.pwd,
+            "getpwnam",
+            lambda _user: SimpleNamespace(pw_uid=1004, pw_gid=1004),
+        ), mock.patch.object(module.os, "lstat", lstat):
+            return module.verified_ingress_directories(domain, {"ingress"})
+
+    def managed_ingress_tree(self, **leaf) -> dict:
+        directory = stat.S_IFDIR
+        return {
+            "/var/lib/argus/managed-ingress": (directory, 0, 0, 0o711),
+            "/var/lib/argus/managed-ingress/nodens-production": (
+                leaf.get("kind", directory),
+                leaf.get("uid", 1004),
+                leaf.get("gid", 1004),
+                leaf.get("mode", 0o710),
+            ),
+            "/var/lib/argus/managed-ingress/nodens-production/upstream.sock": (
+                stat.S_IFSOCK,
+                1004,
+                1004,
+                0o666,
+            ),
+        }
+
+    def test_managed_ingress_bind_is_accepted_with_its_original_owner_and_mode(
+        self,
+    ) -> None:
+        source = "/var/lib/argus/managed-ingress/nodens-production"
+        self.assertEqual(
+            {Path(source): (1004, 1004, 0o710)},
+            self.verify_domain_ingress(
+                "personal-managed", source, self.managed_ingress_tree()
+            ),
+        )
+
+    def test_domain_ingress_bind_rejects_escapes_and_unsafe_directories(
+        self,
+    ) -> None:
+        production = "/var/lib/argus/managed-ingress/nodens-production"
+        cases = {
+            "production bind from a sandbox domain": (
+                "personal-sandbox", production, {}, "escapes"
+            ),
+            "nested below the workload directory": (
+                "personal-managed", f"{production}/nested", {}, "not an accepted"
+            ),
+            "parent traversal": (
+                "personal-managed",
+                "/var/lib/argus/managed-ingress/..",
+                {},
+                "not an accepted",
+            ),
+            "directory owned by the other sandbox domain": (
+                "personal-managed", production, {"uid": 1005}, "owner or mode"
+            ),
+            "group-writable directory": (
+                "personal-managed", production, {"mode": 0o770}, "owner or mode"
+            ),
+            "root-locked directory": (
+                "personal-managed",
+                production,
+                {"uid": 0, "gid": 0, "mode": 0o711},
+                "owner or mode",
+            ),
+            "symlinked workload directory": (
+                "personal-managed", production, {"kind": stat.S_IFLNK}, "owner or mode"
+            ),
+        }
+        for name, (domain, source, leaf, error) in cases.items():
+            with self.subTest(name):
+                with self.assertRaisesRegex(module.RepairError, error):
+                    self.verify_domain_ingress(
+                        domain, source, self.managed_ingress_tree(**leaf)
+                    )
+        tree = self.managed_ingress_tree()
+        tree["/var/lib/argus/managed-ingress"] = (stat.S_IFLNK, 0, 0, 0o777)
+        with self.assertRaisesRegex(module.RepairError, "boundary is unsafe"):
+            self.verify_domain_ingress("personal-managed", production, tree)
+
+    def test_restart_restores_the_recorded_ingress_owner_and_mode(self) -> None:
+        identity = SimpleNamespace(pw_uid=os.getuid(), pw_gid=os.getgid())
+        with tempfile.TemporaryDirectory() as temporary, mock.patch.object(
+            module.pwd, "getpwnam", lambda _user: identity
+        ):
+            directory = Path(temporary) / "nodens-production"
+            directory.mkdir()
+            os.chmod(directory, 0o710)
+            stale = socket.socket(socket.AF_UNIX)
+            try:
+                stale.bind(str(directory / "upstream.sock"))
+            finally:
+                stale.close()
+            original = {directory: (identity.pw_uid, identity.pw_gid, 0o710)}
+            module.prepare_ingress_directories("personal-managed", original)
+            self.assertFalse((directory / "upstream.sock").exists())
+            self.assertEqual(0o700, stat.S_IMODE(os.lstat(directory).st_mode))
+            module.lock_ingress_directories(
+                "personal-managed", original, require_socket=False
+            )
+            restored = os.lstat(directory)
+            self.assertEqual(
+                (identity.pw_uid, identity.pw_gid, 0o710),
+                (restored.st_uid, restored.st_gid, stat.S_IMODE(restored.st_mode)),
+            )
 
     def test_firewall_retries_one_transient_verifier_failure(self) -> None:
         calls = []

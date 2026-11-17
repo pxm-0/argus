@@ -1,0 +1,189 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+from argus_admission import evaluate_current
+from argus_cloudflare_activation import (
+    MODES,
+    activation_plan,
+    catch_all_config,
+    config_with_hostnames,
+    confirmation_phrase,
+    install_config,
+    lower_effective,
+    preflight_refusal,
+    reload_cloudflared,
+    set_effective,
+    stop_cloudflared,
+    write_evidence,
+)
+from argus_cloudflare_allowlist import IngressError, ingress_problems, probe_passes
+from argus_common import NoRedirectHandler, audit, load_json, now, regenerate_dashboard, root
+from argus_state import StateError
+
+
+AUTHENTICATED_CONFIRMATION = "authenticated session gets 200"
+
+
+def access_blocked(status: int, headers: Any) -> bool:
+    """True only when Cloudflare Access itself refused: a redirect to its login host, or a 401/403 it signed."""
+    if status in {301, 302, 303, 307, 308}:
+        host = urllib.parse.urlsplit(str(headers.get("Location", ""))).hostname or ""
+        return host.endswith(".cloudflareaccess.com")
+    if status in {401, 403}:
+        return any(str(name).lower().startswith("cf-access") for name in headers.keys())
+    return False
+
+
+def external_probe(url: str) -> dict[str, Any]:
+    # Redirects are not followed, so an Access login redirect is seen as such.
+    request = urllib.request.Request(url, method="GET", headers={"User-Agent": "argus-cloudflare-activation"})
+    opener = urllib.request.build_opener(NoRedirectHandler)
+    try:
+        with opener.open(request, timeout=8) as response:
+            return {"status": response.status, "accessBlocked": access_blocked(response.status, response.headers)}
+    except urllib.error.HTTPError as exc:
+        return {"status": exc.code, "accessBlocked": access_blocked(exc.code, exc.headers or {})}
+    except (urllib.error.URLError, OSError) as exc:
+        return {"status": "fail", "accessBlocked": False, "error": exc.__class__.__name__}
+
+
+def operator_confirms_authenticated(hostnames: tuple[str, ...]) -> bool:
+    """D027: the operator must see 200 on every hostname through an Access session before evidence is written."""
+    # Prompt on stderr so stdout stays the JSON result.
+    print(f"Open {', '.join('https://' + host for host in hostnames)} with your Cloudflare Access session.", file=sys.stderr)
+    print(f'Type "{AUTHENTICATED_CONFIRMATION}" once each answers 200:', file=sys.stderr, flush=True)
+    return sys.stdin.readline().strip() == AUTHENTICATED_CONFIRMATION
+
+
+def cut_back(config_path: Path, previous: str, *, no_reload: bool) -> dict[str, Any]:
+    """Undo a failed stage: restore the previous ingress, else serve only the 404 catch-all, else stop cloudflared."""
+    attempts: dict[str, Any] = {}
+    candidates = [("restore", previous or catch_all_config(previous)), ("catchAllOnly", catch_all_config(previous))]
+    for name, text in candidates:
+        installed = install_config(config_path, text)
+        reload_result = {"ok": True, "skipped": True} if no_reload or not installed["ok"] else reload_cloudflared()
+        attempts[name] = {"install": installed, "reload": reload_result}
+        if installed["ok"] and reload_result["ok"]:
+            return {**attempts, "trafficCut": True}
+    if no_reload:
+        return {**attempts, "trafficCut": False}
+    stopped = stop_cloudflared()
+    return {**attempts, "stop": stopped, "trafficCut": bool(stopped["ok"])}
+
+
+def refuse(workload_id: str, reason: str, **detail: Any) -> int:
+    audit("cloudflare.activate", workload_id, "blocked", reason=reason, **detail)
+    print(json.dumps({"ok": False, "reason": reason, **detail}, indent=2, sort_keys=True))
+    return 2
+
+
+def apply_stage(workload_id: str, state: str, evidence: dict[str, Any]) -> tuple[str, Path | None]:
+    """Apply the effective state, then write evidence; on any failure undo the state. Returns (failure, path)."""
+    try:
+        set_effective(workload_id, state, "argus-cloudflare-activate", evidence)
+    except (PermissionError, StateError) as exc:
+        return f"effective state not applied: {exc}", None
+    try:
+        return "", write_evidence(evidence)
+    except OSError as exc:
+        try:
+            lower_effective(workload_id, "argus-cloudflare-activate")
+        except (PermissionError, StateError) as lower_exc:
+            return f"activation evidence not written ({exc.__class__.__name__}) and effective state not lowered: {lower_exc}", None
+        return f"activation evidence not written: {exc.__class__.__name__}", None
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Activate an allowlisted Cloudflare named-tunnel route (D027).")
+    parser.add_argument("workload_id")
+    parser.add_argument("--mode", required=True, choices=sorted(MODES), help="protected first; public only after protected evidence.")
+    parser.add_argument("--confirm-workload", required=True)
+    parser.add_argument("--confirm-hostname", required=True)
+    parser.add_argument("--confirm-phrase", required=True, help="protected: the Access phrase; public: the policy publish phrase.")
+    parser.add_argument("--no-reload", action="store_true", help="Write and validate config without restarting cloudflared.")
+    args = parser.parse_args()
+
+    plan = activation_plan(args.workload_id, args.mode)
+    blockers = list(plan["blockers"])
+    admission = evaluate_current(root(), args.workload_id, "access.cloudflare-protected.apply")
+    if not admission.allowed:
+        blockers.append(admission.decision_code)
+    if args.confirm_workload != args.workload_id:
+        blockers.append("workload confirmation did not match")
+    if args.confirm_hostname != plan.get("hostname"):
+        blockers.append("hostname confirmation did not match")
+    phrase = confirmation_phrase(args.mode)
+    if not phrase or args.confirm_phrase != phrase:
+        blockers.append(f"{args.mode} confirmation phrase did not match")
+    # Check the state can be applied before anything goes live.
+    refusal = preflight_refusal(args.workload_id, str(plan["targetState"])) if not blockers else ""
+    if refusal:
+        blockers.append(f"effective state would be refused: {refusal}")
+    if blockers:
+        return refuse(args.workload_id, "activation blocked", blockers=blockers, mode=args.mode, hostname=plan.get("hostname", ""))
+
+    config_path = Path(str(plan["configPath"]))
+    try:
+        previous = config_path.read_text(encoding="utf-8") if config_path.exists() else ""
+    except OSError as exc:
+        return refuse(args.workload_id, "existing cloudflared config is unreadable", error=exc.__class__.__name__)
+    hostnames = tuple(plan["hostnames"])
+    try:
+        config_text = config_with_hostnames(previous, hostnames, hostnames, str(plan["service"]))
+    except IngressError as exc:
+        return refuse(args.workload_id, "existing cloudflared ingress is not flat Argus ingress", error=str(exc))
+    problems = ingress_problems(config_text, load_json("exposure.json"))
+    if problems:
+        return refuse(args.workload_id, "ingress would exceed the allowlist", problems=problems)
+    validation = install_config(config_path, config_text)
+    if not validation["ok"]:
+        return refuse(args.workload_id, "ingress validation failed", validation=validation)
+
+    reload_result = {"ok": True, "skipped": True} if args.no_reload else reload_cloudflared()
+    # Probe every published hostname: one Access app missing a hostname must not pass.
+    probes = {host: external_probe(f"https://{host}") for host in hostnames} if reload_result["ok"] else {}
+    evidence = {
+        "ok": True,
+        "workloadId": args.workload_id,
+        "mode": args.mode,
+        "hostname": plan["hostname"],
+        "hostnames": list(hostnames),
+        "configPath": str(config_path),
+        "validation": validation,
+        "reload": reload_result,
+        "unauthenticatedProbes": probes,
+        "authenticatedConfirmed": args.mode == "protected",
+        "recordedAt": now(),
+    }
+    evidence_path: Path | None = None
+    if not reload_result["ok"]:
+        failure = "cloudflared reload failed"
+    elif not all(probe_passes(args.mode, probe) for probe in probes.values()):
+        failure = f"unauthenticated probe did not match {args.mode} mode"
+    elif args.mode == "protected" and not operator_confirms_authenticated(hostnames):
+        failure = "operator did not confirm an authenticated 200 through Cloudflare Access"
+    else:
+        failure, evidence_path = apply_stage(args.workload_id, str(plan["targetState"]), evidence)
+    if failure:
+        cut = cut_back(config_path, previous, no_reload=args.no_reload)
+        if not cut["trafficCut"]:
+            failure += "; ALERT: traffic not cut, stop the cloudflared service now"
+        return refuse(args.workload_id, failure, reload=reload_result, probes=probes, cut=cut)
+
+    regenerate_dashboard(quiet=True)
+    audit("cloudflare.activate", args.workload_id, "ok", mode=args.mode, hostnames=list(hostnames), evidence=str(evidence_path))
+    print(json.dumps({**evidence, "evidencePath": str(evidence_path)}, indent=2, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

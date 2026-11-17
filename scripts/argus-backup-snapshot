@@ -105,6 +105,12 @@ def discover(root: Path, etc_dir: Path, state_dir: Path) -> tuple[list[tuple[str
     checkpoint = runtime / "audit-checkpoint.json"
     if checkpoint.is_file():
         files.append(("m1/audit-checkpoint.json", checkpoint))
+    overlay = root / "config" / "access.effective.json"
+    if overlay.is_file():
+        files.append(("m1/access.effective.json", overlay))
+    evidence = root / "runtime" / "cloudflare-activation"
+    for path in sorted(evidence.glob("*.json")) if evidence.is_dir() else []:
+        files.append((f"cloudflare-activation/{path.name}", path))
     if etc_dir.is_dir():
         for path in sorted(etc_dir.rglob("*")):
             if path.is_file() and not path.is_symlink():
@@ -468,7 +474,7 @@ def restore_plan(info: dict) -> str:
              "4. Keep current state: for each target below, mv <target> <target>.pre-restore.$(date -u +%Y%m%dT%H%M%SZ)",
              "5. Copy each staged member to its recorded source path (owner/mode preserved by tar --numeric-owner -p):"]
     for name, meta in sorted(manifest["members"].items()):
-        if name.startswith(("db/", "m1/", "etc-argus/")):
+        if name.startswith(("db/", "m1/", "etc-argus/", "cloudflare-activation/")):
             lines.append(f"     {name} -> {meta['source']}  (mode {meta['mode']:o}, uid {meta['uid']}, gid {meta['gid']})")
     lines += ["6. Restore firewall/serve only if they were the thing that broke: state/nft-ruleset.nft, state/tailscale-serve.json "
               "(see docs/RUNBOOKS/emergency-rollback.md).",

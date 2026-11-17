@@ -202,6 +202,47 @@ work-managed
 
 **Verification:** Inject crashes at every write, flush, rename, marker, snapshot, replay, cutover, and rollback boundary.
 
+### D027: Allow one public route, for the nodens website, through a named tunnel
+
+**Status:** Accepted 2026-11-15 by the operator. Partly supersedes the P0 hard rules in `CLAUDE.md` and `docs/PR_WORKFLOW.md` ("no Cloudflare tunnels, no DNS records, no public exposure"), for this route only.
+
+**Decision:** `nodens-production` (a static website with no accounts, forms or secrets) may be published at `nodens.dev`, with `www.nodens.dev` redirecting to it, through a Cloudflare named tunnel. Nothing else becomes public. In detail:
+
+- The route is enforced as an explicit allowlist (workload and hostname) in the exposure config and checked by policy, doctor, reconcile and smoke. Any workload or hostname not on it still fails closed.
+- It goes live in two stages: first behind Cloudflare Access limited to the operator (`cloudflare-protected`), and only after that is verified, `cloudflare-public`.
+- `nodens-staging`, the dashboard, the control API and every other workload stay tailnet-only.
+- Tailscale Funnel, Cloudflare Quick Tunnels, router port forwards and inbound listeners stay banned. The tunnel is outbound-only, and its ingress ends in a 404 catch-all.
+- Tunnel credentials stay on the server, outside Git.
+
+**Reason:** The site is meant to be public, and its canonical URL is already `https://nodens.dev`. A named tunnel publishes it without opening inbound ports and keeps origin access behind the existing per-workload ingress. A per-route allowlist keeps the default deny for everything else instead of weakening the gates globally.
+
+**Threat model and rollback:** `docs/NODENS_PUBLIC_ROUTE.md`.
+
+**Verification:**
+- `cloudflared tunnel ingress validate`, plus `ingress rule` checks showing that only the allowlisted hostnames match and everything else hits the catch-all.
+- A protected-stage probe answers 401/403 without an Access session and 200 with one. A public-stage probe answers 200.
+- doctor, reconcile and online smoke are green with the provider enabled.
+- Rollback is rehearsed by removing the ingress rule and confirming the hostname stops resolving to the site.
+
+### D028: Keep server-applied access state out of the reviewed access config
+
+**Status:** Accepted 2026-11-16 by the operator (PR-only desired access).
+
+**Decision:** `config/access.json` is reviewed config only. It is the sole home of `desired` and `urls`; its `effective`, `lastAppliedAt` and `lastError` are a reviewed baseline that is never a Cloudflare state. The server writes those three fields only into the ignored `config/access.effective.json`, through the M1 access writer, and every reader sees the baseline merged with that overlay. In detail:
+
+- The writer never writes `access.json` and never writes `desired`. The dashboard, API, CLI, domain agents and `argus-access-apply` may only re-apply the reviewed desired state; any other desired is refused with "desired access changes land through a reviewed pull request". There is no lower-only valve: lowering Cloudflare stays with `argus-cloudflare-rollback`, which lowers only the server effective.
+- A Cloudflare effective still needs allowlist, provider and evidence. A missing overlay gives the baseline; a malformed overlay makes every loader exit non-zero.
+- Doctor fails on a malformed overlay, a Cloudflare effective in the tracked baseline, unreadable activation evidence, and active protected-stage evidence without a Cloudflare effective (a lost overlay). It warns on overlay entries for untracked workloads.
+- `argus-access-reconcile --apply` no longer relabels state; it prints the rollback command.
+- The M1 journal checksums cover the overlay; the projection holds the merged view, so `m1 verify` parity is unchanged by the split.
+- The overlay and activation evidence are backed up; `argus-m5-runtime-permissions` sets the overlay to the `access.json` contract and evidence to 0644.
+
+**Reason:** The writer rewrote the tracked file on the server, so every activation or rollback left the deploy checkout dirty and a rollback silently rewrote the reviewed desired state. Keeping server state in an ignored overlay ends the dirty checkout, and refusing desired changes keeps Git the only source of desired access.
+
+**Consequences:** The public stage needs a PR that raises desired to `cloudflare-public` first. After a rollback, Git still says the old desired until a follow-up PR lowers it and disables the route. The one-time split of an existing dirty file is `docs/RUNBOOKS/access-effective-split.md`.
+
+**Verification:** `tests/test_argus_access_state.py`, `tests/test_argus_access_effective_migrate.py`, the writer crash-boundary tests in `tests/test_argus_state.py`, and the doctor, reconcile and activation overlay tests in `tests/test_argus_cloudflare_allowlist.py`.
+
 ## Viability Evidence
 
 Evidence was collected read-only from the primary host on 2026-07-14. Detailed output remains in the private task transcript and must be recollected under the server-required issue before it is used as acceptance evidence.

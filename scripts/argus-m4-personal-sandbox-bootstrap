@@ -25,10 +25,13 @@ readonly NFT_TABLE="argus_${CELL_DOMAIN//-/_}"
 readonly NFT_FILE="${ARGUS_DIR}/argus-${CELL_DOMAIN}.nft"
 readonly HOST_GUARD_TABLE="${NFT_TABLE}_host_guard"
 readonly HOST_GUARD_FILE="${ARGUS_DIR}/argus-${CELL_DOMAIN}-host-guard.nft"
+# Each domain owns its helpers: a shared prefix let one domain's bootstrap
+# overwrite another's netns/firewall helpers with its own domain baked in.
+# personal-sandbox keeps its original M4 name; work-sandbox already matches.
 if [[ "$CELL_DOMAIN" == personal-sandbox ]]; then
   readonly HELPER_PREFIX="argus-m4-personal-sandbox"
 else
-  readonly HELPER_PREFIX="argus-work-sandbox"
+  readonly HELPER_PREFIX="argus-${CELL_DOMAIN}"
 fi
 readonly HELPER="/usr/local/lib/argus/${HELPER_PREFIX}-netns"
 readonly FIREWALL_HELPER="/usr/local/lib/argus/${HELPER_PREFIX}-firewall"
@@ -787,6 +790,13 @@ for _ in {1..300}; do
   daemon_pid="\$(pgrep -u "$CELL_USER" -x dockerd 2>/dev/null || true)"
   if [[ -n "\$daemon_pid" && "\$daemon_pid" != *\$'\n'* ]]; then
     rootless_child_pid="\$(ps -o ppid= -p "\$daemon_pid" | tr -d ' ')"
+    # In detach-netns mode the child stays outside the containers' netns, so
+    # this policy would land on the wrong namespace. The unit pins it off.
+    if [[ -n "\$rootless_child_pid" ]] &&
+       tr '\0' ' ' < "/proc/\$rootless_child_pid/cmdline" 2>/dev/null | grep -F -- "--detach-netns" >/dev/null; then
+      echo "refusing success: RootlessKit runs in detach-netns mode" >&2
+      exit 1
+    fi
     if [[ -n "\$rootless_child_pid" ]] &&
        [[ "\$(stat -c %U "/proc/\$rootless_child_pid")" == "$CELL_USER" ]] &&
        tr '\0' ' ' < "/proc/\$rootless_child_pid/cmdline" | grep -F -- "--state-dir=$CELL_STORAGE/rootlesskit" >/dev/null &&
@@ -824,6 +834,9 @@ Environment=XDG_RUNTIME_DIR=$CELL_RUNTIME
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_NET=slirp4netns
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_PORT_DRIVER=none
 Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_STATE_DIR=$CELL_STORAGE/rootlesskit
+# The firewall helper applies policy in the RootlessKit child's netns, which is
+# the containers' netns only without detach-netns; never let the default flip.
+Environment=DOCKERD_ROOTLESS_ROOTLESSKIT_DETACH_NETNS=false
 Delegate=yes
 TasksMax=infinity
 # RootlessKit's detached network namespace is runtime state, not Docker data.

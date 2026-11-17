@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import json
 import sys
+import tempfile
 import threading
 import unittest
 import uuid
@@ -14,6 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "scripts"))
 
 import argus_cli_op  # noqa: E402
+import argus_totp  # noqa: E402
 from argus_api_client import ApiClient, ApiResponse, ApiUnavailable, normalize_base_url  # noqa: E402
 from argus_cli import run  # noqa: E402
 
@@ -21,6 +23,7 @@ TOKEN = "BOOTSTRAP-TOKEN-DO-NOT-LEAK-0123456789"
 DIGEST = "ab" * 32
 PHRASE = "deploy demo sha256:feed"
 OP_ID = str(uuid.uuid4())
+SECRET = "JBSWY3DPEHPK3PXP"
 
 
 class FakeApi(ThreadingHTTPServer):
@@ -34,6 +37,7 @@ class FakeApi(ThreadingHTTPServer):
         self.allowed = True
         self.states = ["queued", "running", "succeeded"]
         self.poll = 0
+        self.codes: list[str] = []  # totp sent with each exchange/step-up
 
 
 class FakeHandler(BaseHTTPRequestHandler):
@@ -81,6 +85,8 @@ class FakeHandler(BaseHTTPRequestHandler):
         if self.headers.get("Origin") != self.server.origin:
             self.reply(403, {"error": "trusted operator origin required"})
             return
+        if self.path in ("/api/session/exchange", "/api/session/step-up"):
+            self.server.codes.append(str(body.get("totp", "")))
         if self.path == "/api/session/exchange":
             if body.get("bootstrapToken") != TOKEN or len(self.headers.get("X-Argus-CSRF-Bootstrap", "")) < 32:
                 self.reply(401, {"error": "bootstrap credential required"})
@@ -181,9 +187,13 @@ class OpCommandTests(unittest.TestCase):
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
         self.addCleanup(self.server.server_close)
         self.addCleanup(self.server.shutdown)
-        patcher = mock.patch.object(argus_cli_op, "POLL_SECONDS", 0)
-        patcher.start()
-        self.addCleanup(patcher.stop)
+        for patcher in (
+            mock.patch.object(argus_cli_op, "POLL_SECONDS", 0),
+            mock.patch.object(argus_cli_op, "keychain_totp_secret", return_value=""),  # never the developer's real Keychain
+            mock.patch.object(argus_cli_op, "COUNTER_FILE", Path(self.enterContext(tempfile.TemporaryDirectory())) / "argus" / "totp-last-counter"),
+        ):
+            patcher.start()
+            self.addCleanup(patcher.stop)
 
     def invoke(self, argv: list[str], tty: FakeTty | None) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -327,6 +337,104 @@ class OpCommandTests(unittest.TestCase):
             captured += repr(exc) + str(exc)
         captured += "".join(path + headers for _, path, headers in self.server.requests)
         self.assertNotIn(TOKEN, captured)
+
+
+class FakeClock:
+    """Stands in for argus_cli_op's time module: sleep advances the wall clock."""
+
+    def __init__(self, now: float) -> None:
+        self.now = now
+        self.slept: list[float] = []
+
+    def time(self) -> float:
+        return self.now
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.slept.append(seconds)
+        self.now += seconds
+
+
+class KeychainCodeTests(unittest.TestCase):
+    """The authenticator code comes from the Keychain secret; only the bootstrap token is typed."""
+
+    setUp = OpCommandTests.setUp
+    invoke = OpCommandTests.invoke
+
+    def invoke_with(self, secret: str, argv: list[str], tty: FakeTty, clock: FakeClock) -> tuple[int, str, str]:
+        with mock.patch.object(argus_cli_op, "keychain_totp_secret", return_value=secret), mock.patch.object(argus_cli_op, "time", clock):
+            return self.invoke(argv, tty)
+
+    def test_create_sends_keychain_codes_and_never_prompts_for_one(self) -> None:
+        clock = FakeClock(1_800_000_010.0)
+        tty = FakeTty()
+        with mock.patch.object(FakeTty, "read_secret", autospec=True, side_effect=lambda self, prompt: self.secrets_asked.append(prompt) or TOKEN):
+            code, out, _ = self.invoke_with(SECRET, ["op", "create", "demo", "deploy", "--yes-digest", DIGEST], tty, clock)
+        self.assertEqual(0, code, out)
+        self.assertFalse([p for p in tty.secrets_asked if "Authenticator" in p], tty.secrets_asked)
+        first = argus_totp.counter_at(1_800_000_010.0)
+        # Step-up in the same window waits for the next code instead of reusing the spent one.
+        self.assertEqual([argus_totp.hotp(SECRET, first), argus_totp.hotp(SECRET, first + 1)], self.server.codes)
+        self.assertEqual([20.5], [s for s in clock.slept if s])  # 10 s into the window: wait out the other 20 s
+        self.assertIn("Waiting", tty.output)
+
+    def test_next_run_in_the_same_window_waits_instead_of_resending_a_spent_code(self) -> None:
+        clock = FakeClock(1_800_000_010.0)
+        first = argus_totp.counter_at(clock.now)
+        self.assertEqual(0, self.invoke_with(SECRET, ["op", "show", OP_ID], FakeTty(), clock)[0])
+        self.assertEqual(str(first), argus_cli_op.COUNTER_FILE.read_text().strip())
+        tty = FakeTty()
+        self.assertEqual(0, self.invoke_with(SECRET, ["op", "show", OP_ID], tty, clock)[0])
+        self.assertEqual([argus_totp.hotp(SECRET, first), argus_totp.hotp(SECRET, first + 1)], self.server.codes)
+        self.assertIn("Waiting", tty.output)
+
+    def test_recorded_counter_far_ahead_of_the_clock_is_ignored(self) -> None:
+        clock = FakeClock(1_800_000_010.0)
+        now = argus_totp.counter_at(clock.now)
+        argus_cli_op.COUNTER_FILE.parent.mkdir(parents=True)
+        argus_cli_op.COUNTER_FILE.write_text(f"{now + 1000}\n")
+        self.assertEqual(0, self.invoke_with(SECRET, ["op", "show", OP_ID], FakeTty(), clock)[0])
+        self.assertEqual([argus_totp.hotp(SECRET, now)], self.server.codes)
+        self.assertEqual([], [s for s in clock.slept if s])
+
+    def test_missing_keychain_item_falls_back_to_the_prompt(self) -> None:
+        tty = FakeTty()
+        with mock.patch.object(FakeTty, "read_secret", autospec=True, side_effect=lambda self, prompt: self.secrets_asked.append(prompt) or ("" if "Authenticator" in prompt else TOKEN)):
+            code, out, _ = self.invoke_with("", ["op", "show", OP_ID], tty, FakeClock(1_800_000_010.0))
+        self.assertEqual(0, code, out)
+        self.assertTrue([p for p in tty.secrets_asked if "Authenticator" in p])
+
+    def test_invalid_keychain_secret_stops_before_any_request(self) -> None:
+        code, out, _ = self.invoke_with("not base32!", ["op", "show", OP_ID], FakeTty(), FakeClock(1_800_000_010.0))
+        self.assertEqual(2, code, out)
+        self.assertEqual("op-exchange-keychain-invalid", json.loads(out)["error"]["code"])
+        self.assertEqual([], self.server.requests)
+
+
+class KeychainLookupTests(unittest.TestCase):
+    def run_security(self, returncode: int, stdout: str = "") -> tuple[str, str]:
+        stderr = io.StringIO()
+        result = mock.Mock(returncode=returncode, stdout=stdout)
+        with mock.patch.object(argus_cli_op.sys, "platform", "darwin"), mock.patch.object(argus_cli_op.subprocess, "run", return_value=result) as run_mock, mock.patch.object(argus_cli_op.sys, "stderr", stderr):
+            secret = argus_cli_op.keychain_totp_secret()
+        self.assertEqual(["/usr/bin/security", "find-generic-password", "-s", "argus-totp", "-w"], run_mock.call_args.args[0])
+        return secret, stderr.getvalue()
+
+    def test_found_item_returns_the_secret(self) -> None:
+        self.assertEqual((SECRET, ""), self.run_security(0, SECRET + "\n"))
+
+    def test_missing_item_is_quiet_and_other_failures_are_reported(self) -> None:
+        self.assertEqual(("", ""), self.run_security(44))
+        secret, warning = self.run_security(51)
+        self.assertEqual("", secret)
+        self.assertIn("security exit 51", warning)
+
+    def test_other_platforms_never_call_security(self) -> None:
+        with mock.patch.object(argus_cli_op.sys, "platform", "linux"), mock.patch.object(argus_cli_op.subprocess, "run") as run_mock:
+            self.assertEqual("", argus_cli_op.keychain_totp_secret())
+        run_mock.assert_not_called()
 
 
 if __name__ == "__main__":
