@@ -337,6 +337,7 @@ def dashboard_state() -> dict[str, Any]:
         )
 
     return {
+        "generatedAt": now(),
         "workloads": merged,
         "privacyStates": privacy["states"],
         "accessStates": access["states"],

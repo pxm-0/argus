@@ -27,6 +27,16 @@ The routine workload row contains identity, trust domain, health, effective acce
 | Operation | Queued, Approval required, Running, Succeeded, Failed safe, Indeterminate, Recovery required |
 | Privacy | Unclassified, Internal, Sensitive, Restricted |
 
+Health maps `ok: true` to Healthy, `ok: false` to Down, and anything else to Unknown with the reason (check configured but not observed, or no check). No health source reports Degraded yet. Down rows sort first and carry a red edge plus the Down label.
+
+Freshness: health evidence is Stale after 15 minutes (three missed runs of `argus-typed-health.timer`); the dashboard state itself is Stale after 90 seconds (three missed 30-second state polls) or when it reports no `generatedAt`. Never observed means no timestamp was recorded.
+
+## What is broken
+
+The Exceptions tile counts, and names under the number: open `page`/`critical` alerts, workloads whose last health check failed, access drift, unclassified workloads, no domain agent available while workloads exist, and estate evidence that is Empty, Conflict, or Error. It turns red above zero and reads "None open" at zero.
+
+The topbar always shows the dashboard state badge (Fresh, Stale, Unavailable) with "State as of" time and age, including while a workload is open. State re-polls every 30 seconds (slower in a hidden tab). Auto-refresh pauses, and says so, while admin mode is on, a workload detail is open, or a dashboard field holds input, so a refresh never discards typed confirmations. If a load fails, a "State unavailable" alert with Retry appears; previously loaded data stays visible and marked Unavailable, and with no prior state every panel says "Unavailable" instead of loading.
+
 ## State and responsive contracts
 
 The fixture-backed prototype covers loading, empty, error, partial, stale, conflict, and success for overview, workload detail, and estate coverage. Fixture fields are illustrative and must not be imported as API or repository schemas.
