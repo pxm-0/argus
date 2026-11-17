@@ -7,12 +7,13 @@ import argparse
 import hashlib
 import json
 import os
-import platform
 import subprocess
 import sys
 import time
 from pathlib import Path
 from typing import Any
+
+from argus_common import expected_server_host, on_expected_server_host
 
 
 STATES = {"loading", "empty", "error", "partial", "stale", "conflict", "complete"}
@@ -26,8 +27,8 @@ def digest(payload: Any) -> str:
 
 def validate(root: Path, target: str) -> dict[str, Any]:
     if target == "browser-private-origin":
-        if platform.node().split(".", 1)[0] != "oreochiserver":
-            raise ValueError("browser-private-origin acceptance must run on oreochiserver")
+        if not on_expected_server_host():
+            raise ValueError(f"browser-private-origin acceptance must run on {expected_server_host()}")
         revision = subprocess.run(["git", "-C", str(root), "rev-parse", "HEAD"], text=True, capture_output=True, check=True).stdout.strip()
         clean = not subprocess.run(["git", "-C", str(root), "status", "--porcelain", "--untracked-files=all"], text=True, capture_output=True, check=True).stdout
         if revision != os.environ.get("ARGUS_D6_SOURCE_REVISION") or not clean:
