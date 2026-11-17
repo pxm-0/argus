@@ -1,17 +1,33 @@
 # Dashboard Action Safety
 
-P2 adds a structured action layer for private dashboard operations.
+P2 added a structured action layer for private dashboard operations. The
+dashboard and `argus op` now use the typed operations API (served by
+`control-plane/api/server.py`; full contract in
+[`ARGUS_M5_OPERATIONS_CONTROL_PLANE.md`](ARGUS_M5_OPERATIONS_CONTROL_PLANE.md)):
 
 ## Endpoints
 
 ```text
-GET  /api/actions
+GET  /api/workloads/<id>/operations
+POST /api/workloads/<id>/operations/preview
+POST /api/workloads/<id>/operations
+POST /api/operations/<operation-id>/approve
+POST /api/operations/<operation-id>/cancel
+```
+
+The original P2 per-action routes remain only as compatibility shims that map
+onto the typed operations (`logs.preview`, `workload.restart`,
+`backup.create`):
+
+```text
 POST /api/workloads/<id>/logs/preview
 POST /api/workloads/<id>/restart/preview
 POST /api/workloads/<id>/restart/apply
 POST /api/workloads/<id>/backup/preview
 POST /api/workloads/<id>/backup/apply
 ```
+
+There is no action-listing endpoint; `GET /api/actions` returns 404.
 
 All `POST` endpoints require:
 
