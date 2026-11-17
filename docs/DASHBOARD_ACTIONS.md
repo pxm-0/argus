@@ -35,6 +35,21 @@ each attempt and are never stored in browser storage. After
 5 failures in 5 minutes the API answers 429 with `Retry-After` for 15 minutes;
 see `docs/RUNBOOKS/operator-session-diagnosis.md`.
 
+In the terminal, `argus op` on macOS reads the authenticator secret from the
+login Keychain item `argus-totp` and sends the codes itself, so only the
+bootstrap token is typed. It records the last code counter it sent in
+`~/Library/Caches/argus/totp-last-counter` and waits for the next 30 s code
+rather than resend a spent one, within a run or across runs. Store
+the base32 secret from `argus keys totp-enroll` (the `secret=` value of the
+`otpauth://` URI) with `security add-generic-password -s argus-totp -a <login> -T "" -w`,
+which prompts for it. `-T ""` trusts no app, so macOS asks once per run before
+handing the secret over; choose "Allow", not "Always Allow". Without it,
+`security` is trusted and any process running as you can read the secret
+silently. With no item the CLI asks for the code as before. This
+deliberately puts the second factor on the Mac, against the enrolment hint to keep
+it on another device; the API still requires the owner's tailnet identity and the
+bootstrap token.
+
 ## Response Rules
 
 Action responses are structured JSON. They include operation class names such as `docker-compose-restart` or `argus-backup-run`, but they do not expose raw shell command strings.
