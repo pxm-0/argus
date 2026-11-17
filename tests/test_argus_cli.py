@@ -941,7 +941,8 @@ class StableCliContractTests(unittest.TestCase):
         for path in documents:
             spans = re.findall(r"`([^`\n]+)`", path.read_text()) + path.read_text().splitlines()
             for span in spans:
-                match = re.search(r"(?:^|[\s/])argus ((?:[a-z0-9|-]+|--[a-z-]+)(?: (?:[a-z0-9|-]+|--[a-z-]+))*)", span)
+                # scripts/ and bin/ prefixes only: `git -C /srv/argus status` names the checkout, not the CLI.
+                match = re.search(r"(?:^|\s|(?:scripts|bin)/)argus ((?:[a-z0-9|-]+|--[a-z-]+)(?: (?:[a-z0-9|-]+|--[a-z-]+))*)", span)
                 if not match or not re.match(r"(?:dashboard|estate|workload|operation|op|keys|doctor|check|release|promote|m1|smoke|backup|alerts|status)\b", match.group(1)):
                     continue
                 problem = walk(build_parser(), match.group(1).split())
