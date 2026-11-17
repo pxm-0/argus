@@ -1,5 +1,15 @@
 #!/usr/bin/env python3
-from argus_cli import main
+import sys
+
+if sys.version_info < (3, 14):
+    found = ".".join(str(part) for part in sys.version_info[:3])
+    sys.stderr.write(
+        f"ERROR unsupported-python: Argus needs Python 3.14 or newer (found {found}).\n"
+        "NEXT Run it with the mise-managed interpreter: mise exec python@3.14 -- argus ...\n"
+    )
+    raise SystemExit(2)
+
+from argus_cli import main  # noqa: E402
 
 
 if __name__ == "__main__":

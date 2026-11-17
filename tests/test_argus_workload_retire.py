@@ -41,7 +41,7 @@ class FakeRunner:
             out = "https://github.com/pxm-0/argus/pull/999\n"
         elif command[:3] == ["git", "rev-parse", "HEAD"] or command[:3] == ["git", "rev-parse", "origin/main"]:
             out = self.head
-        rc = self.check_rc if command[0].endswith("argus-check") else 0
+        rc = self.check_rc if command[-1].endswith("argus-check") else 0
         if command[:3] == ["git", "rev-parse", "--verify"]:
             rc = 0 if self.branch_exists else 1
         if command[:3] == ["gh", "pr", "create"] and self.noisy_url:
@@ -90,7 +90,7 @@ class WorkloadRetireTests(unittest.TestCase):
         self.assertIn("Gone Retirement", (r / "docs/RETIRED_GONE.md").read_text())
         self.assertEqual(result["data"]["prUrl"], "https://github.com/pxm-0/argus/pull/999")
         self.assertEqual(result["data"]["textReferencesToReview"], {"docs/NOTES.md": 1})
-        self.assertTrue(any(c[0].endswith("argus-check") for c in runner.calls))
+        self.assertTrue(any(c[:1] == [sys.executable] and c[-1].endswith("argus-check") for c in runner.calls))
         self.assertIn(["gh", "pr", "comment"], [c[:3] for c in runner.calls])
 
     def test_dry_run_writes_nothing_and_prints_runbook(self) -> None:
@@ -124,6 +124,7 @@ class WorkloadRetireTests(unittest.TestCase):
             self.assertEqual(code, 3)
             self.assertFalse(result["ok"])
             self.assertEqual(before, self.snapshot())
+        self.assertEqual("workload-not-found", self.invoke(FakeRunner(self.root), "nope")[1]["error"]["code"])
 
     def test_invalid_id_is_refused(self) -> None:
         code, result = self.invoke(FakeRunner(self.root), "../x")

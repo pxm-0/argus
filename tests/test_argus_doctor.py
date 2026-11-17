@@ -54,7 +54,7 @@ class DoctorBoundaryAuditTests(unittest.TestCase):
 
         self.assertEqual(1, len(calls))
         self.assertEqual(
-            ["/usr/sbin/runuser", "-u", "oreo", "--", str(ROOT / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"],
+            ["/usr/sbin/runuser", "-u", "oreo", "--", sys.executable, str(ROOT / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"],
             calls[0],
         )
         self.assertTrue(checks[0]["ok"])
@@ -73,7 +73,7 @@ class DoctorBoundaryAuditTests(unittest.TestCase):
             checks: list[dict[str, object]] = []
             self.core_boundary_check(checks)
 
-        self.assertEqual([[str(ROOT / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]], calls)
+        self.assertEqual([[sys.executable, str(ROOT / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]], calls)
         self.assertTrue(checks[0]["ok"])
 
 
