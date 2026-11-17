@@ -20,7 +20,7 @@ Rendered by `scripts/argus-sudoers-render` (`--check` fails when the committed f
 - `ARGUS_SCRIPTS` (tag `EXEC`): `argus-image-import --domain <d> --image *`, `argus-backup-snapshot`
   (no args, `--list`, `--verify *`, `--restore-plan *`), `argus-sandbox-firewall --domain <d> --plan|--verify|--probe`,
   `argus m1 sync|verify`, and `argus-promote-evidence --workload <staging> --image *` (read-only; what
-  `argus release promote` runs over ssh). Each script validates its own arguments (image allowlist and digest,
+  `argus promote` runs over ssh). Each script validates its own arguments (image allowlist and digest,
   image id, trust domain). `argus-release-install` is **not** here: it publishes the code every other entry runs as
   root, so it stays root-shell only (see Residual risk).
 - `ARGUS_SYSTEMCTL`: `restart` of named daemons only, `start argus-smoke|argus-estate-refresh|argus-backup-snapshot.service`,
@@ -31,7 +31,7 @@ Rendered by `scripts/argus-sudoers-render` (`--check` fails when the committed f
 
 Excluded on purpose: the one-time M5 cutover tools, `python3`, `bash`, `cp`, `mv`, `sed`, `tee`,
 `install`, `docker`, and any `systemctl enable|stop|edit|link`. The yog-sothoth entries
-(`/etc/sudoers.d/oreo-yog-sothoth`) are left untouched by decision and show as a warning in `argus doctor --host`.
+(`/etc/sudoers.d/oreo-yog-sothoth`) are left untouched by decision and show as a warning in `scripts/argus-doctor --host`.
 
 The server runs **sudo-rs**, not classic sudo. It accepts only exact argument words or a lone `*`, and it has no
 `log_output`; the rendered file stays inside that subset (`--log-output` exists for classic sudo only, and is not
@@ -42,7 +42,7 @@ used here). Always validate with the server's own `visudo`.
 1. The release path is live: `root-owned-release.md` is applied and `/opt/argus/current` exists.
 2. Open **two** root sessions (console, `ssh root@...`, or `su -`) and keep both until the last step.
    If the only way to get root is `sudo`, stop: you would lock yourself out.
-3. On the Mac, set `ARGUS_REMOTE_REPO=/opt/argus/current` for `argus release pin|import|promote`
+3. On the Mac, set `ARGUS_REMOTE_REPO=/opt/argus/current` for `argus release pin|import` and `argus promote`
    (they call `sudo -n $ARGUS_REMOTE_REPO/scripts/argus-image-import` and `.../argus-promote-evidence`).
 4. Decide which one-time M5 tools you still need. They will need the break-glass path.
 5. Docker consumers: the override drop-ins from `root-owned-release.md` include
@@ -92,7 +92,7 @@ sudo -n /opt/argus/current/scripts/argus-image-import --domain personal-sandbox 
 sudo -n /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image sha256:<image-id>
 ```
 
-From the Mac, `argus release promote nodens-staging nodens-production --dry-run` must still find its evidence
+From the Mac, `argus promote nodens-staging nodens-production --dry-run` must still find its evidence
 (it uses the last command over ssh, and fails with `promote-evidence-unavailable` otherwise).
 
 A snapshot, a restart and an image-import dry path must all succeed before you continue. The negative cases can only
@@ -100,7 +100,7 @@ be proven after the broad grant is gone (next step).
 
 ## Remove the broad grant (root shell A), last
 
-Only when every test passed and `argus doctor --host` shows no failing `sudoers` or `ExecStart` line:
+Only when every test passed and `sudo /opt/argus/current/scripts/argus-doctor --host` shows no failing `sudoers` or `ExecStart` line:
 
 ```bash
 rm /etc/sudoers.d/90-codex-nopasswd
@@ -162,7 +162,7 @@ Groups: `gpasswd -a oreo docker` and `gpasswd -a oreo lxd`, then log in again. T
    `systemctl enable *`, `start *`, `restart *` (for example `sudo systemctl enable --now /home/oreo/x.service` runs
    an `oreo`-written unit as root; `noexec` does not help), `psql -U postgres *` and `psql *` as postgres, `systemd-creds`,
    and `install -m 0644 /home/oreo/yog-sothoth/.../yog-sothoth.service /etc/systemd/system/` (an `oreo`-owned file
-   becomes a root unit). `argus doctor --host` reports it as `ROOT-EQUIVALENT`. A refused `sudo -n bash` is not
+   becomes a root unit). `scripts/argus-doctor --host` reports it as `ROOT-EQUIVALENT`. A refused `sudo -n bash` is not
    proof of containment while this file exists. Follow-up: replace the wildcards with exact
    `yog-sothoth.service` lines (and drop `psql`/`systemd-creds` or pin their arguments).
 2. `oreo` is in the `sudo` group and has a password set; `/etc/sudoers` has `%sudo ALL=(ALL:ALL) ALL`. Anything that

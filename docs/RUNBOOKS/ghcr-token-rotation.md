@@ -7,9 +7,9 @@ GHCR packages). It is stored only in `/etc/argus/registry/.docker/config.json` (
 
 <!-- sudoers: root-shell-runbook (rotation happens in a root shell; the token never touches a command line or an edited file) -->
 
-`argus doctor --host` has a `ghcr-credential` check: the file is a root-owned regular file, 0600, in a root-owned
+`scripts/argus-doctor --host` has a `ghcr-credential` check: the file is a root-owned regular file, 0600, in a root-owned
 non-writable directory; `auths` holds `ghcr.io` only; token age (from `/var/lib/argus/ghcr-token-rotated`) warns at
-75 days and fails at 90; `argus doctor --host --online` also asks GitHub for the token's scopes and fails unless they
+75 days and fails at 90; `scripts/argus-doctor --host --online` also asks GitHub for the token's scopes and fails unless they
 are exactly `read:packages`.
 
 ## Rotate

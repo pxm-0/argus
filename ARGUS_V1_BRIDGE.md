@@ -1118,7 +1118,10 @@ Argus has two user-facing views implemented as three deployments.
 
 The current generated dashboard becomes the private operator view. It stays Tailscale-bound, reads live Argus state, and retains authenticated preview, apply, monitoring, backup, restart, access, and audit operations.
 
-The operator includes:
+The operator includes the views below. These are target scope, not all delivered: the current
+generated dashboard has Overview, Workloads and Coverage (with a trust-domain coverage map and
+access drift) plus the Monitor panel. The Project, Environment and Rebuildability views are planned.
+Track delivery in the `docs/ARGUS_V1_DECISIONS.md` ledger and its GitHub items.
 
 ### Estate
 
@@ -1672,6 +1675,8 @@ Argus V1 is complete when:
 - Break-glass recovery is separately authorized, pre-audited, and cannot bypass non-waivable isolation or exposure rules.
 
 ### Interface
+
+Target scope: the project and environment views below are planned and do not exist yet; see the delivery ledger for the rest.
 
 - The current workload operations dashboard can be generated from Argus state.
 - A project view shows environments and services.

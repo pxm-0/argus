@@ -77,8 +77,9 @@ sudo journalctl --no-pager -n 200 -u argus-domain-agent@personal-sandbox.service
 ```
 
 Check `systemctl list-units 'argus-*'` for failed units before moving on. If an
-operation is stuck, use `argus operation show <id>` and
-`argus operation recover <id>`.
+operation is stuck, use `argus operation list` and `argus operation show <id>`.
+There is no generic recovery command; follow the typed recovery runbook named
+by the operation.
 
 ## 4. M1 store corruption
 

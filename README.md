@@ -8,7 +8,8 @@ P0 is not a public hosting platform. P0 is the minimum safe foundation:
 - Git-tracked platform configuration
 - neutral workload registry
 - dashboard-visible privacy and access states
-- authenticated dashboard toggles for privacy and desired access
+- authenticated dashboard preview/apply for desired access (privacy is changed by
+  reviewed config with `scripts/argus-privacy-set`; the dashboard shows it read-only)
 - read-only workload health/status commands
 - btop-style monitoring panel behind a dashboard toggle
 - workload migration planning into `/srv/argus/workloads/<id>`
