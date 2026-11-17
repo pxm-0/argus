@@ -369,14 +369,14 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
     for action, purpose in (("pin", "Import an image digest and open a PR pinning it."),
                             ("import", "Import an image digest into the workload's trust domain.")):
         pin = action == "pin"
-        item = leaf(sub, action, help_text=purpose, contract=description(
+        item = leaf(sub, action, help_text=purpose[0].lower() + purpose[1:].rstrip("."), contract=description(
             purpose, "server mutation", "ARGUS_SSH_HOST reachable, passwordless sudo -n on the server importer" + (", gh logged in, clean checkout" if pin else ""),
             "image loaded in the trust domain" + ("; branch and PR" if pin else ""), "image ID" + (" and PR URL" if pin else ""),
             f"argus release {action} nodens-staging --image ghcr.io/pxm-0/nodens@sha256:<digest>", "retry; imports are idempotent. Never deploys", "reviewed configuration and the server image importer over SSH"))
         item.add_argument("workload_id")
         item.add_argument("--image", required=True, help="ghcr.io/pxm-0/<name>@sha256:<digest>")
         if pin:
-            item.add_argument("--dry-run", action="store_true", help="print the diff only; no import, branch or PR")
+            item.add_argument("--dry-run", action="store_true", help="preview only: print the diff; no import, branch or PR")
     item = leaf(commands, "promote", help_text="promote the staging pin to production through a PR", contract=description(
         "Promote the staging image pin to production.", "server mutation",
         "promotesTo registered, staging deploy evidence, compose files differing only in name/ingress path/bridge name/secret refs",
@@ -384,7 +384,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
         "fix the named refusal and retry. Never deploys", "reviewed configuration, staging deploy evidence, and the server image importer over SSH"))
     item.add_argument("staging_id")
     item.add_argument("production_id")
-    item.add_argument("--dry-run", action="store_true", help="print the diff only; no import, branch or PR")
+    item.add_argument("--dry-run", action="store_true", help="preview only: print the diff; no import, branch or PR")
     item.add_argument("--skip-evidence-check", action="store_true", help="skip the staging deploy evidence lookup")
 
 
