@@ -14,6 +14,7 @@ import json
 import os
 import re
 import sqlite3
+import sys
 from pathlib import Path
 from typing import Any, Callable
 
@@ -138,7 +139,7 @@ def load_registry(repo: Path) -> dict[str, dict[str, Any]]:
 def workload_context(repo: Path, workload_id: str) -> dict[str, Any]:
     item = load_registry(repo).get(workload_id)
     if item is None:
-        raise ReleaseError("workload-unknown", "The workload is not in the registry.", "Run argus workload list.", EXIT_INVOCATION)
+        raise ReleaseError("workload-not-found", "The requested workload is not in the canonical registry.", "Run argus workload list and retry with an exact workload ID.", EXIT_REFUSAL)
     domain = str(item.get("migration", {}).get("targetTrustDomain", ""))
     service = str(item.get("runtime", {}).get("service", ""))
     compose = repo / "workloads" / workload_id / "source" / "compose.yml"
@@ -243,7 +244,7 @@ def open_pr(repo: Path, runner: Runner, branch: str, path: Path, new_text: str, 
         raise ReleaseError("worktree-dirty", "The working tree has uncommitted changes.", "Commit or stash them, then retry.")
     path.write_text(new_text, encoding="utf-8")
     try:
-        if runner([str(repo / "scripts" / "argus-check")], repo).returncode != 0:
+        if runner([sys.executable, str(repo / "scripts" / "argus-check")], repo).returncode != 0:
             raise ReleaseError("repository-check-failed", "argus check failed after the pin edit; nothing was committed.",
                                "Run ./scripts/argus-check and fix the first named failure.", EXIT_INTERNAL)
         git(repo, runner, "switch", "-c", branch)
@@ -371,7 +372,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
         item = leaf(sub, action, help_text=purpose, contract=description(
             purpose, "server mutation", "ARGUS_SSH_HOST reachable, passwordless sudo -n on the server importer" + (", gh logged in, clean checkout" if pin else ""),
             "image loaded in the trust domain" + ("; branch and PR" if pin else ""), "image ID" + (" and PR URL" if pin else ""),
-            f"argus release {action} nodens-staging --image ghcr.io/pxm-0/nodens@sha256:<digest>", "retry; imports are idempotent. Never deploys"))
+            f"argus release {action} nodens-staging --image ghcr.io/pxm-0/nodens@sha256:<digest>", "retry; imports are idempotent. Never deploys", "reviewed configuration and the server image importer over SSH"))
         item.add_argument("workload_id")
         item.add_argument("--image", required=True, help="ghcr.io/pxm-0/<name>@sha256:<digest>")
         if pin:
@@ -380,7 +381,7 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
         "Promote the staging image pin to production.", "server mutation",
         "promotesTo registered, staging deploy evidence, compose files differing only in name/ingress path/bridge name/secret refs",
         "image loaded in the production domain; branch and PR", "image ID and PR URL", "argus promote nodens-staging nodens-production",
-        "fix the named refusal and retry. Never deploys"))
+        "fix the named refusal and retry. Never deploys", "reviewed configuration, staging deploy evidence, and the server image importer over SSH"))
     item.add_argument("staging_id")
     item.add_argument("production_id")
     item.add_argument("--dry-run", action="store_true", help="print the diff only; no import, branch or PR")

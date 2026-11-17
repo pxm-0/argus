@@ -466,11 +466,12 @@ class CliAlertsTest(unittest.TestCase):
     def test_smoke_status_with_history_and_missing_evidence(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
-            code, _, error = self.invoke(repo, ["smoke", "status", "--json"])
+            code, output, _ = self.invoke(repo, ["smoke", "status", "--json"])
             self.assertEqual(4, code)
+            self.assertTrue(json.loads(output)["error"]["retrySafe"])
             smoke = repo / "runtime" / "smoke"
             smoke.mkdir(parents=True)
-            (smoke / "latest.json").write_text(json.dumps({"ok": False, "timestamp": alerting.iso(time_now() - 2 * HOUR), "failures": 4, "warnings": 0, "exitCode": 1}))
+            (smoke / "latest.json").write_text(json.dumps({"ok": True, "timestamp": alerting.iso(time_now() - 2 * HOUR), "failures": 0, "warnings": 0, "exitCode": 0}))
             rows = [{"timestamp": alerting.iso(time_now() - 3 * HOUR), "ok": True, "failedChecks": []}, {"timestamp": alerting.iso(time_now() - 2 * HOUR), "ok": False, "failedChecks": ["FAIL tracked secrets check ran"]}]
             (smoke / "smoke-history.jsonl").write_text("\n".join(json.dumps(r) for r in rows) + "\nnot json\n")
             code, output, _ = self.invoke(repo, ["smoke", "status", "--last", "1", "--json"])
@@ -479,7 +480,21 @@ class CliAlertsTest(unittest.TestCase):
             self.assertFalse(data["stale"])
             self.assertEqual(1, data["historyShown"])
             self.assertEqual(["FAIL tracked secrets check ran"], data["history"][0]["failedChecks"])
-            self.assertEqual(2, self.invoke(repo, ["smoke", "status", "--last", "0", "--json"])[0])
+            code, output, _ = self.invoke(repo, ["smoke", "status", "--last", "0", "--json"])
+            self.assertEqual(2, code)
+            self.assertIn("between 1 and", json.loads(output)["error"]["nextAction"])
+
+            (smoke / "latest.json").write_text(json.dumps({"ok": False, "timestamp": alerting.iso(time_now() - 2 * HOUR), "failures": 4, "warnings": 0, "exitCode": 1}))
+            code, output, _ = self.invoke(repo, ["smoke", "status", "--json"])
+            failed = json.loads(output)
+            self.assertEqual((3, "smoke-failed"), (code, failed["error"]["code"]))
+            self.assertEqual(4, failed["data"]["latest"]["failures"])
+
+            (smoke / "latest.json").write_text(json.dumps({"ok": True, "timestamp": alerting.iso(time_now() - 30 * HOUR)}))
+            code, output, _ = self.invoke(repo, ["smoke", "status", "--json"])
+            stale = json.loads(output)
+            self.assertEqual((3, "smoke-stale"), (code, stale["error"]["code"]))
+            self.assertTrue(stale["data"]["stale"])
 
     def test_backup_list_and_freshness(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
@@ -495,24 +510,63 @@ class CliAlertsTest(unittest.TestCase):
             env = {"ARGUS_SNAPSHOT_PULL_DIR": str(pull), "ARGUS_SNAPSHOT_LAST": str(last), "ARGUS_BACKUP_STATUS": str(status)}
             listing = json.loads(self.invoke(Path(directory), ["backup", "list", "--json"], env)[1])["data"]
             self.assertEqual(["20261110T020000Z-nightly.tar.age", "20261109T020000Z-nightly.tar.age"], [a["name"] for a in listing["archives"]])
-            fresh = json.loads(self.invoke(Path(directory), ["backup", "freshness", "--json"], env)[1])["data"]
-            self.assertTrue(fresh["ok"])
-            self.assertEqual({"state": "ok"}, fresh["backupStatus"])
+            code, output, _ = self.invoke(Path(directory), ["backup", "freshness", "--json"], env)
+            fresh = json.loads(output)
+            self.assertEqual((0, True), (code, fresh["ok"]))
+            self.assertTrue(fresh["data"]["allFresh"])
+            self.assertNotIn("ok", fresh["data"])
+            self.assertEqual({"state": "ok"}, fresh["data"]["backupStatus"])
+
+            last.write_text(json.dumps({"timestamp": alerting.iso(time_now() - 30 * HOUR)}))
+            code, output, _ = self.invoke(Path(directory), ["backup", "freshness", "--json"], env)
+            stale = json.loads(output)
+            self.assertEqual((3, "backup-stale"), (code, stale["error"]["code"]))
+            self.assertFalse(stale["data"]["allFresh"])
+
             missing = {"ARGUS_SNAPSHOT_PULL_DIR": directory + "/no", "ARGUS_SNAPSHOT_LAST": directory + "/no.json", "ARGUS_BACKUP_STATUS": directory + "/no2.json"}
-            unknown = json.loads(self.invoke(Path(directory), ["backup", "freshness", "--json"], missing)[1])["data"]
-            self.assertFalse(unknown["ok"])
-            self.assertEqual({"unavailable"}, {row["state"] for row in unknown["sources"]})
+            code, output, _ = self.invoke(Path(directory), ["backup", "freshness", "--json"], missing)
+            unknown = json.loads(output)
+            self.assertEqual((4, "backup-evidence-unavailable"), (code, unknown["error"]["code"]))
+            self.assertEqual({"unavailable"}, {row["state"] for row in unknown["data"]["sources"]})
+            code, output, _ = self.invoke(Path(directory), ["backup", "list", "--json"], missing)
+            self.assertEqual((4, "backup-pull-dir-unavailable"), (code, json.loads(output)["error"]["code"]))
 
     def test_alerts_command(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             repo = Path(directory)
-            self.assertEqual(4, self.invoke(repo, ["alerts", "--json"])[0])
-            (repo / "runtime" / "alerts").mkdir(parents=True)
-            state, _ = alerting.evaluate({"failedUnits": ["argus-x.service"]}, {}, time_now())
-            (repo / "runtime" / "alerts" / "state.json").write_text(json.dumps(state))
             code, output, _ = self.invoke(repo, ["alerts", "--json"])
-        data = json.loads(output)["data"]
-        self.assertEqual((0, 1, 1), (code, data["open"], data["page"]))
+            self.assertEqual((4, "alert-state-unavailable"), (code, json.loads(output)["error"]["code"]))
+            state_path = repo / "runtime" / "alerts" / "state.json"
+            state_path.parent.mkdir(parents=True)
+            state_path.write_text(json.dumps({"generatedAt": alerting.iso(time_now()), "alerts": [{"id": "x", "severity": "warn"}]}))
+            code, output, _ = self.invoke(repo, ["alerts", "--json"])
+            quiet = json.loads(output)["data"]
+            self.assertEqual((0, 1, 0, False), (code, quiet["open"], quiet["page"], quiet["stale"]))
+
+            state, _ = alerting.evaluate({"failedUnits": ["argus-x.service"]}, {}, time_now())
+            state_path.write_text(json.dumps(state))
+            code, output, _ = self.invoke(repo, ["alerts", "--json"])
+            paged = json.loads(output)
+            self.assertEqual((3, "alerts-page-open"), (code, paged["error"]["code"]))
+            self.assertEqual((1, 1, False), (paged["data"]["open"], paged["data"]["page"], paged["data"]["stale"]))
+            code, output, error = self.invoke(repo, ["alerts"])
+            self.assertEqual(3, code)
+            self.assertIn("unit-failed:argus-x.service", output)
+            self.assertIn("ERROR alerts-page-open", error)
+
+            state_path.write_text(json.dumps({"generatedAt": alerting.iso(time_now() - 41 * DAY), "alerts": []}))
+            code, output, _ = self.invoke(repo, ["alerts", "--json"])
+            old = json.loads(output)
+            self.assertEqual((3, "alert-state-stale"), (code, old["error"]["code"]))
+            self.assertTrue(old["data"]["stale"])
+
+            for content in ("garbage", json.dumps({"generatedAt": alerting.iso(time_now()), "alerts": 5})):
+                with self.subTest(content=content):
+                    state_path.write_text(content)
+                    code, output, _ = self.invoke(repo, ["alerts", "--json"])
+                    unreadable = json.loads(output)["error"]
+                    self.assertEqual((4, "alert-state-unreadable"), (code, unreadable["code"]))
+                    self.assertNotIn("exists yet", unreadable["message"])
 
     def test_dashboard_state_exposes_sanitized_alerts(self) -> None:
         import argus_common

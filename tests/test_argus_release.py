@@ -211,7 +211,7 @@ class CommandTests(unittest.TestCase):
         (self.repo / "config" / "routes.json").write_text(json.dumps({"dashboard": {"url": "https://127.0.0.1:1"}}))
         self.write_compose("nodens-staging", compose("nodens-staging", OLD_ID, REF))
         self.write_compose("nodens-production", compose("nodens-production", "sha256:PENDING-x"))
-        self.script("scripts/argus-check", "#!/bin/sh\nexit ${FAKE_CHECK_EXIT:-0}\n", self.repo)
+        self.script("scripts/argus-check", "import os\nraise SystemExit(int(os.environ.get(\"FAKE_CHECK_EXIT\", \"0\")))\n", self.repo)
         self.script("ssh", FAKE_SSH.format(id=OLD_ID), self.bin)
         self.script("gh", FAKE_GH, self.bin)
         for args in (["init", "-q", "-b", "main"], ["add", "."], ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "init"],
