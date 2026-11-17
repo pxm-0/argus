@@ -253,16 +253,19 @@ Do not run an old migration script instead of this workflow.
 
 These use the private dashboard API (URL from `argus dashboard url`, or
 `--base-url`) with the same tailnet identity, session, CSRF, Origin and
-bootstrap-token plus authenticator-code step-up as the dashboard. Secrets are
-read only from `/dev/tty`; with no terminal the command exits 2. Each
-authentication asks for the bootstrap token, then `Authenticator code or
-recovery code` (blank if TOTP is not enrolled): once to open the session and
-again at step-up, so a `create` can ask for two or three token-and-code pairs.
-A code is accepted only once; on a repeat prompt wait for the next 30 s code.
+bootstrap-token plus authenticator-code step-up as the dashboard. The bootstrap
+token is read only from `/dev/tty`; with no terminal the command exits 2. Each
+authentication asks for the token: once to open the session and again at
+step-up, so a `create` can ask for it two or three times. On macOS with the
+login Keychain item `argus-totp` the CLI computes each authenticator code
+itself and waits for the next 30 s code rather than resend a spent one (setup in
+`docs/DASHBOARD_ACTIONS.md`). Without that item it prompts `Authenticator code
+or recovery code` (blank if TOTP is not enrolled) after each token; a code is
+accepted only once, so on a repeat prompt wait for the next 30 s code.
 See `docs/RUNBOOKS/operator-session-diagnosis.md`. `create` previews, then
 requires the typed workload ID (or `--yes-digest <digest>` matching the
-previewed digest; it skips only that typed confirmation, the token and
-authenticator prompts are still required), then steps up, creates, approves and watches to a terminal
+previewed digest; it skips only that typed confirmation, the token prompt and
+authentication are still required), then steps up, creates, approves and watches to a terminal
 state. `create`, `watch` and the workload shortcuts wait at most `--timeout
 SECONDS` (default 600) for a terminal state; past it, or after repeated poll
 failures, they exit 5 because the outcome is unobserved, not failed. Exit:
