@@ -90,12 +90,25 @@ digest, and restores the exact pre-running container IDs. Containers start in
 their declared Compose dependency order, including health-gated dependencies;
 the command never recreates a container or named volume.
 
-Accepted ingress sidecars need an additional lifecycle step. Their host Unix
-socket directories are root-locked while running; the repair validates and
-temporarily hands only those exact bind directories to the sandbox identity,
-removes only the stale `upstream.sock`, starts the recorded containers, waits
-for the replacement sockets, and root-locks the directories again. A failed
-restart relocks every prepared directory before reporting recovery required.
+Accepted ingress sidecars need an additional lifecycle step. Two bind layouts
+are accepted, and any other `/run/argus-ingress` source fails closed:
+
+| Layout | Bind source | Accepted directory state |
+| --- | --- | --- |
+| Cutover runtime | `/var/lib/argus/migration-runtime/<domain>/<workload>/<stage>/ingress` | `root:root` `0711` (root-locked) |
+| Typed-deploy ingress, including production `personal-managed` (`nodens.dev`) | `/var/lib/argus/<kind>-ingress/<workload>`, where `<kind>` is the domain suffix (`managed`, `sandbox`) | the domain identity's own UID and primary GID, `0700` or `0710` |
+
+Every directory above the bind leaf must be a real, root-owned directory; a
+symlink anywhere in the chain is refused. Because both sandbox domains share
+`sandbox-ingress`, the leaf owner check is what stops one domain from
+touching the other's directory. The repair records each bind directory's
+owner and mode, temporarily hands only those exact directories to the domain
+identity at `0700`, removes only a stale `upstream.sock` owned by that
+identity, starts the recorded containers, waits for the replacement sockets,
+and then restores the recorded owner and mode. Cutover runtimes are therefore
+root-locked again, while typed-deploy directories keep their domain owner so
+later releases can restart the sidecar. A failed restart restores every
+prepared directory before reporting recovery required.
 
 ## Explicit rollback
 
