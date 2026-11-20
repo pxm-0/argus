@@ -71,6 +71,19 @@
         "mode": "protected",
         "requiresAuth": true
       }
+    },
+    "kadath-staging": {
+      "tailnet": {
+        "enabled": false,
+        "mode": "blocked",
+        "url": ""
+      },
+      "cloudflare": {
+        "enabled": false,
+        "hostname": "",
+        "mode": "disabled",
+        "requiresAuth": true
+      }
     }
   }
 }

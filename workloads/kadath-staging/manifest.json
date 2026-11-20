@@ -1,0 +1,125 @@
+{
+  "id": "kadath-staging",
+  "name": "Kadath Staging",
+  "description": "Default-deny reviewed onboarding candidate.",
+  "schemaVersion": 1,
+  "canonicalRoot": "/srv/argus/workloads/kadath-staging",
+  "sourcePath": "/srv/argus/workloads/kadath-staging/source",
+  "privacyCompatibility": "unclassified",
+  "accessCompatibility": "none",
+  "runtime": {
+    "type": "docker-compose",
+    "compose": {
+      "path": "/srv/argus/workloads/kadath-staging/source/compose.yml",
+      "project": "kadath-staging",
+      "service": "",
+      "legacyPaths": []
+    },
+    "composePath": "/srv/argus/workloads/kadath-staging/source/compose.yml",
+    "composeProject": "kadath-staging",
+    "service": "",
+    "legacyComposePaths": []
+  },
+  "migration": {
+    "status": "planned",
+    "targetTrustDomain": "personal-sandbox",
+    "originalPath": "",
+    "compatibilitySymlink": false,
+    "rollback": "No runtime is adopted; remove only the reviewed candidate records before admission.",
+    "notes": [
+      "Onboarding does not start, stop, migrate, or adopt a discovered runtime."
+    ]
+  },
+  "health": {
+    "url": "",
+    "expectedStatus": 200,
+    "timeoutSeconds": 3
+  },
+  "operations": {
+    "health": {
+      "allowed": false
+    },
+    "logs": {
+      "allowed": false
+    },
+    "restart": {
+      "allowed": false
+    },
+    "deploy": {
+      "allowed": false
+    },
+    "start": {
+      "allowed": false
+    },
+    "stop": {
+      "allowed": false
+    },
+    "backup": {
+      "allowed": false
+    },
+    "restore": {
+      "allowed": false
+    },
+    "access": {
+      "allowed": false
+    },
+    "migrationPreflight": {
+      "allowed": false
+    },
+    "migrationCutover": {
+      "allowed": false
+    },
+    "migrationRollback": {
+      "allowed": false
+    },
+    "productionPromote": {
+      "allowed": false
+    },
+    "productionRollback": {
+      "allowed": false
+    },
+    "cloudflareProtectedPlan": {
+      "allowed": false
+    },
+    "cloudflareProtectedApply": {
+      "allowed": false
+    },
+    "cloudflareProtectedRollback": {
+      "allowed": false
+    }
+  },
+  "backup": {
+    "backupAllowed": false,
+    "restoreAllowed": false,
+    "status": "planned",
+    "source": false,
+    "env": false,
+    "namedVolumes": [],
+    "bindMounts": [],
+    "database": {
+      "type": "none",
+      "dumpCommand": "",
+      "restoreCommand": ""
+    },
+    "destination": "/srv/argus/runtime/backups/kadath-staging",
+    "retention": {
+      "keepLast": 5
+    },
+    "restoreTested": false,
+    "lastBackupAt": "",
+    "lastRestoreTestAt": ""
+  },
+  "security": {
+    "publicAllowed": false,
+    "trackedByArgusGit": false,
+    "classification": "unclassified",
+    "publicExposureAllowed": false,
+    "forbiddenTargets": [
+      "legacy-rootful",
+      "public"
+    ],
+    "notes": [
+      "Public exposure and runtime mutation are denied by default."
+    ]
+  }
+}
