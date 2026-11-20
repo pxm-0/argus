@@ -1,27 +1,28 @@
 {
   "id": "kadath-staging",
   "name": "Kadath Staging",
-  "description": "Default-deny reviewed onboarding candidate.",
+  "description": "Kadath staging: ephemeral demo instance on the reviewed typed-deploy path.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/kadath-staging",
   "sourcePath": "/srv/argus/workloads/kadath-staging/source",
   "privacyCompatibility": "unclassified",
-  "accessCompatibility": "none",
+  "accessCompatibility": "tailnet",
   "runtime": {
     "type": "docker-compose",
     "compose": {
       "path": "/srv/argus/workloads/kadath-staging/source/compose.yml",
       "project": "kadath-staging",
-      "service": "",
+      "service": "web",
+      "bridge": "argus-kdth-stg",
       "legacyPaths": []
     },
     "composePath": "/srv/argus/workloads/kadath-staging/source/compose.yml",
     "composeProject": "kadath-staging",
-    "service": "",
+    "service": "web",
     "legacyComposePaths": []
   },
   "migration": {
-    "status": "planned",
+    "status": "migrated",
     "targetTrustDomain": "personal-sandbox",
     "originalPath": "",
     "compatibilitySymlink": false,
@@ -31,13 +32,14 @@
     ]
   },
   "health": {
-    "url": "",
+    "enabled": true,
+    "url": "https://oreochiserver.tail0a3a58.ts.net:8452/",
     "expectedStatus": 200,
     "timeoutSeconds": 3
   },
   "operations": {
     "health": {
-      "allowed": false
+      "allowed": true
     },
     "logs": {
       "allowed": false
@@ -46,13 +48,13 @@
       "allowed": false
     },
     "deploy": {
-      "allowed": false
+      "allowed": true
     },
     "start": {
-      "allowed": false
+      "allowed": true
     },
     "stop": {
-      "allowed": false
+      "allowed": true
     },
     "backup": {
       "allowed": false
@@ -91,7 +93,7 @@
   "backup": {
     "backupAllowed": false,
     "restoreAllowed": false,
-    "status": "planned",
+    "status": "stateless-by-design",
     "source": false,
     "env": false,
     "namedVolumes": [],
@@ -107,11 +109,16 @@
     },
     "restoreTested": false,
     "lastBackupAt": "",
-    "lastRestoreTestAt": ""
+    "lastRestoreTestAt": "",
+    "recovery": [
+      "Stateless by design: Postgres keeps its data on tmpfs, so every restart starts from an empty database that the API migrates on boot. Staging holds demo data only.",
+      "The only state is the pinned compose.yml tracked in git (domain-local image IDs) and the server-local secret files under /var/lib/argus/sandbox-secrets/kadath-staging.",
+      "Recovery: restore compose.yml from git, then run `argus op workload deploy` with the recorded image ID as targetRevision."
+    ]
   },
   "security": {
     "publicAllowed": false,
-    "trackedByArgusGit": false,
+    "trackedByArgusGit": true,
     "classification": "unclassified",
     "publicExposureAllowed": false,
     "forbiddenTargets": [
@@ -119,7 +126,8 @@
       "public"
     ],
     "notes": [
-      "Public exposure and runtime mutation are denied by default."
+      "Public exposure and runtime mutation are denied by default.",
+      "Only source/compose.yml is tracked: it pins domain-local image IDs, declares no published ports, and references secrets only as server-local files outside git."
     ]
   }
 }

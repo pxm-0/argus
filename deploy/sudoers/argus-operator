@@ -77,7 +77,8 @@ Cmnd_Alias ARGUS_NET = \
     /usr/bin/tailscale serve status, \
     /usr/bin/ss -H -ltnp, \
     /usr/bin/tailscale serve --bg --https\=8450 unix\:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock, \
-    /usr/bin/tailscale serve --bg --https\=8451 unix\:/var/lib/argus/managed-ingress/nodens-production/upstream.sock
+    /usr/bin/tailscale serve --bg --https\=8451 unix\:/var/lib/argus/managed-ingress/nodens-production/upstream.sock, \
+    /usr/bin/tailscale serve --bg --https\=8452 unix\:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock
 
 oreo ALL=(root) NOPASSWD: EXEC: ARGUS_SCRIPTS
 oreo ALL=(root) NOPASSWD: NOEXEC: ARGUS_SYSTEMCTL, ARGUS_READ, ARGUS_NET

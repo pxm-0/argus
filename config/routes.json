@@ -74,9 +74,9 @@
     },
     "kadath-staging": {
       "tailnet": {
-        "enabled": false,
-        "mode": "blocked",
-        "url": ""
+        "enabled": true,
+        "mode": "tailscale-serve",
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8452"
       },
       "cloudflare": {
         "enabled": false,

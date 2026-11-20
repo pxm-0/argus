@@ -39,7 +39,7 @@
       "stage": "staging",
       "trustDomain": "personal-sandbox",
       "status": "classified",
-      "admission": "denied"
+      "admission": "allowed"
     }
   }
 }

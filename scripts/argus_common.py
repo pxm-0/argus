@@ -28,6 +28,7 @@ from argus_reconciliation import reconcile
 ALLOWED_IMAGES = (
     re.compile(r"ghcr\.io/pxm-0/[a-z0-9-]+@sha256:[0-9a-f]{64}"),
     re.compile(r"docker\.io/library/caddy@sha256:[0-9a-f]{64}"),
+    re.compile(r"docker\.io/library/postgres@sha256:[0-9a-f]{64}"),
 )
 
 

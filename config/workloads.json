@@ -254,7 +254,7 @@
         "composePath": "/srv/argus/workloads/kadath-staging/source/compose.yml",
         "legacyComposePaths": [],
         "composeProject": "kadath-staging",
-        "service": ""
+        "service": "web"
       },
       "network": {
         "localUrl": "",
@@ -262,11 +262,12 @@
         "observedBindings": []
       },
       "health": {
-        "enabled": false,
-        "url": "",
+        "enabled": true,
+        "url": "https://oreochiserver.tail0a3a58.ts.net:8452/",
         "expectedStatus": 200,
         "timeoutSeconds": 3
       },
+      "access": "tailnet",
       "actions": {
         "open": false,
         "health": false,
@@ -278,7 +279,7 @@
         "privacyToggle": false
       },
       "migration": {
-        "status": "planned",
+        "status": "migrated",
         "targetTrustDomain": "personal-sandbox",
         "originalPath": "",
         "compatibilitySymlink": false,
@@ -287,6 +288,9 @@
         "notes": [
           "Admission and every mutation capability remain denied pending reviewed evidence."
         ]
+      },
+      "urls": {
+        "tailnet": "https://oreochiserver.tail0a3a58.ts.net:8452"
       }
     }
   ]

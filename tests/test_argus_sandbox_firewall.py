@@ -116,6 +116,9 @@ table inet argus_personal_sandbox_nat {
 }
 """
 STAGING_RULE = '    iifname "argus-ndns-stg" oifname "argus-ndns-stg" accept;\n'
+KADATH_STAGING_RULE = '    iifname "argus-kdth-stg" oifname "argus-kdth-stg" accept;\n'
+# Every checked-in typed project's own-traffic rule, rendered whether or not it runs.
+TYPED_RULES = KADATH_STAGING_RULE + STAGING_RULE
 
 
 class RuntimeRunner(module.Runner):
@@ -189,7 +192,10 @@ class TypedDeployProjectTests(unittest.TestCase):
 
     def test_reviewed_config_declares_nodens_staging_as_typed(self, _child: mock.Mock) -> None:
         self.assertEqual(
-            {"nodens-staging": {"project": "nodens-staging", "bridge": "argus-ndns-stg"}},
+            {
+                "kadath-staging": {"project": "kadath-staging", "bridge": "argus-kdth-stg"},
+                "nodens-staging": {"project": "nodens-staging", "bridge": "argus-ndns-stg"},
+            },
             module.typed_projects(ROOT, "personal-sandbox"),
         )
         self.assertEqual(
@@ -198,7 +204,7 @@ class TypedDeployProjectTests(unittest.TestCase):
         )
 
     def test_nodens_compose_files_pin_their_manifest_bridge(self, _child: mock.Mock) -> None:
-        for workload in ("nodens-staging", "nodens-production"):
+        for workload in ("kadath-staging", "nodens-staging", "nodens-production"):
             manifest = json.loads((ROOT / "workloads" / workload / "manifest.json").read_text())
             bridge = manifest["runtime"]["compose"]["bridge"]
             self.assertLessEqual(len(bridge), 15)
@@ -211,7 +217,7 @@ class TypedDeployProjectTests(unittest.TestCase):
 
     def test_typed_project_adds_only_its_bridge_rule_running_or_not(self, _child: mock.Mock) -> None:
         expected = INSTALLED_POLICY.replace(
-            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + STAGING_RULE
+            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + TYPED_RULES
         )
         absent = self.plan(SANDBOX)
         running = self.plan([*SANDBOX, STAGING])
@@ -221,7 +227,7 @@ class TypedDeployProjectTests(unittest.TestCase):
         self.assertEqual(absent["planDigest"], running["planDigest"])
         self.assertNotIn("nodens-staging", {item["project"] for item in running["containers"]})
         self.assertNotIn('"argus-ndns-stg" oifname "tap0"', running["rendered"])
-        self.assertEqual({"nodens-staging": "argus-ndns-stg"}, module.discover_runtime(
+        self.assertEqual({"kadath-staging": "argus-kdth-stg", "nodens-staging": "argus-ndns-stg"}, module.discover_runtime(
             ROOT, "personal-sandbox", RuntimeRunner([*SANDBOX, STAGING])
         )["typedBridges"])
 
@@ -237,7 +243,7 @@ class TypedDeployProjectTests(unittest.TestCase):
         self.assertEqual({"hastur": "hastur", "kadath": "kadath-live"}, plan["absentProjects"])
         self.assertEqual({}, plan["egress"])
         forward = [line for line in plan["rendered"].splitlines() if line.strip().startswith("iifname") and "masquerade" not in line]
-        self.assertEqual([STAGING_RULE.rstrip("\n")], forward)
+        self.assertEqual(TYPED_RULES.splitlines(), forward)
         self.assertIn("policy drop;", plan["rendered"])
         partial = self.plan([SANDBOX[0], STAGING])
         self.assertEqual({"kadath": "kadath-live"}, partial["absentProjects"])
@@ -322,7 +328,7 @@ class TypedDeployProjectTests(unittest.TestCase):
     def test_cutover_reports_no_drift_while_staging_runs(self, _child: mock.Mock) -> None:
         cutover = load_cutover()
         expected = INSTALLED_POLICY.replace(
-            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + STAGING_RULE
+            '"argus-kadath" accept;\n', '"argus-kadath" accept;\n' + TYPED_RULES
         )
         with (
             mock.patch.object(cutover, "ROOT", ROOT),

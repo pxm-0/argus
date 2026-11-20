@@ -1,0 +1,150 @@
+# Reviewed runtime for the kadath-staging workload in personal-sandbox (stage staging).
+# Images are domain-local IDs printed by scripts/argus-image-import; a
+# workload.deploy targetRevision must equal one of these lines exactly. Until
+# the first import, the PENDING pins fail closed (no deploy can match them).
+#
+# Ephemeral by design: Postgres keeps its data on tmpfs and the API migrates on
+# boot, so every restart starts from an empty database. Secrets are
+# server-local files outside git (root-created, see docs/ARGUS_M5_WORKLOAD_CUTOVER.md);
+# the kadath images read X_FILE into X before any node process starts.
+name: kadath-staging
+
+services:
+  postgres:
+    image: sha256:PENDING-postgres-image-id-from-argus-image-import  # postgres:17-trixie (docker.io/library/postgres@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b)
+    restart: unless-stopped
+    # Running as postgres skips the entrypoint's chown/gosu, so no capabilities are needed.
+    user: postgres
+    environment:
+      POSTGRES_USER: kadath
+      POSTGRES_DB: kadath
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+      # A subdirectory, so initdb creates it owned by postgres inside the tmpfs.
+      PGDATA: /var/lib/postgresql/data/pgdata
+    secrets:
+      - postgres_password
+    read_only: true
+    tmpfs:
+      - /var/lib/postgresql/data:size=512m
+      - /var/run/postgresql
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "kadath", "-d", "kadath"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  api:
+    image: sha256:PENDING-kadath-api-image-id-from-argus-image-import  # ghcr.io/pxm-0/kadath-api@sha256:<digest from the kadath Publish images run>
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "3001"
+      DATABASE_URL_FILE: /run/secrets/database_url
+      API_AUTH_TOKEN_FILE: /run/secrets/api_auth_token
+    secrets:
+      - database_url
+      - api_auth_token
+    depends_on:
+      postgres:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3001/ready').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  web:
+    image: sha256:PENDING-kadath-web-image-id-from-argus-image-import  # ghcr.io/pxm-0/kadath-web@sha256:<digest from the kadath Publish images run>
+    restart: unless-stopped
+    environment:
+      API_BASE_URL: http://api:3001
+      API_AUTH_TOKEN_FILE: /run/secrets/api_auth_token
+      NEXT_TELEMETRY_DISABLED: "1"
+      NODE_ENV: production
+      PORT: "3000"
+      HOSTNAME: 0.0.0.0
+    secrets:
+      - api_auth_token
+    depends_on:
+      api:
+        condition: service_healthy
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/apps/web/.next/cache
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+
+  argus-ingress:
+    image: sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9  # caddy:2 (docker.io/library/caddy@sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9)
+    command: ["caddy", "run", "--config", "/etc/caddy/ingress.json"]
+    depends_on:
+      web:
+        condition: service_started
+    restart: unless-stopped
+    # Not read_only: Compose refuses inline config content on read-only services.
+    cap_drop:
+      - ALL
+    # the caddy binary carries the cap_net_bind_service file capability; exec fails (EPERM) unless it stays bounded
+    cap_add:
+      - NET_BIND_SERVICE
+    security_opt:
+      - no-new-privileges:true
+    configs:
+      - source: ingress
+        target: /etc/caddy/ingress.json
+    volumes:
+      - type: bind
+        source: /var/lib/argus/sandbox-ingress/kadath-staging
+        target: /run/argus-ingress
+    networks:
+      - internal
+
+networks:
+  internal:
+    internal: true
+    driver_opts:
+      # Stable bridge name, equal to manifest runtime.compose.bridge, so the
+      # domain firewall renders one unchanging rule for it (#354).
+      com.docker.network.bridge.name: argus-kdth-stg
+
+secrets:
+  postgres_password:
+    file: /var/lib/argus/sandbox-secrets/kadath-staging/postgres_password
+  database_url:
+    file: /var/lib/argus/sandbox-secrets/kadath-staging/database_url
+  api_auth_token:
+    file: /var/lib/argus/sandbox-secrets/kadath-staging/api_auth_token
+
+configs:
+  ingress:
+    content: |
+      {"apps":{"http":{"servers":{"ingress":{"listen":["unix//run/argus-ingress/upstream.sock|0666"],"routes":[{"handle":[{"handler":"reverse_proxy","upstreams":[{"dial":"web:3000"}]}]}]}}}}}
