@@ -31,20 +31,25 @@ class DashboardLayoutTests(unittest.TestCase):
     def test_evidence_gate_body_carries_its_layout_class(self) -> None:
         self.assertIn('<div id="evidence-state-body" class="evidence-state-body">', render_html())
 
-    def test_inspector_opens_the_workload_route_not_the_first_data_workload_match(self) -> None:
-        handler = js_block('const focus = event.target.closest("[data-focus-workload]");', "const resumeApproval")
-        self.assertIn("location.hash = `#/workloads/${encodeURIComponent(selectedTopologyId)}`", handler)
-        self.assertNotIn('querySelector(`[data-workload=', handler)
-        self.assertIn('.workload[data-workload="${CSS.escape(selectedTopologyId)}"]', handler)
+    def test_inspect_route_scrolls_the_opened_workload_into_view(self) -> None:
+        route = js_block("function syncWorkloadRoute()", 'window.addEventListener("hashchange", syncWorkloadRoute);')
+        # Instant, and after focus: either a focus change or the browser's fragment handling cancels a smooth scroll.
+        self.assertIn('detail.closest(".workload")?.scrollIntoView({ block: "start", behavior: "instant" });', route)
+        self.assertGreater(route.index("scrollIntoView"), route.index('.detail-close")?.focus({ preventScroll: true })'))
+        # The coverage matrix and its selected-object inspector were a second and third copy of the workload table.
+        for removed in ("renderTopology", "selectedTopologyId", "data-focus-workload", 'id="topology"', 'id="estate-coverage"'):
+            self.assertNotIn(removed, JS + render_html())
 
     def test_sticky_topbar_offsets_anchor_targets_and_the_operation_banner(self) -> None:
         self.assertIn("scroll-margin-top:calc(var(--topbar-h,72px) + 12px)", M5_CSS)
         self.assertIn(".active-banner { position:sticky; top:var(--topbar-h,72px);", M5_CSS)
         self.assertIn('setProperty("--topbar-h"', JS)
 
-    def test_coverage_matrix_stacks_its_inspector_below_wide_desktop(self) -> None:
-        self.assertNotIn("minmax(600px,1fr) 320px", M5_CSS)
-        self.assertIn("@media(max-width:1380px){.workloads{grid-template-columns:1fr}.topology{grid-template-columns:minmax(0,1fr)}", M5_CSS)
+    def test_action_panel_and_attention_list_collapse_on_narrow_screens(self) -> None:
+        self.assertIn("@media(max-width:1000px){.action-groups{grid-template-columns:1fr}", M5_CSS)
+        self.assertIn(".action-row,.action-row-access{grid-template-columns:minmax(0,1fr)", M5_CSS)
+        self.assertIn(".attention-item{grid-template-columns:minmax(0,1fr)", M5_CSS)
+        self.assertNotIn(".topology", M5_CSS)
 
     def test_session_explanation_wraps_instead_of_truncating(self) -> None:
         rule = re.search(r"\.session-copy small \{[^}]*\}", M5_CSS).group(0)

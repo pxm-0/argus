@@ -55,6 +55,30 @@ class StatusPresentationTests(unittest.TestCase):
         for evidence in ("empty", "error"):
             self.assertEqual(1, len(run_status(f"exceptionReasons({{workloads: []}}, '{evidence}')")))
 
+    def test_attention_list_names_each_problem_with_its_next_step_exceptions_first(self) -> None:
+        state = {
+            "alerts": {"available": False},
+            "workloads": [{"id": "web", "name": "Web", "health": {"ok": False}}, {"id": "db", "name": "DB", "health": {"ok": True, "lastObservedAt": "2026-11-11T11:58:00Z"}}],
+            "topology": {"nodes": [{"kind": "workload", "id": "db", "drift": True, "declaredAccess": "tailnet", "effectiveAccess": "none"}],
+                         "summary": {"domainAgentsAvailable": 1}},
+            "exposure": {"providers": {"cloudflare": {"enabled": True}, "tailscale": {"funnel": {"observedEnabled": False}}}},
+        }
+        evidence = {"tone": "info", "headline": "No estate evidence configured", "detail": "d", "action": "Open coverage"}
+        items = run_status(f"attentionItems({json.dumps(state)}, 'empty', {json.dumps(evidence)}, Date.parse('2026-11-11T12:00:00Z'))")
+        self.assertEqual(
+            ["Web is down", "DB: access drift", "No estate evidence configured", "Alert evaluator has not reported", "Cloudflare provider enabled", "Health evidence stale for 1 of 2 workloads"],
+            [item["title"] for item in items],
+        )
+        self.assertEqual(["bad", "bad", "bad", "warn", "warn", "warn"], [item["tone"] for item in items])
+        self.assertEqual({"label": "Inspect", "href": "#/workloads/web"}, items[0]["action"])
+        self.assertEqual("Declared tailnet, effective none.", items[1]["detail"])
+        self.assertEqual("#evidence-state", items[2]["action"]["href"])
+
+    def test_attention_list_is_empty_for_a_clean_estate(self) -> None:
+        state = {"alerts": {"available": True, "alerts": []}, "workloads": [{"id": "a", "health": {"ok": True, "lastObservedAt": "2026-11-11T11:58:00Z"}}],
+                 "topology": {"summary": {"domainAgentsAvailable": 1}}}
+        self.assertEqual([], run_status(f"attentionItems({json.dumps(state)}, 'complete', null, Date.parse('2026-11-11T12:00:00Z'))"))
+
     def test_clean_estate_has_no_exceptions(self) -> None:
         state = {"alerts": {"alerts": [{"severity": "warn"}]}, "workloads": [{"health": {"ok": True}}],
                  "topology": {"summary": {"domainAgentsAvailable": 1}}}
@@ -106,23 +130,22 @@ console.log(JSON.stringify(out));
 """
         self.assertEqual([True, False, True], run_js(script))
 
-    def test_unchanged_alert_banner_is_not_rewritten(self) -> None:
+    def test_unchanged_live_region_is_not_rewritten(self) -> None:
         script = """
 let writes = 0;
 let html = "";
-const alertBanner = { dataset: {}, set innerHTML(value) { writes += 1; html = value; }, get innerHTML() { return html; } };
-let state = { alerts: { available: true, alerts: [{ severity: "page", id: "disk", detail: "full" }] } };
+const region = { set innerHTML(value) { writes += 1; html = value; }, get innerHTML() { return html; } };
 const liveRegionMarkup = new WeakMap();
-""" + js_function("escapeHtml") + js_function("setLiveRegionHTML") + js_function("renderAlertBanner") + """
-renderAlertBanner();
-renderAlertBanner();
+""" + js_function("setLiveRegionHTML") + """
+setLiveRegionHTML(region, "<li>a</li>");
+setLiveRegionHTML(region, "<li>a</li>");
 const unchanged = writes;
-state = { alerts: { available: true, alerts: [] } };
-renderAlertBanner();
+setLiveRegionHTML(region, "<li>b</li>");
 console.log(JSON.stringify([unchanged, writes]));
 """
         self.assertEqual([1, 2], run_js(script))
-        self.assertNotIn("alertBanner.innerHTML =", JS)
+        self.assertIn("setLiveRegionHTML(attentionList,", JS)
+        self.assertNotIn("attentionList.innerHTML =", JS)
         self.assertNotIn("evidenceStateBodyEl.innerHTML =", JS)
         self.assertIn("setLiveRegionHTML(evidenceStateBodyEl,", JS)
 
@@ -132,7 +155,8 @@ class GeneratedDashboardStatusTests(unittest.TestCase):
         self.assertIn("function exceptionReasons", JS)
         self.assertNotIn("@include status.js", JS)
         for marker in (
-            "exceptionReasons(state, reconciliationState(state?.reconciliation))",
+            "exceptionReasons(state, evidenceStateId)",
+            "attentionItems(state, evidenceStateId, EVIDENCE_PRESENTATIONS[evidenceStateId])",
             "healthPresentation(health)",
             "freshnessPresentation(healthEvidenceAt, HEALTH_STALE_SECONDS)",
             'data-health="${escapeHtml(healthState.label.toLowerCase())}"',
@@ -169,7 +193,7 @@ class GeneratedDashboardStatusTests(unittest.TestCase):
         self.assertNotIn("error.message", catch_block.split("catch (error)")[1])
         self.assertNotIn("`dashboard state ${response.status}`", JS)
         unavailable = JS[JS.index("function renderStateUnavailable"):JS.index("async function loadDashboardState")]
-        for target in ("alertBanner", "exposureAlert", "#access-plan p", "#backup-plan p", "#cloudflare-plan p", "#system-plan p", "stages", "topologyEl", "workloadsEl", "summaryEl"):
+        for target in ("attentionList", "attentionCount", "systemFactsEl", "stages", "emptyDomainsEl", "workloadsEl", "summaryEl"):
             self.assertIn(target, unavailable)
 
     def test_empty_states_for_workloads_and_activity(self) -> None:
@@ -178,7 +202,7 @@ class GeneratedDashboardStatusTests(unittest.TestCase):
         self.assertNotIn("Authenticate to load activity.", JS)
 
     def test_good_tone_uses_success_colour_everywhere(self) -> None:
-        for selector in (".pill.good", ".history-state.good", ".result-badge.good", ".state-badge.good", ".tone-good"):
+        for selector in ('.attention-item[data-tone="good"] .attention-tone', ".history-state.good", ".result-badge.good", ".state-badge.good", ".tone-good"):
             match = re.search(re.escape(selector) + r"\s*\{\s*color:var\(--(\w+)\)", M5_CSS)
             self.assertIsNotNone(match, selector)
             self.assertEqual("green", match.group(1), selector)

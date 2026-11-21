@@ -54,7 +54,7 @@ class D6DashboardCompletenessTests(unittest.TestCase):
         ):
             self.assertIn(marker, JS)
         self.assertEqual(1, html.count('class="primary-action"'))
-        self.assertIn('href="#estate-coverage"', JS)
+        self.assertIn('href="#evidence-state"', JS)
         self.assertIn("source ${safeEvidenceToken", JS)
         self.assertIn("workload ${safeEvidenceToken", JS)
         self.assertNotIn('href="/public', html)
@@ -64,14 +64,13 @@ class D6DashboardCompletenessTests(unittest.TestCase):
 
     def test_lifecycle_row_is_gated_and_actions_are_table_driven(self) -> None:
         for marker in (
-            'data-operation="deploy-apply"',
-            'data-operation="start-apply"',
-            'data-operation="stop-apply"',
+            'opButton("deploy-apply", "Deploy", deployAllowed && deployPin,',
+            'opButton("start-apply", "Start", startAllowed)',
+            'opButton("stop-apply", "Stop", stopAllowed)',
+            'opButton("restart-apply", "Restart", restartAllowed)',
             "data-target-revision=",
-            "deployAllowed && deployPin && agentAvailable",
-            "startAllowed && agentAvailable",
-            "stopAllowed && agentAvailable",
-            "Deploy: no immutable image pin",
+            "(allowed && agentAvailable ? \"\" : \"disabled\")",
+            "No immutable image pin",
             "resolveOperation(action)",
         ):
             self.assertIn(marker, JS)

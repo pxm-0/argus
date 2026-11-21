@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Generate the private Argus dashboard static files.
 
-The M5 estate matrix prioritizes categorical comparison: trust domain, workload,
-declared access, effective access, and drift remain visible in one scanning path.
+One overview: a "Needs attention" list, one workload table (declared and effective
+access side by side), and per-workload detail with every action in one panel.
 """
 
 from __future__ import annotations
@@ -54,7 +54,8 @@ def render_html() -> str:
         <nav>
           <a href="#overview" aria-current="page">Overview</a>
           <a href="#workloads-heading">Workloads</a>
-          <a href="#estate-coverage">Coverage</a>
+          <a href="#activity-heading">Activity</a>
+          <a href="#system">System</a>
         </nav>
         <div class="private-state"><i aria-hidden="true"></i><span>Private<br>control plane</span></div>
       </aside>
@@ -75,8 +76,6 @@ def render_html() -> str:
           <p id="signin-message" class="signin-message" role="status" aria-live="polite"></p>
         </form>
         <button class="primary-action" id="workload-discover" type="button">Refresh estate</button>
-        <button class="utility-action" id="monitor-toggle" type="button">Monitor</button>
-        <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
         <div class="session-control" id="session-control" data-state="checking">
           <i class="session-signal" aria-hidden="true"></i>
           <span class="session-copy" role="status" aria-live="polite" aria-atomic="true">
@@ -85,38 +84,31 @@ def render_html() -> str:
           </span>
           <button id="admin-toggle" type="button" disabled>Checking</button>
         </div>
+        <div class="view-tools" aria-label="View">
+          <button class="utility-action" id="monitor-toggle" type="button" aria-pressed="false">Monitor</button>
+          <button class="utility-action" id="theme-toggle" type="button" aria-pressed="false">Theme</button>
+        </div>
       </div>
     </header>
     <main id="overview">
-      <section class="summary" id="summary" aria-label="System summary"></section>
       <section class="alert" id="state-alert" data-state="open" role="alert" hidden>
         <strong>State unavailable</strong>
         <span id="state-alert-detail">Argus could not load the dashboard state. No action is authorized from stale or missing state.</span>
         <button type="button" id="state-retry">Retry</button>
       </section>
-      <section class="alert" id="exposure-alert">
-        <strong>Exposure control</strong>
-        <span>loading exposure state</span>
-      </section>
-      <section class="alert" id="alert-banner" data-state="loading" role="status" aria-live="polite">
-        <strong>Alerts</strong>
-        <span>loading alert state</span>
-      </section>
-      <section class="evidence-state" id="evidence-state" aria-labelledby="evidence-state-title" aria-live="polite">
-        <div class="section-head">
-          <div><p class="eyebrow">Evidence gate</p><h2 id="evidence-state-title">Estate completeness</h2></div>
-          <span id="evidence-state-label" class="state-badge info">Loading</span>
+      <section class="attention" id="attention" aria-labelledby="attention-title">
+        <div class="attention-head">
+          <h2 id="attention-title">Needs attention</h2>
+          <span id="attention-count" class="state-badge info">Loading</span>
         </div>
-        <div id="evidence-state-body" class="evidence-state-body">Loading estate evidence.</div>
+        <ul class="attention-list" id="attention-list" aria-live="polite"><li class="attention-item" data-tone="info"><div><strong>Loading estate state</strong></div></li></ul>
+        <dl class="estate-facts" id="summary" aria-label="Estate summary"></dl>
       </section>
       <section class="command-panel" id="command-panel" tabindex="-1" aria-labelledby="command-title" aria-describedby="command-summary" hidden>
         <header class="command-header">
           <div class="command-heading">
             <span class="result-badge info" id="command-status">Result</span>
-            <div>
-              <p class="eyebrow">Command result</p>
-              <h2 id="command-title">Command completed</h2>
-            </div>
+            <h2 id="command-title">Command completed</h2>
           </div>
           <button id="command-close" type="button" aria-label="Close command result">Close</button>
         </header>
@@ -140,49 +132,33 @@ def render_html() -> str:
       <div id="active-operation" class="active-banner" role="status" hidden></div>
       <section class="section-head" id="stages-heading">
         <h2>Stages</h2>
-        <span>Staging versus production pinned images</span>
+        <span>Promote the staging image to production, or roll production back</span>
       </section>
       <section id="stages" aria-labelledby="stages-heading"></section>
       <section class="section-head" id="workloads-heading">
         <h2>Workloads</h2>
-        <span>Placement, health, access, and evidence freshness</span>
+        <span>Inspect a workload to see its evidence and run its actions</span>
       </section>
       <section class="workloads" id="workloads"></section>
+      <p class="empty-domains" id="empty-domains" hidden></p>
       <section class="section-head" id="activity-heading">
         <h2>Activity</h2>
-        <span>Recent operations across all workloads</span>
+        <span>Operations across all workloads, then the audit log</span>
       </section>
       <section id="activity" aria-labelledby="activity-heading"></section>
-      <section class="instrument-head" id="estate-coverage">
-        <div><h2>Estate coverage</h2></div>
-        <p>Compare trust-domain placement and access evidence. This view remains read-only.</p>
+      <h3 class="subhead">Audit log</h3>
+      <ol id="events" class="history-list"><li>loading events</li></ol>
+      <section class="section-head" id="system">
+        <h2>System</h2>
+        <span>Exposure, routes, and estate evidence</span>
       </section>
-      <section class="topology" id="topology" aria-label="Estate coverage by trust domain"></section>
-      <section class="plan-grid" id="evidence">
-        <article id="access-plan">
-          <h2>Access Plan</h2>
-          <p>loading access state</p>
-          <code>-</code>
-        </article>
-        <article id="backup-plan">
-          <h2>Backups</h2>
-          <p>loading backup state</p>
-          <code>/srv/argus/runtime/backups</code>
-        </article>
-        <article id="cloudflare-plan">
-          <h2>Cloudflare Plan</h2>
-          <p>loading Cloudflare state</p>
-          <code>-</code>
-        </article>
-        <article>
-          <h2>Events</h2>
-          <ol id="events" class="history-list"><li>loading events</li></ol>
-        </article>
-        <article id="system-plan">
-          <h2>System</h2>
-          <p>loading system state</p>
-          <code>-</code>
-        </article>
+      <dl class="system-facts" id="system-facts"><div><dt>System</dt><dd>loading system state</dd></div></dl>
+      <section class="evidence-state" id="evidence-state" aria-labelledby="evidence-state-title" aria-live="polite">
+        <div class="evidence-state-head">
+          <h3 id="evidence-state-title">Estate evidence</h3>
+          <span id="evidence-state-label" class="state-badge info">Loading</span>
+        </div>
+        <div id="evidence-state-body" class="evidence-state-body">Loading estate evidence.</div>
       </section>
     </main>
       </div>
@@ -217,12 +193,13 @@ const stateAgeEl = document.getElementById("state-age");
 const stateAlert = document.getElementById("state-alert");
 const stateAlertDetail = document.getElementById("state-alert-detail");
 const stateRetry = document.getElementById("state-retry");
-const exposureAlert = document.getElementById("exposure-alert");
-const alertBanner = document.getElementById("alert-banner");
+const attentionList = document.getElementById("attention-list");
+const attentionCount = document.getElementById("attention-count");
+const emptyDomainsEl = document.getElementById("empty-domains");
+const systemFactsEl = document.getElementById("system-facts");
 const evidenceStateEl = document.getElementById("evidence-state");
 const evidenceStateLabelEl = document.getElementById("evidence-state-label");
 const evidenceStateBodyEl = document.getElementById("evidence-state-body");
-const topologyEl = document.getElementById("topology");
 const workloadsEl = document.getElementById("workloads");
 const eventsEl = document.getElementById("events");
 const commandPanel = document.getElementById("command-panel");
@@ -245,7 +222,6 @@ let operatorIdentity = "";
 let operatorSessionState = "checking";
 let operatorSessionReason = "";
 let operatorSession = null;
-let selectedTopologyId = null;
 let lastCommandTrigger = null;
 const activeOperationPolls = new Set();
 const operationCache = new Map();
@@ -355,20 +331,6 @@ function setOperatorSessionState(nextState, { reason = "", session = null } = {}
   if (state) renderStages();
 }
 
-function statusClass(value) {
-  const normalized = String(value || "").toLowerCase();
-  if (["active", "ok", "tailnet", "local", "migrated"].includes(normalized)) return "good";
-  if (["planned", "cloudflare-protected"].includes(normalized)) return "info";
-  if (["restricted", "sensitive", "existing-funnel", "needs-discovery"].includes(normalized)) return "warn";
-  if (["cloudflare-public", "blocked"].includes(normalized)) return "bad";
-  return "neutral";
-}
-
-function pill(label, value) {
-  const safeValue = value || "-";
-  return `<span class="pill ${statusClass(safeValue)}"><span>${escapeHtml(label)}</span>${escapeHtml(safeValue)}</span>`;
-}
-
 function pct(value) {
   const num = Number(value || 0);
   return Math.max(0, Math.min(100, num));
@@ -391,6 +353,7 @@ function commandResultTone(title, payload) {
 function commandResultSummary(title, payload) {
   if (typeof payload === "string") return payload;
   if (!payload || typeof payload !== "object") return `${title} completed.`;
+  if (payload.confirmationRequired) return payload.confirmationRequired;
   if (payload.redacted_summary) return payload.redacted_summary;
   if (payload.error) return payload.error;
   if (payload.detail) return payload.detail;
@@ -429,6 +392,7 @@ function commandResultAssurance(payload) {
   const migrationReadiness = payload.migrationReadiness || payload.redactedResult;
   const digestValue = payload.previewDigest || payload.preview_digest;
   const revision = payload.expectedRevision || payload.expected_revision;
+  if (payload.confirmationPhrase) rows.push(["Confirmation phrase", payload.confirmationPhrase]);
   if (payload.reason) rows.push(["Policy decision", payload.reason]);
   if (payload.expectedBlastRadius) rows.push(["Expected impact", payload.expectedBlastRadius]);
   if (payload.rollbackBehavior) rows.push(["Rollback", payload.rollbackBehavior]);
@@ -741,7 +705,7 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
   const actionMarkup = !presentation.action ? ""
     : presentation.refresh ? `<button type="button" class="action evidence-action" data-evidence-refresh>${presentation.action}</button>`
     : presentation.href ? `<a class="action evidence-action" href="${presentation.href}">${presentation.action}</a>`
-    : `<a class="action evidence-action" href="#estate-coverage">${presentation.action}</a>`;
+    : `<a class="action evidence-action" href="#evidence-state">${presentation.action}</a>`;
   const sourceMarkup = sources.length
     ? `<ul class="evidence-state-sources">${sources.slice(0, 8).map((source) => `<li><span>${escapeHtml(safeEvidenceToken(source?.sourceId))}</span><strong>${escapeHtml(safeEvidenceToken(source?.state || "unknown"))}</strong></li>`).join("")}</ul>`
     : `<p class="evidence-state-empty">No source rows are available.</p>`;
@@ -754,7 +718,14 @@ function renderEvidenceState(reconciliation = state?.reconciliation) {
   setLiveRegionHTML(evidenceStateBodyEl, `
     <div class="evidence-state-copy"><strong>${presentation.headline}</strong><p>${presentation.detail}</p>${actionMarkup}</div>
     <dl class="evidence-state-meta"><div><dt>Sources</dt><dd>${boundedCount(coverage.freshSources)} fresh / ${boundedCount(coverage.configuredSources)} configured</dd></div><div><dt>Workloads</dt><dd>${boundedCount(workloads.length)} reconciled</dd></div><div><dt>Mutation authority</dt><dd>None granted</dd></div></dl>
-    <div class="evidence-state-detail"><div><p class="eyebrow">Source coverage</p>${sourceMarkup}</div><div><p class="eyebrow">Blockers</p>${blockerMarkup}</div></div>`);
+    <div class="evidence-state-detail"><div><h4>Source coverage</h4>${sourceMarkup}</div><div><h4>Blockers</h4>${blockerMarkup}</div></div>`);
+}
+
+function attentionAction(action) {
+  if (!action) return "";
+  return action.refresh
+    ? `<button type="button" data-evidence-refresh>${escapeHtml(action.label)}</button>`
+    : `<a class="action" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`;
 }
 
 function renderSummary() {
@@ -763,86 +734,31 @@ function renderSummary() {
   const topology = state?.topology || {};
   const topologySummary = topology.summary || {};
   const funnel = exposure?.tailscale?.funnel || {};
-  const cloudflareState = exposure?.cloudflare?.enabled ? "Enabled" : "Disabled";
-  const reasons = exceptionReasons(state, reconciliationState(state?.reconciliation));
+  const evidenceStateId = reconciliationState(state?.reconciliation);
+  const reasons = exceptionReasons(state, evidenceStateId);
   const exceptions = reasons.reduce((total, item) => total + item.count, 0);
+  const items = attentionItems(state, evidenceStateId, EVIDENCE_PRESENTATIONS[evidenceStateId]);
+  const warnings = items.filter((item) => item.tone !== "bad").length;
   const privateExposure = !funnel.observedEnabled && !exposure?.cloudflare?.enabled;
   const agents = Number(topologySummary.domainAgentsAvailable || 0);
-  summaryEl.innerHTML = [
-    ["Exceptions", exceptions, exceptions ? "bad" : "good", exceptions ? reasons.map((item) => item.text).join(" · ") : "None open"],
-    ["Workloads", workloads.length, workloads.length ? "" : "warn", workloads.length ? "" : "None registered"],
-    ["Trust domains", (topology.domains || []).filter((domain) => domain.id !== "management").length, "", ""],
-    ["Agents available", agents, workloads.length && !agents ? "bad" : "", workloads.length && !agents ? "Controls blocked" : ""],
-    ["Exposure", privateExposure ? "Private" : "Review", privateExposure ? "" : "warn", ""]
-  ].map(([label, value, tone, detail]) => `<div${tone ? ` data-tone="${tone}"` : ""}><strong>${escapeHtml(value)}</strong><span>${escapeHtml(label)}</span>${detail ? `<small>${escapeHtml(detail)}</small>` : ""}</div>`).join("");
-  renderAlertBanner();
-  exposureAlert.innerHTML = `<strong>Exposure control</strong><span>Funnel allowed in P0: ${funnel.allowedInP0 ? "yes" : "no"}. Observed Funnel: ${funnel.observedEnabled ? "yes" : "no"}. Cloudflare: ${cloudflareState.toLowerCase()}.</span>`;
-}
-
-function renderAlertBanner() {
-  const alerts = state?.alerts;
-  if (!alerts || alerts.available === false) {
-    alertBanner.dataset.state = "unavailable";
-    setLiveRegionHTML(alertBanner, "<strong>Alerts</strong><span>evaluator state unavailable; argus-alert has not reported yet</span>");
-    return;
-  }
-  const open = alerts.alerts || [];
-  alertBanner.dataset.state = open.length ? "open" : "clear";
-  const lines = open.slice(0, 5).map((item) => `${escapeHtml(item.severity)} ${escapeHtml(item.id)}: ${escapeHtml(item.detail)}`);
-  const more = open.length > 5 ? ` (+${open.length - 5} more)` : "";
-  setLiveRegionHTML(alertBanner, open.length
-    ? `<strong>${open.length} open alert${open.length === 1 ? "" : "s"}</strong><span>${lines.join(" | ")}${more}</span>`
-    : "<strong>Alerts</strong><span>no open alerts</span>");
-}
-
-function renderTopology() {
-  const topology = state?.topology || {};
-  const workloadNodes = (topology.nodes || []).filter((node) => node.kind === "workload");
-  const nodes = new Map(workloadNodes.map((node) => [node.id, node]));
   const domains = (topology.domains || []).filter((domain) => domain.id !== "management");
-  if (!selectedTopologyId || !nodes.has(selectedTopologyId)) {
-    selectedTopologyId = workloadNodes[0]?.id;
-  }
-  const selected = nodes.get(selectedTopologyId) || {};
-  const domainRows = domains.map((domain) => {
-    const rows = domain.workloadIds.map((id) => {
-      const node = nodes.get(id) || {};
-      const active = id === selectedTopologyId ? " selected" : "";
-      return `<button class="matrix-row${active}" type="button" data-focus-workload="${escapeHtml(id)}" aria-pressed="${id === selectedTopologyId}">
-        <span class="matrix-workload"><b>${escapeHtml(node.label || id)}</b><small>${escapeHtml(node.classificationStatus || "unknown")}</small></span>
-        <span class="access-value">${escapeHtml(node.declaredAccess || "none")}</span>
-        <span class="access-arrow" aria-hidden="true">→</span>
-        <span class="access-value">${escapeHtml(node.effectiveAccess || "none")}</span>
-        <span class="drift-state ${node.drift ? "has-drift" : "aligned"}">${node.drift ? "DRIFT" : "ALIGNED"}</span>
-      </button>`;
-    }).join("") || `<div class="matrix-empty"><span>No workloads assigned</span><small>Available target domain</small></div>`;
-    return `<section class="domain-group" data-domain-state="${escapeHtml(domain.state)}">
-      <header><span class="domain-state" aria-hidden="true"></span><div><h3>${escapeHtml(domain.id)}</h3><p>${escapeHtml(domain.kind)} · ${escapeHtml(domain.state)} · ${domain.workloadIds.length} workloads</p></div></header>
-      <div class="domain-workloads">${rows}</div>
-    </section>`;
-  }).join("");
-  const controlBlocked = !selected.agentAvailable;
-  const verdict = controlBlocked ? "Controls are blocked until the trust-domain agent is available." : "Controls execute through a typed, scoped trust-domain agent.";
-  topologyEl.innerHTML = `
-    <div class="matrix-stage">
-      <div class="matrix-columns" aria-hidden="true"><span>Trust domain</span><span>Workload</span><span>Declared</span><span></span><span>Effective</span><span>Status</span></div>
-      ${domainRows}
-    </div>
-    <aside class="topology-inspector" aria-live="polite">
-      <p class="inspector-kicker">SELECTED OBJECT / ${escapeHtml(selected.trustDomain || "unknown")}</p>
-      <h3>${escapeHtml(selected.label || selected.id || "No workload")}</h3>
-      <p class="inspector-state">${escapeHtml(selected.classificationStatus || "unclassified")} · admission ${escapeHtml(selected.admission || "unknown")}</p>
-      <dl class="inspector-facts">
-        <div><dt>Trust domain</dt><dd>${escapeHtml(selected.trustDomain || "-")}</dd></div>
-        <div><dt>Realm / zone</dt><dd>${escapeHtml(selected.realm || "-")} / ${escapeHtml(selected.zone || "-")}</dd></div>
-        <div><dt>Declared access</dt><dd>${escapeHtml(selected.declaredAccess || "-")}</dd></div>
-        <div><dt>Effective access</dt><dd>${escapeHtml(selected.effectiveAccess || "-")}</dd></div>
-        <div><dt>Access drift</dt><dd>${selected.drift ? "Detected" : "Aligned"}</dd></div>
-        <div><dt>Control mode</dt><dd>${escapeHtml(selected.controlMode || "-")}</dd></div>
-      </dl>
-      <div class="control-verdict ${controlBlocked ? "blocked" : ""}"><strong>${controlBlocked ? "Agent unavailable" : "Domain agent available"}</strong><span>${escapeHtml(verdict)}</span></div>
-      <button class="inspect-action" type="button" data-focus-workload="${escapeHtml(selected.id || "")}" data-open-detail="true">View workload evidence</button>
-    </aside>`;
+  const usedDomains = domains.filter((domain) => (domain.workloadIds || []).length).length;
+  attentionCount.className = `state-badge ${exceptions ? "bad" : warnings ? "warn" : "good"}`;
+  attentionCount.textContent = exceptions
+    ? `${exceptions} ${exceptions === 1 ? "exception" : "exceptions"}${warnings ? ` · ${warnings} ${warnings === 1 ? "warning" : "warnings"}` : ""}`
+    : warnings ? `None open · ${warnings} ${warnings === 1 ? "warning" : "warnings"}` : "None open";
+  setLiveRegionHTML(attentionList, items.length
+    ? items.map((item) => `<li class="attention-item" data-tone="${escapeHtml(item.tone)}"><span class="attention-tone">${item.tone === "bad" ? "Exception" : "Warning"}</span><div><strong>${escapeHtml(item.title)}</strong>${item.detail ? `<p>${escapeHtml(item.detail)}</p>` : ""}</div>${attentionAction(item.action)}</li>`).join("")
+    : '<li class="attention-item" data-tone="good"><span class="attention-tone">Clear</span><div><strong>Nothing needs attention</strong><p>No exceptions or warnings in the current state.</p></div></li>');
+  summaryEl.innerHTML = [
+    ["Workloads", workloads.length || "None registered", workloads.length ? "" : "warn"],
+    ["Trust domains", `${usedDomains} of ${domains.length} in use`, ""],
+    ["Agents available", agents, workloads.length && !agents ? "bad" : ""],
+    ["Exposure", privateExposure ? "Private" : "Review", privateExposure ? "good" : "warn"]
+  ].map(([label, value, tone]) => `<div${tone ? ` data-tone="${tone}"` : ""}><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd></div>`).join("");
+  const empty = domains.filter((domain) => !(domain.workloadIds || []).length).map((domain) => domain.id);
+  emptyDomainsEl.hidden = !empty.length;
+  emptyDomainsEl.textContent = empty.length ? `No workloads in ${empty.join(", ")}. These trust domains are available as move targets.` : "";
 }
 
 function workloadActions(urls) {
@@ -878,8 +794,9 @@ function observedAccessEvidence(workload) {
   return observations.join(" + ") || "none recorded";
 }
 
+// Why each action is unavailable, from the manifest and pins only; an offline agent is stated once for the panel.
 function operationBlockers({
-  agentAvailable,
+  sandboxReconcileOnly,
   logsAllowed,
   restartAllowed,
   backupAllowed,
@@ -890,33 +807,36 @@ function operationBlockers({
   startAllowed,
   stopAllowed
 }) {
-  const blockers = [];
-  if (!agentAvailable) blockers.push("All commands: the trust-domain agent is unavailable.");
-  if (!logsAllowed) blockers.push("Logs preview: disabled by the workload manifest.");
-  if (!restartAllowed) blockers.push("Restart: disabled by the workload manifest.");
-  if (!backupAllowed) blockers.push("Backup: no approved backup plan in the workload manifest.");
-  if (!deployAllowed) blockers.push("Deploy: disabled by the workload manifest.");
-  else if (!deployPin) blockers.push("Deploy: no immutable image pin from the tracked compose file.");
-  if (!startAllowed) blockers.push("Start: disabled by the workload manifest.");
-  if (!stopAllowed) blockers.push("Stop: disabled by the workload manifest.");
-  if (!migrationCandidate) {
-    blockers.push("Migration: the proven runtime placement does not require a managed-domain move.");
-  } else if (!migrationAllowed) {
-    blockers.push("Migration preflight: disabled by the workload manifest.");
-  }
-  return blockers;
+  const manifest = "Disabled by the workload manifest.";
+  const sandbox = sandboxReconcileOnly ? "Sandbox workloads are reconcile-only." : "";
+  return {
+    health: sandbox,
+    logs: logsAllowed ? "" : manifest,
+    restart: restartAllowed ? "" : manifest,
+    backup: backupAllowed ? "" : "No approved backup plan in the workload manifest.",
+    deploy: !deployAllowed ? manifest : deployPin ? "" : "No immutable image pin in the tracked compose file.",
+    start: startAllowed ? "" : manifest,
+    stop: stopAllowed ? "" : manifest,
+    access: sandbox,
+    move: !migrationCandidate ? "Runtime placement already matches the declared domain." : migrationAllowed ? "" : "Migration preflight is disabled by the workload manifest."
+  };
+}
+
+function actionRow(workloadId, key, control, purpose, reason) {
+  const noteId = `action-${workloadId}-${key}`;
+  return `<li class="action-row${reason ? " is-blocked" : ""}">${control.replace("<button ", `<button aria-describedby="${escapeHtml(noteId)}" `)}<small id="${escapeHtml(noteId)}">${escapeHtml(reason || purpose)}</small></li>`;
 }
 
 function renderWorkloadReconciliation(workloadId) {
   const row = state?.reconciliation?.workloads?.find((item) => item.id === workloadId);
   if (!row) {
-    return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><p class="eyebrow">D5 evidence</p><strong>Unavailable</strong><p>No sanitized reconciliation row is available for this workload.</p></div><span class="state-badge info">Incomplete</span></section>`;
+    return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><h4>Reconciliation</h4><strong>Unavailable</strong><p>No sanitized reconciliation row is available for this workload.</p></div><span class="state-badge info">Incomplete</span></section>`;
   }
   const sources = Array.isArray(row.matchedSourceIds) ? row.matchedSourceIds.slice(0, 6).map((sourceId) => safeEvidenceToken(sourceId)) : [];
   const blockers = Array.isArray(row.blockers) ? row.blockers.slice(0, 4) : [];
   const stateId = safeEvidenceToken(row.state || "incomplete");
   const blockerText = blockers.length ? blockers.map(reconciliationBlockerLabel).join(" · ") : "No row blockers reported";
-  return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><p class="eyebrow">D5 evidence</p><strong>${escapeHtml(stateId)}</strong><p>${sources.length ? `Matched source${sources.length === 1 ? "" : "s"}: ${escapeHtml(sources.join(", "))}.` : "No matching source identity."} ${escapeHtml(blockerText)}.</p></div><dl><div><dt>Mutation authority</dt><dd>None granted</dd></div><div><dt>Evidence digests</dt><dd>${boundedCount(Array.isArray(row.evidenceDigests) ? row.evidenceDigests.length : 0)} recorded</dd></div></dl></section>`;
+  return `<section class="workload-reconciliation" aria-label="${escapeHtml(workloadId)} reconciliation evidence"><div><h4>Reconciliation</h4><strong>${escapeHtml(stateId)}</strong><p>${sources.length ? `Matched source${sources.length === 1 ? "" : "s"}: ${escapeHtml(sources.join(", "))}.` : "No matching source identity."} ${escapeHtml(blockerText)}.</p></div><dl><div><dt>Mutation authority</dt><dd>None granted</dd></div><div><dt>Evidence digests</dt><dd>${boundedCount(Array.isArray(row.evidenceDigests) ? row.evidenceDigests.length : 0)} recorded</dd></div></dl></section>`;
 }
 
 function renderWorkload(workload) {
@@ -935,6 +855,7 @@ function renderWorkload(workload) {
   const error = access.lastError || "";
   const healthLabel = health.enabled ? "configured" : "not configured";
   const topologyNode = state?.topology?.nodes?.find((node) => node.id === id) || {};
+  const trustDomain = topologyNode.trustDomain || "legacy-rootful";
   const agentAvailable = Boolean(topologyNode.agentAvailable);
   const sandboxReconcileOnly = workload.actions?.sandboxReconcileOnly === true;
   const healthAllowed = !sandboxReconcileOnly;
@@ -950,7 +871,6 @@ function renderWorkload(workload) {
     operations.migrationPreflightAllowed === true
     || operations.migrationPreflight?.allowed === true
   );
-  const migrationStatus = String(migration.status || "");
   const declaredDomain = String(topologyNode.trustDomain || "");
   const runtimeDomain = String(topologyNode.runtimeTrustDomain || "");
   const migrationCandidate = Boolean(
@@ -963,7 +883,7 @@ function renderWorkload(workload) {
   const healthState = healthPresentation(health);
   const freshness = freshnessPresentation(healthEvidenceAt, HEALTH_STALE_SECONDS);
   const blockers = operationBlockers({
-    agentAvailable,
+    sandboxReconcileOnly,
     logsAllowed,
     restartAllowed,
     backupAllowed,
@@ -974,51 +894,85 @@ function renderWorkload(workload) {
     startAllowed,
     stopAllowed
   });
+  const wid = escapeHtml(id);
+  const enabled = (allowed) => (allowed && agentAvailable ? "" : "disabled");
+  const opButton = (action, label, allowed, extra = "") => `<button type="button" data-operation="${action}" data-workload="${wid}"${extra} ${enabled(allowed)}>${label}</button>`;
   return `
     <article
       class="workload"
-      data-workload="${escapeHtml(id)}"
+      data-workload="${wid}"
       data-health="${escapeHtml(healthState.label.toLowerCase())}"
       data-privacy="${escapeHtml(privacy.privacy || "")}"
       data-access="${escapeHtml(access.effective || "")}"
       data-migration="${escapeHtml(migration.status || "")}"
     >
       <div class="workload-overview">
-        <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${escapeHtml(id)}</small></span>
-        <span data-label="Trust domain"><strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        <span data-label="Health"><strong class="tone-${healthState.tone}" data-health-verdict="${escapeHtml(id)}">${escapeHtml(healthState.label)}</strong><small>${escapeHtml(healthState.detail)}</small></span>
-        <span data-label="Effective access"><strong>${escapeHtml(effectiveAccess)}</strong><small>${accessDrift ? "Drift from declared access" : "Aligned"}</small></span>
-        <span data-label="Evidence"><strong class="tone-${freshness.tone}" data-health-freshness="${escapeHtml(id)}">${escapeHtml(freshness.label)}</strong><small>${escapeHtml(freshness.age)}</small></span>
-        <a class="inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${escapeHtml(id)}">Inspect</a>
+        <span class="workload-identity"><strong>${escapeHtml(workload.name || id)}</strong><small>${wid}</small></span>
+        <span data-label="Trust domain"><strong>${escapeHtml(trustDomain)}</strong></span>
+        <span data-label="Health"><strong class="tone-${healthState.tone}" data-health-verdict="${wid}">${escapeHtml(healthState.label)}</strong><small>${escapeHtml(healthState.detail)}</small></span>
+        <span data-label="Access"><strong>${escapeHtml(effectiveAccess)}</strong><small class="${accessDrift ? "tone-bad" : ""}">${accessDrift ? `Drift: declared ${escapeHtml(desiredAccess)}` : "Matches declared"}</small></span>
+        <span data-label="Evidence"><strong class="tone-${freshness.tone}" data-health-freshness="${wid}">${escapeHtml(freshness.label)}</strong><small>${escapeHtml(freshness.age)}</small></span>
+        <a class="action inspect-action" href="#/workloads/${encodeURIComponent(id)}" data-open-workload="${wid}">Inspect</a>
       </div>
-      <div class="workload-detail" data-workload-detail="${escapeHtml(id)}" hidden>
+      <div class="workload-detail" data-workload-detail="${wid}" hidden>
       <div class="workload-head">
         <div>
           <h2>${escapeHtml(workload.name || id)}</h2>
           <p>${escapeHtml(workload.description || "")}</p>
         </div>
-        <div class="detail-heading-actions"><code>${escapeHtml(id)}</code><a class="detail-close" href="#workloads-heading" aria-label="Close ${escapeHtml(workload.name || id)} details">Close</a></div>
+        <div class="detail-heading-actions"><code>${wid}</code><a class="action detail-close" href="#workloads-heading" aria-label="Close ${escapeHtml(workload.name || id)} details">Close</a></div>
       </div>
-      <div class="workload-status">
-        <div class="pills" aria-label="Primary workload state">
-        ${pill("life", workload.lifecycle)}
-        ${pill("privacy", privacy.privacy)}
-        ${pill("effective", access.effective)}
-        ${pill("migration", migration.status)}
-        </div>
-        <div class="workload-context" aria-label="Access and control evidence">
-          <span>Declared access<strong>${escapeHtml(desiredAccess)}</strong></span>
-          <span>Observed access<strong>${escapeHtml(observedAccessEvidence(workload))}</strong></span>
-          <span>Effective access<strong>${escapeHtml(effectiveAccess)}</strong></span>
-          <span class="${accessDrift ? "drift" : ""}">Alignment<strong>${accessDrift ? "Drift detected" : "Aligned"}</strong></span>
-          <span>Health evidence<strong>${escapeHtml(`${freshness.label} · ${freshness.age}`)}</strong></span>
-          <span>Trust domain<strong>${escapeHtml(topologyNode.trustDomain || "legacy-rootful")}</strong></span>
-        </div>
-      </div>
-      ${renderWorkloadReconciliation(id)}
+      <dl class="workload-context" aria-label="Access and control evidence">
+        <div><dt>Declared access</dt><dd>${escapeHtml(desiredAccess)}</dd></div>
+        <div><dt>Observed access</dt><dd>${escapeHtml(observedAccessEvidence(workload))}</dd></div>
+        <div class="${accessDrift ? "drift" : ""}"><dt>Effective access</dt><dd>${escapeHtml(effectiveAccess)}${accessDrift ? " · drift" : ""}</dd></div>
+        <div><dt>Health evidence</dt><dd>${escapeHtml(`${freshness.label} · ${freshness.age}`)}</dd></div>
+        <div><dt>Trust domain</dt><dd>${escapeHtml(trustDomain)}</dd></div>
+        <div><dt>Lifecycle</dt><dd>${escapeHtml(workload.lifecycle || "-")}</dd></div>
+        <div><dt>Privacy</dt><dd>${escapeHtml(privacy.privacy || "-")}</dd></div>
+        <div><dt>Migration</dt><dd>${escapeHtml(migration.status || "-")}</dd></div>
+      </dl>
       ${error ? `<details class="workload-notice"><summary>Access requires reconciliation</summary><p>${escapeHtml(error)}</p></details>` : ""}
+      <section class="workload-controls" aria-labelledby="actions-${wid}">
+        <div class="control-head">
+          <h3 id="actions-${wid}">Actions</h3>
+          <p class="agent-state ${agentAvailable ? "available" : "offline"}">${agentAvailable ? "Domain agent available" : "Domain agent offline"}</p>
+          <div class="workload-links">${workloadActions(urls)}</div>
+        </div>
+        ${agentAvailable ? "" : `<p class="control-blocked">Every action is blocked until the ${escapeHtml(trustDomain)} agent reports in.</p>`}
+        <div class="action-groups">
+          <div class="action-group">
+            <h4>Check</h4>
+            <ul class="action-list">
+              ${actionRow(id, "health", opButton("health-preview", "Refresh health", healthAllowed), "Run the typed health check now.", blockers.health)}
+              ${actionRow(id, "logs", opButton("logs-preview", "Logs preview", logsAllowed), "Show recent redacted log lines.", blockers.logs)}
+            </ul>
+          </div>
+          <div class="action-group">
+            <h4>Change</h4>
+            <p class="action-hint">Click once to preview and get a confirmation phrase. Type it here, then click again to run. A fresh authenticator code may be required.</p>
+            <label class="confirm-field">Confirmation phrase <input type="text" autocomplete="off" spellcheck="false" data-confirm="${wid}" placeholder="${wid}"></label>
+            <ul class="action-list">
+              ${actionRow(id, "restart", opButton("restart-apply", "Restart", restartAllowed), "Restart the workload's containers.", blockers.restart)}
+              ${actionRow(id, "backup", opButton("backup-apply", "Back up", backupAllowed), "Create a backup with the manifest's plan.", blockers.backup)}
+              ${actionRow(id, "deploy", opButton("deploy-apply", "Deploy", deployAllowed && deployPin, ` data-target-revision="${escapeHtml(deployPin)}"`), deployPin ? `Deploy pinned image ${deployPin.slice(0, 19)}…` : "Deploy the pinned image.", blockers.deploy)}
+              ${actionRow(id, "start", opButton("start-apply", "Start", startAllowed), "Start the workload.", blockers.start)}
+              ${actionRow(id, "stop", opButton("stop-apply", "Stop", stopAllowed), "Stop the workload.", blockers.stop)}
+              <li class="action-row action-row-access${blockers.access ? " is-blocked" : ""}"><button type="button" data-apply="${wid}" aria-describedby="action-${wid}-access" ${enabled(accessAllowed)}>Change access</button><label>to <select data-action="access" data-workload="${wid}" ${accessAllowed ? "" : "disabled"}></select></label><small id="action-${wid}-access">${escapeHtml(blockers.access || `Currently declared ${desiredAccess}.`)}</small></li>
+              ${actionRow(id, "move", `<button type="button" data-migration-create="${wid}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Managed move</button>`, `Move to ${declaredDomain || "the declared domain"}.`, blockers.move)}
+            </ul>
+          </div>
+        </div>
+        <div class="operation-history" data-operation-history="${wid}" aria-live="polite">
+          <div class="history-head"><strong>Durable history</strong><span>Loading</span></div>
+        </div>
+        <div class="operation-history" data-migration-history="${wid}" aria-live="polite">
+          <div class="history-head"><strong>Migration parent</strong><span>Loading</span></div>
+        </div>
+      </section>
       <details class="workload-evidence">
-        <summary><span>Technical evidence</span><small>12 fields</small></summary>
+        <summary><span>Technical evidence</span><small>Reconciliation, runtime, reachability</small></summary>
+        ${renderWorkloadReconciliation(id)}
         <div class="fact-groups">
           <section>
             <h3>Runtime</h3>
@@ -1042,79 +996,36 @@ function renderWorkload(workload) {
             <h3>Controls</h3>
             <dl class="facts">
               <div><dt>Cloudflare</dt><dd>${escapeHtml(cloudflare.mode || "disabled")}</dd></div>
-              <div><dt>Operations</dt><dd>logs ${escapeHtml(logsAllowed)}, restart ${escapeHtml(restartAllowed)}</dd></div>
               <div><dt>Backup target</dt><dd>${escapeHtml(backup.destination || "-")}</dd></div>
               <div><dt>Last event</dt><dd>${escapeHtml(lastEvent.action || "-")} ${escapeHtml(lastEvent.result || "")}</dd></div>
             </dl>
           </section>
         </div>
       </details>
-      <section class="workload-controls" aria-label="${escapeHtml(id)} controls">
-        <div class="control-head">
-          <div><p class="control-label">Operations</p><p class="agent-state ${agentAvailable ? "available" : "offline"}">${agentAvailable ? "Domain agent available" : "Domain agent offline"}</p></div>
-          <div class="workload-links">${workloadActions(urls)}</div>
-        </div>
-        <div class="operation-row">
-          <span class="control-label">Inspect</span>
-          <button type="button" data-operation="health-preview" data-workload="${escapeHtml(id)}" ${healthAllowed && agentAvailable ? "" : "disabled"}>Refresh health</button>
-          <button type="button" data-operation="logs-preview" data-workload="${escapeHtml(id)}" ${logsAllowed && agentAvailable ? "" : "disabled"}>Logs preview</button>
-        </div>
-        <details class="more-operations">
-          <summary>More operations</summary>
-          <div class="operation-row">
-            <button type="button" data-operation="restart-preview" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart plan</button>
-            <button type="button" data-operation="backup-preview" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup plan</button>
-            <button type="button" data-operation="migration-plan" data-workload="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Review managed move</button>
-          </div>
-        </details>
-        ${blockers.length ? `<details class="operation-blockers"><summary>${blockers.length} blocking ${blockers.length === 1 ? "condition" : "conditions"}</summary><ul aria-label="Disabled operation reasons">${blockers.map((reason) => `<li>${escapeHtml(reason)}</li>`).join("")}</ul></details>` : ""}
-        <div class="operation-history" data-operation-history="${escapeHtml(id)}" aria-live="polite">
-          <div class="history-head"><strong>Durable history</strong><span>Loading</span></div>
-        </div>
-      </section>
-      <div class="admin-row" hidden>
-        <div class="admin-heading"><strong>Mutation controls</strong><span>Step-up and typed confirmation required</span></div>
-        <label>Access <select data-action="access" data-workload="${escapeHtml(id)}" ${accessAllowed ? "" : "disabled"}></select></label>
-        <label>Confirm <input type="text" autocomplete="off" data-confirm="${escapeHtml(id)}" placeholder="${escapeHtml(id)}"></label>
-        <button type="button" data-preview="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Preview</button>
-        <button type="button" data-apply="${escapeHtml(id)}" ${accessAllowed && agentAvailable ? "" : "disabled"}>Apply</button>
-        <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart apply</button>
-        <button type="button" data-operation="backup-apply" data-workload="${escapeHtml(id)}" ${backupAllowed && agentAvailable ? "" : "disabled"}>Backup apply</button>
-        <div class="operation-row" data-lifecycle="${escapeHtml(id)}">
-          <span class="control-label">Lifecycle</span>
-          <button type="button" data-operation="deploy-apply" data-workload="${escapeHtml(id)}" data-target-revision="${escapeHtml(deployPin)}" ${deployAllowed && deployPin && agentAvailable ? "" : "disabled"}>Deploy</button>
-          <button type="button" data-operation="start-apply" data-workload="${escapeHtml(id)}" ${startAllowed && agentAvailable ? "" : "disabled"}>Start</button>
-          <button type="button" data-operation="stop-apply" data-workload="${escapeHtml(id)}" ${stopAllowed && agentAvailable ? "" : "disabled"}>Stop</button>
-          <button type="button" data-operation="restart-apply" data-workload="${escapeHtml(id)}" ${restartAllowed && agentAvailable ? "" : "disabled"}>Restart</button>
-          <small>${deployPin ? `Deploy target ${escapeHtml(deployPin)}` : "Deploy target unavailable"}. Run once to preview, type the shown phrase, run again to confirm.</small>
-        </div>
-        <button type="button" data-migration-create="${escapeHtml(id)}" ${migrationAllowed && migrationCandidate ? "" : "disabled"}>Approve managed move</button>
-      </div>
-      <div class="operation-history" data-migration-history="${escapeHtml(id)}" aria-live="polite">
-        <div class="history-head"><strong>Migration parent</strong><span>Loading</span></div>
-      </div>
       </div>
     </article>
   `;
 }
 
-function renderPlans() {
+function renderSystem() {
   const route = state?.routes?.dashboard || {};
   const api = state?.routes?.api || {};
   const exposure = state?.exposure?.providers || {};
+  const funnel = exposure?.tailscale?.funnel || {};
   const monitoring = state?.monitoring || {};
   const workloads = state?.workloads || [];
   const backupPlans = workloads.filter((item) => item.backup?.status).length;
   const healthEvidence = workloads.map((item) => item.health?.lastObservedAt || item.migration?.lastHealthCheck).filter((value) => Number.isFinite(Date.parse(value))).sort();
   const oldest = freshnessPresentation(healthEvidence[0] || "", HEALTH_STALE_SECONDS);
   routeSummary.textContent = `${workloads.length} workloads · oldest health evidence ${oldest.label.toLowerCase()} (${oldest.age})`;
-  document.querySelector("#access-plan p").textContent = "Desired and effective access remain separate. Cloudflare states are planned until explicitly applied by policy.";
-  document.querySelector("#access-plan code").textContent = `API ${api.bind || "127.0.0.1"}:${api.port || "8099"}`;
-  document.querySelector("#backup-plan p").textContent = `${backupPlans} workloads have manifest-backed backup metadata. Backup runs remain blocked unless the workload manifest allows them.`;
-  document.querySelector("#cloudflare-plan p").textContent = exposure.cloudflare?.enabled ? "Cloudflare provider is enabled by policy." : "Cloudflare is disabled. Quick tunnels and named tunnels are blocked until an explicit later phase changes policy.";
-  document.querySelector("#cloudflare-plan code").textContent = exposure.cloudflare?.configPath || "-";
-  document.querySelector("#system-plan p").textContent = `Monitor refresh ${monitoring.refreshSeconds || 3}s. Dashboard remains view-only without admin mode.`;
-  document.querySelector("#system-plan code").textContent = route.url || "-";
+  systemFactsEl.innerHTML = [
+    ["Tailscale Funnel", `${funnel.observedEnabled ? "On" : "Off"} · ${funnel.allowedInP0 ? "allowed" : "not allowed"} in P0`, funnel.observedEnabled ? "bad" : ""],
+    ["Cloudflare provider", exposure.cloudflare?.enabled ? "Enabled by policy" : "Disabled", exposure.cloudflare?.enabled ? "warn" : "", exposure.cloudflare?.configPath],
+    ["Dashboard", route.url || "-", ""],
+    ["API", `${api.bind || "127.0.0.1"}:${api.port || "8099"}`, ""],
+    ["Backups", `${backupPlans} of ${workloads.length} workloads have a backup plan`, "", "/srv/argus/runtime/backups"],
+    ["Monitor refresh", `${monitoring.refreshSeconds || 3}s`, ""]
+  ].map(([label, value, tone, path]) => `<div${tone ? ` data-tone="${tone}"` : ""}><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}${path ? `<code>${escapeHtml(path)}</code>` : ""}</dd></div>`).join("");
 }
 
 function renderEvents() {
@@ -1125,7 +1036,6 @@ function renderEvents() {
 function renderDashboard() {
   renderEvidenceState();
   renderSummary();
-  renderTopology();
   renderStages();
   // Down first, then Unknown, then Healthy; sort is stable so registry order holds within a verdict.
   const workloads = [...(state.workloads || [])].sort((a, b) => healthPresentation(b.health).rank - healthPresentation(a.health).rank);
@@ -1133,10 +1043,10 @@ function renderDashboard() {
     ? workloads.map(renderWorkload).join("")
     : '<p class="history-empty"><strong>No workloads registered.</strong> Registered workloads appear here with health, access, and evidence freshness.</p>';
   if (!csrfToken) document.getElementById("activity").innerHTML = '<p class="history-empty">Sign in to view recent operations.</p>';
-  renderPlans();
+  renderSystem();
   renderEvents();
+  fillAdminControls();
   syncWorkloadRoute();
-  if (adminEnabled) fillAdminControls();
 }
 
 function syncWorkloadRoute() {
@@ -1160,6 +1070,9 @@ function syncWorkloadRoute() {
   }
   routeSummary.textContent = `Inspecting ${workloadId}`;
   detail.querySelector(".detail-close")?.focus({ preventScroll: true });
+  // Inspect is a hash link with no matching id, so scroll ourselves. Instant: the browser's own
+  // fragment handling cancels a smooth scroll started from hashchange.
+  detail.closest(".workload")?.scrollIntoView({ block: "start", behavior: "instant" });
 }
 
 window.addEventListener("hashchange", syncWorkloadRoute);
@@ -1219,14 +1132,14 @@ function renderStateAge() {
 function renderStateUnavailable() {
   const unavailable = "Unavailable: dashboard state not loaded.";
   routeSummary.textContent = "Estate state unavailable";
-  summaryEl.innerHTML = '<div data-tone="bad"><strong>Unavailable</strong><span>Estate summary</span><small>Exceptions cannot be counted without dashboard state</small></div>';
+  summaryEl.innerHTML = '<div data-tone="bad"><dt>Estate summary</dt><dd>Unavailable</dd></div>';
   renderEvidenceState({ status: "unavailable" });
-  alertBanner.dataset.state = "unavailable";
-  setLiveRegionHTML(alertBanner, `<strong>Alerts</strong><span>${unavailable}</span>`);
-  exposureAlert.innerHTML = `<strong>Exposure control</strong><span>${unavailable}</span>`;
-  ["#access-plan p", "#backup-plan p", "#cloudflare-plan p", "#system-plan p"].forEach((selector) => { document.querySelector(selector).textContent = unavailable; });
+  attentionCount.className = "state-badge bad";
+  attentionCount.textContent = "Unavailable";
+  setLiveRegionHTML(attentionList, `<li class="attention-item" data-tone="bad"><span class="attention-tone">Exception</span><div><strong>Exceptions cannot be counted</strong><p>${unavailable}</p></div></li>`);
+  systemFactsEl.innerHTML = `<div><dt>System</dt><dd>${unavailable}</dd></div>`;
   document.getElementById("stages").innerHTML = `<p class="history-empty">${unavailable}</p>`;
-  topologyEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
+  emptyDomainsEl.hidden = true;
   workloadsEl.innerHTML = `<p class="history-empty">${unavailable}</p>`;
   eventsEl.innerHTML = "<li>No dashboard state loaded.</li>";
 }
@@ -1515,10 +1428,6 @@ function fillAdminControls() {
 function setAdmin(open) {
   adminEnabled = open;
   signinForm.hidden = !(open && (operatorSessionState !== "authenticated" || pendingStepUp));
-  if (open && operatorSessionState === "authenticated") fillAdminControls();
-  document.querySelectorAll(".admin-row").forEach((row) => {
-    row.hidden = !(open && operatorSessionState === "authenticated");
-  });
 }
 
 workloadDiscoverButton.addEventListener("click", async () => {
@@ -1624,16 +1533,6 @@ document.addEventListener("click", async (event) => {
     workloadDiscoverButton.click();
     return;
   }
-  const focus = event.target.closest("[data-focus-workload]");
-  if (focus) {
-    selectedTopologyId = focus.dataset.focusWorkload;
-    renderTopology();
-    if (focus.dataset.openDetail === "true") {
-      location.hash = `#/workloads/${encodeURIComponent(selectedTopologyId)}`;
-      document.querySelector(`.workload[data-workload="${CSS.escape(selectedTopologyId)}"]`)?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
-    return;
-  }
   const resumeApproval = event.target.closest("[data-resume-operation]");
   if (resumeApproval) {
     if (!csrfToken) {
@@ -1714,7 +1613,7 @@ document.addEventListener("click", async (event) => {
       }
       const confirmation = row?.querySelector("[data-confirm]")?.value || "";
       if (confirmation !== preview.confirmationPhrase) {
-        showCommandResult("Confirmation required", `Type ${preview.confirmationPhrase} in the confirmation field before approving this move.`);
+        showCommandResult(`${workload} managed move preview`, { ...preview, confirmationRequired: `Type "${preview.confirmationPhrase}" in the confirmation field, then click Managed move again.` });
         return;
       }
       if (!(await ensureStepUp())) return;
@@ -1751,15 +1650,6 @@ document.addEventListener("click", async (event) => {
       showCommandResult("Operator session required", "Authenticate before running operations.");
       return;
     }
-    if (action === "migration-plan") {
-      try {
-        const result = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/migration/preview`, {});
-        showCommandResult(`${workload} managed move preview`, result.payload);
-      } catch (error) {
-        showCommandResult("Migration preview failed", error.message);
-      }
-      return;
-    }
     const confirmation = row?.querySelector("[data-confirm]")?.value || "";
     try {
       const definition = resolveOperation(action);
@@ -1778,11 +1668,10 @@ document.addEventListener("click", async (event) => {
     }
     return;
   }
-  const preview = event.target.closest("[data-preview]");
   const apply = event.target.closest("[data-apply]");
-  if (!preview && !apply) return;
-  const workload = (preview || apply).dataset.preview || (preview || apply).dataset.apply;
-  const row = (preview || apply).closest(".workload");
+  if (!apply) return;
+  const workload = apply.dataset.apply;
+  const row = apply.closest(".workload");
   if (!csrfToken) {
     showCommandResult("Operator session required", "Authenticate before changing access.");
     return;
@@ -1791,25 +1680,18 @@ document.addEventListener("click", async (event) => {
   const accessTarget = selectedValue(row, 'select[data-action="access"]');
   const confirmation = selectedValue(row, "[data-confirm]");
   const accessChanged = accessTarget && accessTarget !== current.access?.desired;
-  if (preview) {
-    try {
-      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
-        operationType: "access.apply",
-        parameters: { desired: accessTarget }
-      });
-      showCommandResult(`${workload} access preview`, accessPreview.payload);
-    } catch (error) {
-      showCommandResult("Preview failed", error.message);
-    }
-    return;
-  }
   if (!accessChanged) {
-    showCommandResult(`${workload} apply`, "No access change selected.");
+    showCommandResult(`${workload} access`, "Pick a different access level first.");
     return;
   }
   try {
     if (confirmation !== workload) {
-      showCommandResult("Confirmation required", `Type ${workload} before applying access.`);
+      // First click previews; the operator types the workload ID and clicks again to apply.
+      const accessPreview = await apiPost(`/api/workloads/${encodeURIComponent(workload)}/operations/preview`, {
+        operationType: "access.apply",
+        parameters: { desired: accessTarget }
+      });
+      showCommandResult(`${workload} access preview`, { ...accessPreview.payload, confirmationRequired: `Type "${workload}" in the confirmation field, then click Change access again.` });
       return;
     }
     if (!(await ensureStepUp())) return;
@@ -1846,11 +1728,6 @@ document.addEventListener("keydown", (event) => {
     closeCommandPanel();
     return;
   }
-  const focus = event.target.closest('[role="button"][data-focus-workload]');
-  if (!focus || !["Enter", " "].includes(event.key)) return;
-  event.preventDefault();
-  selectedTopologyId = focus.dataset.focusWorkload;
-  renderTopology();
 });
 
 setTheme(document.documentElement.dataset.theme);
