@@ -1,0 +1,203 @@
+#!/usr/bin/env python3
+"""Edit on the Mac, run on the server: build a dev image here, run it in personal-sandbox (D029).
+
+  argus-dev test     [--dir DIR] [--reuse TAG] [-- COMMAND...]   build, ship, run the tests, fetch /out
+  argus-dev preview  [--dir DIR] [--reuse TAG] [--slot N]        build, ship, serve on the slot's tailnet port
+  argus-dev load     [--dir DIR]                                 build and ship only; prints the tag
+  argus-dev results RUN [--dir DIR] | logs RUN
+  argus-dev stop (--slot N | --run RUN) | status | gc | purge
+
+The project directory holds argus-dev.json (see docs/DEV_ENV_PROTOCOL.md). The image is
+built for linux/amd64 by the Mac's Docker (OrbStack) with dependencies baked in, because
+the sandbox has no egress. Nothing runs on the Mac. The server side is
+scripts/argus-dev-sandbox, called with `ssh $ARGUS_SSH_HOST sudo -n` (default host
+oreochiserver, repo $ARGUS_REMOTE_REPO, default /srv/argus; /opt/argus/current once the
+root-owned release is live). Results land in ~/.cache/argus-dev/<project>/<run>/.
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tarfile
+import time
+from typing import Any
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+
+from argus_release import ReleaseError, ssh_target  # noqa: E402
+
+PROJECT_FILE = "argus-dev.json"
+PROJECT = re.compile(r"[a-z][a-z0-9-]{0,30}")
+TAG = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+RUN = re.compile(r"[a-z][a-z0-9-]{0,30}-[0-9]{8}t[0-9]{6}z-[0-9a-f]{6}")
+CACHE = Path(os.environ.get("ARGUS_DEV_CACHE", Path.home() / ".cache" / "argus-dev"))
+
+
+class DevError(Exception):
+    def __init__(self, message: str, status: int = 2) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def load_project(directory: Path) -> dict[str, Any]:
+    path = directory / PROJECT_FILE
+    try:
+        spec = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise DevError(f"cannot read {path}: {error}") from error
+    if not isinstance(spec, dict) or not isinstance(spec.get("project"), str) or not PROJECT.fullmatch(spec["project"]):
+        raise DevError(f"{path}: project must match [a-z][a-z0-9-]{{0,30}}")
+    for section in ("build", "test", "preview"):
+        if not isinstance(spec.get(section, {}), dict):
+            raise DevError(f"{path}: {section} must be an object")
+    return spec
+
+
+def request(spec: dict[str, Any], mode: str, tag: str, command: list[str] | None = None, slot: int | None = None) -> dict[str, Any]:
+    """The stdin request for argus-dev-sandbox test|preview. The server validates it again."""
+    payload = {"project": spec["project"], "image": f"argus-dev/{spec['project']}:{tag}", **spec.get(mode, {})}
+    if spec.get("services"):
+        payload["services"] = spec["services"]
+    if command:
+        payload["command"] = command
+    if slot is not None:
+        payload["slot"] = slot
+    return payload
+
+
+def remote(verb: str) -> list[str]:
+    host, repo = ssh_target()
+    return ["ssh", "-o", "BatchMode=yes", host, "sudo", "-n", f"{repo}/scripts/argus-dev-sandbox", verb]
+
+
+def build(directory: Path, spec: dict[str, Any]) -> str:
+    tag = time.strftime("%Y%m%dt%H%M%Sz", time.gmtime())
+    options = spec.get("build", {})
+    command = ["docker", "build", "--platform", "linux/amd64", "--tag", f"argus-dev/{spec['project']}:{tag}",
+               "--file", str(directory / options.get("dockerfile", "Dockerfile"))]
+    if options.get("target"):
+        command += ["--target", str(options["target"])]
+    command.append(str(directory / options.get("context", ".")))
+    if subprocess.run(command, check=False).returncode != 0:
+        raise DevError("docker build failed", 1)
+    return tag
+
+
+def ship(spec: dict[str, Any], tag: str) -> None:
+    reference = f"argus-dev/{spec['project']}:{tag}"
+    save = subprocess.Popen(["docker", "save", reference], stdout=subprocess.PIPE)
+    try:
+        status = subprocess.run(remote("load"), stdin=save.stdout, check=False).returncode
+    finally:
+        save.stdout.close()
+        save.wait()
+    if save.returncode != 0 or status != 0:
+        raise DevError(f"shipping {reference} failed (docker save {save.returncode}, server load {status})", 1)
+    # shortcut: every load ships the whole image; ship only new layers if transfers get too slow.
+    subprocess.run(["docker", "image", "rm", reference], stdout=subprocess.DEVNULL, check=False)
+
+
+def call(verb: str, payload: Any = None) -> subprocess.CompletedProcess[bytes]:
+    data = json.dumps(payload).encode() if payload is not None else b""
+    return subprocess.run(remote(verb), input=data, check=False)
+
+
+def run_test(spec: dict[str, Any], tag: str, command: list[str]) -> int:
+    process = subprocess.Popen(remote("test"), stdin=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    process.stdin.write(json.dumps(request(spec, "test", tag, command)))
+    process.stdin.close()
+    run_id = None
+    for line in process.stderr:
+        sys.stderr.write(line)
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get("event") == "run-started" and RUN.fullmatch(str(event.get("run"))):
+            run_id = event["run"]
+    status = process.wait()
+    if run_id:
+        fetch_results(spec["project"], run_id)
+    return status
+
+
+def fetch_results(project: str, run_id: str) -> Path | None:
+    destination = CACHE / project / run_id
+    destination.mkdir(parents=True, exist_ok=True)
+    process = subprocess.Popen(remote("results"), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    process.stdin.write(json.dumps({"run": run_id}).encode())
+    process.stdin.close()
+    try:
+        with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
+            archive.extractall(destination, filter="data")  # untrusted: no links out, no absolute paths, no devices
+    except tarfile.TarError:
+        process.wait()
+        print(f"argus-dev: no results for {run_id} (the test wrote nothing to /out)", file=sys.stderr)
+        return None
+    process.wait()
+    print(f"argus-dev: results in {destination}", file=sys.stderr)
+    return destination
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = parser.add_subparsers(dest="verb", required=True)
+    for verb in ("test", "preview", "load"):
+        item = sub.add_parser(verb)
+        item.add_argument("--dir", type=Path, default=Path.cwd())
+        if verb != "load":
+            item.add_argument("--reuse", metavar="TAG", help="skip build and load; run an image already loaded")
+        if verb == "test":
+            item.add_argument("command", nargs="*", help="overrides test.command after --")
+        if verb == "preview":
+            item.add_argument("--slot", type=int, default=1)
+    for verb in ("results", "logs"):
+        item = sub.add_parser(verb)
+        item.add_argument("run")
+        item.add_argument("--dir", type=Path, default=Path.cwd())
+    stop = sub.add_parser("stop")
+    target = stop.add_mutually_exclusive_group(required=True)
+    target.add_argument("--slot", type=int)
+    target.add_argument("--run")
+    for verb in ("status", "gc", "purge"):
+        sub.add_parser(verb)
+    args = parser.parse_args(argv)
+    try:
+        if args.verb in ("test", "preview", "load"):
+            spec = load_project(args.dir.resolve())
+            tag = getattr(args, "reuse", None)
+            if tag and not TAG.fullmatch(tag):
+                raise DevError("--reuse takes a tag such as 20261121t100000z")
+            if not tag:
+                tag = build(args.dir.resolve(), spec)
+                ship(spec, tag)
+            if args.verb == "load":
+                print(tag)
+                return 0
+            if args.verb == "test":
+                return run_test(spec, tag, args.command)
+            return call("preview", request(spec, "preview", tag, slot=args.slot)).returncode
+        if args.verb == "results":
+            return 0 if fetch_results(load_project(args.dir.resolve())["project"], args.run) else 1
+        if args.verb in ("logs",):
+            return call("logs", {"run": args.run}).returncode
+        if args.verb == "stop":
+            return call("stop", {"slot": args.slot} if args.slot is not None else {"run": args.run}).returncode
+        return call(args.verb).returncode
+    except ReleaseError as error:
+        print(f"argus-dev: {error}", file=sys.stderr)
+        return 2
+    except DevError as error:
+        print(f"argus-dev: {error}", file=sys.stderr)
+        return error.status
+
+
+if __name__ == "__main__":
+    sys.exit(main())

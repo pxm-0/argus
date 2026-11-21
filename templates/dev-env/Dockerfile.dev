@@ -1,0 +1,17 @@
+# Dev image template (Argus docs/DEV_ENV_PROTOCOL.md). Copy to <repo>/Dockerfile.dev.
+#
+# argus-dev builds this on the Mac for linux/amd64 and runs it in personal-sandbox,
+# which has no network egress. So everything the tests and the dev server need must be
+# in the image: dependencies, browsers for Playwright, fonts (next/font/google fetches at
+# build time, so self-host fonts or build them in here). Pin base images by digest.
+FROM node:24-bookworm-slim AS dev
+ENV NEXT_TELEMETRY_DISABLED=1 CI=1
+RUN corepack enable
+WORKDIR /app
+COPY package.json pnpm-lock.yaml ./
+RUN pnpm install --frozen-lockfile
+COPY . .
+# Tests write reports here; `argus-dev test` copies /out back to ~/.cache/argus-dev/.
+RUN mkdir -p /out && chown node:node /out /app
+USER node
+CMD ["pnpm", "test"]

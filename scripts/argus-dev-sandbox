@@ -1,0 +1,522 @@
+#!/usr/bin/env python3
+"""Run dev builds, tests and tailnet previews inside the sealed personal-sandbox cell (D029).
+
+Run as root through the reviewed sudoers entry. Every subcommand is an exact word and
+every parameter arrives on stdin, never as a sudo argument:
+
+  argus-dev-sandbox load      < docker-save.tar      load one argus-dev/<project>:<tag> image
+  argus-dev-sandbox test      < request.json         run the test command, stream its output, exit with its code
+  argus-dev-sandbox preview   < request.json         start an app behind a fixed tailnet preview slot
+  argus-dev-sandbox results   < {"run": ID}          write the test container's /out as a tar stream
+  argus-dev-sandbox logs      < {"run": ID}          print the last 500 lines of a run's main container
+  argus-dev-sandbox stop      < {"run": ID} | {"slot": N}
+  argus-dev-sandbox status                           list dev containers as JSON
+  argus-dev-sandbox gc                               remove expired dev containers and unused dev images
+  argus-dev-sandbox purge                            remove every dev container and dev image (before cell maintenance)
+
+Dev containers get no network interface beyond loopback (--network none, or the netns of
+the run's first container), no published ports, no added capabilities (the preview
+ingress keeps NET_BIND_SERVICE only), and no host mounts except a preview slot's ingress
+socket directory. The domain's default-drop egress is unchanged. Docker reads every
+container reference by full ID after checking its argus.dev label, so the helper can never
+reach a staging container. See docs/DEV_ENV_PROTOCOL.md and docs/DEV_SANDBOX_THREAT_MODEL.md.
+"""
+from __future__ import annotations
+
+import json
+import os
+from pathlib import Path
+import pwd
+import re
+import secrets
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+from typing import Any, BinaryIO
+
+DOMAIN = "personal-sandbox"
+USER = f"argus-{DOMAIN}"
+SOCKET = f"unix:///var/lib/argus/{DOMAIN}/docker.sock"
+DATA_ROOT = Path(f"/var/lib/argus/{DOMAIN}")
+SPOOL_DIR = "/var/tmp"
+INGRESS_ROOT = Path("/var/lib/argus/sandbox-ingress")
+# The caddy:2 ID already imported into personal-sandbox and pinned by nodens-staging; a change lands by PR.
+INGRESS_IMAGE = "sha256:844f60b64e4724a5aa8245e019dace0d3f199f7433ce6c57676cb30a920dbad9"
+SLOTS = {1: 8460, 2: 8461}  # preview slot -> tailnet HTTPS port (tailscale serve, set once by hand)
+LIMITS = ("--pids-limit", "1024", "--memory", "4g", "--cpus", "2")
+MAX_IMAGE_BYTES = 8 << 30
+MIN_FREE_BYTES = 20 << 30  # left free on the cell's disk after a load; staging data lives there too
+MAX_RESULTS_BYTES = 1 << 30
+MAX_REQUEST_BYTES = 64 << 10
+MAX_MANIFEST_BYTES = 1 << 20
+MAX_TEST_SECONDS = 7200
+PREVIEW_TTL_SECONDS = 12 * 3600
+RUN_RETENTION_SECONDS = 24 * 3600
+DOCKER_TIMEOUT = 900
+# Labels an image may not carry: Docker merges image labels into the container, so these would forge identity.
+FORBIDDEN_LABEL_PREFIXES = ("com.docker.compose.", "argus.", "com.argus.", "dev.argus.")
+
+PROJECT = re.compile(r"[a-z][a-z0-9-]{0,30}")
+TAG = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+RUN = re.compile(r"[a-z][a-z0-9-]{0,30}-[0-9]{8}t[0-9]{6}z-[0-9a-f]{6}")
+IMAGE_ID = re.compile(r"sha256:[0-9a-f]{64}")
+CONTAINER_ID = re.compile(r"[0-9a-f]{64}")
+ENV_KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}")
+SERVICE = re.compile(r"[a-z][a-z0-9-]{0,15}")
+USER_SPEC = re.compile(r"[a-z0-9_][a-z0-9_.-]{0,31}(:[a-z0-9_][a-z0-9_.-]{0,31})?")
+CONTAINER_PATH = re.compile(r"/[A-Za-z0-9._/-]{0,254}")
+COMMANDS = ("load", "test", "preview", "results", "logs", "stop", "status", "gc", "purge")
+
+EXIT_FAILED, EXIT_INVALID, EXIT_REFUSED, EXIT_UNAVAILABLE = 1, 2, 3, 4
+
+
+class Refusal(Exception):
+    def __init__(self, code: str, message: str, status: int = EXIT_REFUSED) -> None:
+        super().__init__(message)
+        self.code, self.status = code, status
+
+
+def invalid(message: str) -> Refusal:
+    return Refusal("dev-request-invalid", message, EXIT_INVALID)
+
+
+def docker(*arguments: str) -> list[str]:
+    return ["runuser", "-u", USER, "--", "docker", "--host", SOCKET, *arguments]
+
+
+def run_docker(*arguments: str, check: bool = True, timeout: int = DOCKER_TIMEOUT) -> subprocess.CompletedProcess[str]:
+    result = subprocess.run(docker(*arguments), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=timeout)
+    if check and result.returncode != 0:
+        raise Refusal("dev-docker-failed", f"docker {arguments[0]} failed: {result.stderr.strip()[-300:]}", EXIT_FAILED)
+    return result
+
+
+# --- request validation -------------------------------------------------------------------
+
+def _strings(value: Any, label: str, limit: int = 64) -> list[str]:
+    if not isinstance(value, list) or len(value) > limit or not all(isinstance(item, str) and 0 < len(item) <= 4096 and "\0" not in item for item in value):
+        raise invalid(f"{label} must be a list of at most {limit} non-empty strings")
+    return list(value)
+
+
+def _env(value: Any, label: str) -> dict[str, str]:
+    if not isinstance(value, dict) or len(value) > 64:
+        raise invalid(f"{label} must be an object with at most 64 entries")
+    for key, item in value.items():
+        if not ENV_KEY.fullmatch(key) or not isinstance(item, str) or len(item) > 4096 or "\0" in item:
+            raise invalid(f"{label} entry {key!r} is invalid")
+    return dict(value)
+
+
+def _only(spec: dict[str, Any], allowed: set[str], label: str) -> None:
+    extra = set(spec) - allowed
+    if extra:
+        raise invalid(f"{label} has unsupported fields: {', '.join(sorted(extra))}")
+
+
+def _container_options(spec: dict[str, Any], label: str) -> dict[str, Any]:
+    """The only per-container settings a request may choose; the helper owns everything else."""
+    user = spec.get("user")
+    if user is not None and (not isinstance(user, str) or not USER_SPEC.fullmatch(user)):
+        raise invalid(f"{label}.user is invalid")
+    tmpfs = _strings(spec.get("tmpfs", []), f"{label}.tmpfs", 8)
+    if any(not CONTAINER_PATH.fullmatch(path) or ".." in path.split("/") for path in tmpfs):
+        raise invalid(f"{label}.tmpfs entries must be plain absolute container paths")
+    return {
+        "command": _strings(spec.get("command", []), f"{label}.command"),
+        "env": _env(spec.get("env", {}), f"{label}.env"),
+        "user": user,
+        "tmpfs": tmpfs,
+    }
+
+
+def _dev_image(image: Any, project: str) -> bool:
+    prefix = f"argus-dev/{project}:"
+    return isinstance(image, str) and image.startswith(prefix) and bool(TAG.fullmatch(image[len(prefix):]))
+
+
+def validate_request(payload: Any, mode: str) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise invalid("request must be a JSON object")
+    common = {"project", "image", "command", "env", "user", "tmpfs", "services"}
+    _only(payload, common | ({"timeoutSeconds"} if mode == "test" else {"port", "slot"}), "request")
+    project = payload.get("project")
+    if not isinstance(project, str) or not PROJECT.fullmatch(project):
+        raise invalid("project must match [a-z][a-z0-9-]{0,30}")
+    if not _dev_image(payload.get("image"), project):
+        raise invalid(f"image must be argus-dev/{project}:<tag>")
+    request = {"project": project, "image": payload["image"], **_container_options(payload, "request")}
+    services = payload.get("services", [])
+    if not isinstance(services, list) or len(services) > 4:
+        raise invalid("services must be a list of at most 4 entries")
+    request["services"] = []
+    for index, service in enumerate(services):
+        label = f"services[{index}]"
+        if not isinstance(service, dict):
+            raise invalid(f"{label} must be an object")
+        _only(service, {"name", "image", "command", "env", "user", "tmpfs"}, label)
+        name, image = service.get("name"), service.get("image")
+        taken = {item["name"] for item in request["services"]} | {"main", "ingress"}
+        if not isinstance(name, str) or not SERVICE.fullmatch(name) or name in taken:
+            raise invalid(f"{label}.name must be a unique [a-z][a-z0-9-]{{0,15}} other than main or ingress")
+        if not (isinstance(image, str) and IMAGE_ID.fullmatch(image)) and not _dev_image(image, project):
+            raise invalid(f"{label}.image must be a sha256 image ID already in the domain or argus-dev/{project}:<tag>")
+        request["services"].append({"name": name, "image": image, **_container_options(service, label)})
+    if mode == "test":
+        timeout = payload.get("timeoutSeconds", 1800)
+        if isinstance(timeout, bool) or not isinstance(timeout, int) or not 1 <= timeout <= MAX_TEST_SECONDS:
+            raise invalid(f"timeoutSeconds must be an integer from 1 to {MAX_TEST_SECONDS}")
+        request["timeoutSeconds"] = timeout
+    else:
+        port, slot = payload.get("port"), payload.get("slot", 1)
+        if isinstance(port, bool) or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise invalid("port must be the TCP port the app listens on inside its container")
+        if isinstance(slot, bool) or slot not in SLOTS:
+            raise invalid(f"slot must be one of {sorted(SLOTS)}")
+        request["port"], request["slot"] = port, slot
+    return request
+
+
+def run_selector(payload: Any, verb: str) -> str:
+    if not isinstance(payload, dict) or set(payload) != {"run"} or not isinstance(payload["run"], str) or not RUN.fullmatch(payload["run"]):
+        raise invalid(f'{verb} takes {{"run": ID}}')
+    return payload["run"]
+
+
+def read_request(stream: BinaryIO) -> Any:
+    data = stream.read(MAX_REQUEST_BYTES + 1)
+    if len(data) > MAX_REQUEST_BYTES:
+        raise invalid("request exceeds the size limit")
+    try:
+        return json.loads(data)
+    except ValueError as error:
+        raise invalid("request is not valid JSON") from error
+
+
+# --- image load ---------------------------------------------------------------------------
+
+def _member_json(archive: tarfile.TarFile, name: str) -> Any:
+    try:
+        member = archive.getmember(name)
+    except KeyError:
+        return None
+    if not member.isfile() or member.size > MAX_MANIFEST_BYTES:
+        raise invalid(f"{name} in the image archive is not a small regular file")
+    handle = archive.extractfile(member)
+    try:
+        return json.loads(handle.read()) if handle else None
+    except ValueError as error:
+        raise invalid(f"{name} in the image archive is not JSON") from error
+
+
+def archive_reference(path: Path) -> str:
+    """The single argus-dev reference a docker-save archive carries. Reads two JSON members; extracts nothing."""
+    try:
+        with tarfile.open(path, mode="r:") as archive:
+            manifest = _member_json(archive, "manifest.json")
+            index = _member_json(archive, "index.json")
+            repositories = _member_json(archive, "repositories")
+    except tarfile.TarError as error:
+        raise invalid("image archive is not an uncompressed tar from docker save") from error
+    if not isinstance(manifest, list) or len(manifest) != 1 or not isinstance(manifest[0], dict):
+        raise invalid("image archive must hold exactly one image")
+    tags = manifest[0].get("RepoTags")
+    if not isinstance(tags, list) or len(tags) != 1 or not isinstance(tags[0], str):
+        raise invalid("image archive must carry exactly one tag")
+    reference = tags[0]
+    project, _, tag = reference.removeprefix("argus-dev/").partition(":")
+    if not reference.startswith("argus-dev/") or not PROJECT.fullmatch(project) or not TAG.fullmatch(tag):
+        raise invalid("image tag must be argus-dev/<project>:<tag>")
+    if index is not None:  # Docker 25+ loads names from the OCI index, so it must name the same single image
+        entries = index.get("manifests") if isinstance(index, dict) else None
+        if not isinstance(entries, list) or len(entries) != 1 or not isinstance(entries[0], dict):
+            raise invalid("index.json must hold exactly one image")
+        annotations = entries[0].get("annotations") or {}
+        names = {value for key, value in annotations.items() if key in ("io.containerd.image.name", "org.opencontainers.image.ref.name")} if isinstance(annotations, dict) else {None}
+        if any(name not in (reference, tag, f"docker.io/{reference}") for name in names):
+            raise invalid("index.json names a different image than manifest.json")
+    if repositories is not None and (not isinstance(repositories, dict) or set(repositories) - {f"argus-dev/{project}", f"docker.io/argus-dev/{project}"}):
+        raise invalid("repositories names a different image than manifest.json")
+    return reference
+
+
+def forbidden_labels(labels: Any) -> list[str]:
+    return sorted(key for key in (labels or {}) if str(key).startswith(FORBIDDEN_LABEL_PREFIXES))
+
+
+def load(stream: BinaryIO) -> dict[str, Any]:
+    with tempfile.TemporaryFile(dir=SPOOL_DIR) as spool:
+        size = 0
+        while chunk := stream.read(1 << 20):
+            size += len(chunk)
+            if size > MAX_IMAGE_BYTES:
+                raise invalid("image archive exceeds the size limit")
+            spool.write(chunk)
+        spool.flush()
+        if shutil.disk_usage(DATA_ROOT).free < MIN_FREE_BYTES + 2 * size:
+            raise Refusal("dev-disk-low", f"not enough free space under {DATA_ROOT}; run argus-dev gc", EXIT_UNAVAILABLE)
+        reference = archive_reference(Path(f"/proc/self/fd/{spool.fileno()}"))
+        spool.seek(0)
+        result = subprocess.run(docker("load"), stdin=spool, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False, timeout=DOCKER_TIMEOUT)
+    if result.returncode != 0:
+        raise Refusal("dev-load-failed", f"docker load failed: {result.stderr.strip()[-300:]}", EXIT_FAILED)
+    loaded = [line.split(":", 1)[1].strip() for line in result.stdout.splitlines() if line.startswith("Loaded image")]
+    if loaded != [reference]:
+        for name in loaded:
+            if name.startswith("argus-dev/"):
+                run_docker("image", "rm", name, check=False)
+        raise Refusal("dev-load-mismatch", f"docker load reported {loaded}, expected only {reference}", EXIT_FAILED)
+    inspected = json.loads(run_docker("image", "inspect", "--format", "{{json .}}", reference).stdout)
+    bad = forbidden_labels((inspected.get("Config") or {}).get("Labels"))
+    if bad:
+        run_docker("image", "rm", reference, check=False)
+        raise Refusal("dev-image-labels", f"dev images may not carry identity labels: {', '.join(bad)}")
+    return {"image": reference, "imageId": inspected.get("Id")}
+
+
+# --- containers ---------------------------------------------------------------------------
+
+def new_run_id(project: str) -> str:
+    return f"{project}-{time.strftime('%Y%m%dt%H%M%Sz', time.gmtime())}-{secrets.token_hex(3)}"
+
+
+def run_args(run_id: str, project: str, role: str, network: str, options: dict[str, Any], labels: dict[str, str] | None = None) -> list[str]:
+    """`docker run` options for every dev container. The helper owns network, capabilities, limits and mounts."""
+    all_labels = {"argus.dev": "1", "argus.dev.project": project, "argus.dev.run": run_id, "argus.dev.role": role, **(labels or {})}
+    args = ["--name", f"argus-dev-{run_id}-{role}", "--network", network, "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges", "--restart", "no", *LIMITS]
+    for key, value in all_labels.items():
+        args += ["--label", f"{key}={value}"]
+    if options.get("user"):
+        args += ["--user", options["user"]]
+    for path in options.get("tmpfs", []):
+        args += ["--tmpfs", path]
+    for key, value in options.get("env", {}).items():
+        args += ["--env", f"{key}={value}"]
+    return args
+
+
+def ingress_config(port: int) -> str:
+    return json.dumps({"apps": {"http": {"servers": {"ingress": {
+        "listen": ["unix//run/argus-ingress/upstream.sock|0666"],
+        "routes": [{"handle": [{"handler": "reverse_proxy", "upstreams": [{"dial": f"127.0.0.1:{port}"}]}]}],
+    }}}}}, separators=(",", ":"))
+
+
+def ingress_args(run_id: str, project: str, owner_id: str, slot_dir: Path, port: int, labels: dict[str, str]) -> list[str]:
+    args = run_args(run_id, project, "ingress", f"container:{owner_id}", {"env": {"ARGUS_INGRESS_CONFIG": ingress_config(port)}}, labels)
+    # the caddy binary carries the cap_net_bind_service file capability; exec fails unless it stays bounded
+    return args + ["--cap-add", "NET_BIND_SERVICE", "--read-only", "--tmpfs", "/tmp", "--tmpfs", "/config", "--tmpfs", "/data",
+                   "--mount", f"type=bind,source={slot_dir},target=/run/argus-ingress"]
+
+
+INGRESS_COMMAND = ("sh", "-c", 'rm -f /run/argus-ingress/upstream.sock && printf %s "$ARGUS_INGRESS_CONFIG" > /tmp/ingress.json'
+                   " && exec caddy run --config /tmp/ingress.json")
+
+
+def require_images(request: dict[str, Any]) -> None:
+    for image in [request["image"], *(service["image"] for service in request["services"])]:
+        if run_docker("image", "inspect", "--format", "{{.Id}}", image, check=False).returncode != 0:
+            raise Refusal("dev-image-missing", f"{image} is not loaded in {DOMAIN}; load it first")
+
+
+def start_detached(args: list[str], image: str, command: list[str] | tuple[str, ...]) -> str:
+    container_id = run_docker("run", "--detach", *args, image, *command).stdout.strip()
+    if not CONTAINER_ID.fullmatch(container_id):
+        raise Refusal("dev-docker-failed", "docker run did not return a container ID", EXIT_FAILED)
+    return container_id
+
+
+def start_services(run_id: str, request: dict[str, Any], labels: dict[str, str]) -> str | None:
+    """Start service containers; the first owns the run's loopback-only netns. Returns its full ID."""
+    owner = None
+    for service in request["services"]:
+        network = "none" if owner is None else f"container:{owner}"
+        started = start_detached(run_args(run_id, request["project"], service["name"], network, service, labels), service["image"], service["command"])
+        owner = owner or started
+    return owner
+
+
+def dev_containers(*filters: str) -> list[dict[str, Any]]:
+    args = ["ps", "--all", "--no-trunc", "--filter", "label=argus.dev=1"]
+    for item in filters:
+        args += ["--filter", item]
+    return [json.loads(line) for line in run_docker(*args, "--format", "{{json .}}").stdout.splitlines() if line.strip()]
+
+
+def remove(items: list[dict[str, Any]]) -> int:
+    ids = [item["ID"] for item in items if CONTAINER_ID.fullmatch(str(item.get("ID", "")))]
+    if ids:
+        run_docker("rm", "--force", "--volumes", *ids)
+    return len(ids)
+
+
+def run_main(run_id: str) -> dict[str, Any]:
+    found = dev_containers(f"label=argus.dev.run={run_id}", "label=argus.dev.role=main")
+    if len(found) != 1 or not CONTAINER_ID.fullmatch(str(found[0].get("ID", ""))):
+        raise Refusal("dev-run-missing", "no main container for that run (gc removes runs after 24 hours)")
+    return found[0]
+
+
+def test(request: dict[str, Any]) -> int:
+    gc()
+    require_images(request)
+    run_id = new_run_id(request["project"])
+    print(json.dumps({"event": "run-started", "run": run_id}), file=sys.stderr, flush=True)
+    try:
+        owner = start_services(run_id, request, {})
+        args = run_args(run_id, request["project"], "main", "none" if owner is None else f"container:{owner}", request)
+        try:
+            # Output goes straight to our stdout (the ssh channel); the exit status is the container's.
+            status = subprocess.run(docker("run", *args, request["image"], *request["command"]), check=False, timeout=request["timeoutSeconds"]).returncode
+        except subprocess.TimeoutExpired:
+            run_docker("kill", f"argus-dev-{run_id}-main", check=False)
+            status = 124
+    finally:
+        # Services go; the stopped main container stays for `results` until gc.
+        remove([item for item in dev_containers(f"label=argus.dev.run={run_id}") if labels_of(item).get("argus.dev.role") != "main"])
+    print(json.dumps({"event": "run-finished", "run": run_id, "exitCode": status}), file=sys.stderr, flush=True)
+    return status
+
+
+def preview(request: dict[str, Any]) -> dict[str, Any]:
+    gc()
+    slot, port = request["slot"], request["port"]
+    slot_dir = INGRESS_ROOT / f"dev-{slot}"
+    if slot_dir.is_symlink() or not slot_dir.is_dir() or slot_dir.stat().st_uid != pwd.getpwnam(USER).pw_uid:
+        raise Refusal("dev-slot-unprepared", f"preview slot {slot} is not set up; see the one-time setup in docs/DEV_ENV_PROTOCOL.md")
+    require_images(request)
+    stop_slot(slot)
+    run_id = new_run_id(request["project"])
+    labels = {"argus.dev.slot": str(slot), "argus.dev.expires": str(int(time.time()) + PREVIEW_TTL_SECONDS)}
+    try:
+        owner = start_services(run_id, request, labels)
+        main_id = start_detached(run_args(run_id, request["project"], "main", "none" if owner is None else f"container:{owner}", request, labels),
+                                 request["image"], request["command"])
+        start_detached(ingress_args(run_id, request["project"], owner or main_id, slot_dir, port, labels), INGRESS_IMAGE, INGRESS_COMMAND)
+    except Refusal:
+        stop_slot(slot)
+        raise
+    return {"run": run_id, "slot": slot, "tailnetPort": SLOTS[slot], "expiresInSeconds": PREVIEW_TTL_SECONDS}
+
+
+def stop_slot(slot: int) -> int:
+    return remove(dev_containers(f"label=argus.dev.slot={slot}"))
+
+
+def stop(payload: Any) -> dict[str, Any]:
+    if isinstance(payload, dict) and set(payload) == {"slot"} and not isinstance(payload["slot"], bool) and payload["slot"] in SLOTS:
+        return {"removed": stop_slot(payload["slot"])}
+    return {"removed": remove(dev_containers(f"label=argus.dev.run={run_selector(payload, 'stop')}"))}
+
+
+def logs(payload: Any) -> None:
+    container_id = run_main(run_selector(payload, "logs"))["ID"]
+    subprocess.run(docker("logs", "--tail", "500", container_id), check=False, timeout=60)
+
+
+def results(payload: Any, out: BinaryIO) -> None:
+    container_id = run_main(run_selector(payload, "results"))["ID"]
+    process = subprocess.Popen(docker("cp", f"{container_id}:/out", "-"), stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    size = 0
+    try:
+        while chunk := process.stdout.read(1 << 20):
+            size += len(chunk)
+            if size > MAX_RESULTS_BYTES:
+                raise Refusal("dev-results-too-large", "results exceed the size limit", EXIT_FAILED)
+            out.write(chunk)
+        out.flush()
+    finally:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    if process.returncode != 0:
+        detail = process.stderr.read().decode(errors="replace").strip()[-300:]
+        raise Refusal("dev-results-failed", f"docker cp failed (does the test write to /out?): {detail}", EXIT_FAILED)
+
+
+def labels_of(item: dict[str, Any]) -> dict[str, str]:
+    return dict(pair.split("=", 1) for pair in str(item.get("Labels", "")).split(",") if "=" in pair)
+
+
+def created_epoch(item: dict[str, Any]) -> float:
+    # docker ps CreatedAt looks like "2026-11-21 10:00:00 +0000 UTC"
+    return time.mktime(time.strptime(str(item["CreatedAt"])[:19], "%Y-%m-%d %H:%M:%S")) - time.timezone
+
+
+def expired(item: dict[str, Any], now: float) -> bool:
+    expires = labels_of(item).get("argus.dev.expires", "")
+    if expires.isdigit():
+        return int(expires) < now
+    return item.get("State") != "running" and now - created_epoch(item) > RUN_RETENTION_SECONDS
+
+
+def remove_unused_images() -> dict[str, Any]:
+    used = {item.get("Image") for item in dev_containers()}
+    listed = run_docker("image", "ls", "--filter", "reference=argus-dev/*", "--format", "{{.Repository}}:{{.Tag}}").stdout.split()
+    candidates = [image for image in listed if image not in used]
+    kept = [image for image in candidates if run_docker("image", "rm", image, check=False).returncode != 0]
+    return {"removedImages": len(candidates) - len(kept), "imagesNotRemoved": kept}
+
+
+def gc() -> dict[str, Any]:
+    now = time.time()
+    return {"removedContainers": remove([item for item in dev_containers() if expired(item, now)]), **remove_unused_images()}
+
+
+def purge() -> dict[str, Any]:
+    return {"removedContainers": remove(dev_containers()), **remove_unused_images()}
+
+
+def dispatch(command: str, stdin: BinaryIO, stdout: BinaryIO) -> int | dict[str, Any]:
+    if command == "load":
+        return load(stdin)
+    if command == "test":
+        return test(validate_request(read_request(stdin), "test"))
+    if command == "preview":
+        return preview(validate_request(read_request(stdin), "preview"))
+    if command == "results":
+        results(read_request(stdin), stdout)
+        return 0
+    if command == "logs":
+        logs(read_request(stdin))
+        return 0
+    if command == "stop":
+        return stop(read_request(stdin))
+    if command == "status":
+        return {"containers": [{key: item.get(key) for key in ("ID", "Names", "Image", "State", "Status", "Labels")} for item in dev_containers()]}
+    return gc() if command == "gc" else purge()
+
+
+def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if len(argv) != 1 or argv[0] not in COMMANDS:
+        print(__doc__, file=sys.stderr)
+        return EXIT_INVALID
+    try:
+        if os.geteuid() != 0:
+            raise Refusal("dev-refused", "argus-dev-sandbox must run as root (sudo -n)")
+        try:
+            pwd.getpwnam(USER)
+        except KeyError as error:
+            raise Refusal("dev-refused", f"{USER} does not exist on this host") from error
+        if shutil.which("runuser") is None:
+            raise Refusal("dev-refused", "runuser is not installed", EXIT_UNAVAILABLE)
+        result = dispatch(argv[0], sys.stdin.buffer, sys.stdout.buffer)
+    except Refusal as error:
+        print(json.dumps({"ok": False, "error": {"code": error.code, "message": str(error)}}, sort_keys=True), file=sys.stderr)
+        return error.status
+    except (OSError, ValueError, subprocess.TimeoutExpired) as error:
+        print(json.dumps({"ok": False, "error": {"code": "dev-unavailable", "message": str(error)}}, sort_keys=True), file=sys.stderr)
+        return EXIT_UNAVAILABLE
+    if isinstance(result, int):
+        return result
+    print(json.dumps({"ok": True, **result}, sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
