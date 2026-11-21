@@ -245,7 +245,7 @@ work-managed
 
 ### D029: Run dev builds, tests and previews in personal-sandbox through one helper
 
-**Status:** Proposed 2026-11-21 by the operator's dev-environment decision (edit on the Mac, run and test on the server in personal-sandbox). Accepted when this PR merges. Replaces the local devcontainer model in the old `docs/DEV_ENV_PROTOCOL.md`.
+**Status:** Accepted 2026-11-21 by the operator, including the shared-daemon residual risk (dev runs share personal-sandbox's rootless daemon with staging). Replaces the local devcontainer model in the old `docs/DEV_ENV_PROTOCOL.md`.
 
 **Decision:** Dev images are built on the Mac and enter personal-sandbox only through `scripts/argus-dev-sandbox`, a root helper reached by `ssh` and exact-word `sudo -n` entries, with every parameter on stdin. In detail:
 
