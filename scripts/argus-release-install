@@ -57,11 +57,14 @@ GIT_ENV = {
     "GIT_CONFIG_GLOBAL": "/dev/null",
     "GIT_TERMINAL_PROMPT": "0",
     "GIT_NO_REPLACE_OBJECTS": "1",  # refs/replace/* is operator-writable and would swap the commit behind a sha
+    # A partial-clone config makes a missing object trigger a fetch that runs remote.<name>.uploadpack, an
+    # operator-chosen shell command, as root. Needs git >= 2.44; protocol.allow=never below covers older git.
+    "GIT_NO_LAZY_FETCH": "1",
 }
 # The checkout's .git/config belongs to the unprivileged operator; neutralise every setting that makes git run a program.
 GIT_HARDENING = (
     "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "core.pager=cat",
-    "-c", "core.sshCommand=/bin/false", "-c", "protocol.ext.allow=never",
+    "-c", "core.sshCommand=/bin/false", "-c", "protocol.ext.allow=never", "-c", "protocol.allow=never",
 )
 GIT_BASE = ("--no-optional-locks", "--no-replace-objects", *GIT_HARDENING)
 
@@ -129,14 +132,27 @@ def extract_commit(source: Path, sha: str, destination: Path) -> None:
     if listing.returncode != 0:
         raise ReleaseRefused(f"git ls-tree failed: {listing.stderr.decode(errors='replace')[-200:]}")
     entries = []
+    # Tree objects come from the operator-owned store and are only hash-checked after extraction, so a forged tree
+    # may repeat a path or nest one under a symlink entry; refuse both before anything is written.
+    leaves: set[tuple[str, ...]] = set()
+    directories: set[tuple[str, ...]] = set()
     for record in listing.stdout.split(b"\0"):
         if not record:
             continue
         meta, _, raw_path = record.partition(b"\t")
-        mode, kind, oid = meta.decode().split()
+        fields = meta.decode(errors="replace").split()
+        if len(fields) != 3:
+            raise ReleaseRefused(f"unreadable tree entry: {os.fsdecode(raw_path)!r}")
+        mode, kind, oid = fields
         parts = os.fsdecode(raw_path).split("/")
         if kind != "blob" or mode not in ("100644", "100755", "120000") or any(p in ("", ".", "..", ".git") for p in parts):
             raise ReleaseRefused(f"unsupported tree entry: {mode} {kind} {os.fsdecode(raw_path)!r}")
+        key = tuple(parts)
+        prefixes = {key[:i] for i in range(1, len(key))}
+        if key in leaves or key in directories or prefixes & leaves:
+            raise ReleaseRefused(f"duplicate or shadowed tree entry: {'/'.join(parts)!r}")
+        leaves.add(key)
+        directories |= prefixes
         entries.append((mode, oid, parts))
     objects = git_cat_file(source, [oid for _, oid, _ in entries])
     base = os.path.realpath(destination)
@@ -149,8 +165,11 @@ def extract_commit(source: Path, sha: str, destination: Path) -> None:
         if mode == "120000":
             os.symlink(os.fsdecode(content), target)
         else:
-            target.write_bytes(content)
-            target.chmod(0o755 if mode == "100755" else 0o644)
+            # O_EXCL|O_NOFOLLOW: never write through anything already at the path.
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(content)
+                os.fchmod(handle.fileno(), 0o755 if mode == "100755" else 0o644)
 
 
 def git_cat_file(source: Path, oids: list[str]) -> list[bytes]:
