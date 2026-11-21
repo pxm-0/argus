@@ -77,6 +77,37 @@ class DoctorBoundaryAuditTests(unittest.TestCase):
         self.assertTrue(checks[0]["ok"])
 
 
+class DoctorReleaseCheckoutTests(unittest.TestCase):
+    def test_checkout_root_is_srv_argus_behind_a_release_and_root_otherwise(self) -> None:
+        from argus_common import checkout_root
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tree = Path(tmp).resolve()
+            with patch.dict(os.environ, {"ARGUS_ROOT": str(tree)}):
+                self.assertEqual(tree, checkout_root())
+                (tree / "ARGUS_RELEASE").write_text("a" * 40 + "\n")
+                self.assertEqual(Path("/srv/argus"), checkout_root())
+
+    def test_git_checks_inspect_the_checkout_not_the_sealed_release(self) -> None:
+        namespace = runpy.run_path(str(ROOT / "scripts" / "argus-doctor"))
+        checkout = Path("/srv/argus")
+        calls: list[tuple[list[str], Path | None]] = []
+
+        def runner(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+            calls.append((command, cwd))
+            return subprocess.CompletedProcess(command, 0, "{}", "")
+
+        tracked = namespace["tracked_files"]
+        with (
+            patch.dict(tracked.__globals__, {"run": runner, "checkout_root": lambda: checkout}),
+            patch.object(tracked.__globals__["os"], "geteuid", return_value=1000),
+        ):
+            tracked()
+            namespace["core_boundary_check"]([])
+        self.assertEqual((["git", "ls-files"], checkout), calls[0])
+        self.assertEqual(str(checkout / "scripts" / "argus-check"), calls[1][0][-3])
+
+
 class DoctorTrackedSourceTests(unittest.TestCase):
     def test_only_opted_in_reviewed_compose_may_be_tracked(self) -> None:
         namespace = runpy.run_path(str(ROOT / "scripts" / "argus-doctor"))

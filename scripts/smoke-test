@@ -799,15 +799,20 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
     )
 
 
-def check_operator_links(repo: Path, smoke: Smoke, offline: bool) -> None:
+RELEASE_CURRENT = Path("/opt/argus/current")
+
+
+def check_operator_links(
+    repo: Path, smoke: Smoke, offline: bool, release: Path = RELEASE_CURRENT, bin_dir: Path = Path("/usr/local/bin")
+) -> None:
     if offline:
         smoke.warn("operator link check skipped in offline mode")
         return
     ok = True
-    scripts_dir = repo / "scripts"
-    prefix = Path("/usr/local/bin")
+    # After the root-owned release cutover the operator links must point into the release, not the checkout.
+    scripts_dir = (release / "scripts").resolve() if release.is_symlink() else repo / "scripts"
     for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
-        link = prefix / link_name
+        link = bin_dir / link_name
         target = scripts_dir / target_name
         if not link.is_symlink():
             smoke.fail(f"{link_name} operator link exists")
