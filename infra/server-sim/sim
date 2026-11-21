@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Mac-side lifecycle for the oreochiserver-sim OrbStack machine.
-# Protocol and safety rules: docs/DEV_ENV_PROTOCOL.md ("Server simulation").
+# Protocol and safety rules: docs/SERVER_SIM.md.
 set -euo pipefail
 
 readonly MACHINE="oreochiserver-sim"

@@ -243,6 +243,24 @@ work-managed
 
 **Verification:** `tests/test_argus_access_state.py`, `tests/test_argus_access_effective_migrate.py`, the writer crash-boundary tests in `tests/test_argus_state.py`, and the doctor, reconcile and activation overlay tests in `tests/test_argus_cloudflare_allowlist.py`.
 
+### D029: Run dev builds, tests and previews in personal-sandbox through one helper
+
+**Status:** Accepted 2026-11-21 by the operator, including the shared-daemon residual risk (dev runs share personal-sandbox's rootless daemon with staging). Replaces the local devcontainer model in the old `docs/DEV_ENV_PROTOCOL.md`.
+
+**Decision:** Dev images are built on the Mac and enter personal-sandbox only through `scripts/argus-dev-sandbox`, a root helper reached by `ssh` and exact-word `sudo -n` entries, with every parameter on stdin. In detail:
+
+- `load` accepts one `docker save` archive holding exactly one `argus-dev/<project>:<tag>` image with no identity labels. This is the only image path besides `argus-image-import`, and dev images are never pinned for staging or production.
+- `test` and `preview` start containers the helper fully configures: no interface beyond loopback (`--network none` or one shared dev netns), no capabilities, no mounts, no ports, resource limits, and labels `argus.dev=1` plus run, role and slot.
+- Firewall discovery skips only containers of exactly that shape, and only in personal-sandbox. Every other container without Compose identity still fails closed.
+- Results come back as a capped tar of `/out`. Previews use two fixed tailnet-only routes (`:8460`, `:8461`) to unix sockets through a pinned Caddy sidecar, set up by hand like the staging routes.
+- No egress is ever granted for dev runs. Other trust domains, staging data and production are out of scope.
+
+**Reason:** The operator wants nothing but editing on the Mac. Personal-sandbox is already the sealed domain for untrusted code. The helper lets dev runs in without widening the egress policy, handing out the sandbox socket, or opening a public listener.
+
+**Threat model and rollback:** `docs/DEV_SANDBOX_THREAT_MODEL.md`. Residual: dev runs share the rootless daemon with staging, and a separate `personal-dev` cell is the named upgrade.
+
+**Verification:** `tests/test_argus_dev_sandbox.py` (request, archive, label, container-argument and firewall carve-out tests), `tests/test_argus_sudoers.py` with the re-rendered `deploy/sudoers/argus-operator`, and, on `oreochiserver` after the one-time setup, the smoke run in `docs/DEV_ENV_PROTOCOL.md` plus `argus-sandbox-firewall --domain personal-sandbox --verify` with a preview running.
+
 ## Viability Evidence
 
 Evidence was collected read-only from the primary host on 2026-07-14. Detailed output remains in the private task transcript and must be recollected under the server-required issue before it is used as acceptance evidence.
