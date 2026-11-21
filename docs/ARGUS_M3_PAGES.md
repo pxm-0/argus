@@ -1,5 +1,8 @@
 # Argus M3 GitHub Pages Origin
 
+> Retired 2026-11-21: `.github/workflows/argus-m3-pages.yml` was removed. It only ran on
+> the frozen `argus` branch and last deployed in July. The text below is the historical record.
+
 GitHub Pages is the independent public origin for the synthetic Argus
 portfolio. The workflow consumes only the allowlisted snapshot and artifact
 builder scripts. It has no server network access or operator API configuration.
