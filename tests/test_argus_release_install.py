@@ -205,6 +205,37 @@ class RefusalTests(ReleaseFixture):
         shutil.copyfile(forged, obj)
         self.assert_refused(self.sha, "does not hash|unknown commit|bad|cannot")
 
+    def test_partial_clone_lazy_fetch_cannot_run_an_uploadpack_command_as_root(self) -> None:
+        """A missing object in a promisor repo makes git fetch, running remote.<name>.uploadpack via the shell."""
+        tmp = Path(self._tmp.name)
+        marker = tmp / "pwned"
+        subprocess.run(["git", "init", "-q", "--bare", str(tmp / "upstream")], check=True, env=ENV, capture_output=True)
+        for key, value in (
+            ("core.repositoryformatversion", "1"), ("extensions.partialClone", "origin"),
+            ("remote.origin.promisor", "true"), ("remote.origin.url", str(tmp / "upstream")),
+            ("remote.origin.uploadpack", f"sh -c 'touch {marker}'; git-upload-pack"),
+        ):
+            git(self.source, "config", key, value)
+        self.assert_refused("0" * 40, "unknown commit")
+        self.assertFalse(marker.exists(), "root ran the operator's uploadpack command through a lazy fetch")
+
+    def test_forged_tree_repeating_a_path_cannot_write_through_its_own_symlink(self) -> None:
+        """Trees are hash-checked only after extraction; a symlink entry followed by a file of the same name must not write outside."""
+        outside = Path(self._tmp.name) / "outside.txt"
+
+        def hash_object(data: bytes, *flags: str) -> str:
+            result = subprocess.run(["git", "-C", str(self.source), "hash-object", "-w", *flags, "--stdin"],
+                                    input=data, capture_output=True, check=True, env=ENV)
+            return result.stdout.decode().strip()
+
+        link = hash_object(str(outside).encode())
+        content = hash_object(b"written as root\n")
+        tree = hash_object(b"120000 x\0" + bytes.fromhex(link) + b"100644 x\0" + bytes.fromhex(content), "-t", "tree", "--literally")
+        forged = git(self.source, "commit-tree", "-m", "forged", tree)
+        git(self.source, "update-ref", "refs/remotes/origin/main", forged)
+        self.assert_refused(forged, "duplicate or shadowed")
+        self.assertFalse(outside.exists(), "extraction wrote through a symlink it planted")
+
     def test_git_runs_with_hardening_and_clean_environment(self) -> None:
         seen = {}
 
@@ -218,6 +249,8 @@ class RefusalTests(ReleaseFixture):
         self.assertIn("core.hooksPath=/dev/null", seen["command"])
         self.assertIn("--no-replace-objects", seen["command"])
         self.assertEqual("1", seen["env"]["GIT_NO_REPLACE_OBJECTS"])
+        self.assertEqual("1", seen["env"]["GIT_NO_LAZY_FETCH"])
+        self.assertIn("protocol.allow=never", seen["command"])
         self.assertEqual("1", seen["env"]["GIT_CONFIG_NOSYSTEM"])
         self.assertEqual(os.devnull, seen["env"]["GIT_CONFIG_GLOBAL"])
         self.assertNotIn("GIT_DIR", seen["env"])
