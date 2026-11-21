@@ -8,8 +8,10 @@ on:
 permissions:
   contents: read
 
+# PRs share a group per ref and cancel superseded runs. Main pushes get a group per commit,
+# so a queued run never displaces another and every merge keeps its own Tests result.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
