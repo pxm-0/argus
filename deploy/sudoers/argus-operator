@@ -28,7 +28,16 @@ Cmnd_Alias ARGUS_SCRIPTS = \
     /opt/argus/current/scripts/argus m1 sync --apply --confirm *, \
     /opt/argus/current/scripts/argus m1 verify, \
     /opt/argus/current/scripts/argus m1 verify --json, \
-    /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image *
+    /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image *, \
+    /opt/argus/current/scripts/argus-dev-sandbox load, \
+    /opt/argus/current/scripts/argus-dev-sandbox test, \
+    /opt/argus/current/scripts/argus-dev-sandbox preview, \
+    /opt/argus/current/scripts/argus-dev-sandbox results, \
+    /opt/argus/current/scripts/argus-dev-sandbox logs, \
+    /opt/argus/current/scripts/argus-dev-sandbox stop, \
+    /opt/argus/current/scripts/argus-dev-sandbox status, \
+    /opt/argus/current/scripts/argus-dev-sandbox gc, \
+    /opt/argus/current/scripts/argus-dev-sandbox purge
 
 Cmnd_Alias ARGUS_SYSTEMCTL = \
     /usr/bin/systemctl restart argus-capability-issuer.service, \
@@ -78,7 +87,9 @@ Cmnd_Alias ARGUS_NET = \
     /usr/bin/ss -H -ltnp, \
     /usr/bin/tailscale serve --bg --https\=8450 unix\:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock, \
     /usr/bin/tailscale serve --bg --https\=8451 unix\:/var/lib/argus/managed-ingress/nodens-production/upstream.sock, \
-    /usr/bin/tailscale serve --bg --https\=8452 unix\:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock
+    /usr/bin/tailscale serve --bg --https\=8452 unix\:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock, \
+    /usr/bin/tailscale serve --bg --https\=8460 unix\:/var/lib/argus/sandbox-ingress/dev-1/upstream.sock, \
+    /usr/bin/tailscale serve --bg --https\=8461 unix\:/var/lib/argus/sandbox-ingress/dev-2/upstream.sock
 
 oreo ALL=(root) NOPASSWD: EXEC: ARGUS_SCRIPTS
 oreo ALL=(root) NOPASSWD: NOEXEC: ARGUS_SYSTEMCTL, ARGUS_READ, ARGUS_NET

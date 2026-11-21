@@ -20,13 +20,14 @@ Rendered by `scripts/argus-sudoers-render` (`--check` fails when the committed f
 - `ARGUS_SCRIPTS` (tag `EXEC`): `argus-image-import --domain <d> --image *`, `argus-backup-snapshot`
   (no args, `--list`, `--verify *`, `--restore-plan *`), `argus-sandbox-firewall --domain <d> --plan|--verify|--probe`,
   `argus m1 sync|verify`, and `argus-promote-evidence --workload <staging> --image *` (read-only; what
-  `argus promote` runs over ssh). Each script validates its own arguments (image allowlist and digest,
+  `argus promote` runs over ssh), and `argus-dev-sandbox load|test|preview|results|logs|stop|status|gc|purge` (exact words,
+  parameters on stdin; D029 dev runs in personal-sandbox). Each script validates its own arguments (image allowlist and digest,
   image id, trust domain). `argus-release-install` is **not** here: it publishes the code every other entry runs as
   root, so it stays root-shell only (see Residual risk).
 - `ARGUS_SYSTEMCTL`: `restart` of named daemons only, `start argus-smoke|argus-estate-refresh|argus-backup-snapshot.service`,
   `--no-pager status <unit>`, `daemon-reload`. No globs.
 - `ARGUS_READ`: one `journalctl --no-pager -n 200 -u <unit>` line per daemon.
-- `ARGUS_NET`: `tailscale serve status`, `ss -H -ltnp`, and the exact `tailscale serve` lines for 8450 and 8451.
+- `ARGUS_NET`: `tailscale serve status`, `ss -H -ltnp`, and the exact `tailscale serve` lines for 8450, 8451, 8452 and the dev preview slots 8460 and 8461.
 - Defaults: `!env_keep`, `env_reset`, `secure_path`, and `noexec` (everything except `ARGUS_SCRIPTS`, which spawn docker, runuser and git).
 
 Excluded on purpose: the one-time M5 cutover tools, `python3`, `bash`, `cp`, `mv`, `sed`, `tee`,
