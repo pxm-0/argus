@@ -580,11 +580,12 @@ class CliAlertsTest(unittest.TestCase):
         self.assertTrue(result["available"])
         self.assertNotIn("internal", result["alerts"][0])
 
-    def test_dashboard_banner_is_next_to_exposure_alert_and_reads_alerts(self) -> None:
+    def test_dashboard_attention_list_reads_alerts(self) -> None:
         html = (ROOT / "control-plane" / "dashboard" / "generate_dashboard.py").read_text()
-        self.assertLess(html.index('id="exposure-alert"'), html.index('id="alert-banner"'))
-        self.assertIn("state?.alerts", html)
-        self.assertIn('alertBanner.dataset.state = open.length ? "open" : "clear"', html)
+        status = (ROOT / "control-plane" / "dashboard" / "assets" / "status.js").read_text()
+        self.assertIn('id="attention-list"', html)
+        self.assertIn("dashboardState?.alerts", status)
+        self.assertIn("Alert evaluator has not reported", status)
 
 
 class UnitFilesTest(unittest.TestCase):

@@ -35,10 +35,11 @@ class DashboardPrototypeTests(unittest.TestCase):
         self.assertIn('href="#/workloads/${encodeURIComponent(id)}"', source)
         self.assertIn('window.addEventListener("hashchange", syncWorkloadRoute)', source)
         self.assertIn('routeSummary.textContent = "Invalid workload route"', source)
-        self.assertIn("More operations", source)
-        self.assertLess(source.index("id=\"workloads-heading\""), source.index("id=\"estate-coverage\""))
+        self.assertIn('<ul class="action-list">', source)
+        self.assertLess(source.index("id=\"attention\""), source.index("id=\"workloads-heading\""))
+        self.assertLess(source.index("id=\"workloads-heading\""), source.index("id=\"system\""))
         self.assertIn("button,.action { min-height:44px", css)
-        self.assertIn(".matrix-stage{display:none}", css)
+        self.assertIn(".workload-overview{grid-template-columns:1fr", css)
         self.assertNotIn("CSS = r", source)
 
 

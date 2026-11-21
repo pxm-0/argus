@@ -6,7 +6,9 @@ Status: PR 5A prototype contract. It defines presentation requirements, not D1 o
 
 Argus is a calm, exacting private operations console. The first screen answers: is the estate safe, is the evidence complete and fresh, what needs attention, and what exists? Watchfulness comes from the eye mark and evidence language, not ornamental sci-fi styling.
 
-The routine workload row contains identity, trust domain, health, effective access and drift, evidence freshness, and one Inspect action. Evidence, history, previews, and mutations stay behind workload detail. Only Refresh estate is primary in the global header.
+The page reads top to bottom: Needs attention, Stages, Workloads, Activity (operations, then the audit log), System (exposure, routes, estate evidence). Each fact appears once; there is no separate coverage matrix, exposure strip, or plan cards.
+
+The routine workload row contains identity, trust domain, health, access (effective, with the declared value when they drift), evidence freshness, and one Inspect action. Workload detail holds one facts grid and one Actions panel: Check (Refresh health, Logs preview) and Change (Restart, Back up, Deploy, Start, Stop, Change access, Managed move), one button per operation. Every Change action previews on the first click and runs on the second, once the shown phrase is typed in the panel's single confirmation field. Each action shows its purpose, or the reason it is unavailable, beside the button; an offline domain agent is stated once for the panel. Only Refresh estate is primary in the global header; Monitor and Theme sit after the session control.
 
 ## Visual system
 
@@ -33,7 +35,7 @@ Freshness: health evidence is Stale after 15 minutes (three missed runs of `argu
 
 ## What is broken
 
-The Exceptions tile counts, and names under the number: open `page`/`critical` alerts, workloads whose last health check failed, access drift, unclassified workloads, no domain agent available while workloads exist, and estate evidence that is Empty, Conflict, or Error. It turns red above zero and reads "None open" at zero.
+The Needs attention list names each problem on its own row with its next step (Inspect, View evidence, View exposure, or Retry/Refresh). Exceptions come first: open `page`/`critical` alerts, each workload whose last health check failed, each workload with access drift, unclassified workloads, no domain agent available while workloads exist, and estate evidence that is Empty, Conflict, or Error. Warnings follow: other open alerts, an unreported alert evaluator, partial or stale evidence, an enabled Cloudflare provider, and stale health evidence. The badge counts exceptions (red above zero, "None open" at zero) and warnings.
 
 The topbar always shows the dashboard state badge (Fresh, Stale, Unavailable) with "State as of" time and age, including while a workload is open. State re-polls every 30 seconds (slower in a hidden tab). Auto-refresh pauses, and says so, while admin mode is on, a workload detail is open, or a dashboard field holds input, so a refresh never discards typed confirmations. If a load fails, a "State unavailable" alert with Retry appears; previously loaded data stays visible and marked Unavailable, and with no prior state every panel says "Unavailable" instead of loading.
 
@@ -41,7 +43,7 @@ The topbar always shows the dashboard state badge (Fresh, Stale, Unavailable) wi
 
 The fixture-backed prototype covers loading, empty, error, partial, stale, conflict, and success for overview, workload detail, and estate coverage. Fixture fields are illustrative and must not be imported as API or repository schemas.
 
-Validate 320, 375, 768, 1024, and 1440px widths. Below 760px, workload rows become labeled records, detail becomes full width, and the wide comparison matrix is not the primary interaction. Without JavaScript, render only Argus identity and “JavaScript required”; show no estate data, cached state, credential field, or operation control.
+Validate 320, 375, 768, 1024, and 1440px widths. Below 760px, workload rows become labeled records, detail becomes full width, and attention rows and action rows stack their controls under the text. Without JavaScript, render only Argus identity and “JavaScript required”; show no estate data, cached state, credential field, or operation control.
 
 ## Journey baselines
 

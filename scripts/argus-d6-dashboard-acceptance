@@ -51,7 +51,7 @@ def validate(root: Path, target: str) -> dict[str, Any]:
     checks = {
         "evidence-state": 'id="evidence-state"' in html and 'id="evidence-state-body"' in html,
         "explicit-state-rendering": all(f'label: "{label}"' in JS for label in ("Loading", "Empty", "Error", "Partial", "Stale", "Conflict", "Complete")),
-        "read-only-coverage": "mutation authority" in JS.lower() and "Review coverage" in JS and 'href="#estate-coverage"' in JS,
+        "read-only-coverage": "mutation authority" in JS.lower() and "Review coverage" in JS and 'href="#evidence-state"' in JS,
         "accessibility": "escapeHtml" in JS and "min-height:44px" in M5_CSS,
         "responsive": "@media(max-width:760px)" in M5_CSS and ".evidence-state-body" in M5_CSS,
     }
