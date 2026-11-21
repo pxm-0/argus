@@ -13,7 +13,9 @@ Every Argus P0 plan, phase, and task lands through a pull request.
 
 - Base every current remediation branch on the latest reviewed `main` and target
   its PR to `main`.
-- The P0 PR guard rejects `p0/*` remediation PRs targeting another branch.
+- The P0 PR guard rejects PRs whose base is neither `main` nor a branch whose
+  name contains `wave2` (the wave2 integration line, e.g. `integration/wave2`,
+  and PRs stacked on wave2 branches).
 - Rebase or merge the latest `main` only after the preceding remediation PR
   lands; do not use stale milestone branches as current evidence.
 
