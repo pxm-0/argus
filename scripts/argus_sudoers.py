@@ -267,9 +267,12 @@ DOCKER_GROUP_OVERRIDE = (
     "# Managed by scripts/argus-sudoers-render --overrides-dir; keeps docker access when oreo leaves the docker group.\n"
     "[Service]\nSupplementaryGroups=docker\n"
 )
+# oreo-run units that inspect the git checkout and regenerate gitignored plans under it (the smoke test):
+# the sealed release has no .git and is read-only, so they keep ARGUS_ROOT on the live tree.
+LIVE_ROOT_UNITS = ("argus-smoke.service",)
 
 
-def render_override(unit_text: str, prefix: str = DEFAULT_PREFIX) -> str | None:
+def render_override(unit_text: str, prefix: str = DEFAULT_PREFIX, live_root: bool = False) -> str | None:
     """Drop-in repointing a unit at the release tree; None when the unit never touches /srv/argus."""
     lines = list(logical_lines(unit_text))
     body: list[str] = []
@@ -285,7 +288,7 @@ def render_override(unit_text: str, prefix: str = DEFAULT_PREFIX) -> str | None:
     # Units that may write /srv/argus/config (access.json, privacy.json) keep ARGUS_ROOT on the live tree: the sealed
     # release is read-only (EROFS) and writing into it would be lost on the next install.  Their code still runs from the release.
     writes_config = any(line.startswith("ReadWritePaths=") and f"{SOURCE_PREFIX}/config" in line.split("=", 1)[1].split() for line in lines)
-    root_value = SOURCE_PREFIX if writes_config else prefix
+    root_value = SOURCE_PREFIX if writes_config or live_root else prefix
     return "\n".join([header, "[Service]", f"Environment=ARGUS_ROOT={root_value}", *body]) + "\n"
 
 
@@ -303,7 +306,7 @@ def render_overrides(repo: Path, prefix: str = DEFAULT_PREFIX, units_dir: Path |
                 units[path.name] = path
     result: dict[str, str] = {}
     for name, path in sorted(units.items()):
-        text = render_override(path.read_text(), prefix)
+        text = render_override(path.read_text(), prefix, live_root=name in LIVE_ROOT_UNITS)
         if text is not None:
             result[f"{name}.d/{OVERRIDE_NAME}"] = text
         if name in DOCKER_GROUP_UNITS:
