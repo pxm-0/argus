@@ -41,7 +41,11 @@ TAILSCALE_SERVE = (
     "serve --bg --https=8450 unix:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock",
     "serve --bg --https=8451 unix:/var/lib/argus/managed-ingress/nodens-production/upstream.sock",
     "serve --bg --https=8452 unix:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock",
+    "serve --bg --https=8460 unix:/var/lib/argus/sandbox-ingress/dev-1/upstream.sock",
+    "serve --bg --https=8461 unix:/var/lib/argus/sandbox-ingress/dev-2/upstream.sock",
 )
+# D029: every argus-dev-sandbox parameter arrives on stdin, so each entry is an exact word.
+DEV_SANDBOX_COMMANDS = ("load", "test", "preview", "results", "logs", "stop", "status", "gc", "purge")
 # Binaries that turn a sudo entry into a root shell or arbitrary file write.
 FORBIDDEN_BINARIES = frozenset({
     "all", "sh", "bash", "dash", "zsh", "fish", "python", "python3", "perl", "ruby", "node", "lua", "env",
@@ -96,6 +100,7 @@ def script_commands(prefix: str, domains: tuple[str, ...], promotable: tuple[str
     ]
     # argus-release-install is root-shell only: it installs the code every other entry here runs as root.
     commands += [cmd(f"{scripts}/argus-promote-evidence", "--workload", workload, "--image", "*") for workload in promotable]
+    commands += [cmd(f"{scripts}/argus-dev-sandbox", verb) for verb in DEV_SANDBOX_COMMANDS]
     return commands
 
 

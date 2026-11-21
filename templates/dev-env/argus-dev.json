@@ -1,0 +1,39 @@
+{
+  "project": "myapp",
+  "build": {
+    "context": ".",
+    "dockerfile": "Dockerfile.dev",
+    "target": "dev"
+  },
+  "test": {
+    "command": ["sh", "-c", "pnpm test -- --reporter=junit --outputFile=/out/junit.xml"],
+    "env": {
+      "CI": "1",
+      "NEXT_TELEMETRY_DISABLED": "1",
+      "DATABASE_URL": "postgres://myapp:dev-only@127.0.0.1:5432/myapp"
+    },
+    "timeoutSeconds": 1800
+  },
+  "preview": {
+    "command": ["pnpm", "dev", "--hostname", "127.0.0.1", "--port", "3000"],
+    "env": {
+      "NEXT_TELEMETRY_DISABLED": "1",
+      "DATABASE_URL": "postgres://myapp:dev-only@127.0.0.1:5432/myapp"
+    },
+    "port": 3000
+  },
+  "services": [
+    {
+      "name": "postgres",
+      "image": "sha256:<postgres image ID printed by argus-image-import for personal-sandbox>",
+      "user": "postgres",
+      "env": {
+        "POSTGRES_USER": "myapp",
+        "POSTGRES_DB": "myapp",
+        "POSTGRES_PASSWORD": "dev-only",
+        "PGDATA": "/var/lib/postgresql/data/pgdata"
+      },
+      "tmpfs": ["/var/lib/postgresql/data", "/var/run/postgresql"]
+    }
+  ]
+}
