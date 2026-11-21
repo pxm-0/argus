@@ -32,6 +32,12 @@
       "reason": "D027 privacy review: public site for nodens.dev; serves no operator data, secrets or admin surfaces.",
       "updatedAt": "2026-11-15",
       "updatedBy": "argus-d027-review"
+    },
+    "kadath-staging": {
+      "privacy": "unclassified",
+      "reason": "Reviewed onboarding candidate pending privacy review.",
+      "updatedAt": "",
+      "updatedBy": "argus-workload-onboard"
     }
   }
 }

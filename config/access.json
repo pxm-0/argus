@@ -52,6 +52,17 @@
       },
       "lastAppliedAt": "",
       "lastError": ""
+    },
+    "kadath-staging": {
+      "desired": "none",
+      "effective": "none",
+      "urls": {
+        "local": "",
+        "tailnet": "",
+        "cloudflare": ""
+      },
+      "lastAppliedAt": "",
+      "lastError": ""
     }
   }
 }

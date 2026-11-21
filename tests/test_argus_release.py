@@ -79,7 +79,9 @@ class RewriteTests(unittest.TestCase):
 
     def test_ref_validation(self) -> None:
         self.assertTrue(release.valid_ref(REF))
-        for bad in ("ghcr.io/pxm-0/nodens:latest", f"ghcr.io/other/nodens@{DIGEST}", f"docker.io/library/nginx@{DIGEST}", REF + "x"):
+        self.assertTrue(release.valid_ref(f"docker.io/library/postgres@{DIGEST}"))
+        for bad in ("ghcr.io/pxm-0/nodens:latest", f"ghcr.io/other/nodens@{DIGEST}", f"docker.io/library/nginx@{DIGEST}", REF + "x",
+                    "docker.io/library/postgres:17", f"docker.io/library/postgresx@{DIGEST}", f"docker.io/other/postgres@{DIGEST}"):
             with self.subTest(bad=bad):
                 self.assertFalse(release.valid_ref(bad))
 

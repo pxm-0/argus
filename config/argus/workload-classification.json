@@ -32,6 +32,14 @@
       "trustDomain": "personal-managed",
       "status": "classified",
       "admission": "allowed"
+    },
+    "kadath-staging": {
+      "realm": "personal",
+      "zone": "sandbox",
+      "stage": "staging",
+      "trustDomain": "personal-sandbox",
+      "status": "classified",
+      "admission": "allowed"
     }
   }
 }

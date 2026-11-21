@@ -40,6 +40,7 @@ START_UNITS = ("argus-smoke.service", "argus-estate-refresh.service", "argus-bac
 TAILSCALE_SERVE = (
     "serve --bg --https=8450 unix:/var/lib/argus/sandbox-ingress/nodens-staging/upstream.sock",
     "serve --bg --https=8451 unix:/var/lib/argus/managed-ingress/nodens-production/upstream.sock",
+    "serve --bg --https=8452 unix:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock",
 )
 # Binaries that turn a sudo entry into a root shell or arbitrary file write.
 FORBIDDEN_BINARIES = frozenset({

@@ -64,6 +64,9 @@ workloads/nodens-staging/source/*
 !workloads/nodens-production/source/
 workloads/nodens-production/source/*
 !workloads/nodens-production/source/compose.yml
+!workloads/kadath-staging/source/
+workloads/kadath-staging/source/*
+!workloads/kadath-staging/source/compose.yml
 
 # Secrets and env
 .env

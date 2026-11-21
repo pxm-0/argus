@@ -322,6 +322,7 @@ project.
 | --- | --- |
 | `nodens-staging` | `argus-ndns-stg` |
 | `nodens-production` | `argus-ndns-prd` (not yet deploy-enabled) |
+| `kadath-staging` | `argus-kdth-stg` |
 
 After this lands, regenerate and apply the `personal-sandbox` policy once (the
 only change is the `argus-ndns-stg` rule); until then reconciles report
@@ -458,3 +459,80 @@ ID. Check that `:8450` (staging) or
 targets. To take staging down without a revision change, run
 `workload.stop` for `nodens-staging` the same way (`parameters: {}`; the
 preview's `confirmationPhrase` is the approval text).
+
+## Kadath staging (sandbox)
+
+`kadath-staging` is a typed-deploy workload in `personal-sandbox` on bridge
+`argus-kdth-stg`, served tailnet-only at `:8452`. It runs `postgres`, `api`,
+`web` and `argus-ingress` (dialing `web:3000`). It has no `promotesTo`: the
+live `kadath` workload is still a reconcile-only cutover project.
+
+- **Ephemeral.** Postgres keeps its data on tmpfs and the API migrates on
+  boot, so every restart starts from an empty database. Backup status is
+  `stateless-by-design`. Staging holds demo data only.
+- **Secrets.** The tracked compose names three Compose secret files under
+  `/var/lib/argus/sandbox-secrets/kadath-staging/`. The kadath images (from
+  kadath's `Publish images` workflow) read each `X_FILE` into `X` before any
+  node process starts. The values exist only on the server, never in git, chat
+  or command output.
+- **Images.** `postgres` is imported from `docker.io/library/postgres@sha256`
+  (allowlisted in `argus_common.ALLOWED_IMAGES`). `api` and `web` come from
+  `ghcr.io/pxm-0/kadath-api` and `ghcr.io/pxm-0/kadath-web`. `argus-ingress`
+  reuses the Caddy ID already loaded in `personal-sandbox`.
+
+### One-time host setup (root shell, after the onboarding PR merges)
+
+```bash
+git -C /srv/argus pull --ff-only
+/opt/argus/current/scripts/argus-release-install --sha <merged-sha>
+# sudoers gains the :8452 serve line; install it as in docs/RUNBOOKS/sudo-narrowing.md
+/opt/argus/current/scripts/argus-sudoers-render > /root/argus-operator.new
+cmp /root/argus-operator.new /opt/argus/current/deploy/sudoers/argus-operator
+visudo -cf /root/argus-operator.new && install -m 0440 -o root -g root /root/argus-operator.new /etc/sudoers.d/argus-operator && visudo -c
+argus m1 sync                                   # preview
+argus m1 sync --apply --confirm sha256:<plan-digest>
+argus m1 verify
+
+install -d -m 0711 -o root -g root /var/lib/argus/sandbox-secrets
+install -d -m 0700 -o argus-personal-sandbox -g argus-personal-sandbox \
+  /var/lib/argus/sandbox-secrets/kadath-staging
+install -d -m 0700 -o argus-personal-sandbox -g argus-personal-sandbox \
+  /var/lib/argus/sandbox-ingress/kadath-staging
+( umask 022; cd /var/lib/argus/sandbox-secrets/kadath-staging
+  pw="$(openssl rand -hex 24)"
+  printf '%s' "$pw" > postgres_password
+  printf 'postgres://kadath:%s@postgres:5432/kadath' "$pw" > database_url
+  openssl rand -hex 32 > api_auth_token
+  unset pw
+  chown argus-personal-sandbox:argus-personal-sandbox postgres_password database_url api_auth_token
+  chmod 0444 postgres_password database_url api_auth_token )
+```
+
+The files are `0444` so the non-root container users (`postgres`, `node`) can
+read their bind mounts; the `0700` directory keeps them private on the host.
+
+Apply the `personal-sandbox` firewall once so it renders the `argus-kdth-stg`
+rule (see `docs/RUNBOOKS/sandbox-firewall-remediation.md`): `--plan`, check that
+the only change is that rule, then `--apply --plan-digest <exact>` from the root
+shell, then `--verify`. Until then reconciles report `egressPolicyDrift: true`.
+
+### First release
+
+1. Import all three images and note each printed `imageId`:
+   `sudo ./scripts/argus-image-import --domain personal-sandbox --image <ref>` for
+   `docker.io/library/postgres@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b`,
+   `ghcr.io/pxm-0/kadath-api@sha256:<A>` and `ghcr.io/pxm-0/kadath-web@sha256:<W>`.
+   Run the container-create probe from the nodens release flow (step 1) for each.
+2. Pin PR: replace the three `PENDING` lines in
+   `workloads/kadath-staging/source/compose.yml` with `sha256:<ID>`. A deploy
+   brings up the whole project, so all three must be pinned. Merge it, then
+   `git -C /srv/argus pull --ff-only`.
+3. Deploy with the nodens step 4 API sequence, `w = "kadath-staging"` and
+   `targetRevision: "sha256:<web ID>"` (any pinned line matches; `web` is the
+   manifest service).
+4. Route, once: `sudo tailscale serve --bg --https=8452 unix:/var/lib/argus/sandbox-ingress/kadath-staging/upstream.sock`,
+   then `tailscale serve status` (8452 tailnet only) and `tailscale funnel status` (empty).
+5. Verify: `curl -fsS https://oreochiserver.tail0a3a58.ts.net:8452/` returns 200.
+
+Later releases repeat steps 1 to 3 for the changed images. `workload.stop` takes
+staging down; the next start comes back with an empty, freshly migrated database.
