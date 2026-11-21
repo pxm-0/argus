@@ -1,0 +1,314 @@
+#!/usr/bin/env python3
+"""Activate a merged commit as the running Argus release, from a root shell, with a reviewed plan.
+
+  /opt/argus/current/scripts/argus-release-apply --sha <40-hex> --plan
+  /opt/argus/current/scripts/argus-release-apply --sha <40-hex> --confirm <planDigest>
+
+Design: docs/RELEASE_APPLY.md. This is task 1/5: guards, sha trust, release activation and history.
+Root shell only and never in sudoers, like argus-release-install, whose helpers it loads from its own
+sealed directory. All git is local; it never fetches (fetch as oreo first). `--plan` writes nothing;
+`--confirm` recomputes the plan and refuses unless its digest still matches.
+
+Exit codes: 0 ok, 2 bad invocation, 3 refused before any change, 4 a tool or the lock is unavailable,
+5 failed after the first change (the rollback command is printed).
+"""
+from __future__ import annotations
+
+import argparse
+import contextlib
+import fcntl
+import hashlib
+import importlib.machinery
+import importlib.util
+import json
+import os
+import stat
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Callable
+
+HERE = Path(__file__).resolve().parent
+_loader = importlib.machinery.SourceFileLoader("argus_release_install", str(HERE / "argus-release-install"))
+installer = importlib.util.module_from_spec(importlib.util.spec_from_loader(_loader.name, _loader))
+_loader.exec_module(installer)
+
+ReleaseRefused = installer.ReleaseRefused
+ROLLBACK_WARNING = "ROLLBACK: forward-only schema migrations are not undone"
+CI_ATTESTATION = "gh pr view <n> --json mergeCommit,statusCheckRollup  # on the laptop: mergeCommit must equal --sha, every check SUCCESS"
+
+
+@dataclass(frozen=True)
+class Roots:
+    prefix: Path = installer.PREFIX
+    source: Path = installer.SOURCE
+    state_dir: Path = Path("/var/lib/argus/releases")
+    lock: Path = Path("/run/argus-release-apply.lock")
+    boot_id: Path = Path("/proc/sys/kernel/random/boot_id")
+
+
+class Unavailable(RuntimeError):
+    """A tool, the lock or an evidence source is unavailable; nothing was changed (exit 4)."""
+
+
+Runner = Callable[[list[str]], subprocess.CompletedProcess]
+
+
+def run(argv: list[str]) -> subprocess.CompletedProcess:
+    return subprocess.run(argv, capture_output=True, text=True, check=False, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
+
+
+def parse_args(argv: list[str] | None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="argus release apply", allow_abbrev=False, description="Activate a merged commit as the running Argus release.")
+    parser.add_argument("--sha", required=True, help="40-hex merge commit on main; copy it from the merged PR, not from the server")
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--plan", action="store_true", help="print the plan and its digest; change nothing")
+    mode.add_argument("--confirm", metavar="DIGEST", help="apply, only if the recomputed plan has this digest")
+    return parser.parse_args(argv)
+
+
+# ---- guards ---------------------------------------------------------------------------------------
+
+def require_sealed(script: Path, owner_uid: int) -> None:
+    """The script and every ancestor must be owned by root (or the test owner) with no group/other write.
+
+    A root-owned sticky directory (/tmp) is accepted, as in OpenSSH's secure-path rule.
+    """
+    path = Path(os.path.realpath(script))
+    for node in (path, *path.parents):
+        info = node.lstat()
+        sticky_root_dir = stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and info.st_mode & stat.S_ISVTX
+        if info.st_uid not in (0, owner_uid) or (info.st_mode & 0o022 and not sticky_root_dir):
+            raise ReleaseRefused(f"{node} is not sealed root-owned (owner or group/other write); run apply from /opt/argus/current")
+
+
+@contextlib.contextmanager
+def exclusive_lock(path: Path):
+    fd = os.open(path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    try:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise Unavailable(f"another apply holds {path}") from None
+        yield
+    finally:
+        os.close(fd)
+
+
+# ---- trust and release state -----------------------------------------------------------------------
+
+def trust_sha(source: Path, sha: str) -> None:
+    if not installer.SHA.fullmatch(sha):
+        raise ReleaseRefused("sha must be 40 lowercase hex characters")
+    if installer.git(source, "cat-file", "-e", f"{sha}^{{commit}}").returncode != 0:
+        raise ReleaseRefused(f"unknown commit {sha}; fetch as oreo first: runuser -u oreo -- git -C {source} fetch origin")
+    installer.require_known_commit(source, sha, installer.REF)
+    first_parent = installer.git(source, "rev-list", "--first-parent", installer.REF)
+    if first_parent.returncode != 0 or sha not in first_parent.stdout.split():
+        raise ReleaseRefused(f"{sha} is not a merge to main (branch commit?); use the PR's mergeCommit sha")
+
+
+def previous_release(prefix: Path) -> str:
+    current, releases = prefix / "current", prefix / "releases"
+    if not current.is_symlink() or Path(os.readlink(current)).parent != releases:
+        raise ReleaseRefused(f"{current} is not a symlink into {releases}; bootstrap is manual (docs/RUNBOOKS/root-owned-release.md)")
+    stamp = (current / installer.STAMP).read_text(encoding="utf-8").strip()
+    if not installer.SHA.fullmatch(stamp) or Path(os.readlink(current)).name != stamp:
+        raise ReleaseRefused(f"{current} stamp does not match its release directory")
+    return stamp
+
+
+def snapshot(tree: Path, owner: tuple[int, int] | None) -> dict[str, tuple]:
+    """Relative path -> (type, content or link target, exec bit), never following symlinks."""
+    entries: dict[str, tuple] = {}
+    for current, dirs, files in os.walk(tree, followlinks=False):
+        for name in [*dirs, *files]:
+            path = Path(current, name)
+            info = path.lstat()
+            if owner is not None and ((info.st_uid, info.st_gid) != owner or (not stat.S_ISLNK(info.st_mode) and info.st_mode & 0o022)):
+                raise ReleaseRefused(f"release dir tampered: {path} owner/mode")
+            relative = str(path.relative_to(tree))
+            if stat.S_ISLNK(info.st_mode):
+                entries[relative] = ("link", os.readlink(path), False)
+            elif stat.S_ISDIR(info.st_mode):
+                entries[relative] = ("dir", None, False)
+            else:
+                entries[relative] = ("file", path.read_bytes(), bool(info.st_mode & stat.S_IXUSR))
+    return entries
+
+
+def verify_existing(roots: Roots, sha: str, release: Path, owner: tuple[int, int]) -> None:
+    """The existing release must be exactly what the installer would build from the verified commit."""
+    expected_tree = installer.require_known_commit(roots.source, sha, installer.REF)
+    with tempfile.TemporaryDirectory(prefix=f"argus-verify-{sha[:12]}-") as scratch:
+        expected = Path(scratch)
+        installer.extract_commit(roots.source, sha, expected)
+        if installer.git_tree_hash(expected) != expected_tree:
+            raise ReleaseRefused(f"tree hash mismatch for {sha}")
+        installer.link_state(expected, roots.source)
+        (expected / installer.STAMP).write_text(sha + "\n", encoding="utf-8")
+        want = snapshot(expected, None)
+    info = release.lstat()
+    if not stat.S_ISDIR(info.st_mode) or (info.st_uid, info.st_gid) != owner or info.st_mode & 0o022:
+        raise ReleaseRefused(f"release dir tampered: {release} type/owner/mode")
+    got = snapshot(release, owner)
+    if got != want:
+        differing = sorted((set(got) ^ set(want)) | {key for key in set(got) & set(want) if got[key] != want[key]})
+        raise ReleaseRefused(f"release dir tampered: {release} differs at {', '.join(differing[:5])}; it is never reused or repaired")
+
+
+# ---- history --------------------------------------------------------------------------------------
+
+def read_history(state_dir: Path) -> list[dict]:
+    path = state_dir / "history.jsonl"
+    if not path.exists():
+        return []
+    rows = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        with contextlib.suppress(json.JSONDecodeError):
+            rows.append(json.loads(line))
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def dangling_run(state_dir: Path) -> str | None:
+    rows = read_history(state_dir)
+    finished = {row.get("runId") for row in rows if row.get("phase") == "finished"}
+    open_runs = [row.get("runId") for row in rows if row.get("phase") == "started" and row.get("runId") not in finished]
+    return open_runs[-1] if open_runs else None
+
+
+def append_row(state_dir: Path, row: dict) -> None:
+    """One O_APPEND write plus fsync per row; never rewritten or pruned."""
+    state_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
+    fd = os.open(state_dir / "history.jsonl", os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    try:
+        os.write(fd, (json.dumps(row, sort_keys=True) + "\n").encode())
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def write_private(path: Path, payload: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        json.dump(payload, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+
+
+def utc(moment: datetime) -> str:
+    return moment.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+# ---- plan and apply --------------------------------------------------------------------------------
+
+def build_plan(roots: Roots, sha: str, owner: tuple[int, int]) -> dict:
+    trust_sha(roots.source, sha)
+    previous = previous_release(roots.prefix)
+    release = roots.prefix / "releases" / sha
+    if previous == sha:
+        action = "noop"
+    elif release.exists() or release.is_symlink():
+        verify_existing(roots, sha, release, owner)
+        action = "switch"
+    else:
+        action = "install"
+    rollback = previous != sha and installer.git(roots.source, "merge-base", "--is-ancestor", sha, previous).returncode == 0
+    try:
+        boot_id = roots.boot_id.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise Unavailable(f"cannot read boot id {roots.boot_id}: {exc}") from exc
+    plan = {
+        "sha": sha, "previousSha": previous, "action": action, "rollback": rollback,
+        "danglingRunId": dangling_run(roots.state_dir), "bootId": boot_id,
+    }
+    canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+    return {**plan, "planDigest": "sha256:" + hashlib.sha256(canonical).hexdigest()}
+
+
+def print_plan(plan: dict) -> None:
+    print(f"sha: {plan['sha']}")
+    print(f"previous: {plan['previousSha']}")
+    print(f"action: {plan['action']}")
+    if plan["rollback"]:
+        print(ROLLBACK_WARNING)
+    if plan["danglingRunId"]:
+        print(f"unfinished earlier run: {plan['danglingRunId']} (confirming this plan acknowledges it)")
+    print(f"CI gate (operator-attested): {CI_ATTESTATION}")
+    print(f"planDigest: {plan['planDigest']}")
+
+
+def apply(
+    sha: str, *, plan_only: bool, confirm: str | None, roots: Roots, runner: Runner, now: Callable[[], datetime],
+    euid: int, environ: dict, script_path: Path, owner: tuple[int, int] = (0, 0),
+) -> int:
+    try:
+        if euid != 0:
+            raise ReleaseRefused("argus release apply must run as root")
+        if any(name in environ for name in ("SUDO_USER", "SUDO_UID", "SUDO_COMMAND")):
+            raise ReleaseRefused("run from a root shell, not through sudo")
+        require_sealed(script_path, owner[0])
+        os.umask(0o022)
+        with exclusive_lock(roots.lock):
+            plan = build_plan(roots, sha, owner)
+            print_plan(plan)
+            if plan_only:
+                return 0
+            if confirm != plan["planDigest"]:
+                raise ReleaseRefused("plan changed; re-run --plan")
+            return activate(roots, plan, runner, now)
+    except ReleaseRefused as exc:
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
+    except Unavailable as exc:
+        print(f"unavailable: {exc}", file=sys.stderr)
+        return 4
+
+
+def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetime]) -> int:
+    sha, previous = plan["sha"], plan["previousSha"]
+    started_at = now()
+    run_id = f"{started_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{sha[:12]}"
+    rollback_command = f"argus release apply --sha {previous} --plan"
+    row = {
+        "runId": run_id, "sha": sha, "previousSha": previous, "planDigest": plan["planDigest"],
+        "action": plan["action"], "rollback": plan["rollback"], "resumesRunId": plan["danglingRunId"],
+        "checks": {"source": "operator-attested"},
+    }
+    write_private(roots.state_dir / "runs" / run_id / "plan.json", plan)
+    append_row(roots.state_dir, {**row, "phase": "started", "timestamp": utc(started_at)})  # intent first (D014)
+    outcome, code, error = ("noop" if plan["action"] == "noop" else "applied"), 0, None
+    try:
+        if plan["action"] == "install":
+            # The previously trusted installer runs, never the candidate's.
+            result = runner([str(roots.prefix / "releases" / previous / "scripts" / "argus-release-install"), "--sha", sha])
+            if result.returncode != 0:
+                raise RuntimeError(f"installer exited {result.returncode}: {(result.stderr or '').strip()[-300:]}")
+        elif plan["action"] == "switch":
+            installer.switch_current(roots.prefix / "current", roots.prefix / "releases" / sha)
+    except (RuntimeError, OSError) as exc:
+        outcome, code, error = "failed", 5, str(exc)
+    append_row(roots.state_dir, {
+        **row, "phase": "finished", "timestamp": utc(now()), "outcome": outcome, "exit": code,
+        "error": error, "rollbackCommand": rollback_command,
+    })
+    if code:
+        print(f"failed after changes began: {error}\nto back out: {rollback_command}", file=sys.stderr)
+        return code
+    print(f"already at {sha}" if outcome == "noop" else f"applied {sha} (prev {previous})")
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = parse_args(argv)
+    return apply(
+        args.sha, plan_only=args.plan, confirm=args.confirm, roots=Roots(), runner=run,
+        now=lambda: datetime.now(timezone.utc), euid=os.geteuid(), environ=dict(os.environ), script_path=Path(__file__),
+    )
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -18,13 +18,14 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:32e5a98292ffb9b15569fb7568ea59053981f5d95cef16dd460a3b269729a6a6"
+    "expectedSbomDigest": "sha256:ecd8d5942b6f35d2fcb386f1417a7d7377bf3e0d8997f5bf75b06f7490ba2d45"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
     "allowedPaths": [
       "scripts/argus-m5-egress-verify",
       "scripts/argus-m5-workload-cutover",
+      "scripts/argus-release-apply",
       "scripts/argus_collectors.py",
       "scripts/argus_common.py",
       "scripts/argus_sandbox_firewall.py"
