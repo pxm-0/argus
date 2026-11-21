@@ -31,10 +31,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable
 
+# Root can write the sealed release dirs: never leave __pycache__ there, or verify_existing refuses them forever.
+sys.dont_write_bytecode = True
 HERE = Path(__file__).resolve().parent
-_loader = importlib.machinery.SourceFileLoader("argus_release_install", str(HERE / "argus-release-install"))
-installer = importlib.util.module_from_spec(importlib.util.spec_from_loader(_loader.name, _loader))
-_loader.exec_module(installer)
+
+
+def _load(name: str, filename: str):
+    """Helpers come from this script's own sealed directory, never from sys.path."""
+    loader = importlib.machinery.SourceFileLoader(name, str(HERE / filename))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    sys.modules[name] = module  # dataclasses resolve annotations through sys.modules[cls.__module__]
+    loader.exec_module(module)
+    return module
+
+
+installer = _load("argus_release_install", "argus-release-install")
 
 ReleaseRefused = installer.ReleaseRefused
 ROLLBACK_WARNING = "ROLLBACK: forward-only schema migrations are not undone"

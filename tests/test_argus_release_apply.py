@@ -14,6 +14,7 @@ import io
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timezone
@@ -25,6 +26,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def load(name: str, relative: str):
     loader = importlib.machinery.SourceFileLoader(name, str(ROOT / relative))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    sys.modules[name] = module  # dataclasses resolve annotations through sys.modules[cls.__module__]
     loader.exec_module(module)
     return module
 
