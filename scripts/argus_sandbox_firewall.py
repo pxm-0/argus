@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -224,6 +225,47 @@ def _docker(domain: str, *arguments: str) -> list[str]:
     return ["docker", "--host", f"unix:///var/lib/argus/{domain}/docker.sock", *arguments]
 
 
+DEV_DOMAIN = "personal-sandbox"
+DEV_CAP_ADD = {"NET_BIND_SERVICE", "CAP_NET_BIND_SERVICE"}
+
+
+def _loopback_only_dev(container: dict[str, Any], running: dict[str, dict[str, Any]], depth: int = 0) -> bool:
+    """D029: a dev run container scripts/argus-dev-sandbox started, with no interface beyond loopback.
+
+    It has the argus.dev label and no Compose identity, runs unprivileged in no host
+    namespace, and its network mode is none or the netns of one dev container (running
+    or exited) that is itself none. Such a container has nothing for the domain policy
+    to filter. `running` maps full IDs to inspect data for the running containers plus
+    any netns owners.
+    """
+    config = container.get("Config") or {}
+    host = container.get("HostConfig") or {}
+    settings = container.get("NetworkSettings") or {}
+    if not isinstance(config, dict) or not isinstance(host, dict) or not isinstance(settings, dict):
+        return False
+    labels = config.get("Labels") or {}
+    if not isinstance(labels, dict) or labels.get("argus.dev") != "1":
+        return False
+    if any(str(key).startswith("com.docker.compose.") for key in labels):
+        return False
+    if host.get("Privileged") is not False or any(host.get(key) == "host" for key in ("PidMode", "IpcMode", "UsernsMode", "UTSMode")):
+        return False
+    if not set(host.get("CapAdd") or []) <= DEV_CAP_ADD:
+        return False
+    networks = settings.get("Networks") or {}
+    if not isinstance(networks, dict) or set(networks) - {"none"}:
+        return False
+    if any(isinstance(item, dict) and item.get("IPAddress") for item in networks.values()):
+        return False
+    mode = host.get("NetworkMode")
+    if mode == "none":
+        return True
+    target = str(mode).removeprefix("container:") if isinstance(mode, str) else ""
+    owner = running.get(target)
+    return depth == 0 and owner is not None and (owner.get("HostConfig") or {}).get("NetworkMode") == "none" \
+        and _loopback_only_dev(owner, running, depth + 1)
+
+
 def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     if domain not in DOMAINS:
         raise FirewallOperationError("unsupported sandbox domain")
@@ -316,9 +358,27 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
         raise FirewallOperationError("Docker container inventory must be a list")
     endpoint_map: dict[tuple[str, str, str], set[str]] = {}
     containers: list[dict[str, Any]] = []
+    running_by_id = {str(item.get("Id")): item for item in raw_containers if isinstance(item, dict)}
+    if domain == DEV_DOMAIN:
+        # A dev run's netns owner may have exited while a joined container still runs; inspect it too.
+        missing = sorted({
+            str(((item.get("HostConfig") or {}).get("NetworkMode") or "")).removeprefix("container:")
+            for item in running_by_id.values()
+            if str(((item.get("HostConfig") or {}).get("NetworkMode") or "")).startswith("container:")
+        } - set(running_by_id))
+        missing = [item for item in missing if re.fullmatch(r"[0-9a-f]{64}", item)]
+        if missing:
+            owners = _runtime_json(runner.text(_docker(domain, "inspect", *missing)), "Docker owner inventory")
+            if not isinstance(owners, list):
+                raise FirewallOperationError("Docker owner inventory must be a list")
+            for owner in owners:
+                if isinstance(owner, dict):
+                    running_by_id.setdefault(str(owner.get("Id")), owner)
     for container in raw_containers:
         if not isinstance(container, dict):
             raise FirewallOperationError("Docker container inventory entry must be an object")
+        if domain == DEV_DOMAIN and _loopback_only_dev(container, running_by_id):
+            continue
         config = container.get("Config") or {}
         state = container.get("State") or {}
         network_settings_root = container.get("NetworkSettings") or {}

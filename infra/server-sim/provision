@@ -206,7 +206,7 @@ installer() {
 # Detach mode runs containers in $ROOTLESSKIT_STATE_DIR/netns, not in the RootlessKit
 # child's namespace, which is where the bootstrap's firewall helper loads the policy.
 # Classic mode keeps containers in the filtered namespace. This makes the sim's egress
-# policy hold and says nothing about the server (docs/DEV_ENV_PROTOCOL.md).
+# policy hold and says nothing about the server (docs/SERVER_SIM.md).
 # Manager-wide is fine here: only the sandbox users run rootless dockerd in the sim,
 # and the bootstrap owns and rolls back the user@<uid>.service.d drop-ins.
 readonly ROOTLESS_ENV=/etc/systemd/user.conf.d/argus-sim-rootless.conf
@@ -345,7 +345,7 @@ EOF
 GHCR login present for root (contents not read).
 Next, by hand: import pinned images with
   $ROOT/scripts/argus-image-import --domain <trust-domain> --image ghcr.io/pxm-0/<name>@sha256:<digest>
-then deploy through the API. Smoke, alerting and backups: docs/DEV_ENV_PROTOCOL.md.
+then deploy through the API. Smoke, alerting and backups: docs/SERVER_SIM.md.
 EOF
 }
 
