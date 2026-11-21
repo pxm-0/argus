@@ -61,9 +61,15 @@ def run(argv: list[str]) -> subprocess.CompletedProcess:
     return subprocess.run(argv, capture_output=True, text=True, check=False, env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
 
 
+def full_sha(value: str) -> str:
+    if not installer.SHA.fullmatch(value):
+        raise argparse.ArgumentTypeError("must be 40 lowercase hex characters (abbreviations and ref names are rejected)")
+    return value
+
+
 def parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="argus release apply", allow_abbrev=False, description="Activate a merged commit as the running Argus release.")
-    parser.add_argument("--sha", required=True, help="40-hex merge commit on main; copy it from the merged PR, not from the server")
+    parser.add_argument("--sha", required=True, type=full_sha, help="40-hex merge commit on main; copy it from the merged PR, not from the server")
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--plan", action="store_true", help="print the plan and its digest; change nothing")
     mode.add_argument("--confirm", metavar="DIGEST", help="apply, only if the recomputed plan has this digest")
@@ -115,7 +121,10 @@ def previous_release(prefix: Path) -> str:
     current, releases = prefix / "current", prefix / "releases"
     if not current.is_symlink() or Path(os.readlink(current)).parent != releases:
         raise ReleaseRefused(f"{current} is not a symlink into {releases}; bootstrap is manual (docs/RUNBOOKS/root-owned-release.md)")
-    stamp = (current / installer.STAMP).read_text(encoding="utf-8").strip()
+    try:
+        stamp = (current / installer.STAMP).read_text(encoding="utf-8").strip()
+    except (OSError, UnicodeDecodeError) as exc:
+        raise ReleaseRefused(f"cannot read {current / installer.STAMP}: {exc}") from exc
     if not installer.SHA.fullmatch(stamp) or Path(os.readlink(current)).name != stamp:
         raise ReleaseRefused(f"{current} stamp does not match its release directory")
     return stamp
@@ -175,8 +184,9 @@ def read_history(state_dir: Path) -> list[dict]:
 
 def dangling_run(state_dir: Path) -> str | None:
     rows = read_history(state_dir)
-    finished = {row.get("runId") for row in rows if row.get("phase") == "finished"}
-    open_runs = [row.get("runId") for row in rows if row.get("phase") == "started" and row.get("runId") not in finished]
+    # A run is closed by its own finished row, or by a later finished run that resumed (acknowledged) it.
+    closed = {row.get(key) for row in rows if row.get("phase") == "finished" for key in ("runId", "resumesRunId")}
+    open_runs = [row.get("runId") for row in rows if row.get("phase") == "started" and row.get("runId") not in closed]
     return open_runs[-1] if open_runs else None
 
 
@@ -263,23 +273,29 @@ def apply(
     except ReleaseRefused as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
-    except Unavailable as exc:
+    except (Unavailable, OSError) as exc:  # activate() handles its own errors once changes begin
         print(f"unavailable: {exc}", file=sys.stderr)
         return 4
+    except (ValueError, UnicodeDecodeError) as exc:  # malformed git output or state: refuse, as the installer does
+        print(f"refused: {exc}", file=sys.stderr)
+        return 3
 
 
 def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetime]) -> int:
     sha, previous = plan["sha"], plan["previousSha"]
     started_at = now()
-    run_id = f"{started_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{sha[:12]}"
+    run_id = f"{started_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{sha[:12]}"
     rollback_command = f"argus release apply --sha {previous} --plan"
     row = {
         "runId": run_id, "sha": sha, "previousSha": previous, "planDigest": plan["planDigest"],
         "action": plan["action"], "rollback": plan["rollback"], "resumesRunId": plan["danglingRunId"],
         "checks": {"source": "operator-attested"},
     }
-    write_private(roots.state_dir / "runs" / run_id / "plan.json", plan)
-    append_row(roots.state_dir, {**row, "phase": "started", "timestamp": utc(started_at)})  # intent first (D014)
+    try:
+        write_private(roots.state_dir / "runs" / run_id / "plan.json", plan)
+        append_row(roots.state_dir, {**row, "phase": "started", "timestamp": utc(started_at)})  # intent first (D014)
+    except OSError as exc:
+        raise Unavailable(f"cannot record intent in {roots.state_dir}: {exc}") from exc  # nothing changed yet
     outcome, code, error = ("noop" if plan["action"] == "noop" else "applied"), 0, None
     try:
         if plan["action"] == "install":
@@ -291,10 +307,14 @@ def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetim
             installer.switch_current(roots.prefix / "current", roots.prefix / "releases" / sha)
     except (RuntimeError, OSError) as exc:
         outcome, code, error = "failed", 5, str(exc)
-    append_row(roots.state_dir, {
-        **row, "phase": "finished", "timestamp": utc(now()), "outcome": outcome, "exit": code,
-        "error": error, "rollbackCommand": rollback_command,
-    })
+    try:
+        append_row(roots.state_dir, {
+            **row, "phase": "finished", "timestamp": utc(now()), "outcome": outcome, "exit": code,
+            "error": error, "rollbackCommand": rollback_command,
+        })
+    except OSError as exc:  # the change may already be live: indeterminate, never "nothing changed"
+        print(f"{outcome} {sha}, but the finished row was not recorded: {exc}\nto back out: {rollback_command}", file=sys.stderr)
+        return 5
     if code:
         print(f"failed after changes began: {error}\nto back out: {rollback_command}", file=sys.stderr)
         return code

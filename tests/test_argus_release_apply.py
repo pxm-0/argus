@@ -209,6 +209,12 @@ class GuardTests(ApplyFixture):
         self.assertEqual(4, code)
         self.assertIn("another apply", err)
 
+    def test_unreadable_current_stamp_is_a_refusal_not_a_traceback(self) -> None:
+        (self.prefix / "releases" / self.first / installer.STAMP).unlink()
+        code, _, err = self.run_apply(self.first)
+        self.assertEqual(3, code)
+        self.assertIn("cannot read", err)
+
     def test_bootstrap_stays_manual_when_current_is_not_a_release_symlink(self) -> None:
         (self.prefix / "current").unlink()
         (self.prefix / "current").mkdir()
@@ -260,7 +266,7 @@ class ActivationTests(ApplyFixture):
         started, finished = self.history()
         self.assertEqual(("started", "finished"), (started["phase"], finished["phase"]))
         self.assertEqual(started["runId"], finished["runId"])
-        self.assertEqual(f"20261121T120000Z-{second[:12]}", started["runId"])
+        self.assertRegex(started["runId"], rf"^20261121T120000Z-\d+-{second[:12]}$")
         for row in (started, finished):
             self.assertEqual(second, row["sha"])
             self.assertEqual(self.first, row["previousSha"])
@@ -313,6 +319,10 @@ class ActivationTests(ApplyFixture):
         self.assertNotEqual(before, self.plan_digest(second))
         self.assertEqual(0, self.apply_confirmed(second)[0])
         self.assertEqual("crashed-run", self.history()[-1]["resumesRunId"])
+        # Confirming acknowledged it: later plans no longer carry it.
+        code, out, _ = self.run_apply(second)
+        self.assertEqual(0, code)
+        self.assertNotIn("crashed-run", out)
 
     def test_evidence_never_touches_the_operator_owned_runtime(self) -> None:
         before = tree_digest(self.source / "runtime")
@@ -363,7 +373,8 @@ class StaticTests(unittest.TestCase):
             self.assertNotIn(forbidden, source)
 
     def test_cli_rejects_bad_invocations_with_exit_2(self) -> None:
-        for argv in ([], ["--sha", "a" * 40], ["--sha", "a" * 40, "--plan", "--confirm", "x"], ["--sha", "a" * 40, "--plan", "extra"]):
+        malformed = [["--sha", bad, "--plan"] for bad in ("a" * 12, "A" * 40, "main")]
+        for argv in ([], ["--sha", "a" * 40], ["--sha", "a" * 40, "--plan", "--confirm", "x"], ["--sha", "a" * 40, "--plan", "extra"], *malformed):
             with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
                 apply_module.parse_args(argv)
             self.assertEqual(2, raised.exception.code, argv)
