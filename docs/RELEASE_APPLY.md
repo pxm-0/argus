@@ -79,7 +79,7 @@ Steps 1-7 only read; `--plan` stops after step 7. Steps 8-15 run only with a mat
      2. Compare it with the release dir without following symlinks: the same set of paths, bytes and executable bits, with everything owned by 0:0 and no group or other write.
      3. The only allowed differences are `STAMP` (which must equal the sha) and the three state paths, which must be symlinks to exactly `/srv/argus/<path>` (:43-44, :186-192).
      4. Any failure refuses with `release dir tampered`. Apply never repairs or reuses such a dir.
-   - **Candidate tree.** For `install` it is the temp extraction; for the other two it is the release dir. In every case the candidate is data only and none of its code runs before the switch.
+   - **Candidate tree.** For `install` it is the temp extraction; for the other two it is the release dir. Changed in implementation (#428): the candidate's own `scripts/argus_sudoers.py` renders the release overrides, loaded from this hash-verified tree. The previous release's renderer would lag one release behind, and the verified code becomes current moments later anyway. No other candidate code runs before the switch.
 6. **Desired /etc state from the candidate.** Scope is files that already exist on the host, plus every rendered drop-in and the sudoers file.
 
    | Source | Destination | Owner and mode |
@@ -91,7 +91,7 @@ Steps 1-7 only read; `--plan` stops after step 7. Steps 8-15 run only with a mat
    | `render_sudoers(...)` (:123) | `/etc/sudoers.d/argus-operator` | root:root 0440 |
 
    - The override row covers the generated `argus-m5-workload-*` units, which closes root-owned-release.md:108.
-   - Sudoers: if the rendered text is not byte-equal to the candidate's `deploy/sudoers/argus-operator`, refuse. That is the runbook's `cmp`, the same comparison as `argus-sudoers-render --check` (scripts/argus-sudoers-render:47-50).
+   - Sudoers: changed in implementation (#428). The candidate's committed `deploy/sudoers/argus-operator` is installed as-is. Comparing it with the previous release's renderer would refuse every release that changes the renderer. CI already proves the committed file equals its own renderer's output (tests/test_argus_sudoers.py), and `visudo -cf` checks it before any change.
    - `templates/systemd/` is never a source. Its control-api unit is the stale `User=oreo` copy (templates/systemd/argus-control-api.service:7).
    - Drift classes per path:
 

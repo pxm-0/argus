@@ -1,4 +1,4 @@
-"""argus release apply, task 1/5 (#427): guards, sha trust, release activation and history.
+"""argus release apply: guards, sha trust, release activation and history (#427), /etc convergence (#428).
 
 Spec: docs/RELEASE_APPLY.md. Everything runs unprivileged against temp roots: euid is injected and the
 release owner is the test user instead of root.
@@ -82,9 +82,21 @@ class FakeRunner:
 
     def __init__(self, source: Path, prefix: Path) -> None:
         self.source, self.prefix, self.calls, self.fail_install = source, prefix, [], False
+        self.visudo_file_ok, self.visudo_live_results = True, []  # results for successive `visudo -c`
+
+    def commands(self) -> list[list[str]]:
+        """Calls with the installer path and temp file names reduced to stable words."""
+        return [["installer"] if call[0].endswith("argus-release-install") else call[:2] for call in self.calls]
 
     def __call__(self, argv: list[str]) -> subprocess.CompletedProcess:
         self.calls.append(list(argv))
+        if argv[:2] == ["/usr/sbin/visudo", "-cf"]:
+            return subprocess.CompletedProcess(argv, 0 if self.visudo_file_ok else 1, "", "" if self.visudo_file_ok else "syntax error\n")
+        if argv == ["/usr/sbin/visudo", "-c"]:
+            ok = self.visudo_live_results.pop(0) if self.visudo_live_results else True
+            return subprocess.CompletedProcess(argv, 0 if ok else 1, "", "")
+        if argv in (["/usr/bin/systemctl", "daemon-reload"], ["/usr/bin/systemd-sysusers"]):
+            return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[0].endswith("scripts/argus-release-install"):
             if self.fail_install:
                 return subprocess.CompletedProcess(argv, 3, "", "refused: injected\n")
@@ -115,9 +127,12 @@ class ApplyFixture(unittest.TestCase):
             installer.install_release(self.first, source=self.source, prefix=self.prefix, owner=OWNER)
         self.boot_id = tmp / "boot_id"
         self.boot_id.write_text("boot-1\n")
+        self.etc = apply_module.etc.EtcRoots(systemd=tmp / "etc/systemd/system", sysusers=tmp / "etc/sysusers.d", sudoers=tmp / "etc/sudoers.d")
+        for folder in (self.etc.systemd, self.etc.sysusers, self.etc.sudoers):
+            folder.mkdir(parents=True)
         self.roots = apply_module.Roots(
             prefix=self.prefix, source=self.source, state_dir=self.state,
-            lock=tmp / "apply.lock", boot_id=self.boot_id,
+            lock=tmp / "apply.lock", boot_id=self.boot_id, etc_roots=self.etc,
         )
         self.runner = FakeRunner(self.source, self.prefix)
 
@@ -163,13 +178,13 @@ class ApplyFixture(unittest.TestCase):
 class PlanTests(ApplyFixture):
     def test_plan_writes_nothing_and_runs_no_command(self) -> None:
         second = self.commit('{"v": 2}\n')
-        before = tree_digest(self.prefix, self.state, self.source)
+        before = tree_digest(self.prefix, self.state, self.source, self.tmp / "etc")
         code, out, _ = self.run_apply(second)
         self.assertEqual(0, code)
         self.assertIn("action: install", out)
         self.assertIn(f"previous: {self.first}", out)
         self.assertIn("gh pr view", out)  # the operator-attested CI gate
-        self.assertEqual(before, tree_digest(self.prefix, self.state, self.source))
+        self.assertEqual(before, tree_digest(self.prefix, self.state, self.source, self.tmp / "etc"))
         self.assertEqual([], self.runner.calls)
 
     def test_digest_is_stable_and_a_changed_world_refuses_confirm(self) -> None:
@@ -265,6 +280,7 @@ class ActivationTests(ApplyFixture):
         installer_call = self.runner.calls[0]
         self.assertEqual(str(self.prefix / "releases" / self.first / "scripts/argus-release-install"), installer_call[0])
         self.assertEqual(["--sha", second], installer_call[1:])
+        self.assertEqual([["installer"], ["/usr/bin/systemctl", "daemon-reload"]], self.runner.commands())
         started, finished = self.history()
         self.assertEqual(("started", "finished"), (started["phase"], finished["phase"]))
         self.assertEqual(started["runId"], finished["runId"])
@@ -308,7 +324,7 @@ class ActivationTests(ApplyFixture):
         self.assertEqual(0, self.apply_confirmed(self.first)[0])
         self.assertEqual(self.prefix / "releases" / self.first, self.current())
         self.assertTrue(self.history()[-1]["rollback"])
-        self.assertEqual(1, len(self.runner.calls))  # switch never reinstalls
+        self.assertEqual(1, self.runner.commands().count(["installer"]))  # switch never reinstalls
 
     def test_a_dangling_started_row_is_shown_and_bound_into_the_digest(self) -> None:
         second = self.commit('{"v": 2}\n')
@@ -330,6 +346,138 @@ class ActivationTests(ApplyFixture):
         before = tree_digest(self.source / "runtime")
         self.assertEqual(0, self.apply_confirmed(self.commit('{"v": 2}\n'))[0])
         self.assertEqual(before, tree_digest(self.source / "runtime"))
+
+
+API_UNIT = "[Service]\nWorkingDirectory=/srv/argus\nExecStart=/srv/argus/scripts/argus-control-api\n"
+WORKLOAD_UNIT = "[Service]\nExecStart=/srv/argus/scripts/argus-m5-workload-x\n"  # generated on the host, not in the repo
+
+
+class EtcTests(ApplyFixture):
+    """docs/RELEASE_APPLY.md steps 6 and 11: drift is planned, digested, then converged with backups."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.source / "scripts" / "argus_sudoers.py").write_bytes((ROOT / "scripts" / "argus_sudoers.py").read_bytes())
+        write(self.source, "systemd/argus-control-api.service", API_UNIT)
+        write(self.source, "systemd/argus-new.service", "[Service]\nExecStart=/bin/true\n")
+        write(self.source, "systemd/argus-smoke.service.d/onfailure.conf", "[Unit]\nOnFailure=x\n")
+        write(self.source, "systemd/sysusers.d/argus-api.conf", "u argus-api - - /nonexistent\n")
+        write(self.source, "templates/systemd/argus-control-api.service", "[Service]\nExecStart=/srv/argus/TEMPLATE\n")
+        write(self.source, "deploy/sudoers/argus-operator", "Defaults:oreo env_reset\n")
+        git(self.source, "add", "-A")
+        git(self.source, "commit", "-q", "-m", "etc")
+        self.release = git(self.source, "rev-parse", "HEAD")
+        self.set_main(self.release)
+        write(self.etc.systemd, "argus-control-api.service", "[Service]\nExecStart=/srv/argus/old\n")
+        write(self.etc.systemd, "argus-control-api.service.d/99-local.conf", "[Service]\nNice=5\n")
+        write(self.etc.systemd, "argus-smoke.service", "[Service]\nExecStart=/srv/argus/scripts/argus-smoke-scheduled\n")
+        write(self.etc.systemd, "argus-m5-workload-x.service", WORKLOAD_UNIT)
+        write(self.etc.sysusers, "argus-api.conf", "u argus-api - - /old\n")
+
+    def etc_text(self, relative: str) -> str:
+        return (self.tmp / "etc" / relative).read_text()
+
+    def test_plan_lists_every_change_writes_nothing_and_binds_etc_bytes(self) -> None:
+        before = tree_digest(self.tmp / "etc")
+        code, out, _ = self.run_apply(self.release)
+        self.assertEqual(0, code)
+        self.assertEqual(before, tree_digest(self.tmp / "etc"))
+        self.assertEqual([], self.runner.calls)
+        for line in (
+            f"update                   {self.etc.systemd}/argus-control-api.service",
+            f"create                   {self.etc.systemd}/argus-smoke.service.d/onfailure.conf",
+            f"create                   {self.etc.systemd}/argus-control-api.service.d/10-argus-release.conf",
+            f"create                   {self.etc.systemd}/argus-m5-workload-x.service.d/10-argus-release.conf",
+            f"update                   {self.etc.sysusers}/argus-api.conf",
+            f"create                   {self.etc.sudoers}/argus-operator",
+            f"available-not-installed  {self.etc.systemd}/argus-new.service (report only)",
+        ):
+            self.assertIn(line, out)
+        self.assertIn("+ExecStart=/srv/argus/scripts/argus-control-api", out)  # capped unified diff
+        digest = self.plan_digest(self.release)
+        (self.etc.systemd / "argus-control-api.service.d" / "99-local.conf").write_text("[Service]\nNice=6\n")
+        self.assertEqual(digest, self.plan_digest(self.release))  # unmanaged files are not ours
+        (self.etc.sysusers / "argus-api.conf").write_text("u argus-api - - /older\n")
+        code, _, err = self.run_apply(self.release, confirm=digest)
+        self.assertEqual(3, code)
+        self.assertIn("plan changed", err)
+
+    def test_confirm_converges_with_backups_modes_and_one_reload(self) -> None:
+        code, _, err = self.apply_confirmed(self.release)
+        self.assertEqual(0, code, err)
+        self.assertEqual(API_UNIT, self.etc_text("systemd/system/argus-control-api.service"))
+        self.assertEqual("[Unit]\nOnFailure=x\n", self.etc_text("systemd/system/argus-smoke.service.d/onfailure.conf"))
+        override = self.etc_text("systemd/system/argus-control-api.service.d/10-argus-release.conf")
+        self.assertIn("ExecStart=/opt/argus/current/scripts/argus-control-api", override)
+        self.assertNotIn("TEMPLATE", override)  # templates/systemd is never a source
+        self.assertIn("/opt/argus/current/scripts/argus-m5-workload-x",
+                      self.etc_text("systemd/system/argus-m5-workload-x.service.d/10-argus-release.conf"))
+        self.assertEqual("[Service]\nNice=5\n", self.etc_text("systemd/system/argus-control-api.service.d/99-local.conf"))
+        self.assertFalse((self.etc.systemd / "argus-new.service").exists())
+        sudoers = self.etc.sudoers / "argus-operator"
+        self.assertEqual(0o440, sudoers.stat().st_mode & 0o777)
+        self.assertEqual(0o644, (self.etc.systemd / "argus-control-api.service").stat().st_mode & 0o777)
+        self.assertEqual([], [p.name for p in self.etc.sudoers.iterdir() if p.name.startswith(".")])
+        commands = self.runner.commands()
+        self.assertEqual(["/usr/sbin/visudo", "-cf"], commands[0])  # checked before any change
+        self.assertEqual(["installer"], commands[1])
+        self.assertEqual(1, commands.count(["/usr/bin/systemctl", "daemon-reload"]))
+        self.assertEqual(["/usr/bin/systemctl", "daemon-reload"], commands[-1])
+        self.assertIn(["/usr/bin/systemd-sysusers"], commands)
+        finished = self.history()[-1]
+        backup = self.state / "runs" / finished["runId"] / "backup"
+        self.assertEqual("[Service]\nExecStart=/srv/argus/old\n",
+                         (backup / str(self.etc.systemd / "argus-control-api.service").lstrip("/")).read_text())
+        changed = {Path(entry["path"]).name: entry["class"] for entry in finished["changedFiles"]}
+        self.assertEqual("update", changed["argus-control-api.service"])
+        self.assertEqual("create", changed["argus-operator"])
+        # Converged: a re-apply changes nothing and reloads nothing.
+        self.runner.calls.clear()
+        code, out, _ = self.apply_confirmed(self.release)
+        self.assertEqual(0, code)
+        self.assertIn("etc: 0 to change", out)
+        self.assertEqual([], self.runner.calls)
+
+    def test_symlinked_or_foreign_targets_are_refused_before_any_change(self) -> None:
+        target = self.etc.systemd / "argus-control-api.service"
+        target.unlink()
+        target.symlink_to(self.tmp / "elsewhere")
+        code, _, err = self.run_apply(self.release)
+        self.assertEqual(3, code)
+        self.assertIn("not a root-owned regular file", err)
+        target.unlink()
+        write(self.etc.systemd, "argus-control-api.service", "[Service]\n")
+        (self.etc.systemd / "argus-control-api.service.d").chmod(0o777)
+        code, _, err = self.run_apply(self.release)
+        self.assertEqual(3, code)
+        self.assertIn("group/other writable", err)
+
+    def test_rejected_sudoers_refuses_before_any_change(self) -> None:
+        self.runner.visudo_file_ok = False
+        before = tree_digest(self.tmp / "etc", self.prefix)
+        code, _, err = self.apply_confirmed(self.release)
+        self.assertEqual(3, code)
+        self.assertIn("visudo -cf rejects", err)
+        self.assertEqual(before, tree_digest(self.tmp / "etc", self.prefix))
+        self.assertEqual([], self.history())
+
+    def test_live_visudo_failure_restores_and_exits_5(self) -> None:
+        write(self.etc.sudoers, "argus-operator", "Defaults:oreo old\n", 0o440)
+        self.runner.visudo_live_results = [False, True]
+        code, _, err = self.apply_confirmed(self.release)
+        self.assertEqual(5, code)
+        self.assertIn("previous state restored", err)
+        self.assertEqual("Defaults:oreo old\n", (self.etc.sudoers / "argus-operator").read_text())
+        self.assertEqual(2, self.runner.commands().count(["/usr/sbin/visudo", "-c"]))
+        self.assertEqual(("failed", 5), (self.history()[-1]["outcome"], self.history()[-1]["exit"]))
+
+    def test_managed_orphan_is_reported_and_left_alone(self) -> None:
+        write(self.etc.systemd, "argus-gone.service.d/10-argus-release.conf", "# Managed by scripts/argus-sudoers-render\n[Service]\n")
+        code, out, _ = self.run_apply(self.release)
+        self.assertEqual(0, code)
+        self.assertIn(f"managed-orphan           {self.etc.systemd}/argus-gone.service.d/10-argus-release.conf (report only)", out)
+        self.assertEqual(0, self.apply_confirmed(self.release)[0])
+        self.assertTrue((self.etc.systemd / "argus-gone.service.d" / "10-argus-release.conf").exists())
 
 
 class TamperTests(ApplyFixture):

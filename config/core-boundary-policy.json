@@ -18,7 +18,7 @@
   "dependencyPolicy": {
     "mode": "python-standard-library-only",
     "allowedThirdPartyImports": [],
-    "expectedSbomDigest": "sha256:ecd8d5942b6f35d2fcb386f1417a7d7377bf3e0d8997f5bf75b06f7490ba2d45"
+    "expectedSbomDigest": "sha256:f23bf5298fd62d4bc53aaa9c7b44a643b6f8d3cb07ccde268e20de7c4a1a40ed"
   },
   "dynamicLoadPolicy": {
     "default": "deny",
@@ -26,6 +26,7 @@
       "scripts/argus-m5-egress-verify",
       "scripts/argus-m5-workload-cutover",
       "scripts/argus-release-apply",
+      "scripts/argus_release_etc.py",
       "scripts/argus_collectors.py",
       "scripts/argus_common.py",
       "scripts/argus_sandbox_firewall.py"

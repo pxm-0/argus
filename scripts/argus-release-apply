@@ -46,8 +46,10 @@ def _load(name: str, filename: str):
 
 
 installer = _load("argus_release_install", "argus-release-install")
+etc = _load("argus_release_etc", "argus_release_etc.py")
 
 ReleaseRefused = installer.ReleaseRefused
+REFUSALS = (ReleaseRefused, etc.EtcRefused)
 ROLLBACK_WARNING = "ROLLBACK: forward-only schema migrations are not undone"
 CI_ATTESTATION = "gh pr view <n> --json mergeCommit,statusCheckRollup  # on the laptop: mergeCommit must equal --sha, every check SUCCESS"
 
@@ -59,6 +61,7 @@ class Roots:
     state_dir: Path = Path("/var/lib/argus/releases")
     lock: Path = Path("/run/argus-release-apply.lock")
     boot_id: Path = Path("/proc/sys/kernel/random/boot_id")
+    etc_roots: etc.EtcRoots = etc.EtcRoots()
 
 
 class Unavailable(RuntimeError):
@@ -226,7 +229,22 @@ def utc(moment: datetime) -> str:
 
 # ---- plan and apply --------------------------------------------------------------------------------
 
-def build_plan(roots: Roots, sha: str, owner: tuple[int, int]) -> dict:
+@contextlib.contextmanager
+def candidate_tree(roots: Roots, sha: str, action: str):
+    """The verified tree /etc is rendered from: the release dir (already verified), or a fresh verified extraction."""
+    if action != "install":
+        yield roots.prefix / "releases" / sha
+        return
+    expected_tree = installer.require_known_commit(roots.source, sha, installer.REF)
+    with tempfile.TemporaryDirectory(prefix=f"argus-candidate-{sha[:12]}-") as scratch:
+        installer.extract_commit(roots.source, sha, Path(scratch))
+        if installer.git_tree_hash(Path(scratch)) != expected_tree:
+            raise ReleaseRefused(f"tree hash mismatch for {sha}")
+        yield Path(scratch)
+
+
+def build_plan(roots: Roots, sha: str, owner: tuple[int, int]) -> tuple[dict, dict]:
+    """(plan, desired /etc contents). The plan, and so its digest, binds every /etc before/after hash."""
     trust_sha(roots.source, sha)
     previous = previous_release(roots.prefix)
     release = roots.prefix / "releases" / sha
@@ -242,15 +260,19 @@ def build_plan(roots: Roots, sha: str, owner: tuple[int, int]) -> dict:
         boot_id = roots.boot_id.read_text(encoding="utf-8").strip()
     except OSError as exc:
         raise Unavailable(f"cannot read boot id {roots.boot_id}: {exc}") from exc
+    with candidate_tree(roots, sha, action) as candidate:
+        desired, report = etc.desired_state(candidate, roots.etc_roots)
+    drift = etc.classify(desired, roots.etc_roots, owner)
     plan = {
         "sha": sha, "previousSha": previous, "action": action, "rollback": rollback,
         "danglingRunId": dangling_run(roots.state_dir), "bootId": boot_id,
+        "etc": {"drift": drift, "report": report + etc.managed_orphans(desired, roots.etc_roots)},
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
-    return {**plan, "planDigest": "sha256:" + hashlib.sha256(canonical).hexdigest()}
+    return {**plan, "planDigest": "sha256:" + hashlib.sha256(canonical).hexdigest()}, desired
 
 
-def print_plan(plan: dict) -> None:
+def print_plan(plan: dict, desired: dict) -> None:
     print(f"sha: {plan['sha']}")
     print(f"previous: {plan['previousSha']}")
     print(f"action: {plan['action']}")
@@ -258,6 +280,12 @@ def print_plan(plan: dict) -> None:
         print(ROLLBACK_WARNING)
     if plan["danglingRunId"]:
         print(f"unfinished earlier run: {plan['danglingRunId']} (confirming this plan acknowledges it)")
+    changes = etc.describe(plan["etc"]["drift"], desired)
+    print(f"etc: {len([e for e in plan['etc']['drift'] if e['class'] != 'same'])} to change" + (":" if changes else ""))
+    for line in changes:
+        print(line)
+    for entry in plan["etc"]["report"]:
+        print(f"  {entry['class']:<24} {entry['path']} (report only)")
     print(f"CI gate (operator-attested): {CI_ATTESTATION}")
     print(f"planDigest: {plan['planDigest']}")
 
@@ -274,14 +302,15 @@ def apply(
         require_sealed(script_path, owner[0])
         os.umask(0o022)
         with exclusive_lock(roots.lock):
-            plan = build_plan(roots, sha, owner)
-            print_plan(plan)
+            plan, desired = build_plan(roots, sha, owner)
+            print_plan(plan, desired)
             if plan_only:
                 return 0
             if confirm != plan["planDigest"]:
                 raise ReleaseRefused("plan changed; re-run --plan")
-            return activate(roots, plan, runner, now)
-    except ReleaseRefused as exc:
+            etc.precheck_sudoers(plan["etc"]["drift"], desired, runner)
+            return activate(roots, plan, desired, runner, now, owner)
+    except REFUSALS as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     except (Unavailable, OSError) as exc:  # activate() handles its own errors once changes begin
@@ -292,7 +321,7 @@ def apply(
         return 3
 
 
-def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetime]) -> int:
+def activate(roots: Roots, plan: dict, desired: dict, runner: Runner, now: Callable[[], datetime], owner: tuple[int, int]) -> int:
     sha, previous = plan["sha"], plan["previousSha"]
     started_at = now()
     run_id = f"{started_at.astimezone(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-{os.getpid()}-{sha[:12]}"
@@ -307,7 +336,7 @@ def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetim
         append_row(roots.state_dir, {**row, "phase": "started", "timestamp": utc(started_at)})  # intent first (D014)
     except OSError as exc:
         raise Unavailable(f"cannot record intent in {roots.state_dir}: {exc}") from exc  # nothing changed yet
-    outcome, code, error = ("noop" if plan["action"] == "noop" else "applied"), 0, None
+    code, error, changed = 0, None, []
     try:
         if plan["action"] == "install":
             # The previously trusted installer runs, never the candidate's.
@@ -316,12 +345,19 @@ def activate(roots: Roots, plan: dict, runner: Runner, now: Callable[[], datetim
                 raise RuntimeError(f"installer exited {result.returncode}: {(result.stderr or '').strip()[-300:]}")
         elif plan["action"] == "switch":
             installer.switch_current(roots.prefix / "current", roots.prefix / "releases" / sha)
-    except (RuntimeError, OSError) as exc:
-        outcome, code, error = "failed", 5, str(exc)
+        changed = etc.converge(plan["etc"]["drift"], desired, roots.state_dir / "runs" / run_id / "backup", owner, runner)
+        if changed or plan["action"] != "noop":
+            result = runner([etc.SYSTEMCTL, "daemon-reload"])
+            if result.returncode != 0:
+                raise RuntimeError(f"systemctl daemon-reload failed: {(result.stderr or '').strip()[-300:]}")
+    except (RuntimeError, OSError, etc.EtcFailed) as exc:
+        code, error = 5, str(exc)
+    outcome = "failed" if code else "noop" if plan["action"] == "noop" and not changed else "applied"
     try:
         append_row(roots.state_dir, {
             **row, "phase": "finished", "timestamp": utc(now()), "outcome": outcome, "exit": code,
             "error": error, "rollbackCommand": rollback_command,
+            "changedFiles": [{key: entry[key] for key in ("path", "class", "before", "after")} for entry in changed],
         })
     except OSError as exc:  # the change may already be live: indeterminate, never "nothing changed"
         print(f"{outcome} {sha}, but the finished row was not recorded: {exc}\nto back out: {rollback_command}", file=sys.stderr)
