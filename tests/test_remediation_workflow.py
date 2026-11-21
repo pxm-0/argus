@@ -60,6 +60,10 @@ Acceptance summaries
             "- [x] Acceptance summary attached above.",
         )
         self.assertNotEqual(0, self.run_guard(attached_without_digests).returncode)
+        no_disposition = self.run_guard(self.valid_body().replace("- [x] Acceptance summary N/A", "- [ ] Acceptance summary N/A"))
+        self.assertNotEqual(0, no_disposition.returncode)
+        self.assertIn("- [x] Acceptance summary attached above.", no_disposition.stdout)
+        self.assertIn("reason documented in Notes.", no_disposition.stdout)
         fake_digests = attached_without_digests.replace(
             "Acceptance summaries",
             "Acceptance summaries\nsha256:x sha256:y",
