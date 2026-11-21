@@ -837,7 +837,7 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
         return
     html = html_path.read_text()
     js = js_path.read_text() if js_path.exists() else ""
-    required = ["Estate coverage", "Access Plan", "Backups", "System", "Events", "Workloads", "Cloudflare Plan", "<title>Argus</title>", 'id="topology"', 'id="workloads"', 'id="command-panel"']
+    required = ["Needs attention", "Stages", "Workloads", "Activity", "Audit log", "System", "<title>Argus</title>", 'id="attention-list"', 'id="workloads"', 'id="events"', 'id="system-facts"', 'id="evidence-state"', 'id="command-panel"']
     forbidden = ["control-token", "Authorization: Bearer", "PRIVATE KEY", "BEGIN ", ".env="]
     smoke.check(all(item in html for item in required), "dashboard static shell generated")
     smoke.check(not any(item in html for item in forbidden), "dashboard static shell contains no secret markers")
@@ -852,9 +852,9 @@ def check_dashboard_v2(repo: Path, smoke: Smoke) -> None:
                 "Declared access",
                 "Observed access",
                 "Effective access",
-                "Disabled operation reasons",
+                "Every action is blocked until",
                 "Durable history",
-                "Review managed move",
+                "Managed move",
                 "/migration/preview",
                 "data-migration-create",
                 "migrationStatus",
