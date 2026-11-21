@@ -14,6 +14,7 @@ import os
 import shutil
 import stat
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -52,7 +53,11 @@ def _load_renderer(candidate: Path):
         return None
     loader = importlib.machinery.SourceFileLoader("argus_sudoers_candidate", str(path))
     module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
-    loader.exec_module(module)
+    sys.modules[loader.name] = module  # dataclasses resolve annotations through sys.modules[cls.__module__]
+    try:
+        loader.exec_module(module)
+    finally:
+        sys.modules.pop(loader.name, None)
     return module
 
 
@@ -204,10 +209,12 @@ def _backup(target: Path, backup_root: Path) -> None:
     shutil.copy2(target, copy, follow_symlinks=False)
 
 
-def converge(entries: list[dict], desired: Desired, backup_root: Path, owner: tuple[int, int], runner: Runner) -> list[dict]:
-    """Apply every non-`same` entry, sudoers last; returns the changed entries. Raises EtcFailed."""
+def converge(entries: list[dict], desired: Desired, backup_root: Path, owner: tuple[int, int], runner: Runner,
+             changed: list[dict], force_sysusers: bool = False) -> None:
+    """Apply every non-`same` entry, sudoers last, appending each written entry to the caller's `changed` as it goes,
+    so a failure part-way still records what changed. `force_sysusers` re-runs systemd-sysusers after a failed or
+    crashed earlier run, whose files may already be in place. Raises EtcFailed."""
     pending = sorted((e for e in entries if e["class"] in APPLIED_CLASSES), key=lambda e: (e["kind"] == "sudoers", e["path"]))
-    changed = []
     for entry in pending:
         target = Path(entry["path"])
         content, mode, kind = desired[target]
@@ -223,11 +230,10 @@ def converge(entries: list[dict], desired: Desired, backup_root: Path, owner: tu
         changed.append(entry)
         if kind == "sudoers":
             _verify_sudoers(target, backup_root, owner, runner)
-    if any(entry["kind"] == "sysusers" for entry in changed):
+    if any(entry["kind"] == "sysusers" for entry in changed) or (force_sysusers and any(e["kind"] == "sysusers" for e in entries)):
         result = runner([SYSUSERS])
         if result.returncode != 0:
             raise EtcFailed(f"systemd-sysusers failed: {(result.stderr or '').strip()[-300:]}")
-    return changed
 
 
 def _verify_sudoers(target: Path, backup_root: Path, owner: tuple[int, int], runner: Runner) -> None:

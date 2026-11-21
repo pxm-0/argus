@@ -204,6 +204,11 @@ def dangling_run(state_dir: Path) -> str | None:
     return open_runs[-1] if open_runs else None
 
 
+def last_run_failed(state_dir: Path) -> bool:
+    finished = [row for row in read_history(state_dir) if row.get("phase") == "finished"]
+    return bool(finished) and finished[-1].get("outcome") == "failed"
+
+
 def append_row(state_dir: Path, row: dict) -> None:
     """One O_APPEND write plus fsync per row; never rewritten or pruned."""
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o755)
@@ -263,9 +268,13 @@ def build_plan(roots: Roots, sha: str, owner: tuple[int, int]) -> tuple[dict, di
     with candidate_tree(roots, sha, action) as candidate:
         desired, report = etc.desired_state(candidate, roots.etc_roots)
     drift = etc.classify(desired, roots.etc_roots, owner)
+    dangling = dangling_run(roots.state_dir)
     plan = {
         "sha": sha, "previousSha": previous, "action": action, "rollback": rollback,
-        "danglingRunId": dangling_run(roots.state_dir), "bootId": boot_id,
+        "danglingRunId": dangling, "bootId": boot_id,
+        # After a failed or crashed run its files may already be in place, so no drift is left to trigger the
+        # idempotent follow-ups; re-run them.
+        "recovering": dangling is not None or last_run_failed(roots.state_dir),
         "etc": {"drift": drift, "report": report + etc.managed_orphans(desired, roots.etc_roots)},
     }
     canonical = json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
@@ -280,6 +289,8 @@ def print_plan(plan: dict, desired: dict) -> None:
         print(ROLLBACK_WARNING)
     if plan["danglingRunId"]:
         print(f"unfinished earlier run: {plan['danglingRunId']} (confirming this plan acknowledges it)")
+    if plan["recovering"]:
+        print("recovering from a failed or unfinished run: systemd-sysusers and daemon-reload run again")
     changes = etc.describe(plan["etc"]["drift"], desired)
     print(f"etc: {len([e for e in plan['etc']['drift'] if e['class'] != 'same'])} to change" + (":" if changes else ""))
     for line in changes:
@@ -345,8 +356,9 @@ def activate(roots: Roots, plan: dict, desired: dict, runner: Runner, now: Calla
                 raise RuntimeError(f"installer exited {result.returncode}: {(result.stderr or '').strip()[-300:]}")
         elif plan["action"] == "switch":
             installer.switch_current(roots.prefix / "current", roots.prefix / "releases" / sha)
-        changed = etc.converge(plan["etc"]["drift"], desired, roots.state_dir / "runs" / run_id / "backup", owner, runner)
-        if changed or plan["action"] != "noop":
+        etc.converge(plan["etc"]["drift"], desired, roots.state_dir / "runs" / run_id / "backup", owner, runner,
+                     changed, force_sysusers=plan["recovering"])
+        if changed or plan["action"] != "noop" or plan["recovering"]:
             result = runner([etc.SYSTEMCTL, "daemon-reload"])
             if result.returncode != 0:
                 raise RuntimeError(f"systemctl daemon-reload failed: {(result.stderr or '').strip()[-300:]}")

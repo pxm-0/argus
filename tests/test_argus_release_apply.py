@@ -17,7 +17,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -83,6 +83,7 @@ class FakeRunner:
     def __init__(self, source: Path, prefix: Path) -> None:
         self.source, self.prefix, self.calls, self.fail_install = source, prefix, [], False
         self.visudo_file_ok, self.visudo_live_results = True, []  # results for successive `visudo -c`
+        self.sysusers_results: list[bool] = []  # results for successive systemd-sysusers runs (default ok)
 
     def commands(self) -> list[list[str]]:
         """Calls with the installer path and temp file names reduced to stable words."""
@@ -95,7 +96,10 @@ class FakeRunner:
         if argv == ["/usr/sbin/visudo", "-c"]:
             ok = self.visudo_live_results.pop(0) if self.visudo_live_results else True
             return subprocess.CompletedProcess(argv, 0 if ok else 1, "", "")
-        if argv in (["/usr/bin/systemctl", "daemon-reload"], ["/usr/bin/systemd-sysusers"]):
+        if argv == ["/usr/bin/systemd-sysusers"]:
+            ok = self.sysusers_results.pop(0) if self.sysusers_results else True
+            return subprocess.CompletedProcess(argv, 0 if ok else 1, "", "" if ok else "sysusers failed\n")
+        if argv == ["/usr/bin/systemctl", "daemon-reload"]:
             return subprocess.CompletedProcess(argv, 0, "", "")
         if argv[0].endswith("scripts/argus-release-install"):
             if self.fail_install:
@@ -147,12 +151,12 @@ class ApplyFixture(unittest.TestCase):
         return sha
 
     def run_apply(self, sha: str, *, confirm: str | None = None, euid: int = 0, environ: dict | None = None,
-                  script_path: Path | None = None) -> tuple[int, str, str]:
+                  script_path: Path | None = None, now: datetime = NOW) -> tuple[int, str, str]:
         out, err = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             code = apply_module.apply(
                 sha, plan_only=confirm is None, confirm=confirm, roots=self.roots, runner=self.runner,
-                now=lambda: NOW, euid=euid, environ=environ if environ is not None else {},
+                now=lambda: now, euid=euid, environ=environ if environ is not None else {},
                 script_path=script_path or ROOT / "scripts" / "argus-release-apply", owner=OWNER,
             )
         return code, out.getvalue(), err.getvalue()
@@ -164,8 +168,8 @@ class ApplyFixture(unittest.TestCase):
         self.assertEqual(1, len(lines), out)
         return lines[0].removeprefix("planDigest: ")
 
-    def apply_confirmed(self, sha: str) -> tuple[int, str, str]:
-        return self.run_apply(sha, confirm=self.plan_digest(sha))
+    def apply_confirmed(self, sha: str, now: datetime = NOW) -> tuple[int, str, str]:
+        return self.run_apply(sha, confirm=self.plan_digest(sha), now=now)
 
     def current(self) -> Path:
         return (self.prefix / "current").resolve()
@@ -433,7 +437,7 @@ class EtcTests(ApplyFixture):
         self.assertEqual("create", changed["argus-operator"])
         # Converged: a re-apply changes nothing and reloads nothing.
         self.runner.calls.clear()
-        code, out, _ = self.apply_confirmed(self.release)
+        code, out, _ = self.apply_confirmed(self.release, now=NOW + timedelta(seconds=1))
         self.assertEqual(0, code)
         self.assertIn("etc: 0 to change", out)
         self.assertEqual([], self.runner.calls)
@@ -470,6 +474,35 @@ class EtcTests(ApplyFixture):
         self.assertEqual("Defaults:oreo old\n", (self.etc.sudoers / "argus-operator").read_text())
         self.assertEqual(2, self.runner.commands().count(["/usr/sbin/visudo", "-c"]))
         self.assertEqual(("failed", 5), (self.history()[-1]["outcome"], self.history()[-1]["exit"]))
+
+    def test_failed_sysusers_is_recorded_and_retried_by_the_next_apply(self) -> None:
+        self.runner.sysusers_results = [False]
+        code, _, err = self.apply_confirmed(self.release)
+        self.assertEqual(5, code)
+        self.assertIn("systemd-sysusers failed", err)
+        failed = self.history()[-1]
+        self.assertEqual("failed", failed["outcome"])
+        # Files written before the failure are recorded, not reported as an empty change set.
+        self.assertIn(str(self.etc.sysusers / "argus-api.conf"), [entry["path"] for entry in failed["changedFiles"]])
+        self.runner.calls.clear()
+        later = NOW + timedelta(seconds=1)
+        code, out, _ = self.run_apply(self.release, now=later)
+        self.assertEqual(0, code)
+        self.assertIn("etc: 0 to change", out)
+        self.assertIn("recovering from a failed or unfinished run", out)
+        code, _, err = self.apply_confirmed(self.release, now=later)
+        self.assertEqual(0, code, err)
+        self.assertEqual([["/usr/bin/systemd-sysusers"], ["/usr/bin/systemctl", "daemon-reload"]], self.runner.commands())
+
+    def test_a_release_whose_renderer_was_loaded_can_still_be_switched_back_to(self) -> None:
+        """Loading a release's renderer must not leave __pycache__ in it, or verify_existing would refuse it forever."""
+        self.assertEqual(0, self.apply_confirmed(self.release)[0])
+        self.assertEqual(0, self.apply_confirmed(self.release, now=NOW + timedelta(seconds=1))[0])  # noop loads it in place
+        newer = self.commit('{"v": 3}\n')
+        self.assertEqual(0, self.apply_confirmed(newer, now=NOW + timedelta(seconds=2))[0])
+        self.assertEqual([], list((self.prefix / "releases" / self.release).rglob("__pycache__")))
+        code, _, err = self.apply_confirmed(self.release, now=NOW + timedelta(seconds=3))
+        self.assertEqual(0, code, err)
 
     def test_managed_orphan_is_reported_and_left_alone(self) -> None:
         write(self.etc.systemd, "argus-gone.service.d/10-argus-release.conf", "# Managed by scripts/argus-sudoers-render\n[Service]\n")
