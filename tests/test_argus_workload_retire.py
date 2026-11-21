@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
@@ -256,7 +257,8 @@ class WorkloadRetireTests(unittest.TestCase):
         shared = pins("nodens-staging") & pins("nodens-production")
         self.assertTrue(shared, "staging and production share no image, so there is no warning to check")
         for digest in shared:
-            self.assertIn(f"`{digest[:19]}` is also pinned by `nodens-production`", rb)
+            # Other workloads may pin the same image, so the user list can hold more than one name.
+            self.assertRegex(rb, re.escape(f"`{digest[:19]}` is also pinned by ") + r"[^;]*`nodens-production`")
 
     def test_failed_check_opens_draft_pr(self) -> None:
         runner = FakeRunner(self.root, check_rc=1)

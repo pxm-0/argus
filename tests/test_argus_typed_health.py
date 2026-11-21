@@ -101,7 +101,7 @@ class TypedTargetTests(unittest.TestCase):
 
     def test_checked_in_typed_deploy_workloads_are_targeted(self) -> None:
         # The fixture above marks them active; the real inventory keeps them discovered (#375).
-        self.assertEqual(["nodens-production", "nodens-staging"], typed.typed_targets(ROOT))
+        self.assertEqual(["kadath-staging", "nodens-production", "nodens-staging"], typed.typed_targets(ROOT))
 
     def test_checked_in_estate_never_targets_the_m5_timer_workloads(self) -> None:
         self.assertFalse({"hastur", "kadath", "nodens"} & set(typed.typed_targets(ROOT)))
