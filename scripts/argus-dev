@@ -116,6 +116,8 @@ def run_test(spec: dict[str, Any], tag: str, command: list[str]) -> int:
     run_id = None
     for line in process.stderr:
         sys.stderr.write(line)
+        if run_id is not None:
+            continue  # the helper announces the run before the container starts; later lines may come from the test
         try:
             event = json.loads(line)
         except ValueError:
@@ -129,6 +131,8 @@ def run_test(spec: dict[str, Any], tag: str, command: list[str]) -> int:
 
 
 def fetch_results(project: str, run_id: str) -> Path | None:
+    if not RUN.fullmatch(run_id):
+        raise DevError(f"not a run ID: {run_id!r}")
     destination = CACHE / project / run_id
     destination.mkdir(parents=True, exist_ok=True)
     process = subprocess.Popen(remote("results"), stdin=subprocess.PIPE, stdout=subprocess.PIPE)
@@ -137,9 +141,11 @@ def fetch_results(project: str, run_id: str) -> Path | None:
     try:
         with tarfile.open(fileobj=process.stdout, mode="r|") as archive:
             archive.extractall(destination, filter="data")  # untrusted: no links out, no absolute paths, no devices
-    except tarfile.TarError:
-        process.wait()
-        print(f"argus-dev: no results for {run_id} (the test wrote nothing to /out)", file=sys.stderr)
+    except (tarfile.TarError, OSError) as error:
+        process.kill()  # stop ssh before waiting: an unread full pipe would block it forever
+        status = process.wait()
+        reason = "the server sent nothing (no /out, or the run is gone)" if status else f"the archive was refused: {error}"
+        print(f"argus-dev: no results for {run_id}: {reason}", file=sys.stderr)
         return None
     process.wait()
     print(f"argus-dev: results in {destination}", file=sys.stderr)

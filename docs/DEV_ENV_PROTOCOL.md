@@ -59,9 +59,10 @@ the project root, and add `argus-dev.json` to Git.
 | `preview.command`, `preview.env`, `preview.port` | the dev server; it must listen on `127.0.0.1:<port>` or `0.0.0.0:<port>` |
 | `services[]` | up to four helper containers (`name`, `image`, `command`, `env`, `user`, `tmpfs`) |
 
-A service `image` is either another `argus-dev/<project>:<tag>` or a
-`sha256:` image ID already in personal-sandbox, for example the Postgres ID that
-`argus-image-import` printed for kadath-staging. The first service owns the
+A service `image` is either another `argus-dev/<project>:<tag>` or the
+`sha256:` ID of a public Postgres image already imported into personal-sandbox
+(the ID `argus-image-import` printed, for example for kadath-staging). Other
+image IDs, including staging workload images, are refused. The first service owns the
 run's network namespace and every other container joins it, so they talk over
 `127.0.0.1`. Containers start in order, but nothing waits for readiness. The
 test command must wait for its database itself, for example with a short retry

@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import re
 import shutil
 import stat
 import subprocess
@@ -232,8 +233,10 @@ def _loopback_only_dev(container: dict[str, Any], running: dict[str, dict[str, A
     """D029: a dev run container scripts/argus-dev-sandbox started, with no interface beyond loopback.
 
     It has the argus.dev label and no Compose identity, runs unprivileged in no host
-    namespace, and its network mode is none or the netns of one running dev container
-    that is itself none. Such a container has nothing for the domain policy to filter.
+    namespace, and its network mode is none or the netns of one dev container (running
+    or exited) that is itself none. Such a container has nothing for the domain policy
+    to filter. `running` maps full IDs to inspect data for the running containers plus
+    any netns owners.
     """
     config = container.get("Config") or {}
     host = container.get("HostConfig") or {}
@@ -356,6 +359,21 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     endpoint_map: dict[tuple[str, str, str], set[str]] = {}
     containers: list[dict[str, Any]] = []
     running_by_id = {str(item.get("Id")): item for item in raw_containers if isinstance(item, dict)}
+    if domain == DEV_DOMAIN:
+        # A dev run's netns owner may have exited while a joined container still runs; inspect it too.
+        missing = sorted({
+            str(((item.get("HostConfig") or {}).get("NetworkMode") or "")).removeprefix("container:")
+            for item in running_by_id.values()
+            if str(((item.get("HostConfig") or {}).get("NetworkMode") or "")).startswith("container:")
+        } - set(running_by_id))
+        missing = [item for item in missing if re.fullmatch(r"[0-9a-f]{64}", item)]
+        if missing:
+            owners = _runtime_json(runner.text(_docker(domain, "inspect", *missing)), "Docker owner inventory")
+            if not isinstance(owners, list):
+                raise FirewallOperationError("Docker owner inventory must be a list")
+            for owner in owners:
+                if isinstance(owner, dict):
+                    running_by_id.setdefault(str(owner.get("Id")), owner)
     for container in raw_containers:
         if not isinstance(container, dict):
             raise FirewallOperationError("Docker container inventory entry must be an object")

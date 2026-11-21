@@ -144,7 +144,25 @@ class ArchiveTests(unittest.TestCase):
              self.assertRaises(sandbox.Refusal) as caught:
             sandbox.load(io.BytesIO(path.read_bytes()))
         self.assertEqual("dev-load-mismatch", caught.exception.code)
-        self.assertIn(["image", "rm", "argus-dev/kadath:t1"], [c[c.index("--host") + 2:] for c in calls])
+        removed = [c[c.index("--host") + 2:] for c in calls]
+        self.assertIn(["image", "rm", "argus-dev/kadath:t1"], removed)
+        self.assertNotIn(["image", "rm", "ghcr.io/pxm-0/nodens:x"], removed)
+
+    def test_load_removes_an_untagged_image_it_produced(self) -> None:
+        untagged = "sha256:" + "7" * 64
+
+        def fake_run(command, **kwargs):
+            if command[-1] == "load":
+                return subprocess.CompletedProcess(command, 0, f"Loaded image ID: {untagged}\n", "")
+            return subprocess.CompletedProcess(command, 0, "", "")
+
+        with mock.patch.object(sandbox, "SPOOL_DIR", tempfile.gettempdir()), \
+             mock.patch.object(sandbox, "archive_reference", return_value="argus-dev/kadath:t1"), \
+             mock.patch.object(sandbox.shutil, "disk_usage", return_value=mock.Mock(free=1 << 50)), \
+             mock.patch.object(sandbox.subprocess, "run", side_effect=fake_run) as run, \
+             self.assertRaises(sandbox.Refusal):
+            sandbox.load(io.BytesIO(b"tar"))
+        self.assertIn(["image", "rm", untagged], [c.args[0][c.args[0].index("--host") + 2:] for c in run.call_args_list])
 
     def test_forbidden_labels_catch_identity_forgery(self) -> None:
         labels = {"com.docker.compose.project": "nodens-staging", "argus.dev.slot": "1", "org.opencontainers.image.title": "ok"}
@@ -171,6 +189,7 @@ class ContainerArgumentTests(unittest.TestCase):
         self.assertIn(f"container:{'f' * 64}", args)
         self.assertIn("--read-only", args)
         self.assertIn('"dial":"127.0.0.1:3000"', sandbox.ingress_config(3000))
+        self.assertEqual({"disabled": True}, json.loads(sandbox.ingress_config(3000))["admin"])
 
     def test_docker_always_runs_as_the_sandbox_user_on_its_socket(self) -> None:
         self.assertEqual(["runuser", "-u", "argus-personal-sandbox", "--", "docker", "--host",
@@ -194,11 +213,41 @@ class ContainerArgumentTests(unittest.TestCase):
         now = time.time()
         old = time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime(now - 2 * 86400))
         new = time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime(now - 60))
-        self.assertTrue(sandbox.expired({"Labels": f"argus.dev.expires={int(now) - 1}", "State": "running", "CreatedAt": new}, now))
-        self.assertFalse(sandbox.expired({"Labels": f"argus.dev.expires={int(now) + 99}", "State": "running", "CreatedAt": old}, now))
-        self.assertTrue(sandbox.expired({"Labels": "argus.dev=1", "State": "exited", "CreatedAt": old}, now))
-        self.assertFalse(sandbox.expired({"Labels": "argus.dev=1", "State": "exited", "CreatedAt": new}, now))
-        self.assertFalse(sandbox.expired({"Labels": "argus.dev=1", "State": "running", "CreatedAt": old}, now))
+        self.assertTrue(sandbox.expired({"Expires": str(int(now) - 1), "State": "running", "CreatedAt": new}, now))
+        self.assertFalse(sandbox.expired({"Expires": str(int(now) + 99), "State": "running", "CreatedAt": old}, now))
+        self.assertTrue(sandbox.expired({"Expires": "", "State": "exited", "CreatedAt": old}, now))
+        self.assertFalse(sandbox.expired({"Expires": "", "State": "exited", "CreatedAt": new}, now))
+        self.assertFalse(sandbox.expired({"Expires": "", "State": "running", "CreatedAt": old}, now))
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S +0000 UTC", time.gmtime(1_800_000_000))
+        self.assertEqual(1_800_000_000, sandbox.created_epoch({"CreatedAt": stamp}))
+
+    def test_gc_never_removes_the_images_a_run_is_about_to_use(self) -> None:
+        def fake(*args, check=True, timeout=0):
+            if args[:2] == ("image", "ls"):
+                return subprocess.CompletedProcess(args, 0, "argus-dev/kadath:new\nargus-dev/kadath:old\n", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+        with mock.patch.object(sandbox, "dev_containers", return_value=[]), mock.patch.object(sandbox, "run_docker", side_effect=fake) as run:
+            result = sandbox.gc(keep={"argus-dev/kadath:new"})
+        removed = [call.args[2] for call in run.call_args_list if call.args[:2] == ("image", "rm")]
+        self.assertEqual(["argus-dev/kadath:old"], removed)
+        self.assertEqual(1, result["removedImages"])
+
+    def test_services_may_use_only_imported_public_postgres_ids(self) -> None:
+        request = sandbox.validate_request(test_request(services=[{"name": "db", "image": IMAGE_ID}]), "test")
+
+        def inspect(digests):
+            return lambda *args, check=True, timeout=0: subprocess.CompletedProcess(args, 0, json.dumps(digests), "")
+        with mock.patch.object(sandbox, "run_docker", side_effect=inspect(["postgres@sha256:" + "1" * 64])):
+            sandbox.require_images(request)
+        for digests in (["ghcr.io/pxm-0/nodens@sha256:" + "1" * 64], [], None):
+            with self.subTest(digests=digests), mock.patch.object(sandbox, "run_docker", side_effect=inspect(digests)), \
+                 self.assertRaises(sandbox.Refusal) as caught:
+                sandbox.require_images(request)
+            self.assertEqual("dev-service-image", caught.exception.code)
+
+    def test_ps_format_reads_labels_one_by_one(self) -> None:
+        self.assertIn('"Expires":{{json (.Label "argus.dev.expires")}}', sandbox.PS_FORMAT)
+        self.assertNotIn(".Labels", sandbox.PS_FORMAT)
 
     def test_main_refuses_without_root_and_unknown_verbs(self) -> None:
         self.assertEqual(2, sandbox.main(["shell"]))
@@ -248,6 +297,13 @@ class FirewallCarveOutTests(unittest.TestCase):
             with self.subTest(name=name):
                 self.assertFalse(self.check(container, owner, staging, middle))
 
+    def test_an_exited_netns_owner_still_qualifies(self) -> None:
+        owner = inspected("a" * 64)
+        joined = inspected("b" * 64, mode=f"container:{'a' * 64}", networks={})
+        self.assertTrue(firewall._loopback_only_dev(joined, {"b" * 64: joined, "a" * 64: owner}))
+        source = (ROOT / "scripts" / "argus_sandbox_firewall.py").read_text()
+        self.assertIn('runner.text(_docker(domain, "inspect", *missing))', source)
+
     def test_discovery_ignores_dev_containers_only_in_personal_sandbox(self) -> None:
         source = (ROOT / "scripts" / "argus_sandbox_firewall.py").read_text()
         self.assertIn("if domain == DEV_DOMAIN and _loopback_only_dev(container, running_by_id):", source)
@@ -274,6 +330,11 @@ class WrapperTests(unittest.TestCase):
         with mock.patch.dict(wrapper.os.environ, {"ARGUS_SSH_HOST": "oreochiserver", "ARGUS_REMOTE_REPO": "/opt/argus/current"}):
             self.assertEqual(["ssh", "-o", "BatchMode=yes", "oreochiserver", "sudo", "-n",
                               "/opt/argus/current/scripts/argus-dev-sandbox", "test"], wrapper.remote("test"))
+
+    def test_results_refuse_a_run_id_that_is_a_path(self) -> None:
+        for run in ("../..", "kadath/../../x", ""):
+            with self.subTest(run=run), self.assertRaises(wrapper.DevError):
+                wrapper.fetch_results("kadath", run)
 
     def test_project_file_is_validated(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
