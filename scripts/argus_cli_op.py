@@ -262,7 +262,8 @@ class _Flow:
             if _bare(self.args.yes_digest) != _bare(summary["previewDigest"]):
                 raise self.stop("op-digest-mismatch", "--yes-digest does not match the previewed digest.", "Re-run argus op preview and pass the digest it prints.", self.cli.EXIT_REFUSAL)
             return
-        if self.tty.read_line(f"Type the workload ID ({summary['workloadId']}) to confirm: ").strip() != summary["workloadId"]:
+        typed = self.tty.read_line(f"Type the workload ID ({summary['workloadId']}) to confirm: ").strip()
+        if self.cli.workload_aliases(self.repo).get(typed, typed) != summary["workloadId"]:
             raise self.stop("op-confirmation-mismatch", "The typed workload ID did not match.", "Nothing was created; rerun to try again.", self.cli.EXIT_REFUSAL)
 
     def approve(self, operation_id: str, confirmation: str) -> None:
