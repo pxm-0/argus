@@ -33,6 +33,7 @@ class FakeApi(ThreadingHTTPServer):
         self.log: list[str] = []
         self.requests: list[tuple[str, str, str]] = []  # method, path, header dump
         self.stepped = False
+        self.exchange_steps_up = True  # like the real server; a test can turn it off
         self.expire_step_up_once = False
         self.allowed = True
         self.states = ["queued", "running", "succeeded"]
@@ -91,7 +92,8 @@ class FakeHandler(BaseHTTPRequestHandler):
             if body.get("bootstrapToken") != TOKEN or len(self.headers.get("X-Argus-CSRF-Bootstrap", "")) < 32:
                 self.reply(401, {"error": "bootstrap credential required"})
                 return
-            self.reply(201, {"authenticated": True}, ("argus_session=SESSION; Path=/; Secure; HttpOnly", "argus_csrf=CSRFVALUE; Path=/; Secure"))
+            self.server.stepped = self.server.exchange_steps_up
+            self.reply(201, {"authenticated": True, "stepUpValid": self.server.exchange_steps_up}, ("argus_session=SESSION; Path=/; Secure; HttpOnly", "argus_csrf=CSRFVALUE; Path=/; Secure"))
             return
         if not self.authed(True):
             return
@@ -218,6 +220,17 @@ class OpCommandTests(unittest.TestCase):
         self.assertEqual(0, code, out)
         self.assertEqual("succeeded", json.loads(out)["data"]["state"])
         self.assertEqual(
+            ["/api/session/exchange", "/api/workloads/demo/operations/preview", "/api/workloads/demo/operations", f"/api/operations/{OP_ID}/approve"],
+            self.paths(),
+        )
+        self.assertEqual(1, len(tty.secrets_asked))
+
+    def test_create_steps_up_when_exchange_not_stepped_up(self) -> None:
+        self.server.exchange_steps_up = False
+        tty = FakeTty()
+        code, out, _ = self.invoke(["op", "create", "demo", "deploy", "--yes-digest", DIGEST], tty)
+        self.assertEqual(0, code, out)
+        self.assertEqual(
             ["/api/session/exchange", "/api/workloads/demo/operations/preview", "/api/session/step-up", "/api/workloads/demo/operations", f"/api/operations/{OP_ID}/approve"],
             self.paths(),
         )
@@ -291,9 +304,12 @@ class OpCommandTests(unittest.TestCase):
         tty = FakeTty()
         code, out, _ = self.invoke(["op", "create", "demo", "deploy", "--yes-digest", DIGEST], tty)
         self.assertEqual(0, code, out)
-        self.assertEqual(3, len(tty.secrets_asked))
+        # Exchange token, then one more from approve()'s 403 retry; no step-up before create.
+        self.assertEqual(2, len(tty.secrets_asked))
+        self.assertEqual(["/api/session/exchange", "/api/workloads/demo/operations/preview", "/api/workloads/demo/operations", f"/api/operations/{OP_ID}/approve", "/api/session/step-up", f"/api/operations/{OP_ID}/approve"], self.paths())
 
     def test_rejected_step_up_is_a_refusal_and_creates_nothing(self) -> None:
+        self.server.exchange_steps_up = False
         with mock.patch.object(FakeTty, "read_secret", side_effect=[TOKEN, "", "wrong", ""]):
             code, out, _ = self.invoke(["op", "create", "demo", "deploy", "--yes-digest", DIGEST], FakeTty())
         self.assertEqual(3, code)
@@ -398,7 +414,19 @@ class KeychainCodeTests(unittest.TestCase):
         self.assertEqual(0, code, out)
         self.assertFalse([p for p in tty.secrets_asked if "Authenticator" in p], tty.secrets_asked)
         first = argus_totp.counter_at(1_800_000_010.0)
-        # Step-up in the same window waits for the next code instead of reusing the spent one.
+        # Exchange already steps up, so one code is spent and nothing waits for the next window.
+        self.assertEqual([argus_totp.hotp(SECRET, first)], self.server.codes)
+        self.assertEqual([], [s for s in clock.slept if s])
+        self.assertNotIn("Waiting", tty.output)
+
+    def test_step_up_in_the_same_window_waits_for_the_next_code(self) -> None:
+        self.server.exchange_steps_up = False
+        clock = FakeClock(1_800_000_010.0)
+        tty = FakeTty()
+        with mock.patch.object(FakeTty, "read_secret", autospec=True, side_effect=lambda self, prompt: self.secrets_asked.append(prompt) or TOKEN):
+            code, out, _ = self.invoke_with(SECRET, ["op", "create", "demo", "deploy", "--yes-digest", DIGEST], tty, clock)
+        self.assertEqual(0, code, out)
+        first = argus_totp.counter_at(1_800_000_010.0)
         self.assertEqual([argus_totp.hotp(SECRET, first), argus_totp.hotp(SECRET, first + 1)], self.server.codes)
         self.assertEqual([20.5], [s for s in clock.slept if s])  # 10 s into the window: wait out the other 20 s
         self.assertIn("Waiting", tty.output)

@@ -1,7 +1,7 @@
 """`argus op` and `argus workload deploy|start|stop|restart`: operator API flows.
 
-The bootstrap token and then the authenticator code are read only through getpass on /dev/tty, except that
-the code is computed from the macOS Keychain item `argus-totp` when it exists. Preview and
+The bootstrap token and then the authenticator code are read only through getpass on /dev/tty, once per
+run (again only if step-up expired before approval), except that the code is computed from the macOS Keychain item `argus-totp` when it exists. Preview and
 approval stay separate steps: the operator confirms the previewed digest (typed
 workload ID on a TTY, or --yes-digest) before anything is created.
 The server binds approval to the originating session, so `create` carries the
@@ -127,6 +127,7 @@ class _Flow:
         self.prompted_code = False  # a second prompt in one run must not reuse the first 30 s code
         self.totp_secret: str | None = None  # None until the Keychain is read; "" means type the code
         self.last_counter = -1
+        self.step_up_valid = False  # the server's word on the last exchange/step-up
 
     def stop(self, code: str, message: str, next_action: str, exit_code: int, **kwargs: Any) -> _Stop:
         return _Stop(self.cli._error(code, message, next_action, exit_code=exit_code, authority="operator-api", **kwargs))
@@ -201,6 +202,7 @@ class _Flow:
                 raise self.stop(f"op-{stage}-locked", "Too many failed attempts; this operator is locked out for up to 15 minutes.", "Wait for the lockout to expire, then retry.", self.cli.EXIT_REFUSAL)
             if response.status not in (200, 201):
                 raise self.stop(f"op-{stage}-rejected", f"The {stage} credential was rejected.", "Verify the bootstrap token, authenticator code and tailnet identity, then retry.", self.cli.EXIT_REFUSAL)
+            self.step_up_valid = response.body.get("stepUpValid") is True
         except ApiUnavailable as exc:
             raise self.stop(f"op-{stage}-unavailable", _clean(exc), "Check tailnet connectivity and retry.", self.cli.EXIT_UNAVAILABLE) from None
         finally:
@@ -329,8 +331,9 @@ class _Flow:
         if verb == "create":
             summary = self.preview()
             self.confirm(summary)
-            # Step-up precedes create so the 60 s preview window is not spent typing.
-            self.authenticate("step-up", lambda client, token, code: client.step_up(token, code))
+            # Exchange already steps up the session; approve() re-authenticates once on a 403 if it expired.
+            if not self.step_up_valid:
+                self.authenticate("step-up", lambda client, token, code: client.step_up(token, code))
             created = self.call("create", lambda: self.client.create(args.workload_id, args.operation_type, summary_parameters(args), summary))
             operation_id = str(created.get("operation_id", ""))
             self.approve(operation_id, str(summary["confirmationPhrase"]))
