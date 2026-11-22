@@ -12,6 +12,8 @@ import sys
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -223,6 +225,22 @@ class OperatorLinkReleaseTests(unittest.TestCase):
     def test_after_cutover_links_must_point_into_the_release(self) -> None:
         self.assertEqual([], self.check(cut_over=True, link_into_release=True))
         self.assertIn("argus operator link target valid", self.check(cut_over=True, link_into_release=False))
+
+
+class ScriptsUnderTestTests(unittest.TestCase):
+    def test_checks_run_scripts_shipped_with_the_smoke_test_not_the_inspected_checkout(self) -> None:
+        self.assertEqual(SCRIPT.resolve().parent, module.SCRIPTS)
+        calls: list[list[str]] = []
+
+        def fake_run(command, cwd, env=None):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            checkout = Path(tmp)
+            with mock.patch.object(module, "run", side_effect=fake_run):
+                module.check_p6_evidence(checkout, module.Smoke())
+        self.assertEqual([[str(module.SCRIPTS / "argus-template-check"), "--json"]], calls)
 
 
 if __name__ == "__main__":

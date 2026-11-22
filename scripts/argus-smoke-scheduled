@@ -108,7 +108,8 @@ def main() -> int:
     parser.add_argument("--log-dir", type=Path, default=root() / "runtime" / "smoke")
     args = parser.parse_args()
 
-    command = [str(root() / "scripts" / "smoke-test")]
+    # The smoke test ships with this release; it inspects the live checkout via --root.
+    command = [str(Path(__file__).resolve().parent / "smoke-test"), "--root", str(root())]
     if args.offline:
         command.append("--offline")
     result = subprocess.run(command, cwd=root(), text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False)
