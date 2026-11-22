@@ -140,6 +140,23 @@ argus workload list
 argus workload show nodens-staging --json
 ```
 
+### Workload aliases
+
+Aliases are Mac CLI shorthands for workload IDs, added to `config/workloads.json`
+only by reviewed PR (`validate-manifests` refuses duplicates, bad patterns, and
+aliases equal to an active or retired ID). The CLI swaps an alias for its
+canonical ID before dispatch and prints `<alias> -> <id>` on stderr (not in
+`--json` mode); an exact ID always wins. The typed confirmation in `argus op
+create` and the workload shortcuts also accepts the workload's own alias. The
+server, API, M1, ledgers and logs only ever see canonical IDs, and the
+destructive `argus workload retire` needs the exact ID.
+
+| Alias | Workload |
+|-------|----------|
+| `ks` | `kadath-staging` |
+| `ns` | `nodens-staging` |
+| `np` | `nodens-production` |
+
 ### Reviewed onboarding and admission drift
 
 `scripts/argus-workload-onboard preview` writes only an ignored, digest-bound
@@ -356,7 +373,7 @@ argus operation show 00000000-0000-0000-0000-000000000000 --json
 
 `server-mutation` — `argus release pin <workload> --image <ref>`
 
-`server-mutation` — `argus promote <staging-id> <production-id>`
+`server-mutation` — `argus promote <staging-id> [<production-id>]`
 
 `server-mutation` — `argus keys totp-enroll`
 
@@ -366,6 +383,8 @@ Root-only, TTY-only enrolment of one operator's TOTP second factor; see
 Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
 $ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/srv/argus`), rewrites only the workload service's `image:` line, runs
 `argus check`, and opens a PR; `--dry-run` prints the diff only. Promote
+defaults the production ID to the staging workload's `promotesTo` (so
+`argus promote ns` promotes to `nodens-production`) and
 refuses unless `promotesTo` is registered, the two compose files differ only in
 name, ingress path (managed or sandbox ingress dir) and secret refs, and a succeeded staging deploy of the image
 ID is found in the operations ledger. The ledger is `argus-control` only, so when the local read fails the check runs

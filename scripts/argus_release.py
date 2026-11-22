@@ -325,8 +325,14 @@ def deploy_evidence(repo: Path, runner: Runner, staging_id: str, image_id: str) 
                        "Needs passwordless `sudo -n` for the server's argus-promote-evidence (merge and pull this change first), or confirm the staging deploy and rerun with --skip-evidence-check.")
 
 
-def promote(repo: Path, runner: Runner, staging_id: str, production_id: str, dry_run: bool, skip_evidence: bool) -> Result:
-    staging, production = workload_context(repo, staging_id), workload_context(repo, production_id)
+def promote(repo: Path, runner: Runner, staging_id: str, production_id: str | None, dry_run: bool, skip_evidence: bool) -> Result:
+    staging = workload_context(repo, staging_id)
+    if production_id is None:
+        production_id = staging["item"].get("promotesTo")
+        if not isinstance(production_id, str) or not WORKLOAD_ID.fullmatch(production_id):
+            raise ReleaseError("promote-target-unregistered", f"{staging_id} has no promotesTo target registered.",
+                               "Name the production workload, or set promotesTo in config/workloads.json through a reviewed PR.")
+    production = workload_context(repo, production_id)
     if staging["item"].get("promotesTo") != production_id:
         raise ReleaseError("promote-target-unregistered", f"{staging_id} is not registered with promotesTo={production_id}.",
                            "Set promotesTo in config/workloads.json through a reviewed PR.")
@@ -383,13 +389,13 @@ def register(commands: Any, leaf: Callable[..., Any], description: Callable[...,
         "image loaded in the production domain; branch and PR", "image ID and PR URL", "argus promote nodens-staging nodens-production",
         "fix the named refusal and retry. Never deploys", "reviewed configuration, staging deploy evidence, and the server image importer over SSH"))
     item.add_argument("staging_id")
-    item.add_argument("production_id")
+    item.add_argument("production_id", nargs="?", help="defaults to the staging workload's promotesTo")
     item.add_argument("--dry-run", action="store_true", help="preview only: print the diff; no import, branch or PR")
     item.add_argument("--skip-evidence-check", action="store_true", help="skip the staging deploy evidence lookup")
 
 
 def dispatch(args: Any, repo: Path, runner: Runner, error: Callable[..., Result], success: Callable[..., Result]) -> Result:
-    ids = [getattr(args, name) for name in ("workload_id", "staging_id", "production_id") if hasattr(args, name)]
+    ids = [getattr(args, name) for name in ("workload_id", "staging_id", "production_id") if getattr(args, name, None) is not None]
     try:
         if not all(WORKLOAD_ID.fullmatch(value) for value in ids):
             raise ReleaseError("workload-id-invalid", "The workload ID is invalid.", "Run argus workload list.", EXIT_INVOCATION)

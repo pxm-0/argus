@@ -375,6 +375,54 @@ class StableCliContractTests(unittest.TestCase):
         self.assertEqual(3, code)
         self.assertEqual("workload-manifest-invalid", json.loads(output)["error"]["code"])
 
+    def write_aliases(self) -> None:
+        path = self.root / "config" / "workloads.json"
+        registry = json.loads(path.read_text())
+        registry["workloads"][0]["aliases"] = ["dm"]
+        registry["workloads"].append({"id": "other", "name": "Other", "aliases": ["demo"], "migration": {}})
+        path.write_text(json.dumps(registry))
+
+    def test_alias_resolves_to_the_canonical_id(self) -> None:
+        self.write_aliases()
+        code, output, error = self.invoke(["workload", "show", "dm"])
+        self.assertEqual(0, code, error)
+        self.assertEqual("dm -> demo\n", error)
+
+        code, output, error = self.invoke(["workload", "show", "dm", "--json"])
+        self.assertEqual(0, code)
+        self.assertEqual("", error)
+        workload = json.loads(output)["data"]["workload"]
+        self.assertEqual(("demo", ["dm"]), (workload["id"], workload["aliases"]))
+
+        code, output, _ = self.invoke(["workload", "list", "--json"])
+        self.assertEqual({"demo": ["dm"], "other": ["demo"]}, {row["id"]: row["aliases"] for row in json.loads(output)["data"]["workloads"]})
+
+    def test_exact_id_wins_and_unknown_values_stay_unchanged(self) -> None:
+        self.write_aliases()
+        code, output, error = self.invoke(["workload", "show", "demo", "--json"])
+        self.assertEqual(0, code)
+        self.assertEqual(("demo", ""), (json.loads(output)["data"]["workload"]["id"], error))
+
+        code, output, error = self.invoke(["workload", "show", "nope", "--json"])
+        self.assertEqual(3, code)
+        self.assertEqual(("workload-not-found", ""), (json.loads(output)["error"]["code"], error))
+
+    def test_retire_never_resolves_aliases(self) -> None:
+        import argus_cli
+
+        self.write_aliases()
+        seen: list[str] = []
+
+        def fake_retire(repo: Path, args: object, runner: object) -> dict:
+            seen.append(args.workload_id)
+            return argus_cli._success("workload.retire")
+
+        with mock.patch.object(argus_cli, "retire_command", side_effect=fake_retire):
+            code, _, error = self.invoke(["workload", "retire", "dm", "--dry-run"])
+        self.assertEqual(0, code)
+        self.assertEqual(["dm"], seen)
+        self.assertNotIn("->", error)
+
     def test_move_preview_status_refusal_and_unavailable_are_distinct(self) -> None:
         code, output, _ = self.invoke(["workload", "move", "preview", "demo", "--json"])
         self.assertEqual(0, code)
@@ -1043,6 +1091,41 @@ class StableCliContractTests(unittest.TestCase):
         self.assertIn("token", create.split("--yes-digest", 1)[1])
         self.assertNotIn("non-interactive", create)
         self.assertIn("argus operation show", help_for("op", "watch", "x"))
+
+
+class WorkloadAliasValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.validate = runpy.run_path(str(ROOT / "scripts" / "validate-manifests"))["validate_aliases"]
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        (self.root / "config" / "argus").mkdir(parents=True)
+        (self.root / "config" / "argus" / "retired-workloads.json").write_text(json.dumps({"schemaVersion": 1, "workloads": ["old"]}))
+
+    def errors(self, *workloads: dict) -> list[str]:
+        (self.root / "config" / "workloads.json").write_text(json.dumps({"workloads": list(workloads)}))
+        return self.validate(self.root)
+
+    def test_repository_aliases_are_valid(self) -> None:
+        self.assertEqual([], self.validate(ROOT))
+
+    def test_short_unique_aliases_pass_and_missing_means_none(self) -> None:
+        self.assertEqual([], self.errors({"id": "a-staging", "aliases": ["as"]}, {"id": "b"}))
+
+    def test_bad_aliases_are_refused_with_named_errors(self) -> None:
+        cases = [
+            ("already registered to a", ({"id": "a", "aliases": ["x"]}, {"id": "b", "aliases": ["x"]})),
+            ("active workload ID", ({"id": "a", "aliases": ["b"]}, {"id": "b"})),
+            ("retired workload ID", ({"id": "a", "aliases": ["old"]},)),
+            ("must match", ({"id": "a", "aliases": ["Bad_Alias"]},)),
+            ("must match", ({"id": "a", "aliases": ["a" * 17]},)),
+            ("must be a list", ({"id": "a", "aliases": "x"},)),
+        ]
+        for needle, workloads in cases:
+            with self.subTest(needle):
+                errors = self.errors(*workloads)
+                self.assertEqual(1, len(errors), errors)
+                self.assertIn(needle, errors[0])
 
 
 class OperatorLinkTransitionTests(unittest.TestCase):

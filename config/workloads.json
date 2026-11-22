@@ -127,6 +127,7 @@
     {
       "id": "nodens-staging",
       "name": "Nodens Staging",
+      "aliases": ["ns"],
       "promotesTo": "nodens-production",
       "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
       "lifecycle": "discovered",
@@ -184,6 +185,7 @@
     {
       "id": "nodens-production",
       "name": "Nodens Production",
+      "aliases": ["np"],
       "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
       "lifecycle": "discovered",
       "kind": "web-app",
@@ -240,6 +242,7 @@
     {
       "id": "kadath-staging",
       "name": "Kadath Staging",
+      "aliases": ["ks"],
       "description": "Reviewed onboarding candidate; runtime discovery is not adopted or started.",
       "lifecycle": "discovered",
       "kind": "web-app",

@@ -195,10 +195,10 @@ class OpCommandTests(unittest.TestCase):
             patcher.start()
             self.addCleanup(patcher.stop)
 
-    def invoke(self, argv: list[str], tty: FakeTty | None) -> tuple[int, str, str]:
+    def invoke(self, argv: list[str], tty: FakeTty | None, repo: Path = ROOT) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
         with mock.patch.object(argus_cli_op, "open_tty", return_value=tty):
-            code = run([*argv, "--base-url", self.server.origin, "--json"], repo=ROOT, stdout=stdout, stderr=stderr)
+            code = run([*argv, "--base-url", self.server.origin, "--json"], repo=repo, stdout=stdout, stderr=stderr)
         return code, stdout.getvalue(), stderr.getvalue()
 
     def paths(self) -> list[str]:
@@ -225,6 +225,29 @@ class OpCommandTests(unittest.TestCase):
 
     def test_wrong_typed_confirmation_creates_nothing(self) -> None:
         code, out, _ = self.invoke(["op", "create", "demo", "workload.deploy"], FakeTty(lines=["nope"]))
+        self.assertEqual(3, code)
+        self.assertEqual("op-confirmation-mismatch", json.loads(out)["error"]["code"])
+        self.assertNotIn("/api/workloads/demo/operations", self.paths())
+
+    def alias_repo(self) -> Path:
+        repo = Path(self.enterContext(tempfile.TemporaryDirectory()))
+        (repo / "config").mkdir()
+        (repo / "config" / "workloads.json").write_text(json.dumps({"workloads": [{"id": "demo", "aliases": ["dm"]}, {"id": "other", "aliases": ["ot"]}]}))
+        return repo
+
+    def test_alias_reaches_the_api_as_the_canonical_id_and_confirms(self) -> None:
+        tty = FakeTty(lines=["dm"])
+        code, out, err = self.invoke(["workload", "deploy", "dm", "--revision", "sha256:feed"], tty, self.alias_repo())
+        self.assertEqual(0, code, out)
+        self.assertEqual("succeeded", json.loads(out)["data"]["state"])
+        self.assertIn("/api/workloads/demo/operations/preview", self.paths())
+        self.assertIn("/api/workloads/demo/operations", self.paths())
+        self.assertNotIn("dm", " ".join(self.paths()))
+        self.assertIn("Type the workload ID (demo)", tty.output)
+        self.assertNotIn("dm -> demo", err)
+
+    def test_another_workloads_alias_does_not_confirm(self) -> None:
+        code, out, _ = self.invoke(["op", "create", "demo", "deploy"], FakeTty(lines=["ot"]), self.alias_repo())
         self.assertEqual(3, code)
         self.assertEqual("op-confirmation-mismatch", json.loads(out)["error"]["code"])
         self.assertNotIn("/api/workloads/demo/operations", self.paths())

@@ -403,10 +403,14 @@ def workload_list(repo: Path) -> dict[str, Any]:
             access_row = access_rows.get(workload_id, {})
             classification_row = classification_rows.get(workload_id, {})
             migration = item.get("migration", {})
+            aliases = item.get("aliases", [])
             if not all(isinstance(value, dict) for value in (privacy_row, access_row, classification_row, migration)):
                 raise ValueError("workload policy row must be an object")
+            if not isinstance(aliases, list) or not all(isinstance(alias, str) and SAFE_ID.fullmatch(alias) for alias in aliases):
+                raise ValueError("workload aliases must be a list of IDs")
             rows.append(
                 {
+                    "aliases": list(aliases),
                     "desiredAccess": safe_text(access_row.get("desired", "")),
                     "effectiveAccess": safe_text(access_row.get("effective", "")),
                     "id": workload_id,
@@ -1199,6 +1203,30 @@ def validate_id(value: str, *, operation: bool = False) -> bool:
     return bool((OPERATION_ID if operation else SAFE_ID).fullmatch(value))
 
 
+def workload_aliases(repo: Path) -> dict[str, str]:
+    """Reviewed CLI alias -> canonical workload ID; empty when the registry is unreadable, and an exact ID always wins."""
+    try:
+        items = load_json(repo, "config/workloads.json")["workloads"]
+        ids = {item["id"] for item in items}
+        return {alias: item["id"] for item in items for alias in item.get("aliases", []) if isinstance(alias, str) and alias not in ids}
+    except (OSError, UnicodeError, DuplicateJsonKey, json.JSONDecodeError, RecursionError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
+def resolve_workload_aliases(args: argparse.Namespace, repo: Path, stderr: TextIO) -> None:
+    """Swap an alias for its canonical ID before dispatch; destructive retire keeps exact IDs only."""
+    if args.command == "workload" and getattr(args, "workload_command", None) == "retire":
+        return
+    aliases = workload_aliases(repo)
+    quiet = args.json or getattr(args, "command_json", False)
+    for name in ("workload_id", "staging_id", "production_id"):
+        value = getattr(args, name, None)
+        if isinstance(value, str) and value in aliases:
+            setattr(args, name, aliases[value])
+            if not quiet:
+                print(f"{value} -> {aliases[value]}", file=stderr)
+
+
 def dispatch(args: argparse.Namespace, repo: Path, runner: Runner) -> tuple[dict[str, Any], str]:
     deprecation = ""
     command = args.command
@@ -1317,6 +1345,7 @@ def run(
         return EXIT_INVOCATION
     json_output = args.json or getattr(args, "command_json", False)
     try:
+        resolve_workload_aliases(args, repo, stderr)
         result, deprecation = dispatch(args, repo, command_runner)
     except Exception as exc:
         # Frames only: the exception message can carry private payloads.
