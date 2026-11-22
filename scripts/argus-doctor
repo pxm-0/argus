@@ -450,6 +450,7 @@ def ghcr_credential_checks(
     fetch: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
     trusted_uids: tuple[int, ...] = (0,),
     below: Path | None = None,
+    privileged: bool | None = None,
 ) -> None:
     """ghcr-credential: dedicated read-only registry login, root 0600, ghcr.io only, rotated within 90 days."""
     name = "ghcr-credential"
@@ -457,6 +458,13 @@ def ghcr_credential_checks(
         info = config.lstat()
     except FileNotFoundError:
         add(checks, True, f"WARN: {name}: {config} not installed yet (docs/RUNBOOKS/ghcr-token-rotation.md)", warn=True, check=name)
+        return
+    except PermissionError:
+        if privileged if privileged is not None else os.geteuid() == 0:
+            add(checks, False, f"{name}: {config} is not readable", check=name)
+        else:
+            # The runbook keeps the credential root-only (0700 dir, 0600 file); a non-root run (smoke) cannot verify it.
+            add(checks, True, f"WARN: {name}: {config} needs root to verify; run argus-doctor --host as root", warn=True, check=name)
         return
     except OSError:
         add(checks, False, f"{name}: {config} is not readable", check=name)

@@ -294,6 +294,16 @@ class HostSudoAndRegistryTests(unittest.TestCase):
         self.assertEqual(1, len(checks))
         self.assertTrue(checks[0]["ok"] and checks[0]["warn"])
 
+    def test_ghcr_root_only_config_warns_for_non_root_and_fails_for_root(self) -> None:
+        config = self.config()
+        with patch.object(Path, "lstat", side_effect=PermissionError(13, "Permission denied")):
+            as_oreo = self.ghcr(config=config, privileged=False)
+            as_root = self.ghcr(config=config, privileged=True)
+        self.assertEqual([True], [item["ok"] for item in as_oreo])
+        self.assertTrue(as_oreo[0].get("warn"))
+        self.assertIn("needs root to verify", as_oreo[0]["message"])
+        self.assertFalse(self.row(as_root, "is not readable")["ok"])
+
     def test_ghcr_online_scope_check(self) -> None:
         tokens: list[str] = []
 
