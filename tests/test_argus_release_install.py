@@ -305,6 +305,68 @@ class CliTests(unittest.TestCase):
         self.assertIn("refused: nope", stderr.getvalue())
 
 
+class RestartTests(unittest.TestCase):
+    """A running daemon keeps the release it resolved at start, so install restarts the release-backed ones."""
+
+    EXEC = {
+        "argus-control-api.service": "{ path=/usr/bin/python3 ; argv[]=/usr/bin/python3 /opt/argus/current/control-plane/api/server.py ; }",
+        "argus-capability-issuer.service": "{ argv[]=/usr/bin/python3 /opt/argus/current/scripts/argus_capability_issuer.py ; }",
+        "argus-domain-agent@personal-sandbox.service": "{ argv[]=/usr/bin/python3 /opt/argus/current/scripts/argus_domain_agent.py ; }",
+        "argus-docker-collector.service": "{ argv[]=/usr/bin/python3 /opt/argus/current/scripts/argus_docker_collector.py ; }",
+        "argus-pilot-rootless-docker.service": "{ argv[]=/usr/bin/env dockerd-rootless.sh --host unix:///var/lib/argus/pilot/docker.sock ; }",
+        "argus-legacy.service": "{ argv[]=/usr/bin/python3 /srv/argus/scripts/argus_legacy.py ; }",
+    }
+
+    def fake(self, failing: str = "", calls: list | None = None):
+        calls = calls if calls is not None else []
+
+        def systemctl(*args: str) -> subprocess.CompletedProcess:
+            calls.append(args)
+            if args[0] == "list-units":
+                listing = "".join(f"{unit} loaded active running x\n" for unit in self.EXEC)
+                return subprocess.CompletedProcess(args, 0, listing, "")
+            if args[0] == "show":
+                return subprocess.CompletedProcess(args, 0, self.EXEC[args[-1]] + "\n", "")
+            if args[0] == "is-active":
+                return subprocess.CompletedProcess(args, 3 if args[-1] == failing else 0, "", "")
+            return subprocess.CompletedProcess(args, 0, "", "")
+        return systemctl
+
+    def test_restarts_only_release_backed_units_core_daemons_first(self) -> None:
+        with patch.object(installer, "systemctl", self.fake()):
+            units = installer.release_units()
+        self.assertEqual([
+            "argus-capability-issuer.service",
+            "argus-control-api.service",
+            "argus-docker-collector.service",
+            "argus-domain-agent@personal-sandbox.service",
+        ], units)
+
+    def test_stops_at_the_first_unit_that_does_not_come_back(self) -> None:
+        calls: list = []
+        with patch.object(installer, "systemctl", self.fake("argus-control-api.service", calls)), \
+                patch.object(installer.time, "sleep"), contextlib.redirect_stdout(io.StringIO()):
+            failed = installer.restart(["argus-capability-issuer.service", "argus-control-api.service", "argus-x.service"])
+        self.assertEqual("argus-control-api.service", failed)
+        self.assertNotIn(("restart", "argus-x.service"), calls)
+
+    def test_successful_install_restarts_and_a_failed_restart_exits_4(self) -> None:
+        for failing, code in (("", 0), ("argus-control-api.service", 4)):
+            calls: list = []
+            with patch.object(os, "geteuid", return_value=0), patch.object(installer, "install_release", return_value=Path("/r")), \
+                    patch.object(installer, "systemctl", self.fake(failing, calls)), patch.object(installer.time, "sleep"), \
+                    contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(code, installer.main(["--sha", "a" * 40]))
+            self.assertIn(("restart", "argus-capability-issuer.service"), calls)
+
+    def test_refused_install_restarts_nothing(self) -> None:
+        calls: list = []
+        with patch.object(os, "geteuid", return_value=0), patch.object(installer, "install_release", side_effect=installer.ReleaseRefused("no")), \
+                patch.object(installer, "systemctl", self.fake(calls=calls)), contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(3, installer.main(["--sha", "a" * 40]))
+        self.assertEqual([], calls)
+
+
 class ReleaseTreeAwarenessTests(unittest.TestCase):
     """After cutover the code runs from /opt/argus/releases/<sha>, not /srv/argus."""
 

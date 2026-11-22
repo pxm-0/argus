@@ -17,6 +17,8 @@ compared with the commit's tree, the tree is chowned root:root with group and
 other write removed, and /opt/argus/current is flipped with an atomic rename.
 Gitignored state paths (runtime/, dashboard public/, the access overlay) become symlinks into the
 live checkout so services keep their state; the release itself stays read-only.
+After the switch, every running argus-* service whose ExecStart runs code from /opt/argus/current is restarted
+(core daemons first, in the runbook order), because a running daemon keeps the release it resolved at start.
 
 git runs with an empty environment, no system/global config, and fsmonitor, hooks and
 pager disabled.  `git status` is never run: it executes repo-configured clean filters
@@ -34,6 +36,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 SOURCE = Path("/srv/argus")
@@ -43,6 +46,15 @@ REF = "origin/main"
 STATE_LINKS = ("runtime", "control-plane/dashboard/public", "config/access.effective.json")
 STAMP = "ARGUS_RELEASE"
 SHA = re.compile(r"[0-9a-f]{40}")
+SYSTEMCTL = "/usr/bin/systemctl"
+# docs/RUNBOOKS/root-owned-release.md restart order; other release-backed units follow alphabetically.
+RESTART_FIRST = (
+    "argus-capability-issuer.service",
+    "argus-operation-worker.service",
+    "argus-control-api.service",
+    "argus-migration-coordinator.service",
+    "argus-privileged-lifecycle-agent.service",
+)
 
 
 class ReleaseRefused(RuntimeError):
@@ -246,6 +258,43 @@ def install_release(
     return final
 
 
+def systemctl(*args: str) -> subprocess.CompletedProcess:
+    return subprocess.run([SYSTEMCTL, *args], stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, check=False,
+                          env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"})
+
+
+def release_units(prefix: Path = PREFIX) -> list[str]:
+    """Running argus-* services whose ExecStart runs code from <prefix>/current, in restart order."""
+    listed = systemctl("list-units", "--type=service", "--state=running", "--plain", "--no-legend", "argus-*")
+    if listed.returncode != 0:
+        raise OSError(f"systemctl list-units failed: {listed.stderr.strip()[-200:]}")
+    marker = f"{prefix}/current/"
+    units = []
+    for line in listed.stdout.splitlines():
+        name = line.split()[0] if line.split() else ""
+        if not name.endswith(".service"):
+            continue
+        shown = systemctl("show", "--property=ExecStart", "--value", name)
+        if shown.returncode != 0:
+            raise OSError(f"systemctl show {name} failed: {shown.stderr.strip()[-200:]}")
+        if marker in shown.stdout:
+            units.append(name)
+    first = {unit: index for index, unit in enumerate(RESTART_FIRST)}
+    return sorted(units, key=lambda unit: (first.get(unit, len(first)), unit))
+
+
+def restart(units: list[str], settle: float = 2.0) -> str | None:
+    """Restart each unit in order; return the first that does not come back active, else None."""
+    for unit in units:
+        if systemctl("restart", unit).returncode != 0:
+            return unit
+        time.sleep(settle)  # Type=simple returns at fork; a crash on start shows up a moment later
+        if systemctl("is-active", "--quiet", unit).returncode != 0:
+            return unit
+        print(f"restarted {unit}")
+    return None
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Install a reviewed commit as a root-owned release.", allow_abbrev=False)
     parser.add_argument("--sha", required=True, help="40-hex commit reachable from origin/main in /srv/argus; copy it from the merged PR, not from the server")
@@ -260,6 +309,14 @@ def main(argv: list[str] | None = None) -> int:
         print(f"refused: {exc}", file=sys.stderr)
         return 3
     print(f"installed {release}; /opt/argus/current -> {release}")
+    try:
+        failed = restart(release_units())
+    except OSError as exc:
+        print(f"restart skipped: {exc}; restart the argus daemons by hand (docs/RUNBOOKS/root-owned-release.md)", file=sys.stderr)
+        return 4
+    if failed:
+        print(f"restart failed: {failed} is not active; see journalctl -u {failed}, later units were not restarted", file=sys.stderr)
+        return 4
     return 0
 
 
