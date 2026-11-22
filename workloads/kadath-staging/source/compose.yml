@@ -11,7 +11,7 @@ name: kadath-staging
 
 services:
   postgres:
-    image: sha256:PENDING-postgres-image-id-from-argus-image-import  # postgres:17-trixie (docker.io/library/postgres@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b)
+    image: sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b  # postgres:17-trixie (docker.io/library/postgres@sha256:0af65001d05296a2ead57ac4a6412433d8913d1bb5d0c88435a7d1e1ee5cb04b)
     restart: unless-stopped
     # Running as postgres skips the entrypoint's chown/gosu, so no capabilities are needed.
     user: postgres
@@ -41,7 +41,7 @@ services:
       - internal
 
   api:
-    image: sha256:PENDING-kadath-api-image-id-from-argus-image-import  # ghcr.io/pxm-0/kadath-api@sha256:<digest from the kadath Publish images run>
+    image: sha256:4a5b31e9724f459db8b0ca265e1c5596c23b565f13048003d764aad9badb7cca  # ghcr.io/pxm-0/kadath-api@sha256:4a5b31e9724f459db8b0ca265e1c5596c23b565f13048003d764aad9badb7cca (kadath 22003ca)
     restart: unless-stopped
     environment:
       NODE_ENV: production
@@ -72,7 +72,7 @@ services:
       - internal
 
   web:
-    image: sha256:PENDING-kadath-web-image-id-from-argus-image-import  # ghcr.io/pxm-0/kadath-web@sha256:<digest from the kadath Publish images run>
+    image: sha256:506e30b7e4fe4ab589571bfca901f90ed2579bfad10f9a570f9232d3f8408d9b  # ghcr.io/pxm-0/kadath-web@sha256:506e30b7e4fe4ab589571bfca901f90ed2579bfad10f9a570f9232d3f8408d9b (kadath 22003ca)
     restart: unless-stopped
     environment:
       API_BASE_URL: http://api:3001
