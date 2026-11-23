@@ -140,6 +140,23 @@ argus workload list
 argus workload show nodens-staging --json
 ```
 
+### Workload aliases
+
+Aliases are Mac CLI shorthands for workload IDs, added to `config/workloads.json`
+only by reviewed PR (`validate-manifests` refuses duplicates, bad patterns, and
+aliases equal to an active or retired ID). The CLI swaps an alias for its
+canonical ID before dispatch and prints `<alias> -> <id>` on stderr (not in
+`--json` mode); an exact ID always wins. The typed confirmation in `argus op
+create` and the workload shortcuts also accepts the workload's own alias. The
+server, API, M1, ledgers and logs only ever see canonical IDs, and the
+destructive `argus workload retire` needs the exact ID.
+
+| Alias | Workload |
+|-------|----------|
+| `ks` | `kadath-staging` |
+| `ns` | `nodens-staging` |
+| `np` | `nodens-production` |
+
 ### Reviewed onboarding and admission drift
 
 `scripts/argus-workload-onboard preview` writes only an ignored, digest-bound
@@ -254,9 +271,9 @@ Do not run an old migration script instead of this workflow.
 These use the private dashboard API (URL from `argus dashboard url`, or
 `--base-url`) with the same tailnet identity, session, CSRF, Origin and
 bootstrap-token plus authenticator-code step-up as the dashboard. The bootstrap
-token is read only from `/dev/tty`; with no terminal the command exits 2. Each
-authentication asks for the token: once to open the session and again at
-step-up, so a `create` can ask for it two or three times. On macOS with the
+token is read only from `/dev/tty`; with no terminal the command exits 2. The
+token is asked once per run: opening the session also steps it up. A `create`
+asks again only if step-up expired before approval. On macOS with the
 login Keychain item `argus-totp` the CLI computes each authenticator code
 itself and waits for the next 30 s code rather than resend a spent one (setup in
 `docs/DASHBOARD_ACTIONS.md`). Without that item it prompts `Authenticator code
@@ -265,7 +282,7 @@ accepted only once, so on a repeat prompt wait for the next 30 s code.
 See `docs/RUNBOOKS/operator-session-diagnosis.md`. `create` previews, then
 requires the typed workload ID (or `--yes-digest <digest>` matching the
 previewed digest; it skips only that typed confirmation, the token prompt and
-authentication are still required), then steps up, creates, approves and watches to a terminal
+authentication are still required), then creates, approves and watches to a terminal
 state. `create`, `watch` and the workload shortcuts wait at most `--timeout
 SECONDS` (default 600) for a terminal state; past it, or after repeated poll
 failures, they exit 5 because the outcome is unobserved, not failed. Exit:
@@ -356,7 +373,7 @@ argus operation show 00000000-0000-0000-0000-000000000000 --json
 
 `server-mutation` — `argus release pin <workload> --image <ref>`
 
-`server-mutation` — `argus promote <staging-id> <production-id>`
+`server-mutation` — `argus promote <staging-id> [<production-id>]`
 
 `server-mutation` — `argus keys totp-enroll`
 
@@ -366,6 +383,8 @@ Root-only, TTY-only enrolment of one operator's TOTP second factor; see
 Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
 $ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/srv/argus`), rewrites only the workload service's `image:` line, runs
 `argus check`, and opens a PR; `--dry-run` prints the diff only. Promote
+defaults the production ID to the staging workload's `promotesTo` (so
+`argus promote ns` promotes to `nodens-production`) and
 refuses unless `promotesTo` is registered, the two compose files differ only in
 name, ingress path (managed or sandbox ingress dir) and secret refs, and a succeeded staging deploy of the image
 ID is found in the operations ledger. The ledger is `argus-control` only, so when the local read fails the check runs

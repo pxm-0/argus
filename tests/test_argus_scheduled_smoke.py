@@ -128,6 +128,18 @@ class ScheduledSmokeTest(unittest.TestCase):
         self.assertEqual(["FAIL tracked file inventory available"], history[0]["failedChecks"])
         self.assertFalse(latest["ok"])
 
+    def test_runs_the_smoke_test_shipped_with_this_release_against_the_live_root(self) -> None:
+        completed = SimpleNamespace(returncode=0, stdout="Smoke summary: 0 failure(s), 0 warning(s)\n")
+        with tempfile.TemporaryDirectory() as directory:
+            live = Path(directory)
+            with mock.patch.object(module.subprocess, "run", return_value=completed) as run, mock.patch.object(
+                module, "root", return_value=live
+            ), mock.patch("sys.argv", ["x", "--offline", "--log-dir", str(live / "smoke")]):
+                with contextlib.redirect_stdout(io.StringIO()):
+                    module.main()
+        self.assertEqual([str(SCRIPT.resolve().parent / "smoke-test"), "--root", str(live), "--offline"], run.call_args.args[0])
+        self.assertEqual(live, run.call_args.kwargs["cwd"])
+
     def test_offline_run_does_not_write_history(self) -> None:
         completed = SimpleNamespace(returncode=0, stdout="Smoke summary: 0 failure(s), 0 warning(s)\n")
         with tempfile.TemporaryDirectory() as directory, mock.patch.dict("os.environ", {"ARGUS_ROOT": directory}):

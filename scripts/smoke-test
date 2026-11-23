@@ -125,7 +125,7 @@ def check_dashboard(repo: Path, smoke: Smoke) -> None:
 def check_dashboard_runtime_cleanliness(repo: Path, smoke: Smoke) -> None:
     assets = [repo / "control-plane" / "dashboard" / "public" / name for name in ["index.html", "style.css", "app.js"]]
     before = {path: path.read_bytes() for path in assets if path.exists()}
-    state_result = run([str(repo / "scripts" / "argus-dashboard-state")], repo)
+    state_result = run([str(SCRIPTS / "argus-dashboard-state")], repo)
     if state_result.returncode != 0:
         smoke.fail("dashboard runtime state generated")
         return
@@ -374,7 +374,7 @@ def check_metrics(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cloudflare_plan(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "argus-cloudflare-plan"), "--json"], repo)
+    result = run([str(SCRIPTS / "argus-cloudflare-plan"), "--json"], repo)
     if result.returncode != 0:
         smoke.fail("Cloudflare plan generated")
         return
@@ -510,7 +510,7 @@ def check_tracked_runtime_and_source(repo: Path, smoke: Smoke) -> None:
 
 
 def check_workload_manifests(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "validate-manifests")], repo)
+    result = run([str(SCRIPTS / "validate-manifests")], repo)
     if result.returncode != 0:
         smoke.fail("workload manifests schema-valid")
         for line in result.stdout.splitlines():
@@ -799,15 +799,22 @@ def check_operation_permissions(repo: Path, smoke: Smoke) -> None:
     )
 
 
-def check_operator_links(repo: Path, smoke: Smoke, offline: bool) -> None:
+RELEASE_CURRENT = Path("/opt/argus/current")
+# Code under test is this script's own directory (the release on the server); --root is the checkout it inspects.
+SCRIPTS = Path(__file__).resolve().parent
+
+
+def check_operator_links(
+    repo: Path, smoke: Smoke, offline: bool, release: Path = RELEASE_CURRENT, bin_dir: Path = Path("/usr/local/bin")
+) -> None:
     if offline:
         smoke.warn("operator link check skipped in offline mode")
         return
     ok = True
-    scripts_dir = repo / "scripts"
-    prefix = Path("/usr/local/bin")
+    # After the root-owned release cutover the operator links must point into the release, not the checkout.
+    scripts_dir = (release / "scripts").resolve() if release.is_symlink() else repo / "scripts"
     for link_name, target_name in APPROVED_OPERATOR_LINKS.items():
-        link = prefix / link_name
+        link = bin_dir / link_name
         target = scripts_dir / target_name
         if not link.is_symlink():
             smoke.fail(f"{link_name} operator link exists")
@@ -907,7 +914,7 @@ def check_policy_effective_access(repo: Path, smoke: Smoke) -> None:
 
 
 def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "argus-cloudflare-plan"), "--json"], repo)
+    result = run([str(SCRIPTS / "argus-cloudflare-plan"), "--json"], repo)
     if result.returncode != 0:
         smoke.fail("Cloudflare policy plan generated")
         return
@@ -952,7 +959,7 @@ def check_cloudflare_policy(repo: Path, smoke: Smoke) -> None:
 
 
 def check_access_reconcile(repo: Path, smoke: Smoke) -> None:
-    result = run([str(repo / "scripts" / "argus-access-reconcile"), "--offline", "--json"], repo)
+    result = run([str(SCRIPTS / "argus-access-reconcile"), "--offline", "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -1042,7 +1049,7 @@ def check_p5_evidence(repo: Path, smoke: Smoke) -> None:
     missing = [path for path in required if not (repo / path).is_file()]
     smoke.check(not missing, "P5 maturity assets exist")
 
-    prune = run([str(repo / "scripts" / "argus-backup-prune"), "--json"], repo)
+    prune = run([str(SCRIPTS / "argus-backup-prune"), "--json"], repo)
     try:
         payload = json.loads(prune.stdout)
     except json.JSONDecodeError:
@@ -1063,7 +1070,7 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
     missing = [path for path in required if not (repo / path).is_file()]
     smoke.check(not missing, "P6 productization assets exist")
 
-    result = run([str(repo / "scripts" / "argus-template-check"), "--json"], repo)
+    result = run([str(SCRIPTS / "argus-template-check"), "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -1073,7 +1080,7 @@ def check_p6_evidence(repo: Path, smoke: Smoke) -> None:
 
 
 def check_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
-    command = [str(repo / "scripts" / "argus-doctor"), "--json"]
+    command = [str(SCRIPTS / "argus-doctor"), "--json"]
     if not offline and is_server_checkout(repo):
         command.append("--host")
     result = run(command, repo)
@@ -1086,7 +1093,7 @@ def check_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def check_admission_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
-    result = run([str(repo / "scripts" / "argus-admission-doctor"), "--root", str(repo), "--json"], repo)
+    result = run([str(SCRIPTS / "argus-admission-doctor"), "--root", str(repo), "--json"], repo)
     try:
         payload = json.loads(result.stdout)
     except json.JSONDecodeError:
@@ -1111,9 +1118,9 @@ def check_admission_doctor(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
-    workloads = run([str(repo / "scripts" / "argus-workloads")], repo)
+    workloads = run([str(SCRIPTS / "argus-workloads")], repo)
     smoke.check(workloads.returncode == 0, "workload CLI works")
-    health = run([str(repo / "scripts" / "argus-health")], repo)
+    health = run([str(SCRIPTS / "argus-health")], repo)
     if health.returncode == 0:
         smoke.pass_("health CLI works")
     elif offline:
@@ -1123,7 +1130,7 @@ def check_cli(repo: Path, smoke: Smoke, offline: bool) -> None:
 
 
 def check_caddy(repo: Path, smoke: Smoke, offline: bool) -> None:
-    plan = run([str(repo / "scripts" / "argus-caddy-dashboard-plan"), "--json"], repo)
+    plan = run([str(SCRIPTS / "argus-caddy-dashboard-plan"), "--json"], repo)
     smoke.check(plan.returncode == 0, "Caddy dashboard route generated")
     planned = repo / "caddy" / "dashboard.Caddyfile"
     if planned.exists():
@@ -1155,6 +1162,8 @@ def main() -> int:
     parser.add_argument("--offline", action="store_true", help="Skip live listener/service checks.")
     args = parser.parse_args()
     repo = args.root.expanduser().resolve()
+    # Child scripts come from SCRIPTS; point their root() at the checkout under test too.
+    os.environ.setdefault("ARGUS_ROOT", str(repo))
     smoke = Smoke()
 
     check_git(repo, smoke)

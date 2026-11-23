@@ -58,8 +58,8 @@ class HumanFormatTests(unittest.TestCase):
 
     def test_workload_list_and_show(self) -> None:
         human, _ = self.human_and_json(["workload", "list"])
-        self.assertRegex(human, r"^ID\s+TRUST_DOMAIN\s+MIGRATION\s+LIFECYCLE\s+ACCESS\s+PRIVACY\n")
-        self.assertRegex(human, r"(?m)^demo\s+personal-sandbox\s+planned\s+active\s+tailnet\s+personal$")
+        self.assertRegex(human, r"^ID\s+TRUST_DOMAIN\s+MIGRATION\s+LIFECYCLE\s+ACCESS\s+PRIVACY\s+ALIASES\n")
+        self.assertRegex(human, r"(?m)^demo\s+personal-sandbox\s+planned\s+active\s+tailnet\s+personal\s+-$")
         human, _ = self.human_and_json(["workload", "show", "demo"])
         self.assertIn("trustDomain       personal-sandbox", human)
         self.assertIn("capabilities      logs allowed; restart denied", human)

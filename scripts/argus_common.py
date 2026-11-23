@@ -104,6 +104,12 @@ def is_server_checkout(repo: Path) -> bool:
     return resolved == Path("/srv/argus") or (resolved / "ARGUS_RELEASE").is_file()
 
 
+def checkout_root() -> Path:
+    """The git checkout behind root(): a root-owned release has no .git, so its checkout is the server's /srv/argus."""
+    current = root()
+    return Path("/srv/argus") if (current / "ARGUS_RELEASE").is_file() else current
+
+
 def root() -> Path:
     override = os.environ.get("ARGUS_ROOT")
     if override:
