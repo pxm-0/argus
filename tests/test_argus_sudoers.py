@@ -178,6 +178,13 @@ class OverrideTests(unittest.TestCase):
             self.assertIn("/opt/argus/current/", text, path.name)
         self.assertIn("Environment=ARGUS_ROOT=/opt/argus/current\n", overrides["argus-control-api.service.d/10-argus-release.conf"])
 
+    def test_smoke_runs_release_code_against_the_live_checkout(self) -> None:
+        # smoke checks .git and regenerates gitignored plans, neither of which exists in the sealed release
+        text = sudoers.render_overrides(ROOT)["argus-smoke.service.d/10-argus-release.conf"]
+        self.assertIn("Environment=ARGUS_ROOT=/srv/argus\n", text)
+        self.assertIn("ExecStart=/opt/argus/current/scripts/argus-smoke-scheduled\n", text)
+        self.assertIn("User=oreo", (ROOT / "systemd" / "argus-smoke.service").read_text())
+
     def test_every_unit_touching_srv_argus_gets_a_dropin_that_leaves_none(self) -> None:
         overrides = sudoers.render_overrides(ROOT)
         for path in sorted((ROOT / "systemd").glob("*.service")):

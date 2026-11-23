@@ -28,7 +28,7 @@ from argus_cloudflare_allowlist import (
     public_allowlist,
     unreadable_evidence,
 )
-from argus_common import load_json, print_json, root
+from argus_common import checkout_root, load_json, print_json, root
 from argus_sudoers import findings as sudoers_findings, parse_entries as parse_sudoers
 
 
@@ -50,12 +50,12 @@ GHCR_WARN_DAYS, GHCR_FAIL_DAYS = 75, 90
 GHCR_SCOPES = {"read:packages"}
 
 
-def run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, cwd=root(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
+def run(command: list[str], cwd: Path | None = None) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(command, cwd=cwd or root(), text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False)
 
 
 def tracked_files() -> list[str]:
-    result = run(["git", "ls-files"])
+    result = run(["git", "ls-files"], checkout_root())
     if result.returncode != 0:
         return []
     return result.stdout.splitlines()
@@ -450,6 +450,7 @@ def ghcr_credential_checks(
     fetch: Callable[[str], subprocess.CompletedProcess[str]] | None = None,
     trusted_uids: tuple[int, ...] = (0,),
     below: Path | None = None,
+    privileged: bool | None = None,
 ) -> None:
     """ghcr-credential: dedicated read-only registry login, root 0600, ghcr.io only, rotated within 90 days."""
     name = "ghcr-credential"
@@ -457,6 +458,13 @@ def ghcr_credential_checks(
         info = config.lstat()
     except FileNotFoundError:
         add(checks, True, f"WARN: {name}: {config} not installed yet (docs/RUNBOOKS/ghcr-token-rotation.md)", warn=True, check=name)
+        return
+    except PermissionError:
+        if privileged if privileged is not None else os.geteuid() == 0:
+            add(checks, False, f"{name}: {config} is not readable", check=name)
+        else:
+            # The runbook keeps the credential root-only (0700 dir, 0600 file); a non-root run (smoke) cannot verify it.
+            add(checks, True, f"WARN: {name}: {config} needs root to verify; run argus-doctor --host as root", warn=True, check=name)
         return
     except OSError:
         add(checks, False, f"{name}: {config} is not readable", check=name)
@@ -529,13 +537,13 @@ def ghcr_online_check(checks: list[dict[str, Any]], auth: str, fetch: Callable[[
 
 
 def core_boundary_check(checks: list[dict[str, Any]]) -> None:
-    command = [sys.executable, str(root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
+    command = [sys.executable, str(checkout_root() / "scripts" / "argus-check"), "--boundary-only", "--boundary-json"]
     if os.geteuid() == 0:
         # Host mode needs root for service and ownership checks, while the
         # deterministic boundary audit intentionally refuses root.  Run only
         # that read-only audit as the owner of the reviewed checkout.
         try:
-            owner = pwd.getpwuid(root().stat().st_uid).pw_name
+            owner = pwd.getpwuid(checkout_root().stat().st_uid).pw_name
         except (KeyError, OSError):
             add(checks, False, "deterministic core boundary audit available")
             return

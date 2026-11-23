@@ -6,7 +6,7 @@ name: nodens-production
 
 services:
   nodens:
-    image: sha256:9b192cb82be6c0b8ffb5911c5d50cc03351cf92fa033c7871103f6b75a5ceb31  # ghcr.io/pxm-0/nodens@sha256:9b192cb82be6c0b8ffb5911c5d50cc03351cf92fa033c7871103f6b75a5ceb31
+    image: sha256:535a6fa9b8899762453ade8a7e672bf861ce29adbe7041a8d9e13993723312f1  # ghcr.io/pxm-0/nodens@sha256:535a6fa9b8899762453ade8a7e672bf861ce29adbe7041a8d9e13993723312f1
     restart: unless-stopped
     read_only: true
     tmpfs:

@@ -208,7 +208,7 @@ class CommandTests(unittest.TestCase):
         for path in (self.repo / "config", self.repo / "scripts", self.bin, self.log):
             path.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", "--bare", str(base / "origin.git")], check=True)
-        registry = {"workloads": [workload("nodens-staging", promotesTo="nodens-production"), workload("nodens-production")]}
+        registry = {"workloads": [workload("nodens-staging", promotesTo="nodens-production", aliases=["ns"]), workload("nodens-production")]}
         (self.repo / "config" / "workloads.json").write_text(json.dumps(registry))
         (self.repo / "config" / "routes.json").write_text(json.dumps({"dashboard": {"url": "https://127.0.0.1:1"}}))
         self.write_compose("nodens-staging", compose("nodens-staging", OLD_ID, REF))
@@ -319,6 +319,21 @@ class CommandTests(unittest.TestCase):
         del registry["workloads"][0]["promotesTo"]
         (self.repo / "config/workloads.json").write_text(json.dumps(registry))
         self.assertEqual("promote-target-unregistered", self.promote_refusal("--skip-evidence-check"))
+
+    def test_promote_alias_defaults_to_the_registered_target(self) -> None:
+        code, payload, err = self.invoke("promote", "ns", "--skip-evidence-check", "--dry-run")
+        self.assertEqual(0, code, payload)
+        self.assertIn("workloads/nodens-production/source/compose.yml", payload["data"]["diff"])
+        self.assertIn(f"+    image: {OLD_ID}", payload["data"]["diff"])
+        self.assertEqual("", err)
+
+    def test_promote_without_target_refuses_when_promotes_to_is_absent(self) -> None:
+        registry = json.loads((self.repo / "config/workloads.json").read_text())
+        del registry["workloads"][0]["promotesTo"]
+        (self.repo / "config/workloads.json").write_text(json.dumps(registry))
+        code, payload, _ = self.invoke("promote", "nodens-staging", "--skip-evidence-check", "--dry-run")
+        self.assertEqual((3, "promote-target-unregistered"), (code, payload["error"]["code"]))
+        self.assertIn("no promotesTo", payload["error"]["message"])
 
     def test_promote_refuses_unpinned_staging(self) -> None:
         self.write_compose("nodens-staging", compose("nodens-staging", "sha256:PENDING-x"))

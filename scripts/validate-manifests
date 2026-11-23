@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -15,6 +16,7 @@ PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restrict
 ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
 BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"}
 SENSITIVE_PRIVACY = {"sensitive", "restricted"}
+ALIAS_PATTERN = re.compile(r"^[a-z0-9][a-z0-9-]{0,15}$")
 
 
 def repo_root() -> Path:
@@ -220,6 +222,37 @@ def validate_promotions(repo: Path) -> list[str]:
     return errors
 
 
+def validate_aliases(repo: Path) -> list[str]:
+    """CLI aliases in config/workloads.json: short, globally unique, never an active or retired workload ID."""
+    path = repo / "config" / "workloads.json"
+    if not path.exists():
+        return []
+    items = [item for item in load_json(path).get("workloads", []) if isinstance(item, dict)]
+    retired_path = repo / "config" / "argus" / "retired-workloads.json"
+    retired = {str(item) for item in load_json(retired_path).get("workloads", [])} if retired_path.exists() else set()
+    active = {str(item.get("id")) for item in items}
+    owners: dict[str, str] = {}
+    errors: list[str] = []
+    for item in items:
+        workload_id = str(item.get("id"))
+        aliases = item.get("aliases", [])
+        if not isinstance(aliases, list):
+            add_error(errors, workload_id, "aliases", "must be a list of strings")
+            continue
+        for alias in aliases:
+            if not isinstance(alias, str) or not ALIAS_PATTERN.fullmatch(alias):
+                add_error(errors, workload_id, "aliases", f"entry {alias!r} must match {ALIAS_PATTERN.pattern}")
+            elif alias in active:
+                add_error(errors, workload_id, "aliases", f"entry {alias} must not equal an active workload ID")
+            elif alias in retired:
+                add_error(errors, workload_id, "aliases", f"entry {alias} must not equal a retired workload ID")
+            elif alias in owners:
+                add_error(errors, workload_id, "aliases", f"entry {alias} is already registered to {owners[alias]}")
+            else:
+                owners[alias] = workload_id
+    return errors
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="Validate Argus workload manifests.")
     parser.add_argument("--root", type=Path, default=repo_root())
@@ -252,7 +285,7 @@ def main() -> int:
                 print(f"FAIL {error}")
         else:
             print(f"PASS {workload_id} manifest valid")
-    for error in validate_promotions(repo):
+    for error in [*validate_promotions(repo), *validate_aliases(repo)]:
         failed = True
         print(f"FAIL {error}")
     return 1 if failed else 0

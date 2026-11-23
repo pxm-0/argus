@@ -12,6 +12,8 @@ import sys
 import subprocess
 import tempfile
 import unittest
+from types import SimpleNamespace
+from unittest import mock
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -194,6 +196,51 @@ class ActiveWorkloadEvidenceTests(unittest.TestCase):
     def build_route_down(self, root: Path, base: str) -> None:
         routes = {"w": {"tailnet": {"enabled": True, "url": base + "/down"}}}
         (root / "config" / "routes.json").write_text(json.dumps({"workloadRoutes": routes}), encoding="utf-8")
+
+
+class OperatorLinkReleaseTests(unittest.TestCase):
+    def check(self, *, cut_over: bool, link_into_release: bool) -> list[str]:
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            base = Path(tmp).resolve()
+            repo, release_tree = base / "srv", base / "releases" / ("a" * 40)
+            for tree in (repo, release_tree):
+                (tree / "scripts").mkdir(parents=True)
+                for name in module.APPROVED_OPERATOR_LINKS.values():
+                    (tree / "scripts" / name).write_text("#!/bin/sh\n")
+                    (tree / "scripts" / name).chmod(0o755)
+            current = base / "current"
+            if cut_over:
+                current.symlink_to(release_tree)
+            bin_dir = base / "bin"
+            bin_dir.mkdir()
+            for link, target in module.APPROVED_OPERATOR_LINKS.items():
+                (bin_dir / link).symlink_to((current if link_into_release else repo) / "scripts" / target)
+            smoke = module.Smoke()
+            module.check_operator_links(repo, smoke, False, release=current, bin_dir=bin_dir)
+            return smoke.failures
+
+    def test_before_cutover_links_point_into_the_checkout(self) -> None:
+        self.assertEqual([], self.check(cut_over=False, link_into_release=False))
+
+    def test_after_cutover_links_must_point_into_the_release(self) -> None:
+        self.assertEqual([], self.check(cut_over=True, link_into_release=True))
+        self.assertIn("argus operator link target valid", self.check(cut_over=True, link_into_release=False))
+
+
+class ScriptsUnderTestTests(unittest.TestCase):
+    def test_checks_run_scripts_shipped_with_the_smoke_test_not_the_inspected_checkout(self) -> None:
+        self.assertEqual(SCRIPT.resolve().parent, module.SCRIPTS)
+        calls: list[list[str]] = []
+
+        def fake_run(command, cwd, env=None):
+            calls.append(command)
+            return SimpleNamespace(returncode=0, stdout='{"ok": true}', stderr="")
+
+        with tempfile.TemporaryDirectory() as tmp, contextlib.redirect_stdout(io.StringIO()):
+            checkout = Path(tmp)
+            with mock.patch.object(module, "run", side_effect=fake_run):
+                module.check_p6_evidence(checkout, module.Smoke())
+        self.assertEqual([[str(module.SCRIPTS / "argus-template-check"), "--json"]], calls)
 
 
 if __name__ == "__main__":

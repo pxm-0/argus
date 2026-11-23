@@ -48,9 +48,9 @@ def _status(data: dict[str, Any], stdout: TextIO) -> None:
 
 def _workload_list(data: dict[str, Any], stdout: TextIO) -> None:
     table(
-        [["ID", "TRUST_DOMAIN", "MIGRATION", "LIFECYCLE", "ACCESS", "PRIVACY"]]
+        [["ID", "TRUST_DOMAIN", "MIGRATION", "LIFECYCLE", "ACCESS", "PRIVACY", "ALIASES"]]
         + [
-            [item["id"], item["trustDomain"], item["migrationStatus"], item["lifecycle"], item["effectiveAccess"], item["privacy"]]
+            [item["id"], item["trustDomain"], item["migrationStatus"], item["lifecycle"], item["effectiveAccess"], item["privacy"], ",".join(item["aliases"])]
             for item in data["workloads"]
         ],
         stdout,

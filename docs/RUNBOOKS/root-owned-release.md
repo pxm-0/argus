@@ -37,7 +37,10 @@ Anything that writes under the release (for example `__pycache__`) now fails or 
 `config/access.effective.json` (the server-applied access overlay, D028; `config/access.json` itself is now reviewed
 config only) and `config/privacy.json`: the units that write them (`argus-domain-agent@`, `argus-domain-agent-legacy-rootful`, which have
 `ReadWritePaths=/srv/argus/config`) get `ARGUS_ROOT=/srv/argus` in their drop-in while their code still runs from
-`/opt/argus/current`, so `access.apply` keeps writing the live files. Run `argus m1 sync --apply --confirm <digest>` and
+`/opt/argus/current`, so `access.apply` keeps writing the live files. `argus-smoke` (runs as `oreo`) also keeps `ARGUS_ROOT=/srv/argus`:
+it checks the git checkout and regenerates gitignored plans, neither of which a release has. Its code (`smoke-test` and
+every script it calls) still runs from the release; `--root` only points the checks at `/srv/argus`. `argus-doctor` run from
+the release inspects `/srv/argus` for its git-based checks (tracked files, core boundary audit). Run `argus m1 sync --apply --confirm <digest>` and
 `argus-privacy-set` the same way only against `/srv/argus` (not through `/opt/argus/current`, which is sealed).
 
 Residual risks, not closed by this PR: (a) allowlisted root scripts (`argus m1 sync --apply`, `argus-backup-snapshot`)
@@ -104,8 +107,12 @@ Or return to `/srv/argus` entirely: remove `/etc/systemd/system/*.service.d/10-a
 
 ## Upgrades afterwards
 
-From a root shell, `/opt/argus/current/scripts/argus-release-install --sha <sha>` (the previous root-owned copy; not allowlisted by design), then restart the daemons whose code
-changed. Render the overrides again only when `systemd/` changed. A root shell may delete old releases once no unit
+From a root shell, `/opt/argus/current/scripts/argus-release-install --sha <sha>` (the previous root-owned copy; not allowlisted by design). After the switch it restarts every running
+`argus-*` service whose `ExecStart` runs code from `/opt/argus/current` (the step 3 daemons first, in that order, then
+the collectors), because a running daemon keeps the release it resolved at start: a preview from a stale API and a
+check from a fresh agent disagree and the deploy fails `revision-stale`. Rootless Docker daemons are not
+release-backed, so workloads keep running. Exit 4 means the release is installed but a unit did not come back
+active (or systemd could not be queried); fix it from `journalctl -u <unit>` and restart the rest by hand. Render the overrides again only when `systemd/` changed. A root shell may delete old releases once no unit
 points at them.
 
 Other runbooks in this directory use the post-narrowing `/opt/argus/current/scripts` paths; before the cutover
