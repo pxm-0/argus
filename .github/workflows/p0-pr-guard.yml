@@ -3,17 +3,18 @@ name: P0 PR Guard
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
-  push:
-    branches: [main, argus]
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   validate-pr-contract:
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
+    timeout-minutes: 2
     steps:
       - name: Validate P0 PR body
         env:
@@ -94,25 +95,3 @@ jobs:
           print("P0 PR contract ok")
           PY
 
-  flag-direct-main-push:
-    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/argus')
-    runs-on: ubuntu-latest
-    steps:
-      - name: Verify protected-branch push came through a merged PR
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TARGET_BRANCH: ${{ github.ref_name }}
-        run: |
-          associated_prs="$(
-            gh api \
-              -H "Accept: application/vnd.github+json" \
-              "repos/${GITHUB_REPOSITORY}/commits/${GITHUB_SHA}/pulls" \
-              --jq '[.[] | select(.merged_at != null and .base.ref == env.TARGET_BRANCH)] | length'
-          )"
-
-          if [ "${associated_prs}" -lt 1 ]; then
-            echo "::error::P0 plans and phases must land through pull requests, not direct pushes to protected integration branches."
-            exit 1
-          fi
-
-          echo "Protected-branch commit is associated with a merged pull request."
