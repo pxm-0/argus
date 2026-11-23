@@ -3,10 +3,16 @@ name: Tests
 on:
   pull_request:
   push:
-    branches: [main, argus]
+    branches: [main]
 
 permissions:
   contents: read
+
+# PRs share a group per ref and cancel superseded runs. Main pushes get a group per commit,
+# so a queued run never displaces another and every merge keeps its own Tests result.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   unittest:
@@ -19,13 +25,29 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
         with:
           python-version: ${{ matrix.python }}
 
       - name: Run the canonical repository check
         run: ./scripts/argus-check
+
+  # One stable check name for branch protection, independent of the matrix values.
+  tests-ok:
+    if: always()
+    needs: unittest
+    runs-on: ubuntu-latest
+    timeout-minutes: 1
+    steps:
+      - name: Require every matrix leg to pass
+        env:
+          RESULT: ${{ needs.unittest.result }}
+        run: |
+          if [ "$RESULT" != "success" ]; then
+            echo "::error::argus-check matrix result: $RESULT"
+            exit 1
+          fi
