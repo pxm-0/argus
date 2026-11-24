@@ -7,7 +7,7 @@ one describes controls and failure modes, not live weaknesses.
 
 | Cell | Before | After (role) |
 |---|---|---|
-| `legacy-rootful` | legacy kind; default label for anything unclassified; holds the quarantined rootful runtime (#345) | `quarantine` kind, outside the roles; unclassified fails closed |
+| `legacy-rootful` | legacy kind; default label for anything unclassified; holds the quarantined rootful runtime (#345) | role `quarantine`, outside the three splits; unclassified stays admission-denied |
 | `personal-sandbox` | `nodens-staging`, `kadath-staging`, `kadath`, `hastur`, D029 dev runs | **staging**: `nodens-staging`, `kadath-staging` |
 | `personal-managed` | `nodens-production` | **prod**: `nodens-production`, `kadath`, `hastur` |
 | `work-sandbox` | provisioned, empty (its only workload was retired) | **sandbox**: `argus-dev` runs only |
@@ -37,7 +37,7 @@ the only list code may read.
 | A dev or staging image ends up in prod | Promotion accepts only staging to prod, checked against the registry roles in `argus promote` and in the privileged lifecycle agent. Prod images still come only through `argus-image-import` by pinned digest; dev images are never pinned. |
 | Code drifts from the registry, so a firewall or guard skips a cell | Every domain list reads the registry, and a test fails when any list, schema, sudoers entry or unit template disagrees with it. |
 | An operator confuses a role with a cell ID (`work-sandbox` is the sandbox) | Operator views, doctor and CLI output print `role (cell)` together. Sudoers and firewall code take the cell from the registry, never from a typed role. |
-| An unclassified workload lands somewhere by default | Unclassified fails closed instead of defaulting into the quarantine cell. |
+| An unclassified workload lands somewhere by default | Unclassified workloads are placed in quarantine with `admission: denied`, so no agent will run them. |
 | Prod egress for `hastur` is used by another prod container | The inner firewall grants HTTPS egress only to `hastur`'s pinned bridge, as it does in staging today. `nodens-production` and `kadath` keep no egress; the phase 5 check proves it from each of them. |
 | Dropping the work realm lets work and personal data mix | No work workloads exist. Any work workload needs a new decision and its own cell before it is onboarded. |
 
@@ -150,12 +150,16 @@ under the rootful runtime.
 
 ### Phase 6: model cleanup (code only) (#452)
 
-Remove the `work` realm and `work-managed` from state, schemas, validators
-and fixtures. Turn `legacy` into the `quarantine` kind and make unclassified
-workloads fail closed.
+Remove the `work` realm and `work-managed` from the registry, state,
+schemas, validators and bootstrap guards. Workloads may target only the
+staging and prod cells. `legacy-rootful` keeps the persisted kind `legacy`
+and carries the role `quarantine`; unclassified workloads already get
+`admission: denied` there, so they cannot run anywhere by default.
 
-- **Verify:** full CI; admission refuses an unclassified workload instead of
-  placing it in quarantine.
+- **Verify:** full CI; the drift test proves the work realm and
+  `work-managed` are gone and that schemas allow only staging and prod
+  targets. The server state store was checked first and holds no `work`
+  realm records.
 - **Rollback:** revert the PR.
 
 ### Out of scope

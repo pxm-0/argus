@@ -277,8 +277,8 @@ In detail:
 
 - `config/argus/domains.json` is the single list of cells, their role and kind. Every hard-coded domain list reads it, and a test fails on drift. Operator views show role and cell ID together. Unix users, sockets, firewall tables, units and keys keep their names; a rename happens only if a cell is rebuilt for another reason.
 - Staging and prod stay separate trust domains under D013. `argus promote` and the privileged lifecycle agent accept only staging to prod; dev images are still never pinned (D029).
-- `kadath` and `hastur` are prod by role while keeping `stage: none`. Each moves on its own through the D018 fenced migration, `kadath` first.
-- `legacy-rootful` becomes kind `quarantine`, outside the three roles, until the quarantined rootful runtime (#345) is resolved. Unclassified workloads fail closed instead of defaulting into it.
+- `kadath` and `hastur` move to prod with `stage: production`, since the managed zone has no `none` stage. Each moves on its own through the D018 fenced migration, `kadath` first.
+- `legacy-rootful` takes the role `quarantine`, outside the three splits, until the quarantined rootful runtime (#345) is resolved. It keeps its persisted kind `legacy`, and unclassified workloads stay `admission: denied` there.
 - The `work` realm and `work-managed` are removed. `stage` stays a per-workload field.
 - Network: sandbox gets no network beyond loopback, ever (dependencies are baked into the image; helper containers share the run's namespace), plus the two tailnet-only preview routes. Staging gets no egress and tailnet-only ingress. Prod gets the D027 tunnel and `hastur`'s HTTPS egress, scoped to its bridge by the inner firewall. Nothing else.
 
