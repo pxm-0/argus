@@ -123,29 +123,51 @@ routes at the new slots. Then remove the dev carve-out from the staging cell.
 - **Rollback:** `argus-dev purge`, revert the PR, install the previous
   release, and point the preview routes back at the staging cell's slots.
 
-### Phase 4: move `kadath` to prod (server) (#450)
+### Phase 4: move `kadath` to prod (code + server) (#450)
 
-D018 fenced migration: fence writes, take and verify a backup, restore into
-the prod cell, compare the database fingerprint, switch its tailnet ingress
-socket, move its database backup spec to the prod cell.
+No existing tool moves state between two sealed cells.
+`argus-m5-workload-cutover` moves workloads from the legacy rootful daemon
+only. The privileged agent's sealed-domain move fences the source and starts
+the target's Compose project, but it does not copy named volumes, so the
+target would start empty. This phase therefore first builds a fenced
+cell-to-cell move for one workload, as its own reviewed PR:
 
-- **Verify:** health 200 through the unchanged tailnet URL; restore
+1. Preflight: source healthy, target project absent, enough capacity, and a
+   fresh verified backup (`argus-m5-workload-db-backup` for `kadath`).
+2. Fence the source (restart policy `no`, writers stopped) and journal each
+   step before it runs, as the legacy cutover does.
+3. Copy state through a logical dump and restore (Postgres for `kadath`),
+   never a raw volume copy across different subordinate-ID maps. Then compare
+   the restore fingerprint.
+4. Rebuild the root-owned runtime files for the prod cell's identity, move
+   the ingress socket to `managed-ingress/`, start the target, and require
+   health.
+5. Re-point the tailnet Serve port to the new socket, retarget the reconcile
+   timer, cutover evidence and database backup spec, and leave the source
+   stopped, with its volume kept until acceptance.
+
+The same PR updates `config/workloads.json`, the classification
+(`stage: production` in the managed zone) and the manifest.
+
+- **Verify:** health 200 through the unchanged tailnet URL; the restore
   fingerprint matches; the prod cell's firewall verify shows `kadath` without
   egress; the backup timer writes from the new cell.
-- **Rollback:** the D018 procedure: re-point ingress to the staging cell,
-  unfence the source, and reconcile any writes made in prod by hand.
+- **Rollback:** before the target starts, restore the source and unfence it.
+  After that, follow D018: the source stays fenced, and writes made in prod
+  are reconciled by hand before the source is ever restarted.
 
 ### Phase 5: move `hastur` to prod (code + server) (#451)
 
-Same procedure as phase 4. Before cutover, add `hastur`'s bridge-scoped HTTPS
-egress to the prod cell's inner firewall and its host guard. After cutover,
-remove the HTTPS allowance from the staging cell's host guard and inner
-firewall. Correct the backup docs, which still describe `hastur` as running
-under the rootful runtime.
+Use the same tool as phase 4. Before cutover, add `hastur`'s bridge-scoped
+HTTPS egress to the prod cell's declared egress and host guard. Its named data
+volume moves through a stopped-writer archive restored as the prod cell's
+identity, plus a content checksum. After cutover, remove the HTTPS allowance
+from the staging cell's host guard and inner firewall. Correct the backup
+docs, which still describe `hastur` as running under the rootful runtime.
 
 - **Verify:** `hastur` health 200 and its outbound HTTPS works; outbound
   HTTPS from `nodens-production` and `kadath` fails; staging has no egress.
-- **Rollback:** the D018 procedure, then restore the staging egress allowance
+- **Rollback:** as in phase 4, then restore the staging egress allowance
   and remove the prod one.
 
 ### Phase 6: model cleanup (code only) (#452)
