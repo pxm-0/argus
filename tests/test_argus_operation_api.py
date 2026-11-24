@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 import shutil
 import os
 import sqlite3
@@ -559,6 +560,16 @@ class OperationApiTests(unittest.TestCase):
         self.assertEqual("sha256:" + "a" * 64, result["runtime"]["pinnedImage"])
         self.assertEqual("", result["runtime"]["observedImage"])
         self.assertEqual("awaiting-approval", result["runtime"]["lastOperationState"])
+
+    def test_runtime_domain_reads_only_workload_manifests(self) -> None:
+        seeded = {"migration": {"runtimeTrustDomain": "seeded-domain"}}
+        (self.runtime / "workloads" / "demo").mkdir(parents=True)
+        (self.runtime / "workloads" / "demo" / "manifest.json").write_text(json.dumps(seeded))
+        # workloads/../manifest.json resolves to the root, outside any workload directory.
+        (self.runtime / "manifest.json").write_text(json.dumps(seeded))
+        with patch.object(self.server, "ROOT", self.runtime):
+            self.assertEqual("seeded-domain", self.server.runtime_domain("demo"))
+            self.assertEqual("legacy-rootful", self.server.runtime_domain(".."))
 
     def test_estate_refresh_request_is_inert_and_status_is_session_bound(self) -> None:
         with (

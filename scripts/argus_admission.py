@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -150,6 +151,9 @@ class AdmissionDecision:
         }
 
 
+WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
+
+
 class AdmissionDataError(ValueError):
     """Raised when a canonical admission dependency cannot be decoded."""
 
@@ -207,11 +211,13 @@ def canonical_records(root: Path, workload_id: str) -> dict[str, Any]:
     privacy = _load(config / "privacy.json")
     classification = _load(config / "argus" / "workload-classification.json")
     routes = _load(config / "routes.json")
-    manifest_path = root / "workloads" / workload_id / "manifest.json"
-    try:
-        manifest = _load(manifest_path)
-    except AdmissionDataError as exc:
-        raise ManifestDataError("workload manifest is invalid") from exc
+    manifest = None
+    # Not a workload id (e.g. ".."): no manifest to read, and the path must stay under workloads/.
+    if WORKLOAD_ID.fullmatch(workload_id):
+        try:
+            manifest = _load(root / "workloads" / workload_id / "manifest.json")
+        except AdmissionDataError as exc:
+            raise ManifestDataError("workload manifest is invalid") from exc
     if manifest is not None and not isinstance(manifest, dict):
         raise ManifestDataError("workload manifest is invalid")
     return {

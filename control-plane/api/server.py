@@ -49,6 +49,7 @@ TAILSCALE_IDENTITY_HEADER = "X-Argus-Tailnet-Login"
 PROXY_TOKEN_HEADER = "X-Argus-Proxy-Token"
 CSRF_BOOTSTRAP_HEADER = "X-Argus-CSRF-Bootstrap"
 SAFE_REQUEST_NONCE = re.compile(r"^[A-Za-z0-9_-]{32,256}$")
+WORKLOAD_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 PREVIEW_TTL_SECONDS = 60
 sys.path.insert(0, str(ROOT / "scripts"))
 
@@ -245,15 +246,16 @@ def trust_domain(workload_id: str) -> str:
 def runtime_domain(workload_id: str) -> str:
     """Resolve effective placement from canonical seed plus fenced outcomes."""
     fallback = trust_domain(workload_id)
-    manifest_path = ROOT / "workloads" / workload_id / "manifest.json"
-    try:
-        manifest = json.loads(manifest_path.read_text())
-        migration = manifest.get("migration", {})
-        seeded = migration.get("runtimeTrustDomain")
-        if isinstance(seeded, str) and seeded:
-            fallback = seeded
-    except (OSError, json.JSONDecodeError, AttributeError):
-        pass
+    # The preview route reaches here before its unknown-workload check; keep ".." out of the path.
+    if WORKLOAD_ID.fullmatch(workload_id):
+        try:
+            manifest = json.loads((ROOT / "workloads" / workload_id / "manifest.json").read_text())
+            migration = manifest.get("migration", {})
+            seeded = migration.get("runtimeTrustDomain")
+            if isinstance(seeded, str) and seeded:
+                fallback = seeded
+        except (OSError, json.JSONDecodeError, AttributeError):
+            pass
     return LEDGER.runtime_domain(workload_id, fallback)
 
 
