@@ -91,6 +91,12 @@ class AdmissionDecisionTests(unittest.TestCase):
         expected = hashlib.sha256(canonical_json(ordered).encode()).hexdigest()
         self.assertEqual(expected, canonical_revision(self.root, WORKLOAD_ID))
 
+    def test_non_workload_id_never_reads_a_manifest_outside_workloads(self) -> None:
+        # workloads/../manifest.json would be the root; a broken file there must not be read.
+        (self.root / "manifest.json").write_text("{not json", encoding="utf-8")
+        self.assertIsNone(canonical_records(self.root, "..")["manifest"])
+        self.assertIsInstance(canonical_records(self.root, WORKLOAD_ID)["manifest"], dict)
+
     def test_first_isolated_restore_is_allowed_but_cutover_requires_restore_evidence(self) -> None:
         restore = self.decision("backup.restore")
         self.assertTrue(restore.allowed)
