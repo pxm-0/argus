@@ -99,13 +99,13 @@ class DriftTest(unittest.TestCase):
         for workload_id, item in classification["workloads"].items():
             self.assertIn(item["trustDomain"], WORKLOAD, workload_id)
 
-    def test_dev_runs_target_a_registered_cell(self) -> None:
-        # Phase 3 of docs/TRUST_SPLITS.md moves both to the sandbox role; until then they stay in staging.
+    def test_dev_runs_target_the_sandbox_cell(self) -> None:
+        self.assertEqual("work-sandbox", argus_domains.cell("sandbox"))
+        self.assertEqual(argus_domains.cell("sandbox"), argus_sandbox_firewall.DEV_DOMAIN)
         dev_sandbox = (ROOT / "scripts" / "argus-dev-sandbox").read_text(encoding="utf-8")
-        domain = re.search(r'^DOMAIN = "([^"]+)"$', dev_sandbox, re.M)
-        self.assertIsNotNone(domain)
-        self.assertEqual(argus_sandbox_firewall.DEV_DOMAIN, domain.group(1))
-        self.assertIn(domain.group(1), WORKLOAD)
+        self.assertIn('DOMAIN = argus_domains.cell("sandbox")', dev_sandbox)
+        with self.assertRaises(argus_domains.DomainRegistryError):
+            argus_domains.cell("dev")
 
 
 if __name__ == "__main__":

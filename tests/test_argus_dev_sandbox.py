@@ -192,8 +192,8 @@ class ContainerArgumentTests(unittest.TestCase):
         self.assertEqual({"disabled": True}, json.loads(sandbox.ingress_config(3000))["admin"])
 
     def test_docker_always_runs_as_the_sandbox_user_on_its_socket(self) -> None:
-        self.assertEqual(["runuser", "-u", "argus-personal-sandbox", "--", "docker", "--host",
-                          "unix:///var/lib/argus/personal-sandbox/docker.sock", "ps"], sandbox.docker("ps"))
+        self.assertEqual(["runuser", "-u", "argus-work-sandbox", "--", "docker", "--host",
+                          "unix:///var/lib/argus/work-sandbox/docker.sock", "ps"], sandbox.docker("ps"))
 
     def test_results_and_logs_only_reach_labelled_dev_containers(self) -> None:
         with mock.patch.object(sandbox, "dev_containers", return_value=[]), self.assertRaises(sandbox.Refusal):
@@ -304,10 +304,11 @@ class FirewallCarveOutTests(unittest.TestCase):
         source = (ROOT / "scripts" / "argus_sandbox_firewall.py").read_text()
         self.assertIn('runner.text(_docker(domain, "inspect", *missing))', source)
 
-    def test_discovery_ignores_dev_containers_only_in_personal_sandbox(self) -> None:
+    def test_discovery_ignores_dev_containers_only_in_the_sandbox_cell(self) -> None:
         source = (ROOT / "scripts" / "argus_sandbox_firewall.py").read_text()
         self.assertIn("if domain == DEV_DOMAIN and _loopback_only_dev(container, running_by_id):", source)
-        self.assertEqual("personal-sandbox", firewall.DEV_DOMAIN)
+        self.assertEqual("work-sandbox", firewall.DEV_DOMAIN)
+        self.assertEqual(firewall.DEV_DOMAIN, sandbox.DOMAIN)
 
 
 class WrapperTests(unittest.TestCase):

@@ -71,6 +71,14 @@ def entry(domain_id: str, path: Path = DEFAULT_PATH) -> dict[str, Any]:
     raise DomainRegistryError(f"unknown trust domain: {domain_id}")
 
 
+def cell(role_name: str, path: Path = DEFAULT_PATH) -> str:
+    """The one cell holding a role."""
+    for item in load(path):
+        if item["role"] == role_name:
+            return item["id"]
+    raise DomainRegistryError(f"no trust domain holds role {role_name}")
+
+
 def role(domain_id: str, path: Path = DEFAULT_PATH) -> str | None:
     return entry(domain_id, path)["role"]
 

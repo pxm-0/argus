@@ -1,8 +1,9 @@
 # Dev Environment Protocol
 
-Decided 2026-11-21 ([D029](ARGUS_V1_DECISIONS.md)). Code is edited on the Mac;
-apps and tests run on `oreochiserver`, inside the sealed `personal-sandbox`
-rootless Docker cell ([`ARGUS_M5_SANDBOX_RUNTIMES.md`](ARGUS_M5_SANDBOX_RUNTIMES.md)).
+Decided 2026-11-21 ([D029](ARGUS_V1_DECISIONS.md)); moved to its own cell by
+[D030](ARGUS_V1_DECISIONS.md). Code is edited on the Mac; apps and tests run on
+`oreochiserver`, inside the sealed sandbox cell (`work-sandbox`, role `sandbox`
+in `config/argus/domains.json`), a rootless Docker cell that holds no workloads ([`ARGUS_M5_SANDBOX_RUNTIMES.md`](ARGUS_M5_SANDBOX_RUNTIMES.md)).
 This replaces the earlier local devcontainer and compose dev stack model. The
 OrbStack machine that rehearses Argus's own installers is documented separately
 in [`SERVER_SIM.md`](SERVER_SIM.md). Threat model and rollback:
@@ -27,7 +28,7 @@ docker save | ssh                     sudo -n argus-dev-sandbox results (tar of 
 2. **The sandbox stays sealed.** Dev containers have no network interface
    beyond loopback (`--network none`, or the netns of the run's first
    container), no published ports, no capabilities, no host mounts, and
-   personal-sandbox's default-drop egress is unchanged. Anything a run needs
+   the sandbox cell's default-drop egress is unchanged. Anything a run needs
    from the network (dependencies, browsers, fonts) is baked into the image at
    build time on the Mac.
 3. **One entry point on the server.** The Mac reaches the cell only through
@@ -39,8 +40,8 @@ docker save | ssh                     sudo -n argus-dev-sandbox results (tar of 
 5. **No real secrets.** Requests carry dev-only placeholder values. Production
    and staging credentials never go into a dev image, `argus-dev.json` or a
    request.
-6. **Only personal-sandbox.** Dev runs never touch work-sandbox,
-   personal-managed, the rootful daemon or a staging or production workload.
+6. **Only the sandbox cell.** Dev runs never touch the staging cell
+   (personal-sandbox), the prod cell (personal-managed), the rootful daemon or a staging or production workload.
    Dev image IDs are never pinned in a reviewed `compose.yml`: staging takes
    images only from `argus release pin` (GHCR digests through
    `argus-image-import`).
@@ -60,7 +61,7 @@ the project root, and add `argus-dev.json` to Git.
 | `services[]` | up to four helper containers (`name`, `image`, `command`, `env`, `user`, `tmpfs`) |
 
 A service `image` is either another `argus-dev/<project>:<tag>` or the
-`sha256:` ID of a public Postgres image already imported into personal-sandbox
+`sha256:` ID of a public Postgres image already imported into the sandbox cell
 (the ID `argus-image-import` printed, for example for kadath-staging). Other
 image IDs, including staging workload images, are refused. The first service owns the
 run's network namespace and every other container joins it, so they talk over
@@ -109,17 +110,22 @@ mirror the nodens-staging ingress setup in
 [`ARGUS_M5_WORKLOAD_CUTOVER.md`](ARGUS_M5_WORKLOAD_CUTOVER.md).
 
 ```bash
-install -d -m 0700 -o argus-personal-sandbox -g argus-personal-sandbox /var/lib/argus/sandbox-ingress/dev-1
-install -d -m 0700 -o argus-personal-sandbox -g argus-personal-sandbox /var/lib/argus/sandbox-ingress/dev-2
+install -d -m 0700 -o argus-work-sandbox -g argus-work-sandbox /var/lib/argus/sandbox-ingress/dev-1
+install -d -m 0700 -o argus-work-sandbox -g argus-work-sandbox /var/lib/argus/sandbox-ingress/dev-2
 tailscale serve --bg --https=8460 unix:/var/lib/argus/sandbox-ingress/dev-1/upstream.sock
 tailscale serve --bg --https=8461 unix:/var/lib/argus/sandbox-ingress/dev-2/upstream.sock
 tailscale serve status    # 8460 and 8461 added, tailnet only
 tailscale funnel status   # must be empty
 ```
 
-The preview ingress uses the Caddy image ID already imported for
-nodens-staging (pinned in `scripts/argus-dev-sandbox`). Database services need
-their image imported once with `argus-image-import --domain personal-sandbox`.
+The preview ingress uses the Caddy image ID pinned for nodens-staging (in
+`scripts/argus-dev-sandbox`); import that same image once into the sandbox cell
+the way it was imported for staging. Database services need their image
+imported once with `argus-image-import --domain work-sandbox`.
+
+Moving from D029's personal-sandbox setup (D030 phase 3): run `argus-dev purge`
+first, then `chown argus-work-sandbox:argus-work-sandbox` the two slot
+directories. The `tailscale serve` routes keep their paths and need no change.
 Then re-render and install the sudoers drop-in as in
 [`RUNBOOKS/sudo-narrowing.md`](RUNBOOKS/sudo-narrowing.md). Until that runbook
 is applied, the operator's existing blanket grant covers the helper. A smoke

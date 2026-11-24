@@ -52,6 +52,11 @@ staging, and the allowlist for every image that staging or production deploys.
 
 ## Residual risks
 
+Since D030 phase 3, dev runs live in their own sandbox cell (`work-sandbox`),
+so the shared-daemon risk below and the carve-out in the staging cell are gone;
+the rest of this document still applies, with the sandbox cell in place of
+personal-sandbox.
+
 - **Shared daemon with staging.** A container escape from a dev run, not just a
   dev-image bug, would control the staging workloads in personal-sandbox, their
   staging secrets, and their tailnet ingress sockets. It would still have no
