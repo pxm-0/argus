@@ -269,7 +269,7 @@ work-managed
 
 | Role | Cell | Runs |
 |---|---|---|
-| sandbox | `work-sandbox` (wiped and re-keyed) | `argus-dev` test and preview runs only |
+| sandbox | `work-sandbox` (wiped and re-bootstrapped) | `argus-dev` test and preview runs only |
 | staging | `personal-sandbox` | `nodens-staging`, `kadath-staging` |
 | prod | `personal-managed` | `nodens-production`, `kadath`, `hastur` |
 

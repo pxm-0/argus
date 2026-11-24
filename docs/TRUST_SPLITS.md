@@ -32,7 +32,7 @@ the only list code may read.
 | Threat | Control |
 | --- | --- |
 | A dev run escapes its container and takes over staging | Dev runs move to their own cell. An escape lands as the sandbox cell's user, which holds no workloads, no secrets and no egress. The D029 firewall carve-out leaves the staging cell. |
-| Leftover state in the reused cell reaches dev runs | Phase 2 audits and wipes the cell's storage, volumes and capability store, and issues new issuer keys before any dev run uses it. |
+| Leftover state in the reused cell reaches dev runs | Phase 0 audited the cell; phase 2 removes the retired workload's firewall policy, wipes the Docker data root and re-bootstraps the cell before any dev run uses it. |
 | Unreleased staging code reaches live data | `kadath` and `hastur` leave the staging cell. Staging then holds only staging workloads and loses its egress. |
 | A dev or staging image ends up in prod | Promotion accepts only staging to prod, checked against the registry roles in `argus promote` and in the privileged lifecycle agent. Prod images still come only through `argus-image-import` by pinned digest; dev images are never pinned. |
 | Code drifts from the registry, so a firewall or guard skips a cell | Every domain list reads the registry, and a test fails when any list, schema, sudoers entry or unit template disagrees with it. |
@@ -90,21 +90,24 @@ staging to prod by role. Show `role (cell)` in views.
 
 ### Phase 2: reset the sandbox cell (server) (#448)
 
-First re-apply the `personal-managed` bootstrap with the current code, so
-prod's units use helpers of their own (fixed in eaabe55, not yet applied).
-Re-applying the sandbox cell before that would rewrite helpers prod still
-uses. Then stop the reused cell's agent and collectors, wipe its storage and capability
-store after the phase 0 inventory confirms nothing needs keeping, re-apply the
-cell bootstrap, and issue new issuer keys through the capability issuer.
+Runbook: [`RUNBOOKS/d030-phase2-cell-reset.md`](RUNBOOKS/d030-phase2-cell-reset.md).
+First give the prod cell its own namespace and firewall helper files and
+point its units at them, without a restart. Before eaabe55 the bootstrap gave
+it helpers under the sandbox cell's name, and the full bootstrap refuses the
+prod cell because its inner policy is workload-managed. Then remove the
+retired workload's inner policy, wipe the sandbox cell's Docker data root,
+re-apply its bootstrap and restart its agent and collectors. There is nothing
+to re-key: every cell shares the one issuer key.
 
-- **Verify:** bootstrap apply exits 0, including its `hello-world` gate;
-  issuer preflight is green; the pairwise matrix shows the cell reaches
+- **Verify:** prod units run only prod helpers, and prod's guard, namespace
+  and inner table are unchanged with `nodens-production` at 200; the sandbox
+  bootstrap exits 0 including its `hello-world` gate; the sandbox cell has its
+  host guard, named namespace and inner table, and its RootlessKit child is
+  not in the host namespace; the pairwise matrix shows the cell reaches
   nothing.
-- **Also verify:** prod's namespace and host guard survive a restart of its
-  namespace unit, and `nodens-production` answers 200 afterwards.
-- **Rollback:** the cell holds no workload, so rollback is the bootstrap
-  `--rollback` from its backup and re-issuing the previous issuer state from
-  the issuer's own backup.
+- **Rollback:** restore prod's two unit files from the runbook backup and
+  reload systemd; the sandbox cell holds no workload, so stop it again or use
+  the bootstrap `--rollback`, then restore its two `.nft` files.
 
 ### Phase 3: move dev runs to the sandbox cell (code + server) (#449)
 
