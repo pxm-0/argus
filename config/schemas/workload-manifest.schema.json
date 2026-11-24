@@ -103,10 +103,10 @@
           "enum": ["planned", "migrated", "external", "rolled-back", "skipped"]
         },
         "targetTrustDomain": {
-          "enum": ["personal-sandbox", "personal-managed", "work-sandbox", "work-managed"]
+          "enum": ["personal-sandbox", "personal-managed"]
         },
         "runtimeTrustDomain": {
-          "enum": ["legacy-rootful", "personal-sandbox", "personal-managed", "work-sandbox", "work-managed"]
+          "enum": ["legacy-rootful", "personal-sandbox", "personal-managed"]
         }
       },
       "allOf": [

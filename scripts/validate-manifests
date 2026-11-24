@@ -13,7 +13,8 @@ import argus_domains
 
 RUNTIME_TYPES = {"docker-compose", "external", "static", "unknown"}
 MIGRATION_STATUSES = {"planned", "migrated", "external", "rolled-back", "skipped"}
-TARGET_TRUST_DOMAINS = set(argus_domains.ids(kind="workload"))
+# D030: workloads run only in the staging and prod cells; the sandbox cell holds dev runs.
+TARGET_TRUST_DOMAINS = {argus_domains.cell("staging"), argus_domains.cell("prod")}
 PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restricted"}
 ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
 BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"}

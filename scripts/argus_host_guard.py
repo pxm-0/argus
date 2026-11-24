@@ -13,7 +13,6 @@ HOST_EGRESS: dict[str, tuple[tuple[str, int], ...]] = {
     "personal-sandbox": (("tcp", 443),),
     "work-sandbox": (),
     "personal-managed": (),
-    "work-managed": (),
 }
 
 

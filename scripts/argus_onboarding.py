@@ -28,7 +28,7 @@ SAFE_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,62}$")
 SAFE_KIND = re.compile(r"^[a-z][a-z0-9-]{0,31}$")
 SAFE_PROJECT = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
 PLAN_DIGEST = re.compile(r"^sha256:[0-9a-f]{64}$")
-ALLOWED_REALMS = {"personal", "work"}
+ALLOWED_REALMS = {"personal"}  # D030 dropped the work realm
 ALLOWED_ZONES = {"sandbox", "managed"}
 ALLOWED_STAGES = {"none", "dev", "staging", "production"}
 

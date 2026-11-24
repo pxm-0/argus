@@ -180,7 +180,7 @@ class M4BootstrapTest(unittest.TestCase):
         return netns, firewall
 
     def test_each_domain_owns_its_netns_and_firewall_helpers(self) -> None:
-        domains = ("personal-sandbox", "work-sandbox", "personal-managed", "work-managed")
+        domains = ("personal-sandbox", "work-sandbox", "personal-managed")
         paths = {domain: self.helper_paths(domain) for domain in domains}
         every_helper = [path for pair in paths.values() for path in pair]
         self.assertEqual(len(every_helper), len(set(every_helper)))

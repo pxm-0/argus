@@ -29,7 +29,7 @@ def main() -> int:
     preview.add_argument("--kind", required=True)
     preview.add_argument("--runtime", required=True, choices=("docker-compose",))
     preview.add_argument("--compose-project", required=True)
-    preview.add_argument("--realm", required=True, choices=("personal", "work"))
+    preview.add_argument("--realm", required=True, choices=("personal",))
     preview.add_argument("--zone", required=True, choices=("sandbox", "managed"))
     preview.add_argument("--stage", required=True, choices=("none", "dev", "staging", "production"))
     preview.add_argument("--trust-domain", required=True)

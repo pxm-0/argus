@@ -6,7 +6,6 @@
     {"id": "legacy-rootful", "kind": "legacy", "role": "quarantine", "rootless": false},
     {"id": "personal-sandbox", "kind": "workload", "role": "staging", "rootless": true},
     {"id": "personal-managed", "kind": "workload", "role": "prod", "rootless": true},
-    {"id": "work-sandbox", "kind": "workload", "role": "sandbox", "rootless": true},
-    {"id": "work-managed", "kind": "workload", "role": null, "rootless": false}
+    {"id": "work-sandbox", "kind": "workload", "role": "sandbox", "rootless": true}
   ]
 }
