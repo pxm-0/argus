@@ -90,13 +90,18 @@ staging to prod by role. Show `role (cell)` in views.
 
 ### Phase 2: reset the sandbox cell (server) (#448)
 
-Stop the reused cell's agent and collectors, wipe its storage and capability
+First re-apply the `personal-managed` bootstrap with the current code, so
+prod's units use helpers of their own (fixed in eaabe55, not yet applied).
+Re-applying the sandbox cell before that would rewrite helpers prod still
+uses. Then stop the reused cell's agent and collectors, wipe its storage and capability
 store after the phase 0 inventory confirms nothing needs keeping, re-apply the
 cell bootstrap, and issue new issuer keys through the capability issuer.
 
 - **Verify:** bootstrap apply exits 0, including its `hello-world` gate;
   issuer preflight is green; the pairwise matrix shows the cell reaches
   nothing.
+- **Also verify:** prod's namespace and host guard survive a restart of its
+  namespace unit, and `nodens-production` answers 200 afterwards.
 - **Rollback:** the cell holds no workload, so rollback is the bootstrap
   `--rollback` from its backup and re-issuing the previous issuer state from
   the issuer's own backup.
