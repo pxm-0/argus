@@ -17,7 +17,7 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
     def service(self) -> LifecycleAgent:
         service = object.__new__(LifecycleAgent)
         service.root = ROOT
-        service.domain = "managed-production"
+        service.domain = "personal-managed"
         service.ledger = Mock()
         return service
 
@@ -61,14 +61,32 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
         ):
             result = service.execute_typed(
                 "production.promote", "demo",
-                {"sourceOperationId": "source", "targetTrustDomain": "managed-production"},
+                {"sourceOperationId": "source", "targetTrustDomain": "personal-managed"},
             )
-        private.assert_called_once_with("managed-production", "demo")
+        private.assert_called_once_with("personal-managed", "demo")
         self.assertEqual(
-            [call("personal-sandbox", "demo", "stop"), call("managed-production", "demo", "up", "-d")],
+            [call("personal-sandbox", "demo", "stop"), call("personal-managed", "demo", "up", "-d")],
             compose.call_args_list,
         )
         self.assertFalse(result["publicExposure"])
+
+    def test_promotion_refuses_any_direction_but_staging_to_prod(self) -> None:
+        service = self.service()
+        for source, target in (("personal-managed", "personal-sandbox"), ("work-sandbox", "personal-managed"),
+                               ("legacy-rootful", "personal-managed"), ("personal-sandbox", "unknown-cell")):
+            service.ledger.get.return_value = {"trust_domain": source}
+            with patch.object(service, "compose") as compose, self.assertRaises(PermissionError):
+                service.execute_typed("production.promote", "demo",
+                                      {"sourceOperationId": "source", "targetTrustDomain": target})
+            compose.assert_not_called()
+
+    def test_sealed_migration_cutover_is_not_role_checked(self) -> None:
+        service = self.service()
+        service.domain = "work-sandbox"
+        service.ledger.get.return_value = {"trust_domain": "personal-managed"}
+        with patch.object(service, "promote_between_domains", return_value={}) as promote:
+            service.execute_typed("migration.cutover", "demo", {"preflightOperationId": "preflight"})
+        promote.assert_called_once_with("personal-managed", "work-sandbox", "demo")
 
     def test_failed_promotion_with_unproven_recovery_is_indeterminate(self) -> None:
         service = self.service()
@@ -87,7 +105,7 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
             with self.assertRaises(IndeterminateOperation):
                 service.execute_typed(
                     "production.promote", "demo",
-                    {"sourceOperationId": "source", "targetTrustDomain": "managed-production"},
+                    {"sourceOperationId": "source", "targetTrustDomain": "personal-managed"},
                 )
 
     def test_private_gate_rejects_ports_host_network_privilege_and_docker_socket(self) -> None:
@@ -95,20 +113,20 @@ class PrivilegedLifecycleAgentTests(unittest.TestCase):
         unsafe = '{"services":{"app":{"ports":["8080:80"],"volumes":["/var/run/docker.sock:/x"]}}}'
         with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=unsafe)):
             with self.assertRaises(PermissionError):
-                service.require_private_target("managed-production", "demo")
+                service.require_private_target("personal-managed", "demo")
 
     def test_private_gate_allows_only_explicit_loopback_ports(self) -> None:
         service = self.service()
         safe = '{"services":{"app":{"ports":[{"host_ip":"127.0.0.1","published":"18080","target":80}]}}}'
         with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=safe)):
-            service.require_private_target("managed-production", "demo")
+            service.require_private_target("personal-managed", "demo")
 
     def test_private_gate_rejects_host_path_mounts(self) -> None:
         service = self.service()
         unsafe = '{"services":{"app":{"volumes":[{"type":"bind","source":"/srv/private","target":"/data"}]}}}'
         with patch.object(service, "compose", return_value=Mock(returncode=0, stdout=unsafe)):
             with self.assertRaises(PermissionError):
-                service.require_private_target("managed-production", "demo")
+                service.require_private_target("personal-managed", "demo")
 
     def test_migration_source_fence_revalidates_bound_evidence_before_stopping(self) -> None:
         service = self.service()

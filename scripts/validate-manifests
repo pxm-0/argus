@@ -8,10 +8,12 @@ import re
 from pathlib import Path
 from typing import Any
 
+import argus_domains
+
 
 RUNTIME_TYPES = {"docker-compose", "external", "static", "unknown"}
 MIGRATION_STATUSES = {"planned", "migrated", "external", "rolled-back", "skipped"}
-TARGET_TRUST_DOMAINS = {"personal-sandbox", "personal-managed", "work-sandbox", "work-managed"}
+TARGET_TRUST_DOMAINS = set(argus_domains.ids(kind="workload"))
 PRIVACY_STATES = {"unclassified", "personal", "internal", "sensitive", "restricted"}
 ACCESS_STATES = {"none", "local", "tailnet", "cloudflare-protected", "cloudflare-public"}
 BACKUP_STATUSES = {"planned", "configured", "needs-discovery", "disabled", "blocked", "ok", "stateless-by-design"}
@@ -207,7 +209,7 @@ def validate_manifest(repo: Path, path: Path, privacy: dict[str, str]) -> list[s
 
 
 def validate_promotions(repo: Path) -> list[str]:
-    """promotesTo in config/workloads.json must name another registered workload; staging and production sit in different trust domains."""
+    """promotesTo in config/workloads.json must name another registered workload, from a staging cell to a prod cell (D030)."""
     path = repo / "config" / "workloads.json"
     if not path.exists():
         return []
@@ -219,6 +221,11 @@ def validate_promotions(repo: Path) -> list[str]:
             continue
         if target == workload_id or target not in items:
             add_error(errors, workload_id, "promotesTo", "must name a different registered workload")
+            continue
+        domains = [str(entry.get("migration", {}).get("targetTrustDomain", "")) for entry in (item, items[target])]
+        refusal = argus_domains.promotion_refusal(*domains)
+        if refusal:
+            add_error(errors, workload_id, "promotesTo", refusal)
     return errors
 
 
