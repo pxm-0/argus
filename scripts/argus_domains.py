@@ -87,7 +87,7 @@ def promotion_refusal(source_domain: str, target_domain: str, path: Path = DEFAU
         source_role, target_role = role(source_domain, path), role(target_domain, path)
     except DomainRegistryError as exc:
         return str(exc)
-    if source_role is None or PROMOTION.get(source_role) != target_role:
+    if source_role is None or target_role is None or PROMOTION.get(source_role) != target_role:
         return (f"promotion runs only staging -> prod; {label(source_domain, path)} -> "
                 f"{label(target_domain, path)} is not allowed")
     return None
