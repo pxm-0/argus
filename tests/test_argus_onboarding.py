@@ -84,7 +84,7 @@ class OnboardingManagerTests(unittest.TestCase):
             self.assertEqual("object", schema["type"])
             self.assertFalse(schema["additionalProperties"])
         plan_schema = json.loads((ROOT / "config/schemas/workload-onboarding-plan.schema.json").read_text())
-        self.assertEqual(4, len(plan_schema["properties"]["inputs"]["allOf"]))
+        self.assertEqual(2, len(plan_schema["properties"]["inputs"]["allOf"]))  # D030: personal realm only
         self.assertEqual(6, len(plan_schema["properties"]["files"]["prefixItems"]))
         self.assertFalse(plan_schema["properties"]["files"]["items"])
         quarantine_schema = json.loads((ROOT / "config/schemas/runtime-quarantine.schema.json").read_text())
