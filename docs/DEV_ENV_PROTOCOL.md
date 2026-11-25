@@ -76,8 +76,8 @@ Tests write reports to `/out` in the test container (the template creates it).
 
 All run on the Mac from the project directory. They use `ssh $ARGUS_SSH_HOST`
 (default `oreochiserver`) and `$ARGUS_REMOTE_REPO/scripts/argus-dev-sandbox`
-(default `/srv/argus`; set `/opt/argus/current` once the root-owned release and
-sudo narrowing from #412 are live, because the sudoers entries point there).
+(default `/opt/argus/current`, the root-owned release, so dev runs use the
+installed code and root never runs the operator-writable `/srv/argus` checkout).
 
 ```bash
 argus-dev test                         # build, ship, run test.command, stream output, fetch /out, exit with its code

@@ -381,7 +381,7 @@ Root-only, TTY-only enrolment of one operator's TOTP second factor; see
 `docs/RUNBOOKS/operator-session-diagnosis.md`.
 
 Pin imports the allowlisted digest over `ssh $ARGUS_SSH_HOST sudo -n
-$ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/srv/argus`), rewrites only the workload service's `image:` line, runs
+$ARGUS_REMOTE_REPO/scripts/argus-image-import` (default `/opt/argus/current`), rewrites only the workload service's `image:` line, runs
 `argus check`, and opens a PR; `--dry-run` prints the diff only. Promote
 defaults the production ID to the staging workload's `promotesTo` (so
 `argus promote ns` promotes to `nodens-production`) and

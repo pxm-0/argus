@@ -136,11 +136,13 @@ system-level sweep cannot see user-level units.
 
 ## Hastur file backup
 
-Hastur runs rootful, outside the sandbox, so its data and login credentials are
-plain host directories rather than a database behind a sandboxed daemon
-(`/home/oreo/hastur/data`, `/home/oreo/hastur/auth`). Like kadath before #266,
-this had no backup. `argus-m5-hastur-backup` tars both paths directly — no
-docker or sandbox socket involved:
+Hastur runs in the prod cell (`personal-managed`, D030). Its data is the named
+volume mounted at `/app/data`, and its login credentials are the sealed host
+directory `/etc/argus/workload-credentials/hastur` that the container binds
+read-only. `argus-m5-hastur-backup` streams `/app/data` out of the one running
+`hastur` container with `tar` through the prod cell's own daemon (a hot copy),
+and tars the credentials directory directly. Before D030 it archived the
+legacy `/home/oreo/hastur` paths, which no longer receive writes:
 
 ```bash
 sudo ./scripts/argus-m5-hastur-backup --workload hastur

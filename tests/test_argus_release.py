@@ -251,7 +251,7 @@ class CommandTests(unittest.TestCase):
         data = payload["data"]
         self.assertEqual(f"release/nodens-staging-{NEW_ID[7:19]}", data["branch"])
         self.assertEqual("https://github.com/pxm-0/argus/pull/999", data["prUrl"])
-        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-sandbox --image {REF}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /opt/argus/current/scripts/argus-image-import --domain personal-sandbox --image {REF}"], self.calls("ssh"))
         branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
         self.assertEqual(data["branch"], branch)
         self.assertIn(f"image: {NEW_ID}", (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
@@ -363,7 +363,7 @@ class CommandTests(unittest.TestCase):
         self.assertEqual(0, code, payload)
         text = (self.repo / "workloads/nodens-production/source/compose.yml").read_text()
         self.assertEqual(OLD_ID, release.read_pin(text, "nodens")[0])
-        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /opt/argus/current/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
         self.assertIn(f"nodens-production: image: {OLD_ID} (was sha256:PENDING-x)", (self.log / "gh").read_text())
 
     def test_promote_dry_run_prints_diff_only(self) -> None:
@@ -387,7 +387,7 @@ class CommandTests(unittest.TestCase):
         self.script("ssh", '#!/bin/sh\necho "$@" >> "$FAKE_LOG/ssh"\necho \'{"ok": true, "deployed": true}\'\n', self.bin)
         with patch.dict(os.environ, {"ARGUS_OPERATIONS_DB": str(self.repo / "nope.sqlite3")}):
             self.assertTrue(release.deploy_evidence(self.repo, subprocess_runner, "nodens-staging", OLD_ID))
-        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-promote-evidence --workload nodens-staging --image {OLD_ID}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /opt/argus/current/scripts/argus-promote-evidence --workload nodens-staging --image {OLD_ID}"], self.calls("ssh"))
 
     def test_deploy_evidence_unavailable_when_both_paths_fail(self) -> None:
         self.script("ssh", "#!/bin/sh\necho '{\"ok\": false}'\nexit 4\n", self.bin)
