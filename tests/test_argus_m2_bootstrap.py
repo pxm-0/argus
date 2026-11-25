@@ -16,7 +16,7 @@ class M2BootstrapTest(unittest.TestCase):
         self.assertTrue(contract["contractDigest"].startswith("sha256:"))
         self.assertIn("no-published-ports", contract["prohibitions"])
         with self.assertRaises(BootstrapError):
-            pilot_contract(domain="work-managed", user="anything")
+            pilot_contract(domain="personal-managed", user="anything")
 
     def test_subordinate_range_avoids_both_uid_and_gid_allocations(self) -> None:
         start, end = first_free_subid_range(

@@ -16,7 +16,7 @@ from argus_access_state import EFFECTIVE_FIELDS, OVERLAY_NAME, OVERLAY_VERSION, 
 from argus_sqlite import ClosingConnection
 
 
-REALMS = {"unclassified", "personal", "work"}
+REALMS = {"unclassified", "personal"}  # D030 dropped the work realm
 ZONES = {"legacy", "sandbox", "managed"}
 STAGES = {"none", "dev", "staging", "production"}
 DOMAIN_KINDS = {"management", "legacy", "workload"}

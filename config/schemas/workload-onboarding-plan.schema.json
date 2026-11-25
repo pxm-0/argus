@@ -27,16 +27,14 @@
         "kind": {"type": "string", "pattern": "^[a-z][a-z0-9-]{0,31}$"},
         "runtime": {"const": "docker-compose"},
         "composeProject": {"type": "string", "pattern": "^[a-z0-9][a-z0-9_.-]{0,127}$"},
-        "realm": {"enum": ["personal", "work"]},
+        "realm": {"enum": ["personal"]},
         "zone": {"enum": ["sandbox", "managed"]},
         "stage": {"enum": ["none", "dev", "staging", "production"]},
-        "trustDomain": {"enum": ["personal-sandbox", "personal-managed", "work-sandbox", "work-managed"]}
+        "trustDomain": {"enum": ["personal-sandbox", "personal-managed"]}
       },
       "allOf": [
         {"if": {"properties": {"realm": {"const": "personal"}, "zone": {"const": "sandbox"}}}, "then": {"properties": {"trustDomain": {"const": "personal-sandbox"}}}},
-        {"if": {"properties": {"realm": {"const": "personal"}, "zone": {"const": "managed"}}}, "then": {"properties": {"trustDomain": {"const": "personal-managed"}}}},
-        {"if": {"properties": {"realm": {"const": "work"}, "zone": {"const": "sandbox"}}}, "then": {"properties": {"trustDomain": {"const": "work-sandbox"}}}},
-        {"if": {"properties": {"realm": {"const": "work"}, "zone": {"const": "managed"}}}, "then": {"properties": {"trustDomain": {"const": "work-managed"}}}}
+        {"if": {"properties": {"realm": {"const": "personal"}, "zone": {"const": "managed"}}}, "then": {"properties": {"trustDomain": {"const": "personal-managed"}}}}
       ]
     },
     "mutationAuthority": {"const": "reviewed-onboarding-only"},

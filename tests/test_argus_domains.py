@@ -19,6 +19,8 @@ import argus_sandbox_firewall  # noqa: E402
 DOMAIN_NAME = re.compile(r"\b(?:legacy-rootful|(?:personal|work)-(?:sandbox|managed))\b")
 WORKLOAD = set(argus_domains.ids(kind="workload"))
 ROOTLESS = set(argus_domains.ids(rootless=True))
+# D030: workloads run only in the staging and prod cells.
+TARGETS = {argus_domains.cell("staging"), argus_domains.cell("prod")}
 
 
 def entry(**overrides: object) -> dict[str, object]:
@@ -86,18 +88,23 @@ class DriftTest(unittest.TestCase):
     def test_schemas_match(self) -> None:
         manifest = json.loads((ROOT / "config/schemas/workload-manifest.schema.json").read_text(encoding="utf-8"))
         migration = manifest["properties"]["migration"]["properties"]
-        self.assertEqual(WORKLOAD, set(migration["targetTrustDomain"]["enum"]))
-        self.assertEqual(WORKLOAD | set(argus_domains.ids(kind="legacy")), set(migration["runtimeTrustDomain"]["enum"]))
+        self.assertEqual(TARGETS, set(migration["targetTrustDomain"]["enum"]))
+        self.assertEqual(TARGETS | set(argus_domains.ids(kind="legacy")), set(migration["runtimeTrustDomain"]["enum"]))
         plan = (ROOT / "config/schemas/workload-onboarding-plan.schema.json").read_text(encoding="utf-8")
-        self.assertEqual(WORKLOAD, names_in(plan))
+        self.assertEqual(TARGETS, names_in(plan))
 
     def test_registered_workloads_sit_in_registered_cells(self) -> None:
         workloads = json.loads((ROOT / "config/workloads.json").read_text(encoding="utf-8"))["workloads"]
         for item in workloads:
-            self.assertIn(item["migration"]["targetTrustDomain"], WORKLOAD, item["id"])
+            self.assertIn(item["migration"]["targetTrustDomain"], TARGETS, item["id"])
         classification = json.loads((ROOT / "config/argus/workload-classification.json").read_text(encoding="utf-8"))
         for workload_id, item in classification["workloads"].items():
-            self.assertIn(item["trustDomain"], WORKLOAD, workload_id)
+            self.assertIn(item["trustDomain"], TARGETS, workload_id)
+
+    def test_the_work_realm_and_work_managed_are_gone(self) -> None:
+        import argus_state
+        self.assertNotIn("work", argus_state.REALMS)
+        self.assertNotIn("work-managed", argus_domains.ids())
 
     def test_dev_runs_target_the_sandbox_cell(self) -> None:
         self.assertEqual("work-sandbox", argus_domains.cell("sandbox"))

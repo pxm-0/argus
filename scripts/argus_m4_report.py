@@ -14,7 +14,7 @@ def _valid_target(state: Any) -> bool:
     realm, zone, stage = state.get("realm"), state.get("zone"), state.get("stage")
     expected_domain = f"{realm}-{zone}"
     return (
-        realm in {"personal", "work"}
+        realm == "personal"
         and zone in {"sandbox", "managed"}
         and stage in allowed_stages(realm, zone)
         and state.get("trustDomain") == expected_domain
