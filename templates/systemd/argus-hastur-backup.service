@@ -6,7 +6,7 @@ OnFailure=argus-alert-unit@%n.service
 
 [Service]
 Type=oneshot
-# Root runs the root-owned release, never the operator-writable /srv/argus checkout.
+# Root runs the root-owned release, never the operator-writable checkout.
 Environment=ARGUS_ROOT=/opt/argus/current
 WorkingDirectory=/opt/argus/current
 ExecStart=/opt/argus/current/scripts/argus-m5-hastur-backup --workload hastur --age-recipient-file /etc/argus/snapshot-recipients.txt
