@@ -26,7 +26,7 @@
   },
   "migration": {
     "status": "migrated",
-    "targetTrustDomain": "personal-sandbox",
+    "targetTrustDomain": "personal-managed",
     "originalPath": "/home/oreo/hastur",
     "compatibilitySymlink": false,
     "migratedAt": "2026-07-29T13:23:54Z",

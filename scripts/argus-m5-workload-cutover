@@ -67,7 +67,7 @@ RECONCILE_LOCK_WAIT_SECONDS = 60
 RECONCILE_LOCK_POLL_SECONDS = 0.5
 SPECS = {
     "hastur": {
-        "domain": "personal-sandbox",
+        "domain": "personal-managed",  # D030 phase 5: prod cell
         "project": "hastur",
         "source": "/home/oreo/hastur",
         "compose": "compose.yml",

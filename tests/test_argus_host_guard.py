@@ -12,8 +12,10 @@ from argus_host_guard import HostGuardError, render_host_guard  # noqa: E402
 
 
 class HostGuardTest(unittest.TestCase):
-    def test_personal_sandbox_allows_only_https_before_default_drop(self) -> None:
-        rendered = render_host_guard("personal-sandbox", 1002)
+    def test_prod_cell_allows_only_https_before_default_drop(self) -> None:
+        # D030 phase 5: hastur's HTTPS egress moved from the staging cell to prod.
+        self.assertNotIn("dport", render_host_guard("personal-sandbox", 1002))
+        rendered = render_host_guard("personal-managed", 1002)
 
         allowance = (
             "meta skuid 1002 tcp dport 443 ct state new,established accept"
