@@ -283,6 +283,11 @@ class TypedDeployProjectTests(unittest.TestCase):
         with self.assertRaisesRegex(module.FirewallOperationError, "projects differ"):
             module.build_plan(ROOT, "personal-managed", RuntimeRunner([production, rogue]), now=self.NOW)
 
+    def test_sandbox_cell_with_no_projects_renders_default_deny(self, _child: mock.Mock) -> None:
+        plan = module.build_plan(ROOT, "work-sandbox", RuntimeRunner([]), now=self.NOW)
+        self.assertIn("policy drop;", plan["rendered"])
+        self.assertFalse([line for line in plan["rendered"].splitlines() if line.strip().startswith("iifname")])
+
     def test_domain_with_no_projects_is_refused(self, _child: mock.Mock) -> None:
         with mock.patch.object(module, "typed_projects", return_value={}):
             with self.assertRaisesRegex(module.FirewallOperationError, "no configured projects"):

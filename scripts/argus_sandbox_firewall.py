@@ -225,7 +225,7 @@ def _docker(domain: str, *arguments: str) -> list[str]:
     return ["docker", "--host", f"unix:///var/lib/argus/{domain}/docker.sock", *arguments]
 
 
-DEV_DOMAIN = "personal-sandbox"
+DEV_DOMAIN = argus_domains.cell("sandbox")  # D030: dev runs live only in the sandbox cell
 DEV_CAP_ADD = {"NET_BIND_SERVICE", "CAP_NET_BIND_SERVICE"}
 
 
@@ -273,7 +273,8 @@ def discover_runtime(root: Path, domain: str, runner: Runner) -> dict[str, Any]:
     typed = typed_projects(root, domain)
     typed_bridges = {item["project"]: item["bridge"] for item in typed.values()}
     # A domain may hold only typed-deploy projects (personal-managed: nodens-production).
-    if not expected_projects and not typed_bridges:
+    # The sandbox cell holds no workloads at all: only dev runs, which never get a network.
+    if not expected_projects and not typed_bridges and domain != DEV_DOMAIN:
         raise FirewallOperationError("sandbox domain has no configured projects")
     child = rootless_child_pid(domain, runner)
     network_ids = runner.text(_docker(domain, "network", "ls", "-q")).splitlines()
