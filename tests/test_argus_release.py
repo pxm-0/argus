@@ -48,9 +48,9 @@ def compose(name: str, pin: str, comment: str = "old", caddy: str = "c" * 64) ->
     return COMPOSE.format(name=name, pin=pin, comment=comment, caddy=caddy)
 
 
-def workload(workload_id: str, **extra: object) -> dict[str, object]:
+def workload(workload_id: str, domain: str = "personal-managed", **extra: object) -> dict[str, object]:
     return {"id": workload_id, "runtime": {"service": "nodens"},
-            "migration": {"targetTrustDomain": "personal-managed"}, **extra}
+            "migration": {"targetTrustDomain": domain}, **extra}
 
 
 class RewriteTests(unittest.TestCase):
@@ -208,10 +208,10 @@ class CommandTests(unittest.TestCase):
         for path in (self.repo / "config", self.repo / "scripts", self.bin, self.log):
             path.mkdir(parents=True)
         subprocess.run(["git", "init", "-q", "--bare", str(base / "origin.git")], check=True)
-        registry = {"workloads": [workload("nodens-staging", promotesTo="nodens-production", aliases=["ns"]), workload("nodens-production")]}
+        registry = {"workloads": [workload("nodens-staging", "personal-sandbox", promotesTo="nodens-production", aliases=["ns"]), workload("nodens-production")]}
         (self.repo / "config" / "workloads.json").write_text(json.dumps(registry))
         (self.repo / "config" / "routes.json").write_text(json.dumps({"dashboard": {"url": "https://127.0.0.1:1"}}))
-        self.write_compose("nodens-staging", compose("nodens-staging", OLD_ID, REF))
+        self.write_compose("nodens-staging", compose("nodens-staging", OLD_ID, REF).replace("managed-ingress", "sandbox-ingress"))
         self.write_compose("nodens-production", compose("nodens-production", "sha256:PENDING-x"))
         self.script("scripts/argus-check", "import os\nraise SystemExit(int(os.environ.get(\"FAKE_CHECK_EXIT\", \"0\")))\n", self.repo)
         self.script("ssh", FAKE_SSH.format(id=OLD_ID), self.bin)
@@ -251,7 +251,7 @@ class CommandTests(unittest.TestCase):
         data = payload["data"]
         self.assertEqual(f"release/nodens-staging-{NEW_ID[7:19]}", data["branch"])
         self.assertEqual("https://github.com/pxm-0/argus/pull/999", data["prUrl"])
-        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-managed --image {REF}"], self.calls("ssh"))
+        self.assertEqual([f"oreochiserver sudo -n /srv/argus/scripts/argus-image-import --domain personal-sandbox --image {REF}"], self.calls("ssh"))
         branch = subprocess.run(["git", "branch", "--show-current"], cwd=self.repo, capture_output=True, text=True).stdout.strip()
         self.assertEqual(data["branch"], branch)
         self.assertIn(f"image: {NEW_ID}", (self.repo / "workloads/nodens-staging/source/compose.yml").read_text())
@@ -314,6 +314,16 @@ class CommandTests(unittest.TestCase):
         with patch.object(release, "deploy_evidence", return_value=False):
             self.assertEqual("promote-staging-not-deployed", self.promote_refusal())
 
+    def test_promote_refuses_any_direction_but_staging_to_prod(self) -> None:
+        for staging_domain, production_domain in (("personal-managed", "personal-managed"),
+                                                  ("personal-managed", "personal-sandbox"),
+                                                  ("work-sandbox", "personal-managed")):
+            registry = json.loads((self.repo / "config/workloads.json").read_text())
+            registry["workloads"][0]["migration"]["targetTrustDomain"] = staging_domain
+            registry["workloads"][1]["migration"]["targetTrustDomain"] = production_domain
+            (self.repo / "config/workloads.json").write_text(json.dumps(registry))
+            self.assertEqual("promote-roles-invalid", self.promote_refusal("--skip-evidence-check"))
+
     def test_promote_refuses_unregistered_target_and_unpinned_staging(self) -> None:
         registry = json.loads((self.repo / "config/workloads.json").read_text())
         del registry["workloads"][0]["promotesTo"]
@@ -336,7 +346,7 @@ class CommandTests(unittest.TestCase):
         self.assertIn("no promotesTo", payload["error"]["message"])
 
     def test_promote_refuses_unpinned_staging(self) -> None:
-        self.write_compose("nodens-staging", compose("nodens-staging", "sha256:PENDING-x"))
+        self.write_compose("nodens-staging", compose("nodens-staging", "sha256:PENDING-x").replace("managed-ingress", "sandbox-ingress"))
         self.assertEqual("promote-staging-unpinned", self.promote_refusal("--skip-evidence-check"))
 
     def test_promote_refuses_compose_differences(self) -> None:

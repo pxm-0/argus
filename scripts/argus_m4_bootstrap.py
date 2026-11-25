@@ -6,6 +6,8 @@ import hashlib
 import json
 from typing import Any
 
+import argus_domains
+
 
 class BootstrapError(ValueError):
     """Raised when an unsupported M4 cell is requested."""
@@ -16,9 +18,7 @@ def _digest(value: Any) -> str:
 
 
 def sandbox_contract(*, domain: str, user: str) -> dict[str, Any]:
-    if domain not in {
-        "personal-sandbox", "work-sandbox", "personal-managed", "work-managed"
-    }:
+    if domain not in argus_domains.ids(kind="workload"):
         raise BootstrapError("unsupported sandbox domain")
     if user != f"argus-{domain}":
         raise BootstrapError(f"{domain} must use its dedicated Argus identity")

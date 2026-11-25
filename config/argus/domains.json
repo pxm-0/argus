@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "decision": "D030",
+  "domains": [
+    {"id": "management", "kind": "management", "role": null, "rootless": false},
+    {"id": "legacy-rootful", "kind": "legacy", "role": "quarantine", "rootless": false},
+    {"id": "personal-sandbox", "kind": "workload", "role": "staging", "rootless": true},
+    {"id": "personal-managed", "kind": "workload", "role": "prod", "rootless": true},
+    {"id": "work-sandbox", "kind": "workload", "role": "sandbox", "rootless": true},
+    {"id": "work-managed", "kind": "workload", "role": null, "rootless": false}
+  ]
+}

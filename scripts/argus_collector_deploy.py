@@ -22,6 +22,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import argus_domains
 from argus_estate_refresh import read_status
 from argus_observations import ObservationError, SourceRegistry, SourceSpec, load_registry
 
@@ -39,7 +40,7 @@ APPLY_ACKNOWLEDGEMENT = "--acknowledge-estate-collectors"
 ROLLBACK_ACKNOWLEDGEMENT = "--acknowledge-estate-collectors-rollback"
 
 ROOTFUL_SOURCE = "oreochiserver.rootful-docker"
-ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
+ROOTLESS_DOMAINS = argus_domains.ids(rootless=True)
 SCHEDULE_USERS = (
     ("oreo", "oreo"),
     ("personal-sandbox", "argus-personal-sandbox"),

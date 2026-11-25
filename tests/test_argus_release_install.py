@@ -401,6 +401,9 @@ class ReleaseTreeAwarenessTests(unittest.TestCase):
         shutil.copy(ROOT / "scripts" / "argus-sandbox-firewall", self.tree / "scripts" / "argus-sandbox-firewall")
         for module in ROOT.joinpath("scripts").glob("argus_*.py"):
             shutil.copy(module, self.tree / "scripts" / module.name)
+        # A release always carries the trust-domain registry (D030); only workloads.json is missing here.
+        (self.tree / "config" / "argus").mkdir(parents=True, exist_ok=True)
+        shutil.copy(ROOT / "config" / "argus" / "domains.json", self.tree / "config" / "argus" / "domains.json")
         env = {key: value for key, value in os.environ.items() if key != "ARGUS_ROOT"}
         done = subprocess.run([sys.executable, str(self.tree / "scripts" / "argus-sandbox-firewall"), "--domain", "personal-sandbox", "--plan"],
                               capture_output=True, text=True, env=env, check=False)

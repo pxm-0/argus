@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 from types import SimpleNamespace
 import socket
 import tempfile
@@ -15,6 +16,7 @@ from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "argus-m5-rootless-gid-repair"
+sys.path.insert(0, str(ROOT / "scripts"))
 loader = importlib.machinery.SourceFileLoader(
     "argus_m5_rootless_gid_repair", str(SCRIPT)
 )
