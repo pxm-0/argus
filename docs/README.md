@@ -20,6 +20,7 @@ or branch in them is not current guidance unless a current document repeats it.
 - [`PR_WORKFLOW.md`](PR_WORKFLOW.md) — current `main`-based P0 branch and PR contract.
 - [`DEV_ENV_PROTOCOL.md`](DEV_ENV_PROTOCOL.md) — edit on the Mac, build, test and preview in personal-sandbox on the server (`scripts/argus-dev`, D029).
 - [`DEV_SANDBOX_THREAT_MODEL.md`](DEV_SANDBOX_THREAT_MODEL.md) — threat model and rollback for D029 dev runs.
+- [`TRUST_SPLITS.md`](TRUST_SPLITS.md) — D030 sandbox, staging and prod splits: threat model, phases and rollback.
 - [`SERVER_SIM.md`](SERVER_SIM.md) — the `oreochiserver-sim` rehearsal machine for Argus's own installers.
 - [`ARGUS_ISSUE_REMEDIATION_PLAN.md`](ARGUS_ISSUE_REMEDIATION_PLAN.md) — approved implementation sequence and critique loop.
 - [`CODEX_TASKS.md`](CODEX_TASKS.md) — task prompts where still linked by a current issue.

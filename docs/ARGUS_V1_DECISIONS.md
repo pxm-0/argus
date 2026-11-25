@@ -261,6 +261,33 @@ work-managed
 
 **Verification:** `tests/test_argus_dev_sandbox.py` (request, archive, label, container-argument and firewall carve-out tests), `tests/test_argus_sudoers.py` with the re-rendered `deploy/sudoers/argus-operator`, and, on `oreochiserver` after the one-time setup, the smoke run in `docs/DEV_ENV_PROTOCOL.md` plus `argus-sandbox-firewall --domain personal-sandbox --verify` with a preview running.
 
+### D030: Run workloads in three splits: sandbox, staging and prod
+
+**Status:** Design agreed 2026-11-24 by the operator; each phase needs its own approval before it changes the server. Narrows D001 and D003 (drops the `work` realm and `work-managed`), replaces D002's role for `legacy-rootful`, and closes the D029 shared-daemon residual.
+
+**Decision:** Workloads run in three roles, each its own rootless cell. Cells keep their current IDs; one registry maps cell to role:
+
+| Role | Cell | Runs |
+|---|---|---|
+| sandbox | `work-sandbox` (wiped and re-bootstrapped) | `argus-dev` test and preview runs only |
+| staging | `personal-sandbox` | `nodens-staging`, `kadath-staging` |
+| prod | `personal-managed` | `nodens-production`, `kadath`, `hastur` |
+
+In detail:
+
+- `config/argus/domains.json` is the single list of cells, their role and kind. Every hard-coded domain list reads it, and a test fails on drift. Operator views show role and cell ID together. Unix users, sockets, firewall tables, units and keys keep their names; a rename happens only if a cell is rebuilt for another reason.
+- Staging and prod stay separate trust domains under D013. `argus promote` and the privileged lifecycle agent accept only staging to prod; dev images are still never pinned (D029).
+- `kadath` and `hastur` move to prod with `stage: production`, since the managed zone has no `none` stage. Each moves on its own through the D018 fenced migration, `kadath` first.
+- `legacy-rootful` takes the role `quarantine`, outside the three splits, until the quarantined rootful runtime (#345) is resolved. It keeps its persisted kind `legacy`, and unclassified workloads stay `admission: denied` there.
+- The `work` realm and `work-managed` are removed. `stage` stays a per-workload field.
+- Network: sandbox gets no network beyond loopback, ever (dependencies are baked into the image; helper containers share the run's namespace), plus the two tailnet-only preview routes. Staging gets no egress and tailnet-only ingress. Prod gets the D027 tunnel and `hastur`'s HTTPS egress, scoped to its bridge by the inner firewall. Nothing else.
+
+**Reason:** The operator wants three clear places for code: where it is developed, where it is tried, and where it lives. Dev runs stop sharing a daemon with staging, and live data stops sharing one with unreleased staging code. Reusing the empty, already-provisioned cell and keeping cell IDs avoids re-provisioning identities on the live server for no security gain. No work workloads remain, so the personal/work boundary costs code without protecting anything; bringing work back needs a new decision.
+
+**Threat model, phases and rollback:** `docs/TRUST_SPLITS.md`.
+
+**Verification:** per phase, as listed in `docs/TRUST_SPLITS.md`, including the pairwise trust-domain matrix under "Required Adversarial Verification" after every phase that changes a cell.
+
 ## Viability Evidence
 
 Evidence was collected read-only from the primary host on 2026-07-14. Detailed output remains in the private task transcript and must be recollected under the server-required issue before it is used as acceptance evidence.
