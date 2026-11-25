@@ -155,9 +155,10 @@ def ssh_target() -> tuple[str, str]:
     host = os.environ.get("ARGUS_SSH_HOST", "oreochiserver")
     if not SSH_HOST.fullmatch(host):
         raise ReleaseError("ssh-host-invalid", "ARGUS_SSH_HOST is not a plain host name.", "Unset it or use a bare host or user@host.", EXIT_INVOCATION)
-    remote_repo = os.environ.get("ARGUS_REMOTE_REPO", "/srv/argus").rstrip("/")
+    # Root runs the root-owned release, never the operator-writable /srv/argus checkout.
+    remote_repo = os.environ.get("ARGUS_REMOTE_REPO", "/opt/argus/current").rstrip("/")
     if not REMOTE_REPO.fullmatch(remote_repo) or ".." in remote_repo.split("/"):
-        raise ReleaseError("remote-repo-invalid", "ARGUS_REMOTE_REPO is not a plain absolute path.", "Unset it or use e.g. /srv/argus.", EXIT_INVOCATION)
+        raise ReleaseError("remote-repo-invalid", "ARGUS_REMOTE_REPO is not a plain absolute path.", "Unset it or use e.g. /opt/argus/current.", EXIT_INVOCATION)
     return host, remote_repo
 
 

@@ -11,8 +11,8 @@ The project directory holds argus-dev.json (see docs/DEV_ENV_PROTOCOL.md). The i
 built for linux/amd64 by the Mac's Docker (OrbStack) with dependencies baked in, because
 the sandbox has no egress. Nothing runs on the Mac. The server side is
 scripts/argus-dev-sandbox, called with `ssh $ARGUS_SSH_HOST sudo -n` (default host
-oreochiserver, repo $ARGUS_REMOTE_REPO, default /srv/argus; /opt/argus/current once the
-root-owned release is live). Results land in ~/.cache/argus-dev/<project>/<run>/.
+oreochiserver, repo $ARGUS_REMOTE_REPO, default /opt/argus/current, the root-owned
+release). Results land in ~/.cache/argus-dev/<project>/<run>/.
 """
 from __future__ import annotations
 
