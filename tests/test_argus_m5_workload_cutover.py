@@ -19,7 +19,8 @@ loader.exec_module(module)
 
 class WorkloadCutoverTests(unittest.TestCase):
     def test_reviewed_domain_and_tailnet_mapping(self) -> None:
-        self.assertEqual("personal-sandbox", module.SPECS["hastur"]["domain"])
+        self.assertEqual("personal-managed", module.SPECS["hastur"]["domain"])
+        self.assertEqual("personal-managed", module.SPECS["kadath"]["domain"])
         self.assertEqual(8443, module.SPECS["kadath"]["tail_port"])
         self.assertEqual(8444, module.SPECS["nodens"]["tail_port"])
         self.assertEqual(8445, module.SPECS["hastur"]["tail_port"])
@@ -426,8 +427,9 @@ class DeclaredEgressTest(unittest.TestCase):
 
     def test_only_hastur_is_granted_egress(self) -> None:
         self.assertEqual(
-            ["hastur"], sorted(module.domain_egress("personal-sandbox"))
+            ["hastur"], sorted(module.domain_egress("personal-managed"))
         )
+        self.assertEqual({}, module.domain_egress("personal-sandbox"))
         self.assertEqual({}, module.domain_egress("work-sandbox"))
         for workload in ("kadath", "nodens"):
             self.assertIsNone(
@@ -442,7 +444,7 @@ class DeclaredEgressTest(unittest.TestCase):
 
     def test_granted_domain_still_seals_every_other_workload(self) -> None:
         rendered = module.firewall_text(
-            "personal-sandbox", module.domain_egress("personal-sandbox"), self.NETWORKS
+            "personal-managed", module.domain_egress("personal-managed"), self.NETWORKS
         )
         for workload in ("kadath", "nodens"):
             self.assertNotIn(module.sandbox_bridge(workload), rendered)

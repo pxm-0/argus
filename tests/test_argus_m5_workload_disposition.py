@@ -38,7 +38,7 @@ class WorkloadDispositionTests(unittest.TestCase):
 
     def test_retained_workloads_have_accepted_fail_closed_destinations(self) -> None:
         destinations = {
-            "hastur": "personal-sandbox",
+            "hastur": "personal-managed",
             "kadath": "personal-managed",
         }
         expected_projects = {

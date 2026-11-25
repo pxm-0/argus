@@ -82,12 +82,15 @@ After acceptance, a later change removes the staging containers and volume.
 
 ## hastur (phase 5)
 
-`W=hastur P=hastur LEAF=3025de1c50d22033 VOL=argus_m5_stage_hastur_data_<live suffix> PORT=8445 HEALTH=/api/health`.
-Before step 7, give the prod cell hastur's declared egress: the
-`argus-hastur` → `tap0` DNS and HTTPS rules and the `masquerade` NAT rule from
-the staging policy, added to `/etc/argus/argus-personal-managed.nft` and
-loaded into the prod child namespace, plus `tcp 443` in the prod host guard
-(`argus_host_guard.HOST_EGRESS`, applied with
-`argus-m5-sandbox-bootstrap --domain personal-managed --apply-host-guard`).
+`W=hastur P=hastur LEAF=3025de1c50d22033 VOL=<the external volume named in the runtime Compose> PORT=8445 HEALTH=/api/health`.
+hastur also binds its sealed credentials from `/etc/argus/workload-credentials/hastur`,
+which must be `root:argus-<cell>`: `chgrp -R argus-personal-managed` it with step 5,
+and back to `argus-personal-sandbox` on rollback.
+After step 7, give the prod cell hastur's declared egress with
+`argus-m5-workload-cutover --workload hastur --apply-egress --acknowledge-m5-egress-policy`,
+which renders the whole prod policy (including nodens-production's bridge) with
+hastur's DNS and HTTPS rules, and apply the prod host guard (`tcp 443`, from
+`argus_host_guard.HOST_EGRESS`) with
+`argus-m5-sandbox-bootstrap --domain personal-managed --apply-host-guard --acknowledge-host-egress`.
 After acceptance, drop both from the staging cell. Verify that hastur reaches
 HTTPS and that `nodens-production` and `kadath` do not.

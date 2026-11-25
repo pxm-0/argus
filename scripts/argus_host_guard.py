@@ -7,12 +7,12 @@ class HostGuardError(ValueError):
 
 
 HOST_EGRESS: dict[str, tuple[tuple[str, int], ...]] = {
-    # The inner personal-sandbox firewall grants this path only to Hastur's
-    # pinned bridge. The host guard sees RootlessKit's sandbox UID instead of
-    # the originating bridge, so both gates are required for working egress.
-    "personal-sandbox": (("tcp", 443),),
+    # The inner prod-cell firewall grants this path only to Hastur's pinned
+    # bridge (D030 phase 5). The host guard sees RootlessKit's cell UID instead
+    # of the originating bridge, so both gates are required for working egress.
+    "personal-sandbox": (),
     "work-sandbox": (),
-    "personal-managed": (),
+    "personal-managed": (("tcp", 443),),
 }
 
 
