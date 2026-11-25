@@ -11,9 +11,9 @@
     },
     "kadath": {
       "realm": "personal",
-      "zone": "sandbox",
-      "stage": "none",
-      "trustDomain": "personal-sandbox",
+      "zone": "managed",
+      "stage": "production",
+      "trustDomain": "personal-managed",
       "status": "classified",
       "admission": "allowed"
     },
