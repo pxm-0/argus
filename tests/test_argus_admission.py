@@ -150,13 +150,14 @@ class AdmissionDecisionTests(unittest.TestCase):
 
     def test_classification_admission_legacy_and_target_matrix(self) -> None:
         request = current_request(self.root, WORKLOAD_ID, "workload.restart")
+        # D030 phase 5: hastur's reviewed target is the prod cell, so staging mismatches.
         mismatch = replace(
             request,
             target=Classification(
                 "personal",
-                "managed",
-                "production",
-                "personal-managed",
+                "sandbox",
+                "none",
+                "personal-sandbox",
                 "workload",
             ),
         )
