@@ -26,14 +26,14 @@
   },
   "migration": {
     "status": "migrated",
-    "targetTrustDomain": "personal-sandbox",
+    "targetTrustDomain": "personal-managed",
     "originalPath": "/home/oreo/kadath",
     "compatibilitySymlink": false,
     "migratedAt": "2026-07-29T13:07:09Z",
     "lastHealthCheck": "2026-07-29T13:51:08Z",
     "rollback": "Stateful rollback requires reviewed target-write reconciliation. Keep the stopped /home/oreo/kadath source and original named volume fenced until that review is complete.",
     "notes": [
-      "Compose project kadath-live is preserved in personal-sandbox.",
+      "Compose project kadath-live is preserved; re-homed to personal-managed (D030 phase 4).",
       "Web, API, and PostgreSQL have no host-published ports.",
       "Tailnet-only HTTPS port 8443 proxies to a root-owned Unix socket.",
       "PostgreSQL role, database, logical contents, and TCP-auth posture passed final restore validation."

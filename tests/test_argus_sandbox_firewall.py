@@ -294,7 +294,8 @@ class TypedDeployProjectTests(unittest.TestCase):
         self.assertFalse([line for line in plan["rendered"].splitlines() if line.strip().startswith("iifname")])
 
     def test_domain_with_no_projects_is_refused(self, _child: mock.Mock) -> None:
-        with mock.patch.object(module, "typed_projects", return_value={}):
+        with mock.patch.object(module, "typed_projects", return_value={}), \
+                mock.patch.object(module, "configured_projects", return_value={}):
             with self.assertRaisesRegex(module.FirewallOperationError, "no configured projects"):
                 module.build_plan(ROOT, "personal-managed", RuntimeRunner([]), now=self.NOW)
 
