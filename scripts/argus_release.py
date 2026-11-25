@@ -18,6 +18,7 @@ import sys
 from pathlib import Path
 from typing import Any, Callable
 
+import argus_domains
 from argus_common import ALLOWED_IMAGES, is_server_checkout
 from argus_operations import OperationLedger
 
@@ -336,6 +337,10 @@ def promote(repo: Path, runner: Runner, staging_id: str, production_id: str | No
     if staging["item"].get("promotesTo") != production_id:
         raise ReleaseError("promote-target-unregistered", f"{staging_id} is not registered with promotesTo={production_id}.",
                            "Set promotesTo in config/workloads.json through a reviewed PR.")
+    refusal = argus_domains.promotion_refusal(staging["domain"], production["domain"])
+    if refusal:
+        raise ReleaseError("promote-roles-invalid", refusal.capitalize() + ".",
+                           "Promote only from a staging-cell workload to a prod-cell workload (D030).")
     staging_text, production_text = staging["compose"].read_text(encoding="utf-8"), production["compose"].read_text(encoding="utf-8")
     image_id, comment = read_pin(staging_text, staging["service"])
     ref = next((word for word in comment.split() if valid_ref(word)), "")

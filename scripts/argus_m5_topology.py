@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+import argus_domains
 
-DOMAIN_ORDER = (
-    "management",
-    "legacy-rootful",
-    "personal-sandbox",
-    "personal-managed",
-    "work-sandbox",
-    "work-managed",
-)
+
+DOMAIN_ORDER = argus_domains.ids()
 
 
 def build_topology(
@@ -27,7 +22,8 @@ def build_topology(
     domains = {
         domain_id: {
             "id": domain_id,
-            "kind": "management" if domain_id == "management" else ("legacy" if domain_id == "legacy-rootful" else "workload"),
+            "kind": argus_domains.entry(domain_id)["kind"],
+            "role": argus_domains.role(domain_id),
             "workloadIds": [],
         }
         for domain_id in DOMAIN_ORDER
@@ -41,7 +37,7 @@ def build_topology(
     unresolved_count = 0
 
     for domain_id in DOMAIN_ORDER[1:]:
-        nodes.append({"id": domain_id, "kind": "trust-domain", "label": domain_id})
+        nodes.append({"id": domain_id, "kind": "trust-domain", "label": argus_domains.label(domain_id)})
         edges.append({"source": "host", "target": domain_id, "meaning": "containment"})
 
     for workload in workloads:

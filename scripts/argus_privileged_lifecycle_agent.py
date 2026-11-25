@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from argus_common import by_id, load_manifest
+import argus_domains
 from argus_access_runtime import apply_tailscale_access
 from argus_domain_agent import AgentService, IndeterminateOperation
 from argus_ipc import receive_frame, send_frame
@@ -404,6 +405,10 @@ class LifecycleAgent(AgentService):
                 raise PermissionError("promotion source disappeared")
             source_domain = str(source["trust_domain"])
             target_domain = str(parameters["targetTrustDomain"])
+            # D030: production promotion runs only staging -> prod; sealed migrations keep their own checks.
+            refusal = argus_domains.promotion_refusal(source_domain, target_domain)
+            if refusal:
+                raise PermissionError(refusal)
             result = self.promote_between_domains(
                 source_domain, target_domain, workload_id, apply_private_route=True
             )

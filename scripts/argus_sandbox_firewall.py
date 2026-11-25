@@ -20,6 +20,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timezone
 from typing import Any
 
+import argus_domains
+
 from argus_firewall import (
     INTERFACE,
     FirewallPolicyError,
@@ -31,9 +33,7 @@ from argus_firewall import (
 )
 
 
-DOMAINS = {
-    "personal-sandbox", "work-sandbox", "personal-managed", "work-managed"
-}
+DOMAINS = set(argus_domains.ids(kind="workload"))
 BUILTIN_NETWORKS = {"bridge", "host", "none"}
 MAX_CONFIG_BYTES = 65536
 MAX_RUNTIME_OUTPUT_BYTES = 1048576

@@ -10,12 +10,13 @@ import stat
 import time
 
 from argus_alerting import parse_timestamp
+import argus_domains
 from argus_common import audit, now, root
 
 
 SUMMARY = re.compile(r"Smoke summary: (?P<failures>\d+) failure\(s\), (?P<warnings>\d+) warning\(s\)")
 ROOTLESS_PROBE_ROOT = Path("/run/argus-rootless-runtime-probe")
-ROOTLESS_DOMAINS = ("personal-sandbox", "work-sandbox", "personal-managed")
+ROOTLESS_DOMAINS = argus_domains.ids(rootless=True)
 ROOTLESS_PROBE_MAX_AGE_SECONDS = 900
 HISTORY_RETENTION_SECONDS = 30 * 86400
 HISTORY_FAILED_CHECKS = 10

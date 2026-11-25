@@ -30,6 +30,15 @@ class M5TopologyTest(unittest.TestCase):
         self.assertTrue(result["readOnly"])
         self.assertEqual(1, result["summary"]["unresolvedClassifications"])
 
+    def test_trust_domains_carry_their_d030_role(self) -> None:
+        result = build_topology(workloads=[], legacy={}, classified={})
+        roles = {item["id"]: item["role"] for item in result["domains"]}
+        self.assertEqual("staging", roles["personal-sandbox"])
+        self.assertEqual("prod", roles["personal-managed"])
+        self.assertEqual("sandbox", roles["work-sandbox"])
+        labels = {item["id"]: item["label"] for item in result["nodes"] if item["kind"] == "trust-domain"}
+        self.assertEqual("prod (personal-managed)", labels["personal-managed"])
+
     def test_edges_have_explicit_allowlisted_meanings(self) -> None:
         result = build_topology(workloads=[], legacy={}, classified={})
         self.assertTrue(result["edges"])
