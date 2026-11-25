@@ -156,8 +156,8 @@ newest 14 of each (`data-*.tar.gz`, `auth-*.tar.gz`) retained.
 Install the schedule:
 
 ```bash
-sudo install -m 0644 templates/systemd/argus-hastur-backup.service \
-  templates/systemd/argus-hastur-backup.timer /etc/systemd/system/
+sudo install -m 0644 /opt/argus/current/templates/systemd/argus-hastur-backup.service \
+  /opt/argus/current/templates/systemd/argus-hastur-backup.timer /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now argus-hastur-backup.timer
 ```

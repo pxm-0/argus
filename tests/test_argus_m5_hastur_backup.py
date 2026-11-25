@@ -145,6 +145,10 @@ class HasturBackupTest(unittest.TestCase):
         timer = (ROOT / "templates" / "systemd" / "argus-hastur-backup.timer").read_text()
         self.assertIn("User=root", service)
         self.assertIn("--workload hastur", service)
+        self.assertIn("ExecStart=/opt/argus/current/scripts/argus-m5-hastur-backup", service)
+        self.assertIn("--age-recipient-file /etc/argus/snapshot-recipients.txt", service)
+        self.assertIn("OnFailure=argus-alert-unit@%n.service", service)
+        self.assertNotIn("/srv/argus", service)
         self.assertIn("Persistent=true", timer)
         self.assertIn("Unit=argus-hastur-backup.service", timer)
 
