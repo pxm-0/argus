@@ -70,7 +70,7 @@ class DatabaseBackupTest(unittest.TestCase):
 
     def test_every_database_workload_is_mapped_to_its_domain(self) -> None:
         self.assertEqual(
-            {"kadath": "personal-sandbox"},
+            {"kadath": "personal-managed"},
             {name: spec["domain"] for name, spec in module.SPECS.items()},
         )
 

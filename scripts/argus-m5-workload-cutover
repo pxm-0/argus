@@ -123,7 +123,7 @@ SPECS = {
         },
     },
     "kadath": {
-        "domain": "personal-sandbox",
+        "domain": "personal-managed",  # D030 phase 4: prod cell
         "project": "kadath-live",
         "source": "/home/oreo/kadath",
         "compose": "deploy/compose.yml",

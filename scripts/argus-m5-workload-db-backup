@@ -28,7 +28,7 @@ LOCK_ROOT = Path("/run/argus-m5-workload-db-backup")
 # Retained workloads that carry a database, mapped to their sandbox identity.
 SPECS = {
     "kadath": {
-        "domain": "personal-sandbox",
+        "domain": "personal-managed",
         "project": "kadath-live",
         "service": "postgres",
     },

@@ -67,7 +67,7 @@
     {
       "id": "kadath",
       "name": "Kadath",
-      "description": "Personal strategic HQ app migrated into the sealed personal sandbox.",
+      "description": "Personal strategic HQ app, running in the prod cell (D030).",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {
@@ -108,7 +108,7 @@
       },
       "migration": {
         "status": "migrated",
-        "targetTrustDomain": "personal-sandbox",
+        "targetTrustDomain": "personal-managed",
         "migratedAt": "2026-07-29T13:07:09Z",
         "lastHealthCheck": "2026-07-29T13:51:08Z",
         "originalPath": "/home/oreo/kadath",

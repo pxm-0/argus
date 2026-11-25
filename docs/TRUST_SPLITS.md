@@ -125,6 +125,13 @@ routes at the new slots. Then remove the dev carve-out from the staging cell.
 
 ### Phase 4: move `kadath` to prod (code + server) (#450)
 
+Runbook: [`RUNBOOKS/d030-rehome.md`](RUNBOOKS/d030-rehome.md). It re-homes the
+accepted cutover (spec domain, runtime files, volume, accepted state) and
+lets the cutover script's own `--reconcile` start and verify the target,
+instead of a new tool. The volume is copied with a tar stream through
+rootless containers on both sides, so in-namespace ownership survives the
+different subordinate-ID maps, and is compared by a per-file manifest.
+
 No existing tool moves state between two sealed cells.
 `argus-m5-workload-cutover` moves workloads from the legacy rootful daemon
 only. The privileged agent's sealed-domain move fences the source and starts
