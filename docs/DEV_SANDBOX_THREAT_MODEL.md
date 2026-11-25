@@ -61,6 +61,9 @@ staging, and the allowlist for every image that staging or production deploys.
   data or credentials worth more than its rebuild cost. The fix then is a
   separate `personal-dev` cell built by the same bootstrap; that also removes
   the firewall carve-out.
+  [D030](ARGUS_V1_DECISIONS.md) schedules that fix: dev runs move to the
+  reused `work-sandbox` cell (role sandbox) in phase 3 of
+  [`TRUST_SPLITS.md`](TRUST_SPLITS.md).
 - **Writable container layers** have no disk quota under rootless overlay.
   Memory limits cap tmpfs, but a test that writes to its root filesystem can
   still grow until `gc` removes it.
