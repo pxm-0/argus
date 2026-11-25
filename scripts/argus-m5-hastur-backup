@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
 """Back up hastur's data and credentials.
 
-Hastur runs rootful, outside the sandbox (see docs/HANDOFF notes on the
-2026-07-30 outage), so its data is plain host directories, not a database
-behind a sandboxed daemon. This has no backup today — the same silent-failure
-class as #266 (kadath's orphaned nightly dump), just simpler to fix because
-there is no docker exec or sandbox socket involved: it's a tar of two paths.
+Hastur runs in the prod cell (D030 phase 5). Its data lives in a named volume
+behind that cell's rootless daemon, so the data archive is streamed out of the
+running container with `tar`; its credentials are the sealed host directory the
+container binds read-only. The archive is a hot copy, as before the move.
 """
 from __future__ import annotations
 
@@ -27,10 +26,12 @@ import time
 BACKUP_ROOT = Path("/var/backups/argus-m5-workload-files")
 SPECS = {
     "hastur": {
-        "data": Path("/home/oreo/hastur/data"),
-        "auth": Path("/home/oreo/hastur/auth"),
+        "data": {"domain": "personal-managed", "project": "hastur", "service": "hastur", "path": "/app/data"},
+        "auth": Path("/etc/argus/workload-credentials/hastur"),
     },
 }
+CONTAINER_ID_RE = re.compile(r"^[0-9a-f]{12,64}$")
+TAR_TIMEOUT_SECONDS = 3600
 RETAINED_COPIES = 14
 
 PULL_DIR = Path("/var/backups/argus-snapshots-pull")
@@ -127,6 +128,43 @@ def archive_one(source: Path, directory: Path, name: str, stamp: str) -> dict:
     return {"name": name, "artifactPath": str(artifact), "artifactBytes": artifact.stat().st_size}
 
 
+def cell_docker(domain: str, *arguments: str) -> list[str]:
+    return ["runuser", "-u", f"argus-{domain}", "--", "docker", "--host", f"unix:///var/lib/argus/{domain}/docker.sock", *arguments]
+
+
+def archive_container(source: dict, directory: Path, name: str, stamp: str) -> dict:
+    """Stream a path out of the workload's running container into a verified tar.gz."""
+    listing = subprocess.run(
+        cell_docker(source["domain"], "ps", "-q",
+                    "--filter", f"label=com.docker.compose.project={source['project']}",
+                    "--filter", f"label=com.docker.compose.service={source['service']}"),
+        capture_output=True, text=True, check=False, timeout=60,
+    )
+    ids = listing.stdout.split()
+    if listing.returncode != 0 or len(ids) != 1 or not CONTAINER_ID_RE.match(ids[0]):
+        raise BackupError(f"{name}: expected exactly one running {source['project']}/{source['service']} container")
+    artifact = directory / f"{name}-{stamp}.tar.gz"
+    partial = directory / f".{artifact.name}.partial"
+    descriptor = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_CLOEXEC, 0o600)
+    try:
+        with os.fdopen(descriptor, "wb") as handle:
+            streamed = subprocess.run(
+                cell_docker(source["domain"], "exec", ids[0], "tar", "-C", source["path"], "-czf", "-", "."),
+                stdout=handle, stderr=subprocess.PIPE, check=False, timeout=TAR_TIMEOUT_SECONDS,
+            )
+        if streamed.returncode != 0:
+            raise BackupError(f"{name}: container tar failed with exit {streamed.returncode}")
+        # An unlistable tar is not a backup: prove it before it counts.
+        with tarfile.open(partial, "r:gz") as tar:
+            if not tar.getmembers():
+                raise BackupError(f"{name} archive verified empty")
+    except BaseException:
+        partial.unlink(missing_ok=True)
+        raise
+    os.replace(partial, artifact)
+    return {"name": name, "artifactPath": str(artifact), "artifactBytes": artifact.stat().st_size}
+
+
 def backup(workload: str, recipient_file: Path | None = None) -> dict:
     if os.geteuid() != 0:
         raise BackupError("run with sudo")
@@ -135,7 +173,11 @@ def backup(workload: str, recipient_file: Path | None = None) -> dict:
     ensure_root_directory(BACKUP_ROOT)
     ensure_root_directory(directory)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
-    artifacts = [archive_one(source, directory, name, stamp) for name, source in spec.items()]
+    artifacts = [
+        archive_container(source, directory, name, stamp) if isinstance(source, dict)
+        else archive_one(source, directory, name, stamp)
+        for name, source in spec.items()
+    ]
     # hastur is frozen: the pull dir holds exactly one encrypted copy of each archive.
     if recipient_file:
         for item in artifacts:

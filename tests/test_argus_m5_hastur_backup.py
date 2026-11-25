@@ -43,11 +43,45 @@ class HasturBackupTest(unittest.TestCase):
             self.assertFalse(final.is_symlink())
             self.assertEqual(final.read_bytes(), b"cipher")
 
-    def test_hastur_backs_up_both_data_and_auth(self) -> None:
+    def test_hastur_backs_up_live_volume_data_and_sealed_auth(self) -> None:
+        # D030 phase 5: the data lives in the prod cell's volume, not the legacy home directory.
         self.assertEqual(
-            {"data": Path("/home/oreo/hastur/data"), "auth": Path("/home/oreo/hastur/auth")},
+            {
+                "data": {"domain": "personal-managed", "project": "hastur", "service": "hastur", "path": "/app/data"},
+                "auth": Path("/etc/argus/workload-credentials/hastur"),
+            },
             module.SPECS["hastur"],
         )
+
+    def test_container_archive_streams_from_the_one_running_container(self) -> None:
+        import io
+        import tarfile as tarlib
+        import unittest.mock as mock
+        payload = io.BytesIO()
+        with tarlib.open(fileobj=payload, mode="w:gz") as tar:
+            info = tarlib.TarInfo("./index.sqlite")
+            info.size = 2
+            tar.addfile(info, io.BytesIO(b"db"))
+        calls = []
+
+        def fake_run(argv, **kwargs):
+            calls.append(argv)
+            if "ps" in argv:
+                return mock.Mock(returncode=0, stdout="a1b2c3d4e5f6\n")
+            kwargs["stdout"].write(payload.getvalue())
+            return mock.Mock(returncode=0, stderr=b"")
+
+        source = module.SPECS["hastur"]["data"]
+        with tempfile.TemporaryDirectory() as directory, mock.patch.object(module.subprocess, "run", fake_run):
+            result = module.archive_container(source, Path(directory), "data", "20261125T000000Z")
+            self.assertTrue(Path(result["artifactPath"]).exists())
+        self.assertIn("unix:///var/lib/argus/personal-managed/docker.sock", calls[1])
+        self.assertEqual(["exec", "a1b2c3d4e5f6", "tar", "-C", "/app/data", "-czf", "-", "."], calls[1][-8:])
+        with tempfile.TemporaryDirectory() as directory, \
+                mock.patch.object(module.subprocess, "run", lambda argv, **kw: mock.Mock(returncode=0, stdout="")):
+            with self.assertRaises(module.BackupError):
+                module.archive_container(source, Path(directory), "data", "20261125T000000Z")
+            self.assertEqual([], list(Path(directory).iterdir()))
 
     def test_pruning_keeps_the_newest_copies_only(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
