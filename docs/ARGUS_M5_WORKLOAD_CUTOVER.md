@@ -112,14 +112,14 @@ Provision before preflight (hastur example, `personal-sandbox`):
 sudo install -d -o root -g argus-personal-sandbox -m 0750 \
   /etc/argus/workload-credentials/hastur
 sudo install -o root -g argus-personal-sandbox -m 0640 \
-  /path/to/threads-storage.json \
-  /etc/argus/workload-credentials/hastur/threads-storage.json
+  /path/to/credential.json \
+  /etc/argus/workload-credentials/hastur/credential.json
 ```
 
 Preflight and apply refuse to continue unless the directory is root-owned
 `0750`, grouped to the sandbox identity, and contains only root-owned `0640`
 regular files. The mount target and any workload-specific runtime environment
-(hastur: `CRAWL_SCHEDULE_ENABLED=true`, `CRAWL_SCHEDULE_MECHANISM=internal`)
+(hastur: its in-process schedule settings)
 live in that workload's cutover spec.
 
 ## Declared egress
@@ -131,7 +131,7 @@ must carry an `egress` key; `None` means sealed on purpose and renders no rules.
 "egress": {
     "resolver": "10.0.2.3",
     "allow": (("tcp", 443),),
-    "reason": "threads.net crawl",
+    "reason": "scheduled job egress",
 }
 ```
 
@@ -204,18 +204,17 @@ runs every syntax check with `--network none` before stopping the accepted conta
 retained for automatic recovery, and named volumes are never removed.
 
 For Hastur, revision `82e5f437e6858763b37f561bf9094e41920fab05`
-includes the in-process scheduler and indexes crawl history by `finished_at`.
-Without that index, the growing `raw_json` history spills its newest-first sort
-to temporary storage; this rootless overlay rejects the spill with `EOVERFLOW`,
+includes the in-process scheduler and a run-history index. Without that index,
+a growing history query spills its sort to temporary storage; this rootless overlay rejects the spill with `EOVERFLOW`,
 which Node reports as SQLite error 14. Both the workload replacement and its
 Caddy 2.11.4 ingress sidecar are flat-rootfs images because their accepted
 layered images cannot be instantiated again by the current rootless storage
 driver. Refresh proves both pinned images can unpack before stopping the
 accepted project. SSH export remains retired in the sandbox: no private key is
 delivered, and `AUTO_EXPORT_ON_STORAGE_THRESHOLD=false` prevents a scheduled
-crawl from triggering a knowingly unusable export path.
+run from triggering a knowingly unusable export path.
 
-Hastur hit all three at once: sealed credentials, the `CRAWL_SCHEDULE_*`
+Hastur hit all three at once: sealed credentials, the schedule
 overlay, and a declared egress policy each landed after it was cut over, so
 the running project had no `/app/auth` mount, no schedule variables, and a
 non-deterministic `br-<id>` bridge that no declared rule could name.

@@ -178,7 +178,7 @@ class FirewallPolicyTests(unittest.TestCase):
                     "project": "alpha",
                     "resolver": "10.0.2.3",
                     "allow": (("tcp", 443),),
-                    "reason": "reviewed crawl",
+                    "reason": "reviewed egress",
                 }
             },
         )

@@ -204,8 +204,8 @@ class WorkloadCutoverTests(unittest.TestCase):
         no up/start/restart keyword, so the old check never counted it."""
         source = "/home/oreo/hastur"
         crontab = """
-        0 */6 * * * cd /home/oreo/hastur && docker exec hastur pnpm run scrape
-        0 1 * * * cd /home/oreo/other && docker exec other pnpm run scrape
+        0 */6 * * * cd /home/oreo/hastur && docker exec hastur pnpm run job
+        0 1 * * * cd /home/oreo/other && docker exec other pnpm run job
         0 2 * * * cd /home/oreo/hastur && echo docker-exec-typo not a real command
         """
         self.assertEqual(
@@ -384,7 +384,7 @@ class CredentialDeliveryTest(unittest.TestCase):
                     )
                 source = root / "hastur"
                 source.mkdir(mode=0o750)
-                credential = source / "threads-storage.json"
+                credential = source / "session.json"
                 credential.write_text("{}")
                 module.os.chmod(credential, 0o640)
                 # Owned by the invoking user rather than root: rejected.
@@ -465,7 +465,7 @@ class DeclaredEgressTest(unittest.TestCase):
             "hastur": {
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
-                "reason": "threads.net crawl",
+                "reason": "scheduled job egress",
             }
         }
         rendered = module.firewall_text("personal-sandbox", policies, self.NETWORKS)
@@ -532,7 +532,7 @@ class RuntimeRefreshTest(unittest.TestCase):
         "services": {
             "hastur": {
                 "image": "sha256:aaaa",
-                "environment": {"CRAWL_MAX_RUNTIME_MS": "10800000"},
+                "environment": {"JOB_MAX_RUNTIME_MS": "10800000"},
                 "restart": "no",
                 "volumes": [
                     {
@@ -564,7 +564,7 @@ class RuntimeRefreshTest(unittest.TestCase):
             "egress": {
                 "resolver": "10.0.2.3",
                 "allow": (("tcp", 443),),
-                "reason": "threads.net crawl",
+                "reason": "scheduled job egress",
             },
         }
 
@@ -591,7 +591,7 @@ class RuntimeRefreshTest(unittest.TestCase):
         )
         # Captured runtime environment is preserved, not replaced.
         self.assertEqual(
-            "10800000", service["environment"]["CRAWL_MAX_RUNTIME_MS"]
+            "10800000", service["environment"]["JOB_MAX_RUNTIME_MS"]
         )
         # The sealed credential bind, which had no mount at all.
         self.assertIn(
@@ -672,7 +672,7 @@ class RuntimeRefreshTest(unittest.TestCase):
             )
 
     def test_hastur_runtime_reaps_children_and_caps_pids(self) -> None:
-        # 1,155 unreaped headless Chrome zombies accumulated under hastur's
+        # 1,155 unreaped child-process zombies accumulated under hastur's
         # node PID 1 before the 2026-11-15 reboot.
         updated = module.refresh_overlay(
             self.ACCEPTED, "hastur", self.granted_spec(), self.CREDENTIAL_DIR

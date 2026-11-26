@@ -105,7 +105,7 @@ class EncryptedDumpFlowTests(unittest.TestCase):
     def test_hastur_publishes_one_encrypted_copy_per_archive(self) -> None:
         module = load("argus-m5-hastur-backup")
         data, auth = self.base / "data", self.base / "auth"
-        for source, name in ((data, "posts.json"), (auth, "threads.json")):
+        for source, name in ((data, "records.json"), (auth, "session.json")):
             source.mkdir()
             (source / name).write_text("{}")
         with mock.patch.object(module, "PULL_DIR", self.pull), mock.patch.object(module, "BACKUP_ROOT", self.base / "b"), \

@@ -112,8 +112,8 @@ class HasturBackupTest(unittest.TestCase):
             auth_source = root / "source-auth"
             data_source.mkdir()
             auth_source.mkdir()
-            (data_source / "posts.json").write_text("[]")
-            (auth_source / "threads-storage.json").write_text("{}")
+            (data_source / "records.json").write_text("[]")
+            (auth_source / "session.json").write_text("{}")
 
             originals = (
                 module.BACKUP_ROOT,
