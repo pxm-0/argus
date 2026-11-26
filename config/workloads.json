@@ -5,7 +5,7 @@
     {
       "id": "hastur",
       "name": "Hastur",
-      "description": "Hastur, running in the prod cell (D030).",
+      "description": "A cron runner.",
       "lifecycle": "active",
       "kind": "web-app",
       "paths": {

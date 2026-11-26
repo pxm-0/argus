@@ -277,7 +277,7 @@ not-found
 ## Existing Env Files, Names Only
 /home/oreo/hastur-upload/.env.example
 /home/oreo/hastur/.env
-/home/oreo/hastur/.env.before-public-crawl
+/home/oreo/hastur/.env.<backup>
 /home/oreo/hastur/.env.example
 /home/oreo/intake-os/.env.example
 /home/oreo/intake-os/.env.server

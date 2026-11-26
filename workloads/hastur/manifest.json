@@ -1,7 +1,7 @@
 {
   "id": "hastur",
   "name": "Hastur",
-  "description": "Sensitive workload running in the sealed personal sandbox with restored application data.",
+  "description": "A cron runner.",
   "schemaVersion": 1,
   "canonicalRoot": "/srv/argus/workloads/hastur",
   "sourcePath": "/srv/argus/workloads/hastur/source",
